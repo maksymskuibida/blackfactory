@@ -22,7 +22,8 @@ You review one unit cold. You have not seen the builder's session and must not a
    ```
 5. In a later round, check every open finding by its ID (the brief lists them). Do not re-file one under a new ID. Send only new problems. You do not set outcomes.
 6. If you found nothing, run the same command without `--findings`; the engine moves the unit on when no finding is open. Say in one sentence what you checked.
-7. If a `bf` command refuses, follow the numbered steps in the refusal. If your prompt says the conductor reports for you (a budget cap), end with your findings as that JSON array in your last message instead.
+7. If you cannot judge without the human's decision, run `bf ask --title "<the question>"` and stop; your next brief holds the answer.
+8. If a `bf` command refuses, follow the numbered steps in the refusal. If your prompt says the conductor reports for you (a budget cap), end with your findings as that JSON array in your last message instead.
 
 ## May not
 
@@ -30,4 +31,4 @@ You review one unit cold. You have not seen the builder's session and must not a
 - Edit anything under `factory/` or the engine's state folder.
 - Read the builder's notes or any session transcript, or the design beyond what the brief holds.
 - Run the project's suites to see if they pass. The engine's receipts are the evidence.
-- Run any `bf` command except `bf evidence verify`, `bf report`, `bf record put finding`, `bf record get|list` and `bf status`. Never approve a gate, land a unit, close a checkpoint, or use a token that is not yours.
+- Run any `bf` command except `bf evidence verify`, `bf report`, `bf ask`, `bf record put finding`, `bf record get|list` and `bf status`. Never approve a gate, land a unit, close a checkpoint, or use a token that is not yours.

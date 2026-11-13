@@ -8,7 +8,7 @@ You give an idea and make the design decisions. The factory builds the product o
 
 - **Design phase.** Five gates, in order: idea and evaluation, requirements, UI design, architecture, delivery plan. At each one you read a page and say in chat whether you approve.
 - **Build phase.** Agents build, review and verify unit by unit. The engine (`bf`) decides what happens next and refuses anything unproven. You are called only for the human steps the plan names, or when a unit is stuck.
-- **Records.** Everything is stored as small files in `factory/` inside your project, in git. The engine's secrets live outside the project, in a state folder (section 9).
+- **Records.** Everything is stored as small files in `factory/`, in git: inside your project, or in a workspace of its own (section 3). The engine's secrets live outside, in a state folder (section 9).
 
 ## 2. Build the engine
 
@@ -26,37 +26,70 @@ You give an idea and make the design decisions. The factory builds the product o
    bf --help
    ```
 
-## 3. Install the harness into your project
+## 3. Choose a layout and install the harness
 
-Your project must be a git repository with at least one commit. The order matters: commit, install, `bf init`, commit again, start.
+There are two layouts. Pick one before you start.
 
-1. From this repository:
-   ```bash
-   harness/claude/install.sh /path/to/your/project
-   ```
-2. It copies the conductor skill, the three worker roles and the page template into the project's `.claude/`, and adds to `.claude/settings.json` two hooks and two permission rules that keep Claude out of the engine's state folder. It keeps a `.bak` copy of anything it changes, touches nothing outside the project, and is safe to run again.
+| | Project folder | Workspace |
+|---|---|---|
+| Where the factory's files live | In the code repository: `factory/` (records, receipts, the log) and `.claude/` are committed with your code | In a folder of its own, normally a private repository, that points at one or more code repositories |
+| Where Claude Code runs | In the project | In the workspace folder |
+| What the code repositories get | The factory's files | Nothing but branches and commits |
+| Use it for | A private project with one repository that you do not mind carrying the factory's files | A public project, a project with several repositories, or any code history you want to keep free of factory files |
 
-The hooks and rules are explained in `harness/claude/README.md`.
+In a workspace, nothing but branches and commits is written into the code repositories: no `factory/`, no `.claude/`, no `.gitignore` entry. The factory's records, its log and the harness files stay in the workspace. A unit's working copy is a git worktree of its code repository under `.bf/work/` in the workspace.
+
+Install the harness into the folder that holds the factory, never into a code repository of a workspace:
+
+```bash
+harness/claude/install.sh /path/to/your/project              # project folder
+harness/claude/install.sh --workspace /path/to/workspace     # workspace
+```
+
+It copies the conductor skill, the three worker roles and the page template into that folder's `.claude/`, and adds to `.claude/settings.json` two hooks and two permission rules that keep Claude out of the engine's state folder. It keeps a `.bak` copy of anything it changes, touches nothing outside the folder, and is safe to run again. The hooks and rules are explained in `harness/claude/README.md`.
 
 ## 4. Start
 
-1. In your project:
+Run `bf init` from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`: checks run with the `PATH` captured then, in `[exec] path` of `factory/policy.toml`. `bf doctor` lists folders of that `PATH` inside the project or your home folder, as information.
+
+**Project folder.** The order matters: commit, install, `bf init`, commit again, start.
+
+1. The project is a git repository with at least one commit. Its `.gitignore` lists your build output (`target/`, `node_modules/`, `__pycache__/`): a receipt is bound to a hash of every file that is not ignored, so a stray build folder voids it.
+2. Install the harness (section 3), then:
    ```bash
    cd /path/to/your/project
    bf init --name myproject
    ```
-   This creates `factory/` (records, policy, config), `.bf/` (derived files, added to `.gitignore`) and the state folder, and accepts the policy as it is. Run it from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`: checks run with the `PATH` captured here, in `[exec] path` of `factory/policy.toml`. `bf doctor` lists folders of that `PATH` inside the project or your home folder, as information.
-   Make sure `.gitignore` also lists your build output (`target/`, `node_modules/`, `__pycache__/`). A receipt is bound to a hash of every file that is not ignored, so a stray build folder changes the hash and voids the receipt.
-2. Commit the new files (`.claude/`, `factory/` and `.gitignore`), so that the factory begins on a quiet project:
+   This creates `factory/`, `.bf/` (derived files, added to `.gitignore`) and the state folder, and accepts the policy as it is.
+3. Commit the new files (`.claude/`, `factory/` and `.gitignore`), so that the factory begins on a quiet project:
    ```bash
    git add -A && git commit -m "Add Black Factory"
    ```
    `bf status` then prints one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error.
-3. Start Claude Code in the same folder and type:
+4. Start Claude Code in the project folder and type `/factory`.
+
+**Workspace.**
+
+1. Every code repository is a git repository with at least one commit on its main branch and its own `.gitignore` for build output. In a workspace nothing is left out of the receipt hash.
+2. Make the workspace. `bf init --workspace` makes the folder a git repository too:
+   ```bash
+   mkdir myapp-factory && cd myapp-factory
+   bf init --workspace --name myapp
    ```
-   /factory
+3. Point it at each code repository (a path, absolute or relative to the workspace, and the branch it is merged into, which defaults to the one checked out):
+   ```bash
+   bf repo add app ../app
+   bf repo list
    ```
-4. Describe your idea in one message. The conductor takes it from there.
+4. Install the harness into the workspace (section 3), then commit it:
+   ```bash
+   harness/claude/install.sh --workspace /path/to/myapp-factory
+   git add -A && git commit -m "Add Black Factory"
+   ```
+   You may give the workspace a private remote; the engine never touches the network.
+5. Start Claude Code **in the workspace folder** and type `/factory`.
+
+Then, in either layout, describe your idea in one message. The conductor takes it from there. In a workspace with several repositories the plan says which repository each unit changes.
 
 ## 5. The five gates
 
@@ -73,7 +106,7 @@ The questions and gate pages are published as private pages through the Claude a
 |---|---|---|
 | 1. Idea and evaluation | The problem, the user, success measures, what v1 leaves out, risks, first market and legal notes | Go, go with changes, or stop |
 | 2. Requirements | Requirements with IDs and acceptance statements; user journeys for a product with an interface | That this is what gets built. From here every ID is tracked to done |
-| 3. UI design | Screens, their states, the journeys. Skipped if the product has no interface | The look and the flows |
+| 3. UI design | Screens, their states, the journeys. For a product with no interface the conductor asks whether to skip it, and you say so in your own words | The look and the flows |
 | 4. Architecture | Components, decisions with what was rejected, measurable targets, threats | Structure, targets and security posture |
 | 5. Delivery plan | Units as waves, handoffs, checkpoints and the IDs each proves, human steps, estimate, budget | Start building. The plan is frozen from here: later changes need an amendment you approve |
 
@@ -90,7 +123,8 @@ The questions and gate pages are published as private pages through the Claude a
 After you approve the delivery plan, the conductor runs a loop: ask `bf next`, start the workers it names (builder, reviewer, verifier), land finished units, close checkpoints. You can leave. It stops only for:
 
 - a human step the plan marks as stopping the run (you test something by hand, you confirm a result),
-- a parked unit or a failed or unreachable check that needs a decision,
+- a parked or blocked unit, or a failed or unreachable check, that needs a decision (only that unit or checkpoint waits; the rest goes on),
+- a question one of the workers put to you: it shows up in chat with its options, only that unit waits, and your answer reaches the worker in its next brief,
 - the budget cap,
 - the end of the run, after the last checkpoint closes. Each checkpoint's verifier is the verification of what it proves, and `bf ledger check` is the final test.
 
@@ -102,7 +136,7 @@ A test run completes a whole factory run without you approving each gate. It is 
 
 1. Say in chat that you grant a test run, in a sentence that speaks of a test run (the engine refuses a grant that does not).
 2. The conductor runs `bf test-mode grant` with your words as the quote.
-3. The conductor drafts the records of every stage, then starts the run (`bf run start`), then opens and approves each gate in order with a record marked **simulated**.
+3. The conductor drafts the records of every stage, then starts the run (`bf run start`), then opens and approves each gate in order with a record marked **simulated**. The order and the not-empty rules hold in a test run too, and skipping the UI gate still needs your own words.
 
 A simulated approval counts for nothing outside a granted run, and a run that contains one can never be merged onto `main`. Never use it on work you intend to ship.
 
@@ -110,9 +144,9 @@ A simulated approval counts for nothing outside a granted run, and a run that co
 
 | Where | What |
 |---|---|
-| `factory/` (in your project, tracked) | Requirements, design parts, units, checkpoints, receipts, the run log. One file each |
+| `factory/` (in the project folder or the workspace, tracked) | Requirements, design parts, units, checkpoints, receipts, the run log, and in a workspace `workspace.toml` naming the code repositories. One file each |
 | `factory/policy.toml` | Model tier by kind of work, round limits, budget cap, the `PATH` checks run with, the words the engine reads. Only you edit it, and a change counts only after you accept it with `bf policy accept` (section 12) |
-| `.bf/` (in your project, ignored by git) | Drafts, briefs, built pages, the signed guard table and the units' working copies |
+| `.bf/` (in the project folder or the workspace, ignored by git) | Drafts, briefs, built pages, the signed guard table and the units' working copies (`.bf/work/<unit>`; a checkpoint over several repositories has `.bf/work/<checkpoint>/<repo>`) |
 | `.claude/skills/factory/`, `.claude/agents/` | The conductor's instructions, the page template, builder, reviewer, verifier |
 | `~/.local/state/blackfactory/<project id>/` | The state folder: the key that seals receipts and the log, the log's head, the accepted copy of the policy, the role tokens. Outside the project. If `BF_STATE_HOME` or `XDG_STATE_HOME` is set, it is under that instead |
 
@@ -120,10 +154,10 @@ Do not edit `factory/` or the state folder by hand. The engine and the guard hoo
 
 ## 10. Merging the result
 
-Closing a checkpoint (`bf checkpoint close`) leaves the work on a local branch `bf/K-1`. Nothing reaches `main` and nothing is pushed until you decide. You have two ways to merge:
+Checkpoints are stacked in plan order: each builds on the one before, so a run flows through all of them and you merge once, at the end. Closing a checkpoint (`bf checkpoint close`) leaves the work on a local branch `bf/K-1`, `bf/K-2` and so on, in each code repository it touched. Nothing reaches the main branch and nothing is pushed until you decide. You have two ways to merge:
 
-- Ask the conductor in chat to merge. It opens a step gate for the checkpoint, you say merge, and it runs `bf checkpoint close K-1 --merge`.
-- Merge it yourself in your own terminal, for example `git merge --no-ff bf/K-1`.
+- Ask the conductor in chat to merge. It opens a step gate for the last checkpoint, you say merge, and it runs `bf checkpoint close K-<last> --merge`, which brings every earlier checkpoint and merges in every repository involved (each main checkout must be on its main branch).
+- Merge it yourself in your own terminal, for example `git merge --no-ff bf/K-<last>` in each code repository.
 
 The engine refuses its own merge after a test run, and complains if a merge brings in commits of a test run or of a unit that never landed. Do not merge the branch of a test run.
 
@@ -134,6 +168,7 @@ bf status            # where the run stands
 bf gate status       # which gates are open or approved, and the words that decided them
 bf log               # the append-only event log
 bf next              # what would start next
+bf repo list         # in a workspace: the code repositories and where each main branch stands
 bf ledger check      # every designed part with no unit, check or evidence
 bf ledger impact R-3 # everything linked to R-3
 bf doctor            # checks the key, the log, the guard table and the plan
@@ -148,17 +183,16 @@ Every refusal has four parts: what was refused, why, numbered steps, and how to 
 - **No human message followed the gate.** Type your decision in the session that is running the factory. The engine records your message as the hook delivers it.
 - **The policy file differs from the one you accepted.** Every command stops. Read the change with `bf policy diff`. If you agree, tell the conductor in chat and it runs `bf policy accept` with your words. If not, put the old file back. Only you decide this.
 - **A check failed or is unreachable.** The verifier recorded why (`bf next` shows it). Fix the cause or amend the plan, then the verifier runs the check again. On macOS checks run in a sandbox with no network and a short list of environment variables. A check that needs the network or more variables is allowed by setting `[exec] network = true` or `[exec] env = [...]` in `factory/policy.toml`, which you then accept with `bf policy accept`.
-- **The log does not match its head, or the main branch moved without the engine.** `bf doctor` and `bf status` say where. Only you decide to keep things as they are: tell the conductor in chat, and it runs `bf head accept` with your words. A commit that touches only `factory/` and `.gitignore` is not a move. Receipts of a cloned project must be run again.
-- **A role token is lost or stolen.** The conductor takes tokens with `bf token take`; asking again voids the earlier one. Only you can clear them all: tell the conductor in chat, and it runs `bf tokens reset` with your words.
+- **The log does not match its head, or the main branch moved without the engine.** `bf doctor` and `bf status` say where. Only you decide to keep things as they are: tell the conductor in chat, and it runs `bf head accept` with your words. An ordinary commit of yours on the main branch is only a note, and blocks nothing; the engine objects only when work from a unit that never landed, or from a test run, reached it. Receipts of a cloned project must be run again.
+- **A gate will not open.** Gates open in order (idea, requirements, UI, architecture, plan) and only with their records in place. For a product with no interface, tell the conductor in your own words to skip the UI gate.
 
 ## 13. When a unit is parked
 
-A unit is parked when it passes its limit of review rounds or sits idle too long. The conductor tells you which unit and why.
+A unit is parked when it passes its limit of review rounds (`max_rounds`) or of failed attempts in a row (`max_attempts`), or sits idle too long; it is blocked when its builder says it cannot go on. The conductor tells you which unit and why, and the rest of the run carries on.
 
-1. Run `bf stuck` to list parked units and the reason.
-2. Read the unit's open findings: `bf record list --kind finding`, and `bf record get F-1` for one.
-3. Decide, then tell the conductor in chat: re-plan the unit through an amendment (`bf amend open <ID>`), raise the limit in `factory/policy.toml` (only you edit that file), or accept a finding by setting its `outcome = "accepted"`. The engine has no command that releases a parked unit by itself.
-4. The rest of the run carries on meanwhile.
+1. Read the unit's open findings: `bf record list --kind finding`, and `bf record get F-1` for one.
+2. Decide, then tell the conductor in chat. To let the unit try again, say so in your own words: the conductor runs `bf unit release U-3` with your words as the quote, and rounds and attempts start again.
+3. Or re-plan the unit through an amendment (`bf amend open <ID>`): once you approve it, the engine re-opens the units, checkpoints and checks it touches and nothing else. Or raise `max_rounds` or `max_attempts` in `factory/policy.toml` and accept the change. Or accept a finding by setting its `outcome = "accepted"`.
 
 ## 14. What the factory checks, and what it leaves to Claude Code
 
@@ -183,4 +217,5 @@ The full table is in [engine.md](engine.md), section "What the engine does not s
 - Opening pull requests. The plan can mark a checkpoint for one, and nothing acts on it yet.
 - Harnesses other than Claude Code, and hosts other than local git.
 - The UI/UX mode, the security and legal roles, and the operations phase (deploy, observe).
-- Team work: one person per project. Records outside git.
+- Team work: one person per project. Records that are not in git.
+- One unit that changes two repositories: a unit names one repository.

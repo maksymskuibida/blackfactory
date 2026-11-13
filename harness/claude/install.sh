@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Install the Black Factory Claude Code harness into a project.
-# Usage: harness/claude/install.sh <project-dir>
+# Install the Black Factory Claude Code harness into a project folder or into a workspace.
+# Usage: harness/claude/install.sh [--workspace] <dir>
+#   <dir> is either a project (a git repository that holds the code) or a workspace
+#   (a folder made with `bf init --workspace`, which holds only the factory).
+#   Everything goes into <dir>/.claude. A code repository that a workspace points at is never touched:
+#   pass the workspace, not the repository. With --workspace the script refuses a folder that is not one.
 set -euo pipefail
 
+workspace_flag=0
+if [ "${1:-}" = "--workspace" ]; then
+  workspace_flag=1
+  shift
+fi
 if [ $# -ne 1 ] || [ ! -d "$1" ]; then
-  echo "usage: install.sh <project-dir>" >&2
-  echo "  <project-dir> must be an existing git repository." >&2
+  echo "usage: install.sh [--workspace] <dir>" >&2
+  echo "  <dir> must be an existing git repository (a project) or a workspace made with 'bf init --workspace'." >&2
   exit 1
 fi
 
@@ -13,9 +22,24 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 project="$(cd "$1" && pwd -P)"
 
+mode="project"
+if [ -f "$project/factory/workspace.toml" ]; then
+  mode="workspace"
+fi
+if [ "$workspace_flag" = 1 ] && [ "$mode" != "workspace" ]; then
+  echo "refused: $project is not a workspace (no factory/workspace.toml in it)." >&2
+  echo "  1. Make the workspace first: mkdir <name> && cd <name> && bf init --workspace --name <name>" >&2
+  echo "  2. Run this script again with that folder." >&2
+  exit 2
+fi
+
 if [ ! -e "$project/.git" ]; then
   echo "refused: $project is not a git repository (no .git inside it)." >&2
-  echo "  1. Run: git init   inside the project, or pick the project's root folder." >&2
+  if [ "$workspace_flag" = 1 ]; then
+    echo "  1. Run: bf init --workspace --name <name>   inside the workspace folder (it makes the folder a git repository)." >&2
+  else
+    echo "  1. Run: git init   inside the project, or pick the project's root folder. For a workspace run bf init --workspace first." >&2
+  fi
   echo "  2. Run this script again." >&2
   exit 2
 fi
@@ -53,7 +77,7 @@ install_file() {
   changed=1
 }
 
-echo "Installing into $project"
+echo "Installing into $project ($mode)"
 install_file "$here/skills/factory/SKILL.md" "$project/.claude/skills/factory/SKILL.md"
 for a in builder reviewer verifier; do
   install_file "$here/agents/$a.md" "$project/.claude/agents/$a.md"
@@ -192,4 +216,8 @@ if command -v bf >/dev/null 2>&1; then
 else
   echo "warning: 'bf' is not on your PATH. The hooks call it by name. Build it with 'cargo build --release' and put target/release/bf on your PATH." >&2
 fi
-echo "Next: cd into the project, run 'bf init --name <project>', start Claude Code there and type /factory."
+if [ "$mode" = "workspace" ]; then
+  echo "Next: commit the new files in the workspace, start Claude Code in the workspace folder (not in a code repository) and type /factory."
+else
+  echo "Next: cd into the project, run 'bf init --name <project>', commit the new files, start Claude Code there and type /factory."
+fi
