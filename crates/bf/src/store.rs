@@ -556,6 +556,20 @@ impl Project {
         let start = fs::canonicalize(start)
             .map_err(|e| err(format!("cannot open {}: {e}", start.display())))?;
         let mut top: Option<PathBuf> = None;
+        // A workspace above wins over anything nearer: a code repository inside it may hold a `factory/`
+        // folder of its own, and a working copy's git data belongs to another repository.
+        for dir in start.ancestors() {
+            if dir.join("factory/workspace.toml").is_file()
+                && dir.join("factory/config.toml").is_file()
+            {
+                let t = start
+                    .ancestors()
+                    .find(|d| d.join(".git").exists())
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(|| dir.to_path_buf());
+                return Project::open(dir.to_path_buf(), t, &start);
+            }
+        }
         for dir in start.ancestors() {
             let dot = dir.join(".git");
             if top.is_none() && dot.exists() {
@@ -833,6 +847,73 @@ impl Project {
             }]
         };
         Ok(())
+    }
+
+    /// The ignore lines (`/<folder>/`) the workspace's repository needs for the code repositories that
+    /// live inside the workspace folder.
+    pub fn nested_repo_lines(&self) -> Vec<String> {
+        self.repos
+            .iter()
+            .filter_map(|r| r.path.strip_prefix(&self.root).ok())
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map(|rel| format!("/{}/", rel.to_string_lossy()))
+            .collect()
+    }
+
+    /// The workspace repository's local ignore file (`.git/info/exclude`), if the workspace is a git
+    /// repository.
+    pub fn exclude_file(&self) -> Option<PathBuf> {
+        if !self.workspace || !self.root.join(".git").exists() {
+            return None;
+        }
+        let rel =
+            crate::gitx::must(&self.root, &["rev-parse", "--git-path", "info/exclude"]).ok()?;
+        let p = PathBuf::from(rel.trim());
+        Some(if p.is_absolute() {
+            p
+        } else {
+            self.root.join(p)
+        })
+    }
+
+    /// The nested-repository lines the local ignore file lacks.
+    pub fn missing_excludes(&self) -> Vec<String> {
+        let lines = self.nested_repo_lines();
+        if lines.is_empty() {
+            return vec![];
+        }
+        let Some(file) = self.exclude_file() else {
+            return vec![];
+        };
+        let have = fs::read_to_string(&file).unwrap_or_default();
+        lines
+            .into_iter()
+            .filter(|l| !have.lines().any(|h| h.trim() == l))
+            .collect()
+    }
+
+    /// Put the missing lines into `.git/info/exclude`, once each, and return the ones added. Nothing of a
+    /// nested code repository is ever staged or committed into the workspace's repository.
+    pub fn ensure_excludes(&self) -> R<Vec<String>> {
+        let missing = self.missing_excludes();
+        if missing.is_empty() {
+            return Ok(missing);
+        }
+        let Some(file) = self.exclude_file() else {
+            return Ok(vec![]);
+        };
+        if let Some(d) = file.parent() {
+            fs::create_dir_all(d)?;
+        }
+        let mut text = fs::read_to_string(&file).unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        for l in &missing {
+            text.push_str(&format!("{l}\n"));
+        }
+        fs::write(&file, text)?;
+        Ok(missing)
     }
 
     pub fn repo(&self, name: &str) -> R<&Repo> {
@@ -1184,6 +1265,7 @@ impl Project {
             "state_dir": self.state_dir().to_string_lossy(),
             "worktrees": worktrees,
             "main_branch": self.repos.first().map(|r| r.branch.clone()).unwrap_or_else(|| self.config.main_branch.clone()),
+            "workspace": self.workspace,
             "repos": self.repos.iter().map(|r| json!({"name": r.name, "path": r.path.to_string_lossy(), "branch": r.branch})).collect::<Vec<_>>(),
             "branch_prefix": self.config.branch_prefix,
         });

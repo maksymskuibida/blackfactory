@@ -71,6 +71,34 @@ pub fn doctor(p: &Project) -> R<Value> {
             ),
         },
     );
+    if p.workspace && !p.nested_repo_lines().is_empty() {
+        let missing = p.missing_excludes();
+        if missing.is_empty() {
+            add(
+                "nested repositories",
+                true,
+                "the code repositories inside the workspace are in .git/info/exclude".to_string(),
+            );
+        } else {
+            // Put back (a fresh clone of the workspace has no exclude file), then say so.
+            let put = p.ensure_excludes().unwrap_or_default();
+            add(
+                "nested repositories",
+                !put.is_empty(),
+                if put.is_empty() {
+                    format!(
+                        "{} missing from .git/info/exclude and could not be added",
+                        missing.join(", ")
+                    )
+                } else {
+                    format!(
+                        "{} was missing from .git/info/exclude and has been put back",
+                        put.join(", ")
+                    )
+                },
+            );
+        }
+    }
     let notes = crate::evidence::path_notes(p);
     add(
         "check path",

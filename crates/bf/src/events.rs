@@ -392,6 +392,8 @@ pub struct State {
     pub reopen_floor: BTreeMap<String, u64>,
     /// Events of the human's messages, recorded or rejected (`human.turn`, `human.turn.rejected`).
     pub human_events: usize,
+    /// Where each page was published: name -> (url, when). The latest event for a name wins.
+    pub pages: BTreeMap<String, (String, String)>,
     /// Events from a conductor at work: anything but the project's start, the human's messages and
     /// the acceptance of the policy or the log.
     pub work_events: usize,
@@ -742,6 +744,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     {
                         u.attempts += 1;
                     }
+                }
+            }
+            "page.published" => {
+                if !sv("name").is_empty() && !sv("url").is_empty() {
+                    st.pages.insert(sv("name"), (sv("url"), at.clone()));
                 }
             }
             "gate.skip" => {
