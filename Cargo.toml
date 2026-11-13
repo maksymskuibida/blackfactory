@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/bf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.89"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Dependencies (the TOML parser above all) are optimised even in debug builds, so the timing tests
+# measure something close to the shipped binary.
+[profile.dev.package."*"]
+opt-level = 3
