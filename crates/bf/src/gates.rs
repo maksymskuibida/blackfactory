@@ -466,6 +466,44 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     Ok(st.gate(&id).cloned().unwrap())
 }
 
+/// Why `bf gate open <kind>` would refuse right now for want of records or an earlier gate, in words,
+/// or `None` when it would open. `bf next` uses it so that no directive carries a command the engine
+/// would refuse.
+pub fn open_blocker(p: &Project, st: &State, kind: &str) -> Option<String> {
+    match check_order_and_content(p, st, kind) {
+        Ok(()) => None,
+        Err(crate::refusal::Fail::Refused(r)) => {
+            let mut why = r.because.clone();
+            if kind == "plan" {
+                if let Ok(pl) = plan::load(p) {
+                    if !pl.problems.is_empty() {
+                        why = format!(
+                            "the plan has problems: {}",
+                            pl.problems
+                                .iter()
+                                .take(5)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        );
+                    }
+                }
+            }
+            Some(why)
+        }
+        Err(crate::refusal::Fail::Error(e)) => Some(e),
+    }
+}
+
+/// The first design gate, in order, that is neither approved nor skipped.
+pub fn first_unpassed_design_gate(st: &State) -> &'static str {
+    DESIGN_ORDER
+        .iter()
+        .copied()
+        .find(|k| !(st.gate_passed(k, None) || (*k == "ui" && st.skipped_words("ui").is_some())))
+        .unwrap_or("plan")
+}
+
 /// The design gates, in the order they are approved.
 const DESIGN_ORDER: &[&str] = &["idea", "requirements", "ui", "architecture", "plan"];
 

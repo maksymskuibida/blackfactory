@@ -670,3 +670,163 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     );
     fx.must(&["checkpoint", "close", "K-1"]);
 }
+
+/// R-1, C-1, D-1 (and J-1 when `journey`) delivered by one unit, proved by its check and one checkpoint:
+/// a whole plan with no idea file yet.
+fn whole_plan(fx: &Fx, journey: bool) {
+    let mut del = vec!["R-1", "C-1", "D-1"];
+    if journey {
+        del.push("J-1");
+    }
+    let list = del
+        .iter()
+        .map(|d| format!("\"{d}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut recs: Vec<(&str, String)> = vec![
+        (
+            "requirement",
+            "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n".into(),
+        ),
+        (
+            "component",
+            "id=\"C-1\"\nkind=\"component\"\ntitle=\"Core\"\n".into(),
+        ),
+        (
+            "decision",
+            "id=\"D-1\"\nkind=\"decision\"\ntitle=\"d\"\nchosen=\"a\"\nrejected=\"b\"\n".into(),
+        ),
+    ];
+    if journey {
+        recs.push((
+            "journey",
+            "id=\"J-1\"\nkind=\"journey\"\ntitle=\"Say hello\"\n".into(),
+        ));
+    }
+    recs.extend([
+        ("unit", format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[{list}]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n")),
+        ("check", format!("id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[{list}]\nscope=\"unit\"\nunit=\"U-1\"\n")),
+        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[{list}]\nchecks=[\"X-1\"]\n")),
+    ]);
+    for (k, t) in recs {
+        let o = fx.put(k, &t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.commit_all("records");
+}
+
+/// Ask `bf next`, and do what its one directive says, asserting that the command it offers runs.
+fn walk_the_gates(fx: &Fx, skip_ui: bool) {
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..30 {
+        if fx.must(&["status", "--json"]).json()["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["kind"] == "plan" && g["status"] == "approved")
+        {
+            break;
+        }
+        let n = fx.must(&["next", "--json"]).json();
+        let ds = n["directives"].as_array().unwrap();
+        assert_eq!(ds.len(), 1, "one directive at a time: {n}");
+        let d = &ds[0];
+        let kind = d["gate_kind"].as_str().unwrap_or("").to_string();
+        match d["action"].as_str().unwrap() {
+            "add-records" => {
+                // The directive says what is missing; the conductor writes it, or has the ui gate skipped.
+                if kind == "idea" {
+                    assert!(d["missing"].as_str().unwrap().contains("idea"), "{n}");
+                    fs::write(fx.root.join("factory/idea.md"), "# A tiny greeter\n").unwrap();
+                    seen.push("add-records idea".into());
+                } else {
+                    assert_eq!(kind, "ui", "{n}");
+                    assert!(skip_ui, "{n}");
+                    assert!(
+                        d["skip_command"].as_str().unwrap().contains("gate skip ui"),
+                        "{n}"
+                    );
+                    fx.human("There is no interface here, skip the ui gate.");
+                    fx.must(&["gate", "skip", "ui", "--quote", "skip the ui gate"]);
+                    seen.push("skip ui".into());
+                }
+            }
+            "open-gate" => {
+                // The offered command runs without refusal.
+                let cmd = d["command"].as_str().unwrap();
+                let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+                let o = fx.bf(&args);
+                assert_eq!(o.code, 0, "`{cmd}` was offered and refused: {}", o.all());
+                seen.push(format!("open {kind}"));
+            }
+            "decide-gate" => {
+                let gid = d["gate"].as_str().unwrap().to_string();
+                let said = format!("The {kind} is right, approved.");
+                fx.human(&said);
+                fx.must(&["gate", "approve", &gid, "--quote", &said]);
+                seen.push(format!("decide {kind}"));
+            }
+            a => panic!("unexpected directive {a}: {n}"),
+        }
+    }
+    let want: Vec<&str> = if skip_ui {
+        vec![
+            "add-records idea",
+            "open idea",
+            "decide idea",
+            "open requirements",
+            "decide requirements",
+            "skip ui",
+            "open architecture",
+            "decide architecture",
+            "open plan",
+            "decide plan",
+        ]
+    } else {
+        vec![
+            "add-records idea",
+            "open idea",
+            "decide idea",
+            "open requirements",
+            "decide requirements",
+            "open ui",
+            "decide ui",
+            "open architecture",
+            "decide architecture",
+            "open plan",
+            "decide plan",
+        ]
+    };
+    assert_eq!(seen, want);
+}
+
+#[test]
+fn bf_next_walks_the_five_gates_in_order_and_every_offered_command_runs() {
+    // A project folder, the ui gate skipped.
+    let fx = Fx::new();
+    ordered(&fx);
+    whole_plan(&fx, false);
+    fx.must(&["run", "start"]);
+    walk_the_gates(&fx, true);
+    // A workspace, the ui gate decided.
+    let fx = Fx::workspace(&["app"]);
+    ordered(&fx);
+    whole_plan(&fx, true);
+    fx.must(&["run", "start"]);
+    walk_the_gates(&fx, false);
+}
+
+#[test]
+fn bf_next_never_offers_a_later_gate_while_an_earlier_one_waits() {
+    let fx = Fx::new();
+    ordered(&fx);
+    whole_plan(&fx, false);
+    fs::write(fx.root.join("factory/idea.md"), "# idea\n").unwrap();
+    fx.must(&["run", "start"]);
+    fx.must(&["gate", "open", "idea"]);
+    let n = fx.must(&["next", "--json"]).json();
+    let d = &n["directives"][0];
+    assert_eq!(d["action"], "decide-gate", "{n}");
+    assert_eq!(d["gate"], "idea-r1");
+    assert!(!n.to_string().contains("bf gate open plan"), "{n}");
+}

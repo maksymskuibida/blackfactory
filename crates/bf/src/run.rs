@@ -168,6 +168,29 @@ fn next_raw(p: &Project) -> R<Value> {
     let mut directives: Vec<Value> = Vec::new();
     let mut waiting: Vec<String> = Vec::new();
 
+    // With the gates in order, the one to offer is the first that is not approved or skipped: decide it
+    // if it is open, otherwise open it, or say which record is missing for it to open.
+    if p.policy.gates.in_order && !st.gate_passed("plan", None) {
+        let kind = gates::first_unpassed_design_gate(&st);
+        if let Some(g) = st.latest_gate(kind, None).filter(|g| g.status == "open") {
+            directives.push(
+                json!({"role": "human", "action": "decide-gate", "gate": g.id, "gate_kind": kind,
+                "note": format!("Ask the human to approve or reject the {kind} gate in chat.")}),
+            );
+        } else if let Some(why) = gates::open_blocker(p, &st, kind) {
+            let mut d = json!({"role": "conductor", "action": "add-records", "gate_kind": kind, "missing": why,
+                "note": format!("The {kind} gate cannot open yet: {why}. Write what it needs, then ask again.")});
+            if kind == "ui" {
+                // A product with no interface needs no screen: the human can skip the gate.
+                d["skip_command"] = json!("bf gate skip ui --quote \"<the human's words>\"");
+                d["note"] = json!(format!("The ui gate cannot open yet: {why}. Write a screen or journey, or, for a product with no interface, ask the human whether to skip the ui gate and record their words with the skip command."));
+            }
+            directives.push(d);
+        } else {
+            directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": kind, "command": format!("bf gate open {kind}")}));
+        }
+        return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
+    }
     match st.latest_gate("plan", None) {
         Some(g) if g.status == "approved" => {}
         Some(g) if g.status == "open" => {
