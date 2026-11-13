@@ -113,6 +113,118 @@ fn review_rounds_end_in_parking_and_stuck_lists_it() {
         .json();
     assert_eq!(l.as_array().unwrap().len(), 4);
     assert_eq!(l[0]["id"], "F-1");
+    // A way back: only the human releases a parked unit, in their words.
+    fx.refused(&["unit", "release", "U-1", "--quote", "Yes, release it."]);
+    fx.human("Yes, release it and let the builder try again.");
+    let r = fx
+        .must(&[
+            "unit",
+            "release",
+            "U-1",
+            "--quote",
+            "Yes, release it",
+            "--json",
+        ])
+        .json();
+    assert_eq!(r["state"], "fixing");
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["role"], "builder", "{n}");
+    assert_eq!(n["directives"][0]["action"], "fix");
+    assert_eq!(n["directives"][0]["limits"]["round"], 0);
+    // The history stays in the log, and the same words cannot release it twice.
+    let log = fx.must(&["log", "--json"]).json().to_string();
+    assert!(log.contains("unit.release") && log.contains("unit.park"));
+    fx.refused(&["unit", "release", "U-1", "--quote", "Yes, release it"]);
+    // A unit that is not parked or blocked is not released.
+    fx.human("Yes, release it again.");
+    let o = fx.refused(&[
+        "unit",
+        "release",
+        "U-1",
+        "--quote",
+        "Yes, release it again.",
+    ]);
+    assert!(
+        o.stderr.contains("only a parked or blocked unit"),
+        "{}",
+        o.stderr
+    );
+}
+
+#[test]
+fn a_builder_that_keeps_failing_its_check_is_parked_and_a_blocked_unit_can_be_released() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.set_policy("max_attempts = 10", "max_attempts = 3");
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    for i in 1..=3 {
+        let o = fx.bf_in(
+            &wc,
+            &[
+                "evidence",
+                "run",
+                "X-1",
+                "--unit",
+                "U-1",
+                "--",
+                "test",
+                "-f",
+                "src/hello.txt",
+            ],
+        );
+        assert_eq!(o.code, 1, "try {i}: {}", o.all());
+    }
+    let st = fx.must(&["status", "--json"]).json();
+    assert_eq!(st["units"][0]["state"], "parked", "{st}");
+    let n = fx.must(&["next", "--json"]).json();
+    assert!(n["idle_reason"].as_str().unwrap().contains("parked"), "{n}");
+    fx.human("Go on, release it.");
+    fx.must(&["unit", "release", "U-1", "--quote", "release it"]);
+    assert_eq!(
+        fx.must(&["status", "--json"]).json()["units"][0]["state"],
+        "running"
+    );
+    // A blocked report counts as an attempt, and a blocked unit is released the same way.
+    fx.must(&[
+        "report",
+        "U-1",
+        "--result",
+        "blocked",
+        "--note",
+        "need a decision",
+    ]);
+    assert_eq!(
+        fx.must(&["status", "--json"]).json()["units"][0]["state"],
+        "blocked"
+    );
+    fx.human("It is fine, release it now.");
+    fx.must(&["unit", "release", "U-1", "--quote", "release it now"]);
+    assert_eq!(
+        fx.must(&["status", "--json"]).json()["units"][0]["state"],
+        "running"
+    );
+}
+
+#[test]
+fn bf_next_parks_an_idle_unit_by_itself() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.set_policy("idle_minutes = 60", "idle_minutes = 0");
+    fx.start_test_run();
+    fx.must(&["unit", "start", "U-1"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // Nobody calls `bf stuck`: `bf next` runs the idle check.
+    let n = fx.must(&["next", "--json"]).json();
+    assert!(
+        n["directives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["role"] == "human" && d["unit"] == "U-1"),
+        "{n}"
+    );
 }
 
 #[test]

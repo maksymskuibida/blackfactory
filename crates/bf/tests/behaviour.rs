@@ -609,7 +609,7 @@ fn the_plan_gate_shows_what_is_being_approved() {
         .collect();
     assert_eq!(kinds, ["waves", "coverage"], "{units}");
     let cov = &units["blocks"][1]["rows"];
-    assert_eq!(cov.as_array().unwrap().len(), 3); // R-1, R-2, C-1
+    assert_eq!(cov.as_array().unwrap().len(), 4); // R-1, R-2, C-1 and the handoff H-1
     assert!(
         cov.as_array()
             .unwrap()

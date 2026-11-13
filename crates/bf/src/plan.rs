@@ -2,6 +2,7 @@
 
 use crate::events::State;
 use crate::evidence;
+use crate::gitx;
 use crate::refusal::{refuse_owned, R};
 use crate::schema;
 use crate::store::{s, str_list, Project};
@@ -189,6 +190,17 @@ fn analyse(pl: &mut Plan, ids: &HashSet<String>) {
         {
             bad.push(format!(
                 "handoff {hid} is proved by no check (add it to the `proves` of a check)"
+            ));
+        } else if !pl.checks.iter().any(|c| {
+            str_list(c, "proves").iter().any(|x| x == hid)
+                && (unit_ids.contains(s(c, "unit"))
+                    || pl
+                        .checkpoints
+                        .iter()
+                        .any(|k| str_list(k, "checks").iter().any(|x| x == s(c, "id"))))
+        }) {
+            bad.push(format!(
+                "handoff {hid} is proved only by checks that nothing runs: none belongs to a unit (`unit = \"<id>\"`) or is listed by a checkpoint (`checks`)"
             ));
         }
     }
@@ -412,7 +424,20 @@ pub fn not_ready(
             }
         }
     }
-    let _ = p;
+    // A checkpoint builds on the one before it in plan order: its first unit waits until that one is
+    // closed, so the branch can be cut from it.
+    let k = s(u, "checkpoint");
+    if !k.is_empty() {
+        if let Some(prev) = crate::run::previous_checkpoint(pl, k) {
+            if !st.closed.contains_key(&prev)
+                && !gitx::branch_exists(&p.root, &p.checkpoint_branch(k))
+            {
+                return Some(format!(
+                    "its checkpoint {k} builds on {prev}, which is not closed yet"
+                ));
+            }
+        }
+    }
     None
 }
 

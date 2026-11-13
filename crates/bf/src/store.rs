@@ -15,6 +15,7 @@ pub fn default_policy_text(exec_path: &str, git: &str) -> String {
 [limits]
 max_rounds = 3        # review rounds before a unit is parked
 idle_minutes = 60     # a running unit with no event for this long is stuck
+max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
 
 [tiers]               # model tier by role: cheap, standard or strong
 builder = "standard"
@@ -86,12 +87,14 @@ protected_extra = []  # more paths agents may not write
 pub struct Limits {
     pub max_rounds: u32,
     pub idle_minutes: u64,
+    pub max_attempts: u32,
 }
 impl Default for Limits {
     fn default() -> Self {
         Limits {
             max_rounds: 3,
             idle_minutes: 60,
+            max_attempts: 10,
         }
     }
 }
@@ -716,9 +719,6 @@ impl Project {
     }
     pub fn head_path(&self) -> PathBuf {
         self.state_dir().join("head.json")
-    }
-    pub fn offers_path(&self) -> PathBuf {
-        self.state_dir().join("offers.json")
     }
     pub fn tokens_path(&self) -> PathBuf {
         self.state_dir().join("tokens.json")

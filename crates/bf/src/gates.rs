@@ -765,10 +765,63 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         .and_then(|e| e["seq"].as_u64())
         .unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
+    // What the amendment re-opens, worked out from the plan now and written into the event.
+    let a = a.unwrap();
+    let pl = plan::load(p)?;
+    // What changed is the amendment's IDs and the kept impact set, less what the human waived.
+    let changed: Vec<String> = a
+        .keep
+        .iter()
+        .chain(a.ids.iter())
+        .filter(|i| !a.waive.contains(i))
+        .cloned()
+        .collect();
+    let reopen_units: Vec<String> = pl
+        .units
+        .iter()
+        .filter(|u| {
+            let uid = s(u, "id").to_string();
+            let del = str_list(u, "delivers");
+            a.keep.contains(&uid)
+                && st.units.contains_key(&uid)
+                && (del.is_empty() || del.iter().any(|d| !a.waive.contains(d)))
+        })
+        .map(|u| s(u, "id").to_string())
+        .collect();
+    let reopen_checkpoints: Vec<String> = pl
+        .checkpoints
+        .iter()
+        .filter(|k| {
+            str_list(k, "proves").iter().any(|i| changed.contains(i))
+                || str_list(k, "after")
+                    .iter()
+                    .any(|u| reopen_units.contains(u))
+        })
+        .map(|k| s(k, "id").to_string())
+        .collect();
+    let mut reopen_checks: Vec<String> = pl
+        .checks
+        .iter()
+        .filter(|c| {
+            let cid = s(c, "id").to_string();
+            (a.keep.contains(&cid) && str_list(c, "proves").iter().any(|i| changed.contains(i)))
+                || reopen_units.contains(&s(c, "unit").to_string())
+                || pl.checkpoints.iter().any(|k| {
+                    reopen_checkpoints.contains(&s(k, "id").to_string())
+                        && str_list(k, "checks").contains(&cid)
+                })
+        })
+        .map(|c| s(c, "id").to_string())
+        .collect();
+    reopen_checks.sort();
+    reopen_checks.dedup();
+    let receipt_floor = crate::evidence::highest_receipt_number(p);
     events::append(
         p,
         "amend.approve",
-        json!({"amend": aid, "turn": seq, "quote": quote.trim()}),
+        json!({"amend": aid, "turn": seq, "quote": quote.trim(),
+               "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
+               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor}),
     )?;
     p.write_guard()?;
     Ok(json!({"amend": aid, "approved": true, "turn": seq}))
@@ -833,17 +886,4 @@ pub fn policy_diff(p: &Project) -> String {
         out.push_str("no difference\n");
     }
     out
-}
-
-/// `bf tokens reset`: a human act, like an approval.
-pub fn tokens_reset(p: &Project, quote: &str) -> R<Value> {
-    let st = events::require_chain(p)?;
-    let (seq, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
-    events::append(
-        p,
-        "tokens.reset",
-        json!({"turn": seq, "quote": quote.trim()}),
-    )?;
-    crate::run::reset_tokens(p)?;
-    Ok(json!({"reset": true}))
 }

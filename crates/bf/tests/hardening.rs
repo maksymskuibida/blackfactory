@@ -660,7 +660,7 @@ fn token_for(fx: &Fx, unit: &str, role: &str) -> String {
             .as_array()
             .unwrap()
             .iter()
-            .any(|d| d["unit"] == unit && d["role"] == role && d["token_command"].is_string()),
+            .any(|d| d["unit"] == unit && d["role"] == role && d["token"].is_string()),
         "no {role} directive for {unit}: {n}"
     );
     fx.take_token(unit, role)

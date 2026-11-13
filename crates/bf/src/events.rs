@@ -298,8 +298,14 @@ pub struct UnitSt {
     pub last_at: String,
     pub cost: f64,
     pub parked_reason: String,
+    /// Failing check runs and blocked reports since the unit last went to review or was released.
+    pub attempts: u32,
+    /// The state before it was blocked or parked, so a release can put it back to work.
+    pub prev_state: String,
     pub landed_hash: String,
     pub landed_run: String,
+    /// The amendment that last sent this unit back to work.
+    pub reopened_by: String,
     /// The commit of the checkpoint branch the unit's branch was cut from.
     pub base_commit: String,
     pub notes: Vec<String>,
@@ -340,6 +346,8 @@ pub struct State {
     pub pending_grants: Vec<u64>,
     pub closed: BTreeMap<String, Closed>,
     pub cost: f64,
+    /// Check ID -> highest receipt number that no longer counts (an amendment re-opened the work).
+    pub reopen_floor: BTreeMap<String, u64>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -625,9 +633,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "unit.report" => {
                 let u = st.units.entry(sv("unit")).or_default();
-                u.state = sv("to");
+                let to = sv("to");
+                if matches!(to.as_str(), "blocked" | "parked") && u.state != to {
+                    u.prev_state = u.state.clone();
+                }
+                u.state = to.clone();
                 if ev["result"] == "findings" {
                     u.rounds += 1;
+                }
+                if ev["result"] == "blocked" {
+                    u.attempts += 1;
+                }
+                if matches!(to.as_str(), "review" | "reviewed") {
+                    u.attempts = 0;
                 }
                 let c = ev["cost"].as_f64().unwrap_or(0.0);
                 u.cost += c;
@@ -647,8 +665,40 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 u.last_seq = seq;
                 u.last_at = at;
             }
+            "evidence.run" => {
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    if ev["exit"].as_i64().unwrap_or(0) != 0
+                        && matches!(u.state.as_str(), "running" | "fixing")
+                    {
+                        u.attempts += 1;
+                    }
+                }
+            }
+            "unit.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: unit release cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    if matches!(u.state.as_str(), "parked" | "blocked") {
+                        u.state = sv("to");
+                        u.rounds = 0;
+                        u.attempts = 0;
+                        u.parked_reason.clear();
+                        u.last_seq = seq;
+                        u.last_at = at;
+                    }
+                }
+            }
             "unit.park" => {
                 let u = st.units.entry(sv("unit")).or_default();
+                if u.state != "parked" {
+                    u.prev_state = u.state.clone();
+                }
                 u.state = "parked".into();
                 u.parked_reason = sv("reason");
                 u.last_seq = seq;
@@ -702,6 +752,29 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 {
                     a.status = "approved".into();
                     st.turns[turn_ix[&tseq]].used = true;
+                    // The approved amendment re-opens what it touches: the units go back to work (what
+                    // they landed stays in the log), the checkpoints open again, and the receipts for
+                    // the changed checks that exist now stop counting.
+                    for uid in crate::store::str_list(ev, "reopen_units") {
+                        if let Some(u) = st.units.get_mut(&uid) {
+                            if matches!(u.state.as_str(), "landed" | "reviewed" | "review") {
+                                u.state = "running".into();
+                            }
+                            u.rounds = 0;
+                            u.attempts = 0;
+                            u.reopened_by = id.clone();
+                            u.last_seq = seq;
+                            u.last_at = at.clone();
+                        }
+                    }
+                    for k in crate::store::str_list(ev, "reopen_checkpoints") {
+                        st.closed.remove(&k);
+                    }
+                    let floor = ev["receipt_floor"].as_u64().unwrap_or(0);
+                    for c in crate::store::str_list(ev, "reopen_checks") {
+                        let e = st.reopen_floor.entry(c).or_insert(0);
+                        *e = (*e).max(floor);
+                    }
                 }
             }
             "tokens.reset" => {

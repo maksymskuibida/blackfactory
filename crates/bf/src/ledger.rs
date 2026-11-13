@@ -51,6 +51,38 @@ fn evidence_for(pl: &Plan, receipts: &[Receipt], st: &State, id: &str) -> Vec<St
     out
 }
 
+/// Evidence for a handoff: a passing receipt from a check that proves it, at the content its unit
+/// landed on (a unit check) or its checkpoint closed on (a checkpoint check).
+fn handoff_evidence(pl: &Plan, receipts: &[Receipt], st: &State, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in pl
+        .checks
+        .iter()
+        .filter(|c| str_list(c, "proves").iter().any(|x| x == id))
+    {
+        let cid = s(c, "id");
+        let unit = s(c, "unit");
+        if !unit.is_empty() {
+            if let Some(u) = st.units.get(unit).filter(|u| u.state == "landed") {
+                if let Some(r) = evidence::satisfied_at(receipts, cid, &u.landed_hash) {
+                    out.push(r.id().to_string());
+                }
+            }
+        }
+        for k in &pl.checkpoints {
+            if !str_list(k, "checks").iter().any(|x| x == cid) {
+                continue;
+            }
+            if let Some(closed) = st.closed.get(s(k, "id")) {
+                if let Some(r) = evidence::satisfied_at(receipts, cid, &closed.hash) {
+                    out.push(r.id().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) -> Vec<Row> {
     let mut by_unit: HashMap<String, Vec<String>> = HashMap::new();
     for u in &pl.units {
@@ -97,6 +129,42 @@ pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) ->
             kind: s(d, "kind").to_string(),
             units,
             checkpoints: cps,
+            checks,
+            evidence,
+            missing,
+        });
+    }
+    // A handoff is a row that needs evidence too: what one unit hands to another has to be proved.
+    for h in &pl.handoffs {
+        let id = s(h, "id").to_string();
+        let checks = by_check.get(&id).cloned().unwrap_or_default();
+        let evidence: Vec<String> = if with_evidence {
+            handoff_evidence(pl, receipts, st, &id)
+        } else {
+            vec![]
+        };
+        let mut missing = Vec::new();
+        if checks.is_empty() {
+            missing.push("check");
+        }
+        if with_evidence && evidence.is_empty() {
+            missing.push("evidence");
+        }
+        out.push(Row {
+            id,
+            title: format!("{} from {} to {}", s(h, "thing"), s(h, "from"), s(h, "to")),
+            kind: "handoff".into(),
+            units: vec![s(h, "from").to_string(), s(h, "to").to_string()],
+            checkpoints: pl
+                .checkpoints
+                .iter()
+                .filter(|k| {
+                    str_list(k, "checks")
+                        .iter()
+                        .any(|c| checks.iter().any(|x| x == c))
+                })
+                .map(|k| s(k, "id").to_string())
+                .collect(),
             checks,
             evidence,
             missing,
