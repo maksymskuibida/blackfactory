@@ -38,21 +38,23 @@ The exact steps for trying Black Factory on a project of your own for the first 
    git add -A && git commit -m "Add Black Factory"
    ```
 
-   **Workspace:** create the workspace, point it at each code repository, install the harness into the workspace, commit.
+   **Workspace:** create the workspace, put each code repository inside it and point the workspace at it, install the harness into the workspace, commit. `bf repo add` makes the workspace's git ignore the code repository's folder.
    ```bash
    mkdir myapp-factory && cd myapp-factory
    bf init --workspace --name myapp
-   bf repo add app /path/to/app
+   git clone <url> app            # or: mv /path/to/app ./app
+   bf repo add app ./app
    /path/to/blackfactory/harness/claude/install.sh --workspace "$PWD"
    git add -A && git commit -m "Add Black Factory"
    ```
+   A code repository outside the workspace works too (`bf repo add app ../app`).
 
    The installer lists what it created. It adds two hooks and two permission rules to `.claude/settings.json`, keeps a `.bak` copy of anything it changed, touches nothing outside the folder it is given and can be run again safely. `bf status` after the commit may print one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error: an ordinary commit of yours blocks nothing.
 4. Restart Claude Code if it was already open in that folder, so it reads the new settings.
 
 ## Run it
 
-1. Start Claude Code in your project folder, or in the workspace folder for a workspace (not in a code repository), and type `/factory`.
+1. Start Claude Code in your project folder, or in the workspace folder for a workspace: the folder that holds `factory/` and `.claude/settings.json`, not the folder above it and not a code repository. Type `/factory`. If you open it elsewhere the hooks never load and none of your messages are recorded; the conductor notices and tells you.
 2. Describe your idea in one message: the problem, who it is for, how you will know it works.
 3. The conductor works through five gates. At each one:
    - It may first publish a **questions page**. Answer it, then write `done` in chat.
@@ -72,6 +74,10 @@ The exact steps for trying Black Factory on a project of your own for the first 
 4. After the plan gate the conductor builds on its own. It stops for a human step the plan names, a stuck unit, a failed check or the budget cap, and tells you why in chat.
 5. At the end it runs the ledger check and tells you what was built and proven. Checkpoints are stacked, so the last one (a branch named `bf/K-<last>` in each code repository it touched) holds the whole result. Merge it yourself, `git merge --no-ff bf/K-<last>`, or ask the conductor in chat to merge it.
 
+## Come back later
+
+Open Claude Code in the same folder and say "continue the build" (or "continue the <project> build", or type `/factory`). The new session has no memory of the old one; it reads the state from the engine, tells you in a few lines where things stand and what it needs from you, and goes on. A questions page it had already published is read again from its link, so your saved answers are still there.
+
 ## A test run, with no gate approvals
 
 Use this on a throwaway project to see the whole loop.
@@ -88,7 +94,7 @@ Every refusal prints four parts: what was refused, why, numbered steps, and how 
 
 | You see | Do this |
 |---|---|
-| `no human turn was recorded after the gate opened` | Type your decision in the Claude Code session that is running the factory. If you did and it still happens, check that the hooks are installed (`.claude/settings.json`) and restart Claude Code. |
+| `no human turn was recorded after the gate opened`, or a note that no message of yours has been recorded | Claude Code was probably opened in the wrong folder, so the hooks never loaded. Open it in the folder that holds `factory/` and `.claude/settings.json` (for a workspace, the workspace root), check that `.claude/settings.json` has the hooks, and say "continue the build". |
 | `factory/policy.toml differs from the policy the human accepted` | Run `bf policy diff`. If you agree with the change, tell the conductor in chat and it accepts it with your words. Otherwise restore the file. |
 | `the main branch moved` | Run `bf status`. If you made that commit, tell the conductor and it accepts the position with your words. |
 | a gate will not open | Gates open in order and only with their records in place. Read what the engine says, or tell the conductor to skip the UI gate if there is no interface. |
