@@ -287,19 +287,20 @@ pub fn take_token(p: &Project, unit: &str, role: &str) -> R<String> {
             "`bf token take` prints a token.",
         ));
     };
-    if o["taken"] == true {
-        return Err(refuse(
-            format!("take the {role} token of {unit}"),
-            format!("that token was already taken (at {}); if it was not you, another caller took it and may hold the {role}'s authority", o["at"].as_str().unwrap_or("an earlier time")),
-            &[
-                "Tell the human that the token was taken by someone else.",
-                "They reset the tokens with `bf tokens reset --quote \"<their words>\"`, and the conductor takes a new one.",
-            ],
-            "`bf token take` prints a token.",
-        ));
-    }
     let token = util::random_hex(12)?;
     let mut v = read_tokens(p);
+    if o["taken"] == true {
+        // Taken before (a conductor that lost its context asks again, or someone else asked first).
+        // The earlier token is void and a new one is issued; the note says so, so whoever held the
+        // earlier token finds out when its report fails.
+        eprintln!(
+            "note: the {role} token of {unit} was already taken (at {}); that token is void now. If it was not you who took it, tell the human.",
+            o["at"].as_str().unwrap_or("an earlier time")
+        );
+        if let Some(m) = v.as_object_mut() {
+            m.retain(|_, e| !(e["unit"] == unit && e["role"] == role));
+        }
+    }
     if let Some(m) = v.as_object_mut() {
         m.insert(
             util::sha256_hex(token.as_bytes()),
@@ -1151,6 +1152,15 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
         note: String::new(),
     };
     if !gitx::branch_exists(&p.root, main) {
+        // A branch that was there and is gone is a change to account for.
+        if events::read_head(p).and_then(|h| h.main_commit).is_some() {
+            return Ok(MainPos {
+                moved: true,
+                detail: format!("the main branch `{main}` does not exist any more"),
+                tip: String::new(),
+                note: String::new(),
+            });
+        }
         return Ok(ok(""));
     }
     let tip = gitx::must(&p.root, &["rev-parse", main])?;

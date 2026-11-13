@@ -1,11 +1,10 @@
 //! The programs checks start. When the plan gate is approved the engine records, for each command
 //! check, where its program is found (on the policy's check PATH) and a hash of that file. Before a
-//! check runs, the program is looked up again: a program that moved or whose file changed stops the
-//! check until the human accepts the change. (Only the first word of the command is covered: a
-//! program that the program itself starts is not.)
+//! check runs, the program is looked up again. A program that moved or whose file changed does not stop
+//! the check (an upgrade is ordinary); the change is recorded in the receipt and printed, and the new
+//! state becomes the recorded one. (Only the first word of the command is covered.)
 
-use crate::events::{self, Decide};
-use crate::refusal::{refuse, R};
+use crate::refusal::R;
 use crate::store::{s, Project};
 use crate::util;
 use serde_json::{json, Value};
@@ -84,68 +83,48 @@ pub fn record_all(p: &Project) -> R<()> {
     Ok(())
 }
 
-/// Before a check runs: the program it starts is the one that was recorded. A check with no record yet
-/// (added after the plan was approved) is recorded now.
-pub fn verify(p: &Project, check_id: &str, word: &str) -> R<()> {
+/// Before a check runs: the program it starts is compared with the one recorded at the plan gate.
+/// Returns a note when it changed (moved, or different contents); never refuses. A check with no record
+/// yet (added after the plan was approved) is recorded now. The new state replaces the old one, so a
+/// change is noted once, in the receipt of the first run after it.
+pub fn verify(p: &Project, check_id: &str, word: &str) -> R<Option<String>> {
     let mut all = read(p);
     let Some(stored) = all.get(check_id).cloned() else {
         if let Some(e) = entry(p, word) {
             all[check_id] = e;
             util::atomic_write(&path_file(p), serde_json::to_string(&all)?.as_bytes())?;
         }
-        return Ok(());
+        return Ok(None);
     };
     let Some(path) = resolve(p, word) else {
-        return Ok(());
+        return Ok(None);
     };
-    let problem = if path.to_string_lossy() != s(&stored, "path") {
+    let (size, mtime) = stat(&path).unwrap_or((0, 0));
+    let same_file = path.to_string_lossy() == s(&stored, "path");
+    if same_file
+        && size == stored["size"].as_u64().unwrap_or(0)
+        && mtime == stored["mtime"].as_u64().unwrap_or(0)
+    {
+        return Ok(None);
+    }
+    let hash = util::sha256_file(&path).ok();
+    let note = if !same_file {
         Some(format!(
-            "it is now found at {}, not at {}",
+            "the program `{word}` is now found at {}, not at {} where it was when the plan was approved",
             path.display(),
             s(&stored, "path")
         ))
+    } else if hash.as_deref() != stored["hash"].as_str() {
+        Some(format!(
+            "the file {} is not the one recorded when the plan was approved (it changed)",
+            path.display()
+        ))
     } else {
-        let (size, mtime) = stat(&path).unwrap_or((0, 0));
-        if size == stored["size"].as_u64().unwrap_or(0)
-            && mtime == stored["mtime"].as_u64().unwrap_or(0)
-        {
-            None
-        } else if util::sha256_file(&path).ok().as_deref() == stored["hash"].as_str() {
-            // Touched but identical: remember the new time.
-            all[check_id]["size"] = json!(size);
-            all[check_id]["mtime"] = json!(mtime);
-            util::atomic_write(&path_file(p), serde_json::to_string(&all)?.as_bytes())?;
-            None
-        } else {
-            Some(format!(
-                "the file {} is not the one that was recorded when the plan was approved",
-                path.display()
-            ))
-        }
+        None
     };
-    match problem {
-        None => Ok(()),
-        Some(why) => Err(refuse(
-            format!("run check {check_id}"),
-            format!("the program `{word}` the check starts changed: {why}"),
-            &[
-                "Tell the human which program and where. An upgrade they made is fine; a file they did not touch is not.",
-                "When they say in chat that the change is theirs, `bf programs accept --quote \"<their words>\"` records the programs as they are now.",
-            ],
-            "`bf evidence run` starts the check.",
-        )),
+    if let Some(e) = entry(p, word) {
+        all[check_id] = e;
+        util::atomic_write(&path_file(p), serde_json::to_string(&all)?.as_bytes())?;
     }
-}
-
-/// `bf programs accept`: the human takes the programs as they are now.
-pub fn accept(p: &Project, quote: &str) -> R<Value> {
-    let st = events::require_chain(p)?;
-    let (seq, _) = events::pick_turn(&st, 0, Decide::Approve, quote)?;
-    events::append(
-        p,
-        "programs.accept",
-        json!({"turn": seq, "quote": quote.trim()}),
-    )?;
-    record_all(p)?;
-    Ok(json!({"accepted": true}))
+    Ok(note)
 }

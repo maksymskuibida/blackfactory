@@ -270,8 +270,10 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
     let before = gitx::content_hash(&top)?;
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
-    check_exec_path(p)?;
-    crate::programs::verify(p, check_id, &argv[0])?;
+    let program_note = crate::programs::verify(p, check_id, &argv[0])?;
+    if let Some(n) = &program_note {
+        eprintln!("note: {n}");
+    }
     let (exit, tail, out_hash, total, sandboxed) = exec_capture(p, &top, argv, tail_bytes)?;
     let after = gitx::content_hash(&top)?;
     if before != after {
@@ -293,6 +295,7 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
         "command": argv.join(" "),
         "program": CHECK_SHELL,
         "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
+        "program_note": program_note.clone().unwrap_or_default(),
         "exit": exit,
         "content_hash": before,
         "output_hash": out_hash,
@@ -361,6 +364,8 @@ fn exec_capture(
                 &p.state_dir_resolved(),
                 &p.root.to_string_lossy(),
                 &dir.to_string_lossy(),
+                p.policy.exec.network,
+                &p.transcript_root(),
             ),
             CHECK_SHELL,
         )
@@ -376,7 +381,11 @@ fn exec_capture(
         .env_clear()
         .env("PATH", &path)
         .env("BF_EVIDENCE", "1");
-    for k in CHECK_ENV {
+    for k in CHECK_ENV
+        .iter()
+        .copied()
+        .chain(p.policy.exec.env.iter().map(|s| s.as_str()))
+    {
         if let Some(v) = std::env::var_os(k) {
             cmd.env(k, v);
         }
@@ -423,49 +432,29 @@ fn exec_capture(
     ))
 }
 
-/// Folders on the check PATH must be the ones the human accepted: none inside the project, and none
-/// that was created or changed after the policy was accepted, unless it is a standard system folder.
-/// (A change to a file that was already there does not change its folder's time: this is not complete.)
-pub fn check_exec_path(p: &Project) -> R<()> {
-    let accepted_at = crate::events::read_head(p)
-        .and_then(|h| h.policy_at)
-        .unwrap_or(0);
+/// What is worth knowing about the folders on the check PATH, for `bf doctor`: ones inside the project
+/// and ones in the user's home folder. Information only; nothing is refused for it.
+pub fn path_notes(p: &Project) -> Vec<String> {
     let root = p.root.clone();
+    let mut out = Vec::new();
     for dir in p.policy.exec.path.split(':').filter(|d| !d.is_empty()) {
         let Ok(canon) = fs::canonicalize(dir) else {
             continue;
         };
         if canon.starts_with(&root) {
-            return Err(refuse(
-                "run a check",
-                format!("`{dir}` is on the policy's check PATH and lies inside the project, where a program can be planted"),
-                &["The human removes it from `[exec] path` in factory/policy.toml and accepts the change with `bf policy accept --quote ...`."],
-                "`bf evidence run` starts the check.",
-            ));
+            out.push(format!("{dir} lies inside the project"));
+            continue;
         }
         let standard = ["/bin", "/usr/bin", "/sbin", "/usr/sbin"];
         if standard.iter().any(|s| canon == Path::new(s)) {
             continue;
         }
-        let changed = fs::metadata(&canon)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if changed > accepted_at {
-            return Err(refuse(
-                "run a check",
-                format!("`{dir}` is on the policy's check PATH and was created or changed after the policy was accepted, so a program in it may not be the one the human knew"),
-                &[
-                    &format!("Tell the human which folder: {dir}."),
-                    "If the change is theirs (an install, an update), they accept the policy again with `bf policy accept --quote ...`, which resets the time.",
-                ],
-                "`bf evidence run` starts the check.",
-            ));
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() && canon.starts_with(&home) {
+            out.push(format!("{dir} is in the user's home folder (the user, and so any program they run, can change what is in it)"));
         }
     }
-    Ok(())
+    out
 }
 
 /// `bf evidence attach <check> <file>`

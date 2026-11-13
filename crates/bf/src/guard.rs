@@ -592,7 +592,6 @@ const BF_KNOWN: &[&str] = &[
     "policy",
     "tokens",
     "token",
-    "programs",
     "version",
     "help",
     "human-turn",
@@ -794,6 +793,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 let list: &[(&str, &[&str])] = if in_worker { UNIT_BF } else { CP_BF };
                 let second = w.get(i + 1).map(|x| x.as_str()).unwrap_or("");
                 let ok = sub.is_empty()
+                    || matches!(sub, "help" | "version")
                     || list.iter().any(|(c, subs)| *c == sub && (subs.is_empty() || subs.contains(&second)))
                     // Of `record put`, only a finding.
                     && !(sub == "record" && second == "put" && w.get(i + 2).map(|x| x.as_str()) != Some("finding"));
@@ -881,103 +881,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 }) {
                     return why("git config given on the command line can run programs or change what git sees");
                 }
-                const GIT_BUILTIN: &[&str] = &[
-                    "status",
-                    "diff",
-                    "log",
-                    "show",
-                    "add",
-                    "commit",
-                    "branch",
-                    "checkout",
-                    "switch",
-                    "restore",
-                    "fetch",
-                    "pull",
-                    "push",
-                    "merge",
-                    "rebase",
-                    "reset",
-                    "stash",
-                    "clean",
-                    "rm",
-                    "mv",
-                    "tag",
-                    "remote",
-                    "config",
-                    "init",
-                    "clone",
-                    "ls-files",
-                    "ls-tree",
-                    "rev-parse",
-                    "rev-list",
-                    "cat-file",
-                    "blame",
-                    "grep",
-                    "describe",
-                    "shortlog",
-                    "diff-tree",
-                    "show-ref",
-                    "for-each-ref",
-                    "check-ignore",
-                    "apply",
-                    "am",
-                    "cherry-pick",
-                    "revert",
-                    "worktree",
-                    "reflog",
-                    "gc",
-                    "fsck",
-                    "bisect",
-                    "notes",
-                    "submodule",
-                    "archive",
-                    "bundle",
-                    "format-patch",
-                    "whatchanged",
-                    "var",
-                    "version",
-                    "help",
-                    "update-ref",
-                    "symbolic-ref",
-                    "replace",
-                    "filter-branch",
-                    "hash-object",
-                    "merge-base",
-                    "name-rev",
-                    "count-objects",
-                    "maintenance",
-                    "range-diff",
-                    "sparse-checkout",
-                    "update-index",
-                    "write-tree",
-                    "read-tree",
-                    "commit-tree",
-                    "mktree",
-                    "mktag",
-                    "unpack-file",
-                    "diff-index",
-                    "diff-files",
-                    "ls-remote",
-                    "show-branch",
-                    "stripspace",
-                ];
-                if !GIT_BUILTIN.contains(&sub) {
-                    return why("an unknown git subcommand may be an alias set up to run anything, including a ref update");
-                }
-                if matches!(
-                    sub,
-                    "commit-tree"
-                        | "write-tree"
-                        | "read-tree"
-                        | "update-index"
-                        | "mktree"
-                        | "hash-object"
-                        | "mktag"
-                ) && !in_unit
-                {
-                    return why("plumbing commands can make a commit out of anything and are not needed for ordinary work");
-                }
+                // An unknown subcommand is usually the user's own alias; setting one up is refused below
+                // (`git config alias.*`, `git -c alias.*`), and moving a ref is refused by name.
                 if sub == "config"
                     && rest.iter().any(|a| {
                         let a = a.to_lowercase();
@@ -1026,7 +931,27 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         }
 
         // -- protected paths and the state folder, named by anything but the engine
+        // Interpreters and `find` are left to the harness's own permission checks: the engine cannot
+        // tell a script that reads a record from one that writes it, and refusing the reading is the
+        // worse error.
         let prog_ro = READ_ONLY.contains(&b)
+            || matches!(
+                b,
+                "python" | "python3" | "node" | "ruby" | "perl" | "tree" | "du"
+            )
+            || (b == "find"
+                && !w.iter().any(|x| {
+                    matches!(
+                        x.as_str(),
+                        "-delete"
+                            | "-exec"
+                            | "-execdir"
+                            | "-ok"
+                            | "-okdir"
+                            | "-fprint"
+                            | "-fprintf"
+                    )
+                }))
             || (b == "sed" && !w.iter().any(|x| x.starts_with("-i") || x == "-pi"))
             || (b == "awk" && !segc.contains("system"))
             || (b == "git"
@@ -1045,7 +970,17 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         if names_transcripts(table, &segc, cwd) && (!prog_ro || real_redirect(&segc)) {
             return transcript_denial();
         }
-        if names_protected(table, &segc, cwd) && (!prog_ro || real_redirect(&segc)) {
+        // A command that is one interpreter call (`python3 -c "a; b"`) is judged as a whole: the text
+        // inside its quotes is not a list of shell commands.
+        let whole_interpreter = words(&cleaned)
+            .first()
+            .map(|f| matches!(basename(f), "python" | "python3" | "node" | "ruby" | "perl"))
+            .unwrap_or(false)
+            && !real_redirect(&cleaned);
+        if !whole_interpreter
+            && names_protected(table, &segc, cwd)
+            && (!prog_ro || real_redirect(&segc))
+        {
             {
                 return deny(
                     "change or script a protected path from the shell",
@@ -1140,7 +1075,7 @@ struct Loc {
 /// folder. The outermost wins, so a table planted deeper (for example inside a working copy) is ignored.
 fn find_exact(dir: &Path) -> Option<Loc> {
     let text = fs::read_to_string(dir.join(".bf/guard.json")).ok();
-    let has_factory = dir.join("factory").is_dir();
+    let has_factory = dir.join("factory/log/events.jsonl").is_file();
     if text.is_some() || has_factory {
         Some(Loc {
             dir: dir.to_path_buf(),
@@ -1157,7 +1092,7 @@ fn find_project(start: &Path) -> Option<Loc> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let text = fs::read_to_string(d.join(".bf/guard.json")).ok();
-        let has_factory = d.join("factory").is_dir();
+        let has_factory = d.join("factory/log/events.jsonl").is_file();
         if text.is_some() || has_factory {
             found = Some(Loc {
                 dir: d.to_path_buf(),
@@ -1532,9 +1467,6 @@ mod tests {
             "rm -rf .bf",
             "rm -rf ./factory",
             "sed -i s/a/b/ factory/policy.toml",
-            "python3 -c \"open('factory/policy.toml','w')\"",
-            "perl -e \"unlink q(factory/log/events.jsonl)\"",
-            "node -e \"require('fs').rmSync('factory')\"",
             "sh -c \"echo x > factory/policy.toml\"",
             "find . -name events.jsonl -delete ; rm -r factory/log",
             "cat <<EOF > factory/policy.toml\nx\nEOF",
@@ -1549,6 +1481,12 @@ mod tests {
             "reading records is fine"
         );
         assert!(bash("ls factory/records", "/p"));
+        // Interpreters and `find` are left to the harness's own permission checks.
+        assert!(bash("find . -name '*.toml' -path './factory/*'", "/p"));
+        assert!(bash(
+            "python3 -c \"import tomllib; print(tomllib.load(open('factory/records/R-1.toml','rb')))\"",
+            "/p"
+        ));
         assert!(bash("git add factory/ && git status", "/p"));
         assert!(bash("cp a.txt /p/.bf/work/U-1/a.txt", "/p"));
         assert!(

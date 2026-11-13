@@ -68,6 +68,16 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 impl Fx {
     /// A fresh git repository with one commit and `bf init` done.
     pub fn new() -> Fx {
+        Fx::build(true)
+    }
+
+    /// The same, with the shipped policy as it is: role tokens on. Only the PATH, the git program
+    /// and the transcript folder (which must live inside the temporary folder) differ.
+    pub fn shipped() -> Fx {
+        Fx::build(false)
+    }
+
+    fn build(tokens_off: bool) -> Fx {
         let tmp = TempDir::new().unwrap();
         let root = fs::canonicalize(tmp.path()).unwrap().join("proj");
         fs::create_dir_all(&root).unwrap();
@@ -89,7 +99,14 @@ impl Fx {
         .find(|g| Path::new(g).exists())
         .unwrap_or(&"/usr/bin/git");
         let pol = bf::store::default_policy_text("/usr/bin:/bin:/usr/sbin:/sbin", git_bin)
-            .replace("tokens = true", "tokens = false")
+            .replace(
+                "tokens = true",
+                if tokens_off {
+                    "tokens = false"
+                } else {
+                    "tokens = true"
+                },
+            )
             .replace(
                 "transcript_root = \"~/.claude/projects\"",
                 &format!("transcript_root = {:?}", tr_root.to_string_lossy()),
@@ -142,18 +159,35 @@ impl Fx {
         }
     }
 
-    /// Record the human's typed message the way the harness hook does: the payload names a
-    /// transcript file, and the file ends with this message.
+    /// Record the human's typed message the way Claude Code's `UserPromptSubmit` hook delivers it: the
+    /// payload carries the session, the transcript path, the working directory and the prompt, and the
+    /// transcript does not hold the prompt yet (the harness writes it after the hook ran). It holds the
+    /// previous message, or nothing before the first one. The prompt is appended afterwards.
     pub fn human(&self, text: &str) -> Out {
         let tr = self.transcript_root().join("transcript.jsonl");
-        let line =
-            serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
-        std::fs::write(&tr, format!("{line}\n")).unwrap();
+        let line = |t: &str| {
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "user", "message": {"role": "user", "content": t}})
+            )
+        };
         let payload = serde_json::json!({
-            "session_id": "s1", "transcript_path": tr.to_string_lossy(), "cwd": self.root.to_string_lossy(),
-            "hook_event_name": "UserPromptSubmit", "prompt": text
+            "session_id": "0b6f1c3e-aaaa-bbbb-cccc-1234567890ab",
+            "transcript_path": tr.to_string_lossy(),
+            "cwd": self.root.to_string_lossy(),
+            "permission_mode": "default",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": text
         });
-        self.bf_stdin(&self.root, &["human-turn"], &payload.to_string())
+        let o = self.bf_stdin(&self.root, &["human-turn"], &payload.to_string());
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&tr)
+            .unwrap();
+        f.write_all(line(text).as_bytes()).unwrap();
+        o
     }
 
     /// Where the fixture's policy says the harness keeps transcripts.
