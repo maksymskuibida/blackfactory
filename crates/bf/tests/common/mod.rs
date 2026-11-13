@@ -138,6 +138,14 @@ impl Fx {
                 },
             )
             .replace(
+                "in_order = true",
+                if tokens_off {
+                    "in_order = false"
+                } else {
+                    "in_order = true"
+                },
+            )
+            .replace(
                 "transcript_root = \"~/.claude/projects\"",
                 &format!("transcript_root = {:?}", tr_root.to_string_lossy()),
             );

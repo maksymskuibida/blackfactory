@@ -24,6 +24,8 @@ const VALUE_FLAGS: &[&str] = &[
     "checkpoint",
     "tail",
     "name",
+    "outcome",
+    "says",
     "branch",
     "stage",
     "title",
@@ -1577,7 +1579,17 @@ fn cmd_evidence(args: &Args) -> R<()> {
         "attach" => {
             let check = args.pos_at(2, "a check ID")?;
             let file = args.pos_at(3, "a file")?;
-            let v = evidence::attach(&p, check, Path::new(file), args.flag("unit"))?;
+            let v = evidence::attach(
+                &p,
+                check,
+                Path::new(file),
+                args.flag("unit"),
+                &evidence::Judgment {
+                    outcome: args.flag("outcome"),
+                    says: args.flag("says").unwrap_or(""),
+                    token: args.flag("token"),
+                },
+            )?;
             out(args, &v, || {
                 format!("{} attached {} to {}", s(&v, "id"), file, check)
             });
@@ -1633,6 +1645,11 @@ fn cmd_gate(args: &Args) -> R<()> {
             let kind = args.pos_at(2, "a gate kind")?;
             let g = gates::open(&p, kind, args.flag("ref"))?;
             out(args, &gates::gate_json(&g), || g.id.clone());
+        }
+        "skip" => {
+            let kind = args.pos_at(2, "a gate kind (ui)")?;
+            let v = gates::skip(&p, kind, args.flag("quote").unwrap_or(""))?;
+            out(args, &v, || format!("the {kind} gate is skipped"));
         }
         "approve" => {
             let g = gates::approve(

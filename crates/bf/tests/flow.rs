@@ -365,3 +365,308 @@ fn a_handoff_proved_only_by_a_check_nothing_runs_is_a_plan_problem_and_a_ledger_
     assert_eq!(o.code, 2, "H-1 has no evidence yet: {}", o.all());
     assert!(o.stderr.contains("H-1"), "{}", o.stderr);
 }
+
+fn ordered(fx: &Fx) {
+    fx.set_policy("in_order = false", "in_order = true");
+}
+
+#[test]
+fn gates_open_in_order_and_never_empty() {
+    let fx = Fx::new();
+    ordered(&fx);
+    // Nothing behind a gate: it says what it needs, in the usual four parts.
+    assert_four_parts(&fx.refused(&["gate", "open", "requirements"]).stderr);
+    let o = fx.refused(&["gate", "open", "idea"]);
+    assert!(
+        o.stderr.contains("nothing to approve") && o.stderr.contains("idea"),
+        "{}",
+        o.stderr
+    );
+    fs::write(fx.root.join("factory/idea.md"), "# A tiny greeter\n").unwrap();
+    // The order rule: requirements waits for the idea.
+    let o = fx.refused(&["gate", "open", "requirements"]);
+    assert!(o.stderr.contains("`idea` gate comes first"), "{}", o.stderr);
+    fx.must(&["gate", "open", "idea"]);
+    fx.human("The idea is right, approved.");
+    fx.must(&["gate", "approve", "idea", "--quote", "approved"]);
+    // The stage has nothing yet.
+    let o = fx.refused(&["gate", "open", "requirements"]);
+    assert!(
+        o.stderr.contains("at least one requirement"),
+        "{}",
+        o.stderr
+    );
+    fx.put(
+        "requirement",
+        "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n",
+    );
+    fx.must(&["gate", "open", "requirements"]);
+    // A rejected gate's next round is not held by the order rule.
+    fx.human("No, change the wording.");
+    fx.must(&[
+        "gate",
+        "reject",
+        "requirements",
+        "--quote",
+        "No, change the wording.",
+    ]);
+    fx.must(&["gate", "open", "requirements"]);
+    fx.human("Yes, those are right.");
+    fx.must(&[
+        "gate",
+        "approve",
+        "requirements",
+        "--quote",
+        "Yes, those are right.",
+    ]);
+    // ui needs a screen or a journey; architecture needs a component and a decision.
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(
+        o.stderr.contains("`ui` gate comes first") && o.stderr.contains("gate skip ui"),
+        "{}",
+        o.stderr
+    );
+    let o = fx.refused(&["gate", "open", "ui"]);
+    assert!(o.stderr.contains("screen or journey"), "{}", o.stderr);
+    fx.put(
+        "journey",
+        "id=\"J-1\"\nkind=\"journey\"\ntitle=\"Say hello\"\n",
+    );
+    fx.must(&["gate", "open", "ui"]);
+    fx.human("The journey is fine, go ahead.");
+    fx.must(&["gate", "approve", "ui", "--quote", "go ahead"]);
+    fx.put(
+        "component",
+        "id=\"C-1\"\nkind=\"component\"\ntitle=\"Messages\"\n",
+    );
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(
+        o.stderr.contains("one component and one decision"),
+        "{}",
+        o.stderr
+    );
+    fx.put(
+        "decision",
+        "id=\"D-1\"\nkind=\"decision\"\ntitle=\"One module\"\nchosen=\"a\"\nrejected=\"b\"\n",
+    );
+    // No threat record: it opens, and the page says so.
+    fx.must(&["gate", "open", "architecture"]);
+    let page = fx
+        .must(&["view", "gate", "architecture"])
+        .json()
+        .to_string();
+    assert!(page.contains("No threat was recorded"), "{page}");
+    fx.human("Architecture approved.");
+    fx.must(&["gate", "approve", "architecture", "--quote", "approved"]);
+    // The plan needs a whole plan with a unit and a checkpoint.
+    let o = fx.refused(&["gate", "open", "plan"]);
+    assert_four_parts(&o.stderr);
+}
+
+#[test]
+fn a_product_with_no_interface_skips_the_ui_gate_in_the_humans_words() {
+    let fx = Fx::new();
+    ordered(&fx);
+    fs::write(fx.root.join("factory/idea.md"), "# A library\n").unwrap();
+    fx.put(
+        "requirement",
+        "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n",
+    );
+    fx.put(
+        "component",
+        "id=\"C-1\"\nkind=\"component\"\ntitle=\"Core\"\n",
+    );
+    fx.put(
+        "decision",
+        "id=\"D-1\"\nkind=\"decision\"\ntitle=\"d\"\nchosen=\"a\"\nrejected=\"b\"\n",
+    );
+    fx.must(&["gate", "open", "idea"]);
+    fx.human("Idea approved.");
+    fx.must(&["gate", "approve", "idea", "--quote", "approved"]);
+    fx.must(&["gate", "open", "requirements"]);
+    fx.human("Requirements approved.");
+    fx.must(&["gate", "approve", "requirements", "--quote", "approved"]);
+    // Only a human's words skip it, and only the ui gate.
+    fx.refused(&["gate", "skip", "ui", "--quote", "There is no interface."]);
+    fx.refused(&["gate", "skip", "plan", "--quote", "There is no interface."]);
+    fx.human("There is no interface, skip the ui gate.");
+    fx.must(&["gate", "skip", "ui", "--quote", "skip the ui gate"]);
+    // Once.
+    fx.human("Skip it again, please.");
+    fx.refused(&["gate", "skip", "ui", "--quote", "Skip it again"]);
+    // It counts as passed for the order rule; the log, the status, the index and the architecture page say so.
+    fx.must(&["gate", "open", "architecture"]);
+    let st = fx.must(&["status", "--json"]).json();
+    assert_eq!(st["skipped_gates"][0]["gate"], "ui", "{st}");
+    assert!(fx.must(&["log", "--json"]).stdout.contains("gate.skip"));
+    let idx = fx.must(&["view", "index"]).json().to_string();
+    assert!(idx.contains("The ui gate was skipped"), "{idx}");
+    let arch = fx
+        .must(&["view", "gate", "architecture"])
+        .json()
+        .to_string();
+    assert!(
+        arch.contains("UI gate skipped") && arch.contains("skip the ui gate"),
+        "{arch}"
+    );
+}
+
+#[test]
+fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
+    let fx = Fx::new();
+    fx.set_policy("tokens = false", "tokens = true");
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"Read the screen aloud\"\nhow=\"agent\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-5\"]\n"),
+    ] {
+        assert_eq!(fx.put(k, t).code, 0);
+    }
+    fx.commit_all("records");
+    fx.start_test_run();
+    // Build U-1 with the tokens the engine shows.
+    let wc = std::path::PathBuf::from(
+        fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/a.txt"), "a\n").unwrap();
+    fx.must_in(
+        &wc,
+        &[
+            "evidence",
+            "run",
+            "X-1",
+            "--unit",
+            "U-1",
+            "--",
+            "test",
+            "-f",
+            "src/a.txt",
+        ],
+    );
+    let bt = fx.take_token("U-1", "builder");
+    fx.must_in(&wc, &["report", "U-1", "--result", "built", "--token", &bt]);
+    let rt = fx.take_token("U-1", "reviewer");
+    fx.must_in(
+        &wc,
+        &[
+            "report", "U-1", "--result", "built", "--role", "reviewer", "--token", &rt,
+        ],
+    );
+    fx.must(&["unit", "land", "U-1"]);
+    let n = fx.must(&["next", "--json"]).json();
+    let d = &n["directives"][0];
+    assert_eq!(d["role"], "verifier", "{n}");
+    let vt = d["token"].as_str().unwrap().to_string();
+    let k = fx.work("K-1");
+    let shot = fx.root.join(".bf/shot.txt");
+    fs::write(&shot, "the screen reads: hello\n").unwrap();
+    let shot_s = shot.to_str().unwrap();
+    // A file without an outcome is supporting material and settles nothing.
+    fx.must_in(&k, &["evidence", "attach", "X-5", shot_s]);
+    assert!(fx
+        .refused(&["checkpoint", "close", "K-1"])
+        .stderr
+        .contains("no sealed passing receipt"));
+    // An outcome needs a sentence, and the verifier's token: a builder's token is not enough.
+    let o = fx.bf_in(
+        &k,
+        &[
+            "evidence",
+            "attach",
+            "X-5",
+            shot_s,
+            "--outcome",
+            "met",
+            "--token",
+            &vt,
+        ],
+    );
+    assert_eq!(o.code, 2);
+    assert!(o.stderr.contains("one sentence"), "{}", o.stderr);
+    let says = "I read the screen text and it says hello";
+    for bad in [None, Some(bt.as_str())] {
+        let mut a = vec![
+            "evidence",
+            "attach",
+            "X-5",
+            shot_s,
+            "--outcome",
+            "met",
+            "--says",
+            says,
+        ];
+        if let Some(t) = bad {
+            a.extend(["--token", t]);
+        }
+        let o = fx.bf_in(&wc, &a);
+        assert_eq!(o.code, 2, "{}", o.all());
+        assert!(o.stderr.contains("verifier's token"), "{}", o.stderr);
+    }
+    // `failed` is a mark: the human decides; a later `met` at the same content supersedes it.
+    fx.must_in(
+        &k,
+        &[
+            "evidence",
+            "attach",
+            "X-5",
+            shot_s,
+            "--outcome",
+            "failed",
+            "--says",
+            "the screen is blank",
+            "--token",
+            &vt,
+        ],
+    );
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "decide-check", "{n}");
+    // The human says look again: the token is still on the directive.
+    assert_eq!(n["directives"][0]["verifier_token"], vt.as_str(), "{n}");
+    fx.must_in(
+        &k,
+        &[
+            "evidence",
+            "attach",
+            "X-5",
+            shot_s,
+            "--outcome",
+            "unreachable",
+            "--says",
+            "the device is not here",
+            "--token",
+            &vt,
+        ],
+    );
+    fx.must_in(
+        &k,
+        &[
+            "evidence",
+            "attach",
+            "X-5",
+            shot_s,
+            "--outcome",
+            "met",
+            "--says",
+            says,
+            "--token",
+            &vt,
+        ],
+    );
+    // The pages show the outcome, the sentence and the file.
+    let page = fx.must(&["view", "checkpoint", "K-1"]).json().to_string();
+    assert!(
+        page.contains("met") && page.contains(says) && page.contains("shot.txt"),
+        "{page}"
+    );
+    let cov = fx.must(&["view", "coverage"]).json().to_string();
+    assert!(
+        cov.contains("Judged by an agent") && cov.contains("the screen is blank"),
+        "{cov}"
+    );
+    fx.must(&["checkpoint", "close", "K-1"]);
+}

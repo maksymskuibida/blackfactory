@@ -1155,7 +1155,16 @@ fn an_attached_file_does_not_settle_a_human_check() {
     // `junk.txt` is a new file in the project; keep it out of the content hash by ignoring it.
     fs::write(fx.root.join(".gitignore"), ".bf/\njunk.txt\n").unwrap();
     fx.must(&["evidence", "attach", "X-5", junk.to_str().unwrap()]);
-    fx.must(&["evidence", "attach", "X-6", junk.to_str().unwrap()]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-6",
+        junk.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
+        "I read the file and it holds what the check asks for.",
+    ]);
     let p = fx.project();
     let rcs = bf::evidence::load_receipts(&p).unwrap();
     let human = rcs.iter().find(|r| r.check() == "X-5").unwrap();

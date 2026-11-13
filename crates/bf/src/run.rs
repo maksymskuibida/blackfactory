@@ -127,6 +127,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
+        "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
         "policy": format!("{:?}", p.policy_state),
         "bad_records": pl.bad.iter().map(|(f, e)| json!({"file": f, "error": e})).collect::<Vec<_>>(),
     }))
@@ -295,6 +296,14 @@ fn next_raw(p: &Project) -> R<Value> {
     Ok(json!({"run": run, "directives": directives, "waiting": waiting}))
 }
 
+/// Whether `token` is the current token for `key` (`<unit or checkpoint>:<role>`), as shown by `bf next`.
+pub fn holds_token(p: &Project, key: &str, token: Option<&str>) -> bool {
+    match (read_tokens(p).get(key).and_then(|t| t.as_str()), token) {
+        (Some(h), Some(t)) => h == t.trim(),
+        _ => false,
+    }
+}
+
 fn read_tokens(p: &Project) -> Value {
     std::fs::read_to_string(p.tokens_path())
         .ok()
@@ -320,17 +329,27 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
     let mut fresh = json!({});
     if let Some(ds) = v["directives"].as_array_mut() {
         for d in ds.iter_mut() {
-            let (role, unit) = (
-                d["role"].as_str().unwrap_or("").to_string(),
-                d["unit"].as_str().unwrap_or("").to_string(),
-            );
-            if matches!(role.as_str(), "builder" | "reviewer") && !unit.is_empty() {
+            let role = d["role"].as_str().unwrap_or("").to_string();
+            // A verifier's directive belongs to a checkpoint; the others to a unit.
+            let unit = d["unit"]
+                .as_str()
+                .or_else(|| d["checkpoint"].as_str())
+                .unwrap_or("")
+                .to_string();
+            // While a check of a checkpoint is marked failed or unreachable the human decides; the
+            // verifier who is asked to look again still needs its token, so it stays on that directive.
+            let (role, field) = if d["action"] == "decide-check" {
+                ("verifier".to_string(), "verifier_token")
+            } else {
+                (role, "token")
+            };
+            if matches!(role.as_str(), "builder" | "reviewer" | "verifier") && !unit.is_empty() {
                 let key = format!("{unit}:{role}");
                 let tok = match tokens.get(&key).and_then(|t| t.as_str()) {
                     Some(t) => t.to_string(),
                     None => util::random_hex(12)?,
                 };
-                d["token"] = json!(tok);
+                d[field] = json!(tok);
                 fresh[&key] = json!(tok);
             }
         }

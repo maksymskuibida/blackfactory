@@ -7,7 +7,7 @@
 
 use crate::events;
 use crate::refusal::{err, refuse, R};
-use crate::store::{s, Project};
+use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
@@ -47,7 +47,14 @@ impl Receipt {
         match s(&self.v, "type") {
             "run" => self.seal_ok && !self.stale && self.v["exit"].as_i64() == Some(0),
             // A file proves only a check that an agent does; a human check is settled by the human's gate.
-            "attach" => self.seal_ok && !self.stale && self.how == "agent",
+            // A met outcome with the sentence that says what was looked at; a bare file is supporting
+            // material and settles nothing.
+            "attach" => {
+                self.seal_ok
+                    && !self.stale
+                    && self.how == "agent"
+                    && !s(&self.v, "reason").is_empty()
+            }
             // `fail` and `unreachable` outcomes are records, never proof.
             _ => false,
         }
@@ -491,7 +498,21 @@ pub fn path_notes(p: &Project) -> Vec<String> {
 }
 
 /// `bf evidence attach <check> <file>`
-pub fn attach(p: &Project, check_id: &str, file: &Path, unit: Option<&str>) -> R<Value> {
+/// What a file attached to a check says: `None` keeps it as supporting material; `met`, `failed` and
+/// `unreachable` are a judgment, with the sentence that says what was looked at.
+pub struct Judgment<'a> {
+    pub outcome: Option<&'a str>,
+    pub says: &'a str,
+    pub token: Option<&'a str>,
+}
+
+pub fn attach(
+    p: &Project,
+    check_id: &str,
+    file: &Path,
+    unit: Option<&str>,
+    j: &Judgment,
+) -> R<Value> {
     // Resolved again now: a link that leads into the state folder is refused.
     let resolved = p.safe_input(file)?;
     let file = resolved.as_path();
@@ -528,6 +549,64 @@ pub fn attach(p: &Project, check_id: &str, file: &Path, unit: Option<&str>) -> R
             "The command prints a receipt.",
         ));
     }
+    let says = j.says.trim();
+    let kind = match j.outcome {
+        None => "support",
+        Some("met") => "attach",
+        Some("failed") => "fail",
+        Some("unreachable") => "unreachable",
+        Some(o) => {
+            return Err(refuse(
+                format!("attach with the outcome `{o}`"),
+                "that is not an outcome",
+                &["Use `--outcome met`, `--outcome failed` or `--outcome unreachable`."],
+                "The command prints a receipt.",
+            ))
+        }
+    };
+    if j.outcome.is_some() {
+        if s(&chk, "how") != "agent" {
+            return Err(refuse(
+                format!("give {check_id} an outcome"),
+                "only a check judged by an agent takes an outcome; a human check is settled by the human's gate",
+                &["Attach the file without an outcome as supporting material."],
+                "`bf evidence verify` lists the receipt.",
+            ));
+        }
+        if says.is_empty() || says.contains('\n') || says.chars().count() > 400 {
+            return Err(refuse(
+                format!("give {check_id} an outcome"),
+                "an outcome needs one sentence saying what was looked at (`--says \"...\"`, one line)",
+                &["Say what you looked at and what you saw: `--says \"I opened the page at 375px and read every label\"`."],
+                "The command prints a receipt.",
+            ));
+        }
+        if p.policy.roles.tokens {
+            // The verifier's token for a checkpoint check; the reviewer's for a unit's own check. A
+            // builder holds neither, so it cannot settle a check for its own unit.
+            let pl = crate::plan::load(p)?;
+            let mut keys: Vec<String> = pl
+                .checkpoints
+                .iter()
+                .filter(|k| str_list(k, "checks").iter().any(|c| c == check_id))
+                .map(|k| format!("{}:verifier", s(k, "id")))
+                .collect();
+            if !s(&chk, "unit").is_empty() {
+                keys.push(format!("{}:reviewer", s(&chk, "unit")));
+            }
+            if !keys.iter().any(|k| crate::run::holds_token(p, k, j.token)) {
+                return Err(refuse(
+                    format!("give {check_id} an outcome"),
+                    "an outcome on a check judged by an agent is accepted only with the verifier's token (the reviewer's, for a check of one unit); none, or the wrong one, was given",
+                    &[
+                        "The conductor runs `bf next --json`; the verifier's directive for the checkpoint carries its `token`.",
+                        "The verifier passes it: `bf evidence attach <check> <file> --outcome met --says \"...\" --token <token>`. A builder cannot settle a check for its own unit.",
+                    ],
+                    "`bf evidence verify` lists the outcome.",
+                ));
+            }
+        }
+    }
     let h = util::sha256_file(file)?;
     fs::create_dir_all(p.evidence_dir())?;
     let dest = p.evidence_dir().join(&h);
@@ -536,9 +615,10 @@ pub fn attach(p: &Project, check_id: &str, file: &Path, unit: Option<&str>) -> R
     }
     let content = p.content_hash(&p.top)?;
     let v = json!({
-        "type": "attach",
+        "type": kind,
         "check": check_id,
         "unit": unit,
+        "reason": says,
         "file_hash": h,
         "file_name": file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
         "bytes": meta.len(),
