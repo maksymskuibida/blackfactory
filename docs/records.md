@@ -149,7 +149,8 @@ Asked before a stage's gate.
 | `context` | string | no | |
 | `answer_kind` | `single`, `multi` or `text` | yes | (`kind` in the file given to `bf ask`) |
 | `options` | list of tables | no | Each with `key`, `text`, `proposed` (boolean) and `why` |
-| `stage` | string | no | The gate kind it must be answered before |
+| `stage` | string | one of `stage` and `unit` | The gate kind it must be answered before |
+| `unit` | string | one of `stage` and `unit` | The unit (or checkpoint) that asked: only it waits for the answer. Set by `bf ask` from a working copy or with `--unit` |
 | `answer` | any | set by `bf answer` | |
 | `answered_at` | string | set by `bf answer` | |
 | `answered_turn` | integer | set by `bf answer` | The human turn after the question that the answer rests on |
@@ -173,7 +174,7 @@ Only the human edits it. The guard keeps agents away from it.
 
 | Section | Keys | Meaning |
 |---|---|---|
-| `[limits]` | `max_rounds`, `idle_minutes` | Review rounds before parking (3); idle time before a running unit counts as stuck (60) |
+| `[limits]` | `max_rounds`, `idle_minutes`, `max_attempts` | Review rounds before parking (3); idle time before a running unit counts as stuck (60); failing check runs and blocked reports in a row before parking (10) |
 | `[tiers]` | `builder`, `reviewer`, `verifier` | Model tier by role |
 | `[budget]` | `cap`, `unit` | Spending cap (0 = none) and its unit |
 | `[review]` | `required` | A unit needs a clean review before landing |
@@ -209,6 +210,6 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `tokens.reset`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
 
 Gates, approvals, test-mode grants and amendments live here, not in record files, so nothing can change them after the fact: a decision is valid only when the replayed log accepts it. A `gate.approve` counts only if it cites a human turn recorded after the gate opened and not used before, with a quote that is in that turn's text (the turn is not only a question), or is simulated inside a run that holds a test-mode grant (or, for a design gate, a grant waiting for its run).

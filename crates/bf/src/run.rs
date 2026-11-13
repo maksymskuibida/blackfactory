@@ -176,8 +176,26 @@ fn next_raw(p: &Project) -> R<Value> {
         json!({"max_rounds": p.policy.limits.max_rounds, "round": us_rounds, "idle_minutes": p.policy.limits.idle_minutes,
                "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }})
     };
+    // Questions a worker put to the human hold that unit (or checkpoint) only; the others go on.
+    let open_unit_questions: Vec<Value> = p
+        .list_records(schema::kind_by_name("question"))?
+        .into_iter()
+        .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
+        .collect();
+    let held = |id: &str| open_unit_questions.iter().any(|q| s(q, "unit") == id);
+    for q in &open_unit_questions {
+        directives.push(json!({"role": "human", "action": "answer-question", "question": s(q, "id"), "unit": s(q, "unit"),
+            "title": s(q, "title"),
+            "note": format!("{} asks: {}. Show the human the question; when they have answered, `bf answer {} --file <answer>`. Only {} waits.", s(q, "unit"), s(q, "title"), s(q, "id"), s(q, "unit"))}));
+    }
     for (id, state, why) in unit_states(p, &pl, &st, &receipts) {
         let u = pl.unit(&id).unwrap();
+        if held(&id) && matches!(state.as_str(), "ready" | "running" | "fixing" | "review") {
+            waiting.push(format!(
+                "{id}: waiting for the human's answer to its question"
+            ));
+            continue;
+        }
         let wc = p.work_dir().join(&id).to_string_lossy().to_string();
         let rounds = st.units.get(&id).map(|x| x.rounds).unwrap_or(0);
         let brief = |role: &str| {
@@ -190,9 +208,15 @@ fn next_raw(p: &Project) -> R<Value> {
             "ready" => directives.push(json!({"role": "builder", "action": "start-unit", "unit": id, "tier": tier_for(p, u, "builder"),
                 "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
                 "commands": [format!("bf unit start {id}"), format!("bf brief {id} --role builder")]})),
-            "running" | "fixing" => directives.push(json!({"role": "builder", "action": if state == "fixing" { "fix" } else { "build" }, "unit": id,
-                "tier": tier_for(p, u, "builder"), "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
-                "commands": [format!("bf brief {id} --role builder")]})),
+            "running" | "fixing" => {
+                let mut d = json!({"role": "builder", "action": if state == "fixing" { "fix" } else { "build" }, "unit": id,
+                    "tier": tier_for(p, u, "builder"), "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
+                    "commands": [format!("bf brief {id} --role builder")]});
+                if let Some(a) = st.units.get(&id).map(|x| x.reopened_by.clone()).filter(|a| !a.is_empty()) {
+                    d["amendment"] = json!(a);
+                }
+                directives.push(d);
+            }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
                 "working_copy": wc, "brief": brief("reviewer"), "limits": limits(rounds),
                 "commands": [format!("bf brief {id} --role reviewer")]})),
@@ -208,6 +232,12 @@ fn next_raw(p: &Project) -> R<Value> {
         let kid = s(k, "id");
         let after = str_list(k, "after");
         if st.closed.contains_key(kid) {
+            continue;
+        }
+        if held(kid) {
+            waiting.push(format!(
+                "{kid}: waiting for the human's answer to its question"
+            ));
             continue;
         }
         if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
@@ -266,88 +296,69 @@ fn read_tokens(p: &Project) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-fn read_offers(p: &Project) -> Value {
-    std::fs::read_to_string(p.offers_path())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| json!({}))
-}
-
-/// `bf token take <unit> --role R`: the one-use token for a directive that the latest `bf next` gave.
-/// It is handed out once. A second request fails loudly, so that whoever got the token first, if it
-/// was not the conductor, is noticed.
-pub fn take_token(p: &Project, unit: &str, role: &str) -> R<String> {
-    let mut offers = read_offers(p);
-    let key = format!("{unit}:{role}");
-    let Some(o) = offers.get(&key).cloned() else {
-        return Err(refuse(
-            format!("take the {role} token of {unit}"),
-            "the latest `bf next` did not give that directive, and a token is handed out only for a directive just given",
-            &["Run `bf next --json` and take the token of a directive it lists (its `token_command`)."],
-            "`bf token take` prints a token.",
-        ));
-    };
-    let token = util::random_hex(12)?;
-    let mut v = read_tokens(p);
-    if o["taken"] == true {
-        // Taken before (a conductor that lost its context asks again, or someone else asked first).
-        // The earlier token is void and a new one is issued; the note says so, so whoever held the
-        // earlier token finds out when its report fails.
-        eprintln!(
-            "note: the {role} token of {unit} was already taken (at {}); that token is void now. If it was not you who took it, tell the human.",
-            o["at"].as_str().unwrap_or("an earlier time")
-        );
-        if let Some(m) = v.as_object_mut() {
-            m.retain(|_, e| !(e["unit"] == unit && e["role"] == role));
+/// `bf tokens` are the way a report says which role is speaking. The token of every open worker
+/// directive is kept in the state folder, keyed by unit and role, and `bf next` shows it every time it
+/// is asked: a conductor that resumes, or a new one, always gets the token of the work already handed
+/// out. A token is spent by one successful report, and tokens of directives that no longer exist are
+/// dropped.
+fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
+    let mut tokens = read_tokens(p);
+    // Old format (hash -> {unit, role}) is dropped.
+    if tokens
+        .as_object()
+        .map(|o| o.values().any(|x| x.is_object()))
+        .unwrap_or(false)
+    {
+        tokens = json!({});
+    }
+    let mut fresh = json!({});
+    if let Some(ds) = v["directives"].as_array_mut() {
+        for d in ds.iter_mut() {
+            let (role, unit) = (
+                d["role"].as_str().unwrap_or("").to_string(),
+                d["unit"].as_str().unwrap_or("").to_string(),
+            );
+            if matches!(role.as_str(), "builder" | "reviewer") && !unit.is_empty() {
+                let key = format!("{unit}:{role}");
+                let tok = match tokens.get(&key).and_then(|t| t.as_str()) {
+                    Some(t) => t.to_string(),
+                    None => util::random_hex(12)?,
+                };
+                d["token"] = json!(tok);
+                fresh[&key] = json!(tok);
+            }
         }
     }
-    if let Some(m) = v.as_object_mut() {
-        m.insert(
-            util::sha256_hex(token.as_bytes()),
-            json!({"unit": unit, "role": role}),
-        );
-    }
-    util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
-    offers[&key]["taken"] = json!(true);
-    offers[&key]["at"] = json!(util::now());
-    util::atomic_write(&p.offers_path(), serde_json::to_string(&offers)?.as_bytes())?;
-    Ok(token)
-}
-
-/// `bf tokens reset`: the human clears every unspent role token, so the next `bf next` hands out new ones.
-pub fn reset_tokens(p: &Project) -> R<()> {
-    util::atomic_write(&p.tokens_path(), b"{}")?;
-    util::atomic_write(&p.offers_path(), b"{}")?;
+    util::atomic_write(&p.tokens_path(), serde_json::to_string(&fresh)?.as_bytes())?;
     Ok(())
 }
 
 fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
-    let hash = token
-        .map(|t| util::sha256_hex(t.trim().as_bytes()))
-        .unwrap_or_default();
-    let v = read_tokens(p);
-    let ok = !hash.is_empty()
-        && v.get(&hash)
-            .map(|e| e["unit"] == unit && e["role"] == role)
-            .unwrap_or(false);
-    if ok {
-        return Ok(hash);
+    let key = format!("{unit}:{role}");
+    let have = read_tokens(p)
+        .get(&key)
+        .and_then(|t| t.as_str())
+        .map(|t| t.to_string());
+    if let (Some(h), Some(t)) = (&have, token) {
+        if h == t.trim() {
+            return Ok(key);
+        }
     }
     Err(refuse(
         format!("report on {unit} as {role}"),
-        format!("a report needs the one-use token that `bf next` handed out for the {role} of {unit}; none, or the wrong one, was given"),
+        format!("a report needs the token of the {role}'s directive for {unit}; none, or the wrong one, was given"),
         &[
-            "The conductor runs `bf next --json` and passes each worker the `token` of its directive.",
-            "The worker reports with `--token <token>`. A builder cannot report as the reviewer: it never holds the reviewer's token.",
+            "The conductor runs `bf next --json`; each builder and reviewer directive carries its `token`.",
+            "The worker reports with `--token <token>`. A builder cannot report as the reviewer: the reviewer's directive exists only while the unit is in review.",
         ],
         "`bf status` shows the unit in its new state.",
     ))
 }
 
-fn spend_token(p: &Project, hash: &str) -> R<()> {
+fn spend_token(p: &Project, key: &str) -> R<()> {
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
-        o.remove(hash);
+        o.remove(key);
     }
     util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
     Ok(())
@@ -355,41 +366,13 @@ fn spend_token(p: &Project, hash: &str) -> R<()> {
 
 /// The next directives, plus a plain statement of whether anything can start and, if not, why.
 pub fn next(p: &Project) -> R<Value> {
+    // The idle check runs here, so nobody has to remember `bf stuck`.
+    if events::replay(p)?.active_run().is_some() {
+        stuck(p, false)?;
+    }
     let mut v = next_raw(p)?;
-    // A worker directive can be given a token, once, to whoever asks for it with `bf token take`. The
-    // offers are exactly the directives this call returned.
     if p.policy.roles.tokens {
-        let mut offers = read_offers(p);
-        let tokens = read_tokens(p);
-        let mut fresh = json!({});
-        if let Some(ds) = v["directives"].as_array_mut() {
-            for d in ds.iter_mut() {
-                let (role, unit) = (
-                    d["role"].as_str().unwrap_or("").to_string(),
-                    d["unit"].as_str().unwrap_or("").to_string(),
-                );
-                if matches!(role.as_str(), "builder" | "reviewer") && !unit.is_empty() {
-                    let key = format!("{unit}:{role}");
-                    // A directive whose token was taken and is still unspent stays "taken"; otherwise it is new.
-                    let unspent = tokens
-                        .as_object()
-                        .map(|o| {
-                            o.values()
-                                .any(|e| e["unit"] == unit.as_str() && e["role"] == role.as_str())
-                        })
-                        .unwrap_or(false);
-                    let taken = offers
-                        .get(&key)
-                        .map(|o| o["taken"] == true)
-                        .unwrap_or(false)
-                        && unspent;
-                    fresh[&key] = json!({"unit": unit, "role": role, "taken": taken, "at": offers.get(&key).and_then(|o| o.get("at")).cloned().unwrap_or(Value::Null)});
-                    d["token_command"] = json!(format!("bf token take {unit} --role {role}"));
-                }
-            }
-        }
-        offers = fresh;
-        util::atomic_write(&p.offers_path(), serde_json::to_string(&offers)?.as_bytes())?;
+        sync_tokens(p, &mut v)?;
     }
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
@@ -705,7 +688,7 @@ fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
         md.push_str(&format!("\n## Human step\n\n{}\n", s(kr, "human_step")));
     }
     md.push_str(&format!(
-        "\n## Outcomes\n\nRun each check from inside `{wc}` so the receipt is for the checkpoint's content. Then, for each ID you judged:\n\n- met: the receipt from `bf evidence run` is the proof.\n- failed: the check ran and does not match the contract, or it fails without a receipt you can show: `bf evidence fail <check> --reason \"what you saw\"`.\n- unreachable: you could not run it: `bf evidence unreachable <check> --reason \"what blocked you\"`. This is not a pass. The checkpoint then waits for the human.\n\nGive your outcomes in your last message too.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/` (the working copy named above is the only place under `.bf/` you may use).\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n",
+        "\n## Outcomes\n\nRun each check from inside `{wc}` so the receipt is for the checkpoint's content. Then, for each ID you judged:\n\n- met: the receipt from `bf evidence run` is the proof.\n- failed: the check ran and does not match the contract, or it fails without a receipt you can show: `bf evidence fail <check> --reason \"what you saw\"`.\n- unreachable: you could not run it: `bf evidence unreachable <check> --reason \"what blocked you\"`. This is not a pass. The checkpoint then waits for the human.\n\nGive your outcomes in your last message too.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/` (the working copy named above is the only place under `.bf/` you may use).\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`. This checkpoint then waits for the answer.\n",
         wc = wc.display()
     ));
     let path = p.briefs_dir().join(format!("{k}-verifier.md"));
@@ -821,6 +804,38 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     } else {
         md.push_str("## Where you work\n\nYou are a blind verifier: judge the built result against the contract above. Do not read the source.\n\n");
     }
+    if let Some(a) = st
+        .units
+        .get(unit)
+        .map(|x| x.reopened_by.clone())
+        .filter(|a| !a.is_empty())
+    {
+        md.push_str(&format!("## Amendment {a}\n\nThis unit was sent back to work because the human approved amendment {a}. The records it delivers changed: read them again (`bf record get <ID>`) and change what no longer fits. The receipts for its checks from before the amendment no longer count; run the checks again.\n\n"));
+    }
+    let qs = p.list_records(schema::kind_by_name("question"))?;
+    let asked: Vec<&Value> = qs.iter().filter(|q| s(q, "unit") == unit).collect();
+    if !asked.is_empty() {
+        md.push_str("## Questions you asked the human\n\n");
+        for q in asked {
+            match q.get("answer") {
+                Some(a) => md.push_str(&format!(
+                    "- {} {}: answered: {}\n",
+                    s(q, "id"),
+                    s(q, "title"),
+                    match a {
+                        Value::String(x) => x.clone(),
+                        o => o.to_string(),
+                    }
+                )),
+                None => md.push_str(&format!(
+                    "- {} {}: not answered yet; do not guess, wait for the answer\n",
+                    s(q, "id"),
+                    s(q, "title")
+                )),
+            }
+        }
+        md.push('\n');
+    }
     let fs_all = p.list_records(schema::kind_by_name("finding"))?;
     let mine: Vec<&Value> = fs_all.iter().filter(|f| s(f, "unit") == unit).collect();
     if !mine.is_empty() {
@@ -862,7 +877,7 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         p.policy.limits.idle_minutes
     ));
     md.push_str(&format!(
-        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- A check counts only when `bf evidence run` ran it.\n",
+        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n- A check counts only when `bf evidence run` ran it.\n",
         p.work_dir().join(unit).display()
     ));
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
@@ -870,8 +885,27 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     Ok(path)
 }
 
+/// The checkpoint that comes just before `k` in plan order, if any.
+pub fn previous_checkpoint(pl: &Plan, k: &str) -> Option<String> {
+    let i = pl.checkpoints.iter().position(|c| s(c, "id") == k)?;
+    if i == 0 {
+        None
+    } else {
+        Some(s(&pl.checkpoints[i - 1], "id").to_string())
+    }
+}
+
 fn ensure_checkpoint_worktree(p: &Project, k: &str) -> R<PathBuf> {
     let main = &p.config.main_branch;
+    // Each checkpoint builds on the one before it in plan order (the first on the main branch), so the
+    // last checkpoint's content holds everything and the final verification runs over the whole result.
+    let pl = plan::load(p)?;
+    let st = events::replay(p)?;
+    let prev = previous_checkpoint(&pl, k).filter(|c| st.closed.contains_key(c));
+    let base = match &prev {
+        Some(c) if gitx::branch_exists(&p.root, &p.checkpoint_branch(c)) => p.checkpoint_branch(c),
+        _ => main.clone(),
+    };
     if !gitx::branch_exists(&p.root, main) {
         return Err(refuse(
             "create a working copy",
@@ -885,12 +919,40 @@ fn ensure_checkpoint_worktree(p: &Project, k: &str) -> R<PathBuf> {
     }
     let cpb = p.checkpoint_branch(k);
     if !gitx::branch_exists(&p.root, &cpb) {
-        gitx::must(&p.root, &["branch", &cpb, main])?;
+        gitx::must(&p.root, &["branch", &cpb, &base])?;
     }
     let wt = p.work_dir().join(k);
     if !wt.join(".git").exists() {
         fs::create_dir_all(p.work_dir())?;
         gitx::must(&p.root, &["worktree", "add", &wt.to_string_lossy(), &cpb])?;
+    }
+    // Work that landed in the earlier checkpoint after this one was cut (an amendment re-opened it) is
+    // brought in before more lands here.
+    if let Some(c) = &prev {
+        let pb = p.checkpoint_branch(c);
+        if gitx::branch_exists(&p.root, &pb) && !gitx::is_ancestor(&p.root, &pb, &cpb) {
+            let out = gitx::run(
+                &wt,
+                &[
+                    "merge",
+                    "--no-ff",
+                    "--no-edit",
+                    "-m",
+                    &format!("Bring in {c}"),
+                    &pb,
+                ],
+                &[],
+            )?;
+            if !out.ok {
+                let _ = gitx::run(&wt, &["merge", "--abort"], &[]);
+                return Err(refuse(
+                    format!("bring {c} into {k}"),
+                    format!("the merge conflicts: {}", out.stderr.lines().next().unwrap_or("")),
+                    &["The human resolves the conflict between the two checkpoint branches by hand."],
+                    "`bf unit land` merges.",
+                ));
+            }
+        }
     }
     Ok(wt)
 }
@@ -1376,7 +1438,14 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ));
         };
         // A run with simulated approvals can never reach the main branch.
-        let tainted_unit = after.iter().any(|u| {
+        let mut owned: Vec<String> = after.clone();
+        for c in &pl.checkpoints {
+            if s(c, "id") == k {
+                break;
+            }
+            owned.extend(str_list(c, "after"));
+        }
+        let tainted_unit = owned.iter().any(|u| {
             let lr = st
                 .units
                 .get(u)
@@ -1477,6 +1546,65 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     Ok(
         json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend}),
     )
+}
+
+/// `bf unit release <U> --quote ...`: the human puts a parked or blocked unit back to work. Its round and
+/// attempt counts start again; the log keeps the whole history.
+pub fn unit_release(p: &Project, unit: &str, quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    need_run(&st)?;
+    let Some(u) = st.units.get(unit) else {
+        return Err(refuse(
+            format!("release {unit}"),
+            "that unit has not been started",
+            &["Use a unit ID from `bf status`."],
+            "`bf status` shows the unit back at work.",
+        ));
+    };
+    if !matches!(u.state.as_str(), "parked" | "blocked") {
+        return Err(refuse(
+            format!("release {unit}"),
+            format!(
+                "it is `{}`; only a parked or blocked unit is released",
+                u.state
+            ),
+            &["`bf next` shows what each unit is waiting for."],
+            "`bf status` shows the unit back at work.",
+        ));
+    }
+    let to = match u.prev_state.as_str() {
+        "review" if u.parked_reason.starts_with("more than") => "fixing",
+        "review" => "review",
+        "fixing" => "fixing",
+        _ => "running",
+    };
+    let (seq, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "unit.release",
+        json!({"unit": unit, "turn": seq, "quote": quote.trim(), "from": u.state, "to": to, "reason": u.parked_reason}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"unit": unit, "state": to, "released": true}))
+}
+
+/// A builder that keeps failing its checks is parked after `max_attempts` in a row.
+pub fn park_if_looping(p: &Project, unit: &str) -> R<()> {
+    let st = events::replay(p)?;
+    let Some(u) = st.units.get(unit) else {
+        return Ok(());
+    };
+    if matches!(u.state.as_str(), "running" | "fixing")
+        && u.attempts >= p.policy.limits.max_attempts
+    {
+        events::append(
+            p,
+            "unit.park",
+            json!({"unit": unit, "reason": format!("{} failing check runs or blocked reports in a row", u.attempts)}),
+        )?;
+        p.write_guard()?;
+    }
+    Ok(())
 }
 
 pub fn stuck(p: &Project, dry: bool) -> R<Value> {

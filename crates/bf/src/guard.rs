@@ -590,8 +590,6 @@ const BF_KNOWN: &[&str] = &[
     "guard",
     "head",
     "policy",
-    "tokens",
-    "token",
     "version",
     "help",
     "human-turn",
@@ -601,6 +599,7 @@ const BF_KNOWN: &[&str] = &[
 /// working copy also reports and files findings; a checkpoint's only runs checks and reads.
 const UNIT_BF: &[(&str, &[&str])] = &[
     ("report", &[]),
+    ("ask", &[]),
     ("status", &[]),
     (
         "evidence",
@@ -609,6 +608,7 @@ const UNIT_BF: &[(&str, &[&str])] = &[
     ("record", &["get", "list", "put"]),
 ];
 const CP_BF: &[(&str, &[&str])] = &[
+    ("ask", &[]),
     ("status", &[]),
     (
         "evidence",

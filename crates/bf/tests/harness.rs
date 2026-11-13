@@ -382,23 +382,15 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
                     a.extend(cmd.iter().map(|x| x.as_str()));
                     w.ok(&wc, &a);
                     let result = if action == "fix" { "fixed" } else { "built" };
-                    // With role tokens on (the default) a report carries the token that was taken for the
-                    // directive; the builder's prompt must pass it on.
-                    let tok = &w
-                        .conductor(&["token", "take", u, "--role", "builder"])
-                        .stdout
-                        .trim()
-                        .to_string();
+                    // With role tokens on (the default) a report carries the token of the directive;
+                    // the builder's prompt must pass it on.
+                    let tok = &d["token"].as_str().unwrap().to_string();
                     w.ok(&wc, &["report", u, "--result", result, "--token", tok]);
                 }
                 ("reviewer", "review") => {
                     let u = d["unit"].as_str().unwrap();
                     let wc = PathBuf::from(d["working_copy"].as_str().unwrap());
-                    let tok = &w
-                        .conductor(&["token", "take", u, "--role", "reviewer"])
-                        .stdout
-                        .trim()
-                        .to_string();
+                    let tok = &d["token"].as_str().unwrap().to_string();
                     let brief = PathBuf::from(
                         w.conductor(&["brief", u, "--role", "reviewer"])
                             .stdout
@@ -775,17 +767,13 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
             "src/a.txt",
         ],
     );
-    let tb = w
-        .conductor(&["token", "take", &u1, "--role", "builder"])
-        .stdout;
+    let tb = fx.take_token(&u1, "builder");
     w.ok(
         &wc,
         &["report", &u1, "--result", "built", "--token", tb.trim()],
     );
     w.conductor(&["next", "--json"]);
-    let tr = w
-        .conductor(&["token", "take", &u1, "--role", "reviewer"])
-        .stdout;
+    let tr = fx.take_token(&u1, "reviewer");
     w.ok(
         &wc,
         &[

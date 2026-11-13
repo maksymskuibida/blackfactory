@@ -321,11 +321,17 @@ impl Fx {
         self.must(&["gate", "approve", "plan", "--simulated"]);
     }
 
-    /// `bf next` gives the directive; the conductor takes the token for it (once).
+    /// `bf next` shows the token of every open worker directive, every time it is asked.
     pub fn take_token(&self, unit: &str, role: &str) -> String {
-        self.must(&["token", "take", unit, "--role", role])
-            .stdout
-            .trim()
+        let n = self.must(&["next", "--json"]).json();
+        n["directives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["unit"] == unit && d["role"] == role)
+            .unwrap_or_else(|| panic!("no {role} directive for {unit}: {n}"))["token"]
+            .as_str()
+            .unwrap()
             .to_string()
     }
 

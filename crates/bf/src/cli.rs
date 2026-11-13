@@ -25,6 +25,9 @@ const VALUE_FLAGS: &[&str] = &[
     "tail",
     "name",
     "stage",
+    "title",
+    "context",
+    "options",
     "reason",
     "quote",
     "token",
@@ -224,6 +227,7 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
     let ok = match (zone, cmd) {
         (_, "status") => true,
         (_, "evidence") => evidence_ok.contains(&sub),
+        (_, "ask") => true,
         ("unit", "report") => true,
         (_, "record") => matches!(sub, "get" | "list") || (zone == "unit" && sub == "put"),
         _ => false,
@@ -495,16 +499,17 @@ fn dispatch(args: &Args) -> R<()> {
         }
         "unit" => {
             let p = project(args)?;
-            let sub = args.pos_at(1, "`start` or `land`")?;
+            let sub = args.pos_at(1, "`start`, `land` or `release`")?;
             let unit = args.pos_at(2, "a unit ID")?;
             let v = match sub {
                 "start" => run::unit_start(&p, unit)?,
                 "land" => run::unit_land(&p, unit)?,
+                "release" => run::unit_release(&p, unit, args.flag("quote").unwrap_or(""))?,
                 _ => {
                     return Err(refuse(
                         "run `bf unit`",
                         "unknown subcommand",
-                        &["Use `bf unit start <U>` or `bf unit land <U>`."],
+                        &["Use `bf unit start <U>`, `bf unit land <U>` or `bf unit release <U> --quote \"...\"`."],
                         "The command prints the result.",
                     ))
                 }
@@ -513,6 +518,10 @@ fn dispatch(args: &Args) -> R<()> {
                 "start" => format!(
                     "{unit} working copy: {}",
                     v["working_copy"].as_str().unwrap_or("")
+                ),
+                "release" => format!(
+                    "{unit} is back at work ({})",
+                    v["state"].as_str().unwrap_or("")
                 ),
                 _ => format!(
                     "{unit} landed on {}",
@@ -589,13 +598,51 @@ fn dispatch(args: &Args) -> R<()> {
         }
         "ask" => {
             let p = project(args)?;
-            let f = read_data_in(
-                &p,
-                args.need(
-                    "file",
-                    "a question file (a JSON list, or a table with `questions`)",
-                )?,
-            )?;
+            let f = match (args.flag("file"), args.flag("title")) {
+                (Some(file), _) => read_data_in(&p, file)?,
+                (None, Some(title)) => {
+                    // A short question without a file: `--title`, `--context`, `--kind`, `--options "A=text;B=text"`.
+                    let mut q = json!({"title": title});
+                    if let Some(c) = args.flag("context") {
+                        q["context"] = json!(c);
+                    }
+                    if let Some(k) = args.flag("kind") {
+                        q["kind"] = json!(k);
+                    }
+                    if let Some(o) = args.flag("options") {
+                        q["options"] = json!(o
+                            .split(';')
+                            .filter(|x| !x.trim().is_empty())
+                            .map(|x| {
+                                let (k, t) = x.split_once('=').unwrap_or(("", x));
+                                json!({"key": k.trim(), "text": t.trim()})
+                            })
+                            .collect::<Vec<_>>());
+                        if q.get("kind").is_none() {
+                            q["kind"] = json!("single");
+                        }
+                    } else if q.get("kind").is_none() {
+                        q["kind"] = json!("text");
+                    }
+                    q
+                }
+                (None, None) => {
+                    return Err(refuse(
+                        "ask a question",
+                        "it needs a question file (`--file`) or a title (`--title`)",
+                        &["Write the question as `bf ask --title \"...\" [--context \"...\"] [--options \"A=first;B=second\"]`, or give a JSON file with `--file`."],
+                        "The command prints the new question ID.",
+                    ))
+                }
+            };
+            // A question belongs to a stage (the gate waits for it) or to a unit (a worker's question to
+            // the human; that unit waits for the answer, the others go on).
+            let zone = real_zone(&p);
+            let unit_tag: Option<String> = match (&zone, args.flag("unit")) {
+                (Some((_, id)), _) => Some(id.clone()),
+                (None, Some(u)) => Some(u.to_string()),
+                _ => None,
+            };
             let items: Vec<Value> = match &f {
                 Value::Array(a) => a.clone(),
                 o => match o.get("questions").and_then(|q| q.as_array()) {
@@ -630,6 +677,21 @@ fn dispatch(args: &Args) -> R<()> {
                     if let Some(st) = args.flag("stage") {
                         rec["stage"] = json!(st);
                     }
+                }
+                if let Some(u) = &unit_tag {
+                    rec["unit"] = json!(u);
+                    rec.as_object_mut().map(|o| o.remove("stage"));
+                }
+                if rec.get("stage").is_none() && rec.get("unit").is_none() {
+                    return Err(refuse(
+                        "ask a question that blocks nothing",
+                        "the question is not tagged: it names no stage and no unit, so no gate and no unit would wait for the answer",
+                        &[
+                            "A design question: add `--stage idea|requirements|ui|architecture|plan` (or `stage` in the file); that gate will not open until it is answered.",
+                            "A question about a unit's work: add `--unit U-<n>` (a worker asks from its working copy and is tagged by itself); that unit waits for the answer while the others go on.",
+                        ],
+                        "`bf questions --open` lists the question with its stage or unit.",
+                    ));
                 }
                 schema::validate_or_refuse(kind, &rec)?;
                 recs.push(rec);
@@ -766,40 +828,6 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = run::stuck(&p, args.has("dry-run"))?;
             out(args, &v, || pretty(&v));
-            Ok(())
-        }
-        "token" => {
-            let p = project(args)?;
-            if args.pos.get(1).map(|x| x.as_str()) != Some("take") {
-                return Err(refuse(
-                    "run `bf token`",
-                    "only `bf token take <unit> --role <builder|reviewer>` exists",
-                    &["Run `bf next --json` and use the `token_command` of the directive."],
-                    "The command prints the token.",
-                ));
-            }
-            let unit = args.pos_at(2, "a unit ID")?;
-            let role = args.need("role", "the role: builder or reviewer")?;
-            let t = run::take_token(&p, unit, role)?;
-            out(
-                args,
-                &json!({"token": t, "unit": unit, "role": role}),
-                || t.clone(),
-            );
-            Ok(())
-        }
-        "tokens" => {
-            let p = project(args)?;
-            if args.pos.get(1).map(|x| x.as_str()) != Some("reset") {
-                return Err(refuse(
-                    "run `bf tokens`",
-                    "only `bf tokens reset` exists",
-                    &["After the human says in chat to reset them: `bf tokens reset --quote \"<their words>\"`."],
-                    "`bf next` prints a token again.",
-                ));
-            }
-            let v = gates::tokens_reset(&p, args.flag("quote").unwrap_or(""))?;
-            out(args, &v, || "tokens reset".to_string());
             Ok(())
         }
         "policy" => {

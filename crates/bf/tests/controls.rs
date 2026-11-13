@@ -494,38 +494,23 @@ fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_info
 // ------------------------------------------------------------ tokens taken once
 
 #[test]
-fn a_role_token_is_handed_out_for_a_directive_just_given_and_a_second_request_voids_the_first() {
+fn bf_next_shows_the_token_of_every_open_directive_every_time() {
     let fx = Fx::new();
     fx.tiny();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
-    // Nothing is handed out before a directive has been given.
-    let o = fx.refused(&["token", "take", "U-1", "--role", "builder"]);
-    assert!(
-        o.stderr.contains("did not give that directive"),
-        "{}",
-        o.stderr
-    );
+    // Every ask gives the same token for the same open directive: a conductor that resumes, or a new
+    // one, always has what it needs. Nothing is shown once, and nothing needs the human to reset it.
     let first = fx.must(&["next", "--json"]).json();
-    assert!(
-        first["directives"][0]["token"].is_null(),
-        "`bf next` shows no token itself: {first}"
-    );
-    assert_eq!(
-        first["directives"][0]["token_command"],
-        "bf token take U-1 --role builder"
-    );
-    let tok = fx.take_token("U-1", "builder");
-    // A second request (a conductor that lost its context, or a script that asked first) is served,
-    // and says loudly that the earlier token is void now.
-    let o = fx.must(&["token", "take", "U-1", "--role", "builder"]);
-    assert!(
-        o.stderr.contains("already taken") && o.stderr.contains("void"),
-        "{}",
-        o.stderr
-    );
-    let tok2 = o.stdout.trim().to_string();
-    assert_ne!(tok, tok2);
+    let tok = first["directives"][0]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(first["directives"][0]["role"], "builder");
+    for _ in 0..3 {
+        assert_eq!(fx.take_token("U-1", "builder"), tok);
+    }
+    // A guess, and a worker running `bf next`, get nothing.
     let wc = started_unit(&fx);
     assert_eq!(
         fx.bf_in(
@@ -535,55 +520,30 @@ fn a_role_token_is_handed_out_for_a_directive_just_given_and_a_second_request_vo
         .code,
         2
     );
-    // A worker cannot ask for tokens.
-    assert_eq!(
-        fx.bf_in(&wc, &["token", "take", "U-1", "--role", "reviewer"])
-            .code,
-        2
-    );
-    // The first taker's token no longer works; the second taker's does.
-    assert_eq!(
-        fx.bf_in(
-            &wc,
-            &["report", "U-1", "--result", "built", "--token", &tok]
-        )
-        .code,
-        2,
-        "the token that was voided"
-    );
+    assert_eq!(fx.bf_in(&wc, &["next", "--json"]).code, 2);
     fx.must_in(
         &wc,
-        &["report", "U-1", "--result", "built", "--token", &tok2],
+        &["report", "U-1", "--result", "built", "--token", &tok],
     );
-    // The reviewer's directive is new, so its token can be taken.
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["role"], "reviewer");
-    let rt = fx.take_token("U-1", "reviewer");
-    // The human can still clear every unspent token and offer.
-    let o = fx.bf(&["tokens", "reset", "--quote", "Yes, reset them."]);
-    assert_eq!(o.code, 2, "needs a human turn");
-    fx.human("Yes, reset them.");
-    fx.must(&["tokens", "reset", "--quote", "Yes, reset them."]);
-    fx.refused(&["token", "take", "U-1", "--role", "reviewer"]);
-    fx.must(&["next", "--json"]);
-    let rt2 = fx.take_token("U-1", "reviewer");
-    assert_ne!(rt, rt2);
+    // The token is spent; the reviewer's directive is new and has its own token.
     assert_eq!(
         fx.bf_in(
             &wc,
-            &["report", "U-1", "--result", "built", "--role", "reviewer", "--token", &rt]
+            &["report", "U-1", "--result", "built", "--role", "reviewer", "--token", &tok]
         )
         .code,
         2,
-        "the old token is gone"
+        "the builder's token is not the reviewer's"
     );
+    let rt = fx.take_token("U-1", "reviewer");
+    assert_ne!(rt, tok);
+    assert_eq!(fx.take_token("U-1", "reviewer"), rt);
     fx.must_in(
         &wc,
         &[
-            "report", "U-1", "--result", "built", "--role", "reviewer", "--token", &rt2,
+            "report", "U-1", "--result", "built", "--role", "reviewer", "--token", &rt,
         ],
     );
-    assert_eq!(fx.bf_in(&wc, &["tokens", "reset", "--quote", "x"]).code, 2);
 }
 
 // ------------------------------------------------------------ the guard and ordinary commands

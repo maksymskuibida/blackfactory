@@ -32,8 +32,7 @@ bf status
 | `<state>/<project id>/key` | the key that seals receipts, chains the log and signs the guard table | never, and outside the project tree |
 | `<state>/<project id>/head.json` | the log's head: event count, last hash, the main commit the engine last made or the human accepted, the main branch's name, the hash and time of the accepted policy | never, outside the project tree |
 | `<state>/<project id>/policy.accepted.toml` | the policy the human accepted: **this** is the policy in force, not the file on disk | never, outside the project tree |
-| `<state>/<project id>/tokens.json` | hashes of the one-use role tokens | never, outside the project tree |
-| `<state>/<project id>/offers.json` | the directives `bf next` last offered, so a token is handed out only for one just given | never, outside the project tree |
+| `<state>/<project id>/tokens.json` | the token of each open worker directive | never, outside the project tree |
 | `<state>/<project id>/programs.json` | where each command check's program was found and a hash of that file, recorded when the plan gate is approved; a change is noted in the receipt | never, outside the project tree |
 | `<state>/<project id>/guard.gen` | the number of the newest guard table; an older signed table is refused | never, outside the project tree |
 
@@ -94,6 +93,8 @@ Prints the next free ID of that kind, for example `R-8`, and reserves it: the ne
 
 `check` lists every designed part that has no unit, no check or no evidence, and refuses while any exists. `--plan` checks only units and checks (use it before building). The designed kinds are set in `factory/policy.toml` under `[ledger] kinds`. Evidence means a sealed, passing receipt from a check of a **closed** checkpoint that proves the part, at the content that checkpoint closed on (a receipt from a version that no longer exists counts for nothing); for a human check, the checkpoint's approved step gate.
 
+A **handoff is a row too**: it needs a proving check, and evidence, which is a passing receipt of that check at the content its unit landed on (a unit check) or its checkpoint closed on (a checkpoint check).
+
 `impact` prints everything linked to the IDs: units that deliver them and units that depend on those, handoffs, checks, checkpoints and receipts.
 
 ```bash
@@ -105,7 +106,7 @@ Refuses when: any designed part lacks a link.
 
 ### `bf plan check`
 
-Checks the delivery plan: every handoff is proved by some check (a check's `proves` may name a handoff `H-n`; so may a checkpoint's); no cycle in the unit graph; every handoff has a sender, a receiver (which depends on the sender) and a named thing; every checkpoint names the IDs it proves and a check for each; every designed ID belongs to a unit and to a checkpoint; every unit has a check; units in one wave share no files. Waves are the levels of the dependency graph.
+Checks the delivery plan: every handoff is proved by some check (a check's `proves` may name a handoff `H-n`; so may a checkpoint's), and at least one such check really runs, that is, belongs to a unit (`unit = "U-n"`) or is listed in a checkpoint's `checks`; no cycle in the unit graph; every handoff has a sender, a receiver (which depends on the sender) and a named thing; every checkpoint names the IDs it proves and a check for each; every designed ID belongs to a unit and to a checkpoint; every unit has a check; units in one wave share no files. Waves are the levels of the dependency graph.
 
 Refuses when: any of that fails (all problems are listed).
 
@@ -127,6 +128,8 @@ It also says plainly whether anything can start: `can_start` (a worker or engine
 bf next --json
 ```
 
+`bf next` also runs the idle check (see `bf stuck`) before it answers, so nobody has to call it. Questions that workers put to the human appear as `human` directives (`answer-question`) and hold only their own unit (see `bf ask`).
+
 Refuses when: no run is active; the budget cap is reached.
 
 ### `bf brief <unit-or-checkpoint> --role <builder|reviewer|verifier>`
@@ -137,7 +140,7 @@ Given a checkpoint ID (`K-1`), it writes the verifier's brief for the checkpoint
 
 The only way a worker changes a unit's state.
 
-**Role tokens.** With `[roles] tokens = true` (the default), `bf report` needs the one-use token for the role it reports as: the builder's token for `built`, `fixed` and `blocked`, the reviewer's for the review. `bf next` never prints a token; each builder and reviewer directive carries a `token_command` instead, and the conductor runs `bf token take <unit> --role <role>` to get the token. A token is handed out only for a directive that `bf next` has just given, is bound to the unit and the role, is spent by one successful report. A second `bf token take` for the same unit and role is served too, and says on stderr that the earlier token is void: a conductor that lost its context asks again and goes on, and a script that asked first finds its token dead when it reports. The human can still clear every unspent token and offer with `bf tokens reset --quote "<their words>"`. A builder never holds the reviewer's token: it is created only when the unit is in review, and `bf next`, `bf brief` and `bf token` refuse to run from inside a working copy. **Cost.** With a budget cap, every report must carry `--cost <number>` (the conductor reads the session's real usage); text that is not a number is refused, never counted as zero.
+**Role tokens.** With `[roles] tokens = true` (the default), `bf report` needs the token of the directive it reports on: the builder's token for `built`, `fixed` and `blocked`, the reviewer's for the review. The token only says which role is reporting. `bf next` shows the current token in every builder and reviewer directive (`token`), **every time it is asked**, until a report spends it: a conductor that resumes, or a new one, always has the token of the work already handed out, and nothing needs the human to reset it. Tokens of directives that no longer exist are dropped. A builder cannot report as the reviewer: the reviewer's directive exists only while the unit is in review, and `bf next` and `bf brief` refuse to run from inside a working copy. **Cost.** With a budget cap, every report must carry `--cost <number>` (the conductor reads the session's real usage); text that is not a number is refused, never counted as zero.
 
 | Unit is | Report | Becomes |
 |---|---|---|
@@ -145,7 +148,7 @@ The only way a worker changes a unit's state.
 | `review` | `findings --role reviewer [--findings f.json]` | `fixing` while a finding is open (new ones from the file, or filed with `bf record put finding`); `parked` after more than `max_rounds` rounds; `reviewed` when there is no finding at all |
 | `review` | `built --role reviewer` | `reviewed` (refused while findings are open) |
 | `fixing` | `fixed` (or `built`) | `review` |
-| `running`, `fixing` | `blocked` | `blocked` |
+| `running`, `fixing` | `blocked` | `blocked` (counts as an attempt) |
 
 `--findings -` reads the list from standard input, so a reviewer needs no file. A findings file is a JSON list such as `[{"title": "...", "severity": "high", "where": "src/a.rs:10", "action": "..."}]`; each entry becomes a finding record with an ID that never changes. `--cost` adds to the budget count.
 
@@ -153,11 +156,13 @@ A finding is open until its `outcome` is `fixed` or `accepted`. A reviewer can f
 
 Refuses when: no run is active; the report does not fit the unit's state; a unit in review is reported on without `--role reviewer`; a clean review is reported while findings are open.
 
-### `bf unit start <U>` / `bf unit land <U>`
+### `bf unit start <U>` / `bf unit land <U>` / `bf unit release <U> --quote "..."`
 
-`start` creates the unit's working copy (on a unit that is already in flight it only makes sure the working copy exists) at `.bf/work/<U>` on branch `bf/<U>`, cut from the local branch of its checkpoint (`bf/<K>`, itself cut from the main branch the first time). It needs an active run, an approved plan gate, and the unit's dependencies and handoffs satisfied. Running it again resumes the same working copy.
+`start` creates the unit's working copy (on a unit that is already in flight it only makes sure the working copy exists) at `.bf/work/<U>` on branch `bf/<U>`, cut from the local branch of its checkpoint (`bf/<K>`). **A checkpoint's branch is cut from the branch of the checkpoint just before it in plan order** (the first from the main branch), so each checkpoint holds everything before it and the last one holds the whole result; the first unit of a checkpoint therefore waits until the earlier checkpoint is closed (`bf next` says `builds on K-1, which is not closed yet`). If work lands in an earlier checkpoint after a later branch was cut (an amendment re-opened it), it is merged into the later branch before more lands there. It needs an active run, an approved plan gate, and the unit's dependencies and handoffs satisfied. Running it again resumes the same working copy.
 
 `land` merges the unit's branch into its checkpoint branch (no network). It re-checks first: the unit is `reviewed`; no finding is open; every check of the unit has a sealed passing receipt for the content now in the working copy; every changed path is inside the unit's file scope. Pending changes are committed in the unit's working copy first.
+
+`release` is the human's way back for a unit that is `parked` (after `max_rounds` review rounds, `max_attempts` failing check runs or blocked reports in a row, or an idle limit) or `blocked`. It needs the human's words as a quote, like an approval. The unit goes back to work (`fixing` if it was parked after a review round, otherwise where it was), its round and attempt counts start again, and the log keeps the history. `bf next` then offers it again.
 
 ```bash
 bf unit start U-1
@@ -225,7 +230,7 @@ Kinds: `idea`, `requirements`, `ui`, `architecture`, `plan`, `checkpoint-step` (
 `approve <gate> --quote "<words>"` and `reject <gate> --quote "<words>"` need a human turn recorded **after** the gate opened and not yet used for anything else. One typed message decides one thing. **The quote** is the words of the human's message that the conductor read as the decision. The conductor's reading of the human's words is intended; the engine does not second-guess it. It checks only what it can:
 
 - the quote is in the human's message (and is not empty);
-- an approval (`approve`, `test-mode grant`, `amend approve`, `policy accept`, `head accept`, `tokens reset`) is not a question: the quote does not end with `?`, and the message is not only questions;
+- an approval (`approve`, `test-mode grant`, `amend approve`, `policy accept`, `head accept`, `unit release`) is not a question: the quote does not end with `?`, and the message is not only questions;
 - a test-mode grant also speaks of a test run.
 
 The quote is stored with the decision, and so is the human's **whole** message. `bf gate status`, `bf gate approve --json` and the gate page ("Decided on the words", "The human's whole message") show both. When the message also holds a word that can point the other way (the policy's `[human] refusal_words` for an approval, `approval_words` for a rejection: *not*, *wait*, *change*, *later*, *cannot* and so on, in English, German, French and Spanish), the gate status and the page show a **caution** ("the message also contains a word that can mean no: \"wait\""). The lists never refuse anything. `approve --simulated` is described next. A bare kind (`plan`) means its latest round.
@@ -266,13 +271,17 @@ bf render gate architecture --template views/templates/page.html --out out/archi
 
 Refuses when: the template cannot be read or has no marker; the page kind is unknown; no gate matches.
 
-### `bf ask --file q.json [--stage S]` / `bf answer <Q> --file a.json` / `bf questions [--open]`
+### `bf ask --file q.json [--stage S]` / `bf ask --title T [--unit U]` / `bf answer <Q> --file a.json` / `bf questions [--open]`
 
 A stage's questions come before its gate. `ask` takes a JSON list of questions in the view contract's shape without IDs: `[{"title", "kind": "single|multi|text", "context", "stage", "options": [{"key", "text", "proposed", "why"}]}]` (a table with a `questions` list, or one question, also works). The engine assigns `Q-` IDs and prints them; a bad entry writes nothing. `--stage` fills the stage of entries that have none. `answer` needs a human turn recorded after the question was asked (the turn is stored as `answered_turn`), and takes one file per question, for example `{"choice": "A", "note": "..."}`, and stores it as the answer (or the file's `answer` value if it has one). `questions` lists them.
+
+A question is **tagged**: a stage question (`--stage`, or `stage` in the file) holds that stage's gate; a **unit question** holds only its unit. A builder, reviewer or verifier asks from its working copy with `bf ask --title "..." [--context "..."] [--options "A=first;B=second"]` (no file needed; `--file -` or a file also work) and is tagged with its own unit or checkpoint; the conductor can tag one with `--unit U-<n>`. `bf next` shows each open unit question as a human directive (`answer-question`) and offers no directive for that unit until the human answers; other units go on. The answer reaches the worker in its next brief (`## Questions you asked the human`). A question with neither a stage nor a unit is refused, with the recipe, because nothing would wait for it.
 
 ### `bf amend open <ID>... ` / `narrow --file f` / `approve [A-n]`
 
 `open` computes the impact set from the ledger. `narrow` takes `{"keep": [...], "waive": [...], "reasons": {"<ID>": "why"}}`: it may only remove IDs from the set, every removed ID needs a reason, and every waived ID needs a reason. `approve` needs a human turn after the narrowing. An approved amendment lets its IDs be replaced with `bf record put` after their gate was approved, and its `waive` list stands in for a receipt at `checkpoint close`.
+
+**An approved amendment re-opens what it touches.** Every unit in the kept impact set whose work is not all waived goes back to work (`running`; what it landed stays in the log; its rounds and attempts start again; its brief and directive name the amendment), every checkpoint that proves a changed ID or comes after a re-opened unit opens again, and the receipts of the changed checks that exist at the approval stop counting (newer ones count). The ledger therefore reads open until the new evidence exists. Units and checkpoints outside the set keep their state and approvals, and `bf next` offers exactly the re-opened work.
 
 ### `bf cost status` and the policy
 
@@ -280,7 +289,7 @@ A stage's questions come before its gate. `ask` takes a JSON list of questions i
 
 ### `bf stuck [--dry-run]`
 
-Parks every running unit with no event for `idle_minutes`, and lists all parked units. Units parked by review rounds are listed too.
+Parks every running unit with no event for `idle_minutes`, and lists all parked units. Units parked by review rounds are listed too. `bf next` runs the same check by itself.
 
 ### `bf doctor [--perf]`
 
@@ -353,7 +362,7 @@ The guard and the checks stop mistakes, drift and casual cheating, and make deli
 - **Hide a path.** The guard reads command text. A path built at run time (`'fac' + 'tory'` inside a script, a variable, a glob such as `fact*/`) or a script file that does the work (`sh src/x.sh`) is not seen. The sandbox around checks and git helps only where the engine starts the process; a worker's own Bash call is not sandboxed unless the harness does it.
 - **Run its own code as a check.** A check runs the unit's code; that is the point of it. On macOS the engine runs it in a sandbox (no state folder, no network, no writes to `factory/` or other working copies); elsewhere it runs unsandboxed and the receipt says so. Either way the code can do what it likes inside its working copy and its temporary folder, and what a check proves rests on someone reading that code.
 - **Plant a program where checks look.** The folders on the check PATH are not watched for change. A program replaced in place is noted in the receipt of the next run (see `bf evidence run`), only for the first word of a check's command.
-- **Take the reviewer's token.** `bf token take` serves a token only for a directive `bf next` just gave, and a second request voids the first with a note. A script that asks first still gets one.
+- **Take the reviewer's token.** The token only says which role is reporting. A worker that runs `bf next` from a script before the conductor does can read the reviewer's token; the engine refuses `bf next` from a working copy, and the rest is left to Claude Code's own permission checks (below).
 - **Move main, then be noticed.** The engine sees a move of the main branch the next time it reads, and refuses to land, close or call the ledger closed until the human accepts the position. It does not stop the move: only a host's branch protection does.
 
 ### What Claude Code's own permission checks are relied on for

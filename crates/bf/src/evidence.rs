@@ -106,8 +106,28 @@ pub fn seal(key: &str, v: &Value) -> String {
     util::sha256_hex(format!("{key}\x1e{}", seal_input(v)).as_bytes())
 }
 
+/// The number of the newest receipt on file (0 when there is none).
+pub fn highest_receipt_number(p: &Project) -> u64 {
+    fs::read_dir(p.receipts_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| receipt_number(&e.path().file_stem()?.to_string_lossy()))
+        .max()
+        .unwrap_or(0)
+}
+
+fn receipt_number(id: &str) -> Option<u64> {
+    id.strip_prefix("rc-")?.parse().ok()
+}
+
 pub fn load_receipts(p: &Project) -> R<Vec<Receipt>> {
     let key = read_key(p);
+    // Receipts that an approved amendment put out of count: for a re-opened check, those up to the
+    // newest one on file when the amendment was approved.
+    let floors = crate::events::replay(p)
+        .map(|st| st.reopen_floor)
+        .unwrap_or_default();
     let mut out = Vec::new();
     let rd = match fs::read_dir(p.receipts_dir()) {
         Ok(r) => r,
@@ -142,7 +162,12 @@ pub fn load_receipts(p: &Project) -> R<Vec<Receipt>> {
                 _ => (String::new(), String::new()),
             })
             .clone();
-        let stale = hash.is_empty() || s(&v, "check_hash") != hash;
+        let stale = hash.is_empty()
+            || s(&v, "check_hash") != hash
+            || floors
+                .get(&cid)
+                .map(|f| receipt_number(s(&v, "id")).unwrap_or(0) <= *f)
+                .unwrap_or(false);
         out.push(Receipt {
             v,
             seal_ok,
@@ -311,6 +336,11 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
         "evidence.run",
         json!({"receipt": v["id"], "check": check_id, "unit": unit, "exit": exit}),
     )?;
+    if exit != 0 {
+        if let Some(u) = unit {
+            crate::run::park_if_looping(p, u)?;
+        }
+    }
     Ok(v)
 }
 
