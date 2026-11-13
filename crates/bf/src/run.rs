@@ -89,6 +89,43 @@ pub fn unit_states(
     out
 }
 
+/// The latest link per page name, as `[{name, url, at}]`.
+pub fn pages_json(st: &State) -> Vec<Value> {
+    st.pages
+        .iter()
+        .map(|(n, (u, at))| json!({"name": n, "url": u, "at": at}))
+        .collect()
+}
+
+/// `bf page set <name> <url>`: record where a page was published, so that a new session finds it. The
+/// link stays in the workspace's log; nothing writes it anywhere else.
+pub fn page_set(p: &Project, name: &str, url: &str) -> R<Value> {
+    events::require_chain(p)?;
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(refuse(
+            "record a page link",
+            "the page name must be letters, digits, `-`, `_` or `.` (for example `questions`, `gate-architecture-r1`, `plan`)",
+            &["Use the page's name without `.html`."],
+            "`bf page list` shows it.",
+        ));
+    }
+    let scheme = format!("{}{}", "https", ":/\u{2f}");
+    if !url.starts_with(&scheme) || url.len() < 12 || url.contains(char::is_whitespace) {
+        return Err(refuse(
+            "record a page link",
+            "the link must be a secure web address (https) without spaces",
+            &["Pass the address the page was published at, the way the browser shows it."],
+            "`bf page list` shows it.",
+        ));
+    }
+    events::append(p, "page.published", json!({"name": name, "url": url}))?;
+    Ok(json!({"name": name, "url": url}))
+}
+
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
     let main = main_position(p, &st)?;
@@ -127,6 +164,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
+        "pages": pages_json(&st),
         "human_turns_note": st.human_turns_note().unwrap_or_default(),
         "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
         "policy": format!("{:?}", p.policy_state),
@@ -477,6 +515,23 @@ pub fn next(p: &Project) -> R<Value> {
             }
         ))
     };
+    // A directive that waits on the human for a gate or for questions carries the page's link when one
+    // was recorded.
+    if let Some(ds) = v["directives"].as_array_mut() {
+        for d in ds.iter_mut() {
+            if d["role"] != "human" {
+                continue;
+            }
+            let page = match d["action"].as_str().unwrap_or("") {
+                "decide-gate" => d["gate"].as_str().map(|g| format!("gate-{g}")),
+                "answer-question" => Some("questions".to_string()),
+                _ => None,
+            };
+            if let Some((url, _)) = page.and_then(|n| st.pages.get(&n)) {
+                d["page_url"] = json!(url);
+            }
+        }
+    }
     v["human_turns_note"] = json!(st.human_turns_note().unwrap_or_default());
     if let Some(n) = st.human_turns_note() {
         eprintln!("note: {n}");

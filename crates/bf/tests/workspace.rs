@@ -301,13 +301,9 @@ fn the_same_path_in_two_repositories_is_no_clash_and_repo_add_has_rules() {
         ],
     );
     fx.must(&["plan", "check"]);
-    // A repository must lie apart from the workspace, be a git repository, and have its branch.
+    // A repository is a git repository of its own with its branch, not the workspace itself.
     let o = fx.refused(&["repo", "add", "inside", "."]);
-    assert!(
-        o.stderr.contains("apart from the workspace"),
-        "{}",
-        o.stderr
-    );
+    assert!(o.stderr.contains("the workspace itself"), "{}", o.stderr);
     let plain = fx.repo_dir("app").parent().unwrap().join("plain");
     fs::create_dir_all(&plain).unwrap();
     let o = fx.refused(&["repo", "add", "plain", plain.to_str().unwrap()]);
@@ -335,4 +331,262 @@ fn a_project_that_is_not_a_workspace_cannot_add_repositories() {
     assert!(o.stderr.contains("not a workspace"), "{}", o.stderr);
     let l = fx.must(&["repo", "list", "--json"]).json();
     assert_eq!(l.as_array().unwrap().len(), 1);
+}
+
+/// A code repository that lives inside the workspace folder: `ws/code`, with its own `.git`.
+fn nested_repo(fx: &Fx, files: &[(&str, &str)]) -> PathBuf {
+    let d = fx.root.join("code");
+    fs::create_dir_all(&d).unwrap();
+    git(&d, &["init", "-q", "-b", "main"]);
+    fs::write(d.join("README.md"), "# code\n").unwrap();
+    for (f, t) in files {
+        fs::create_dir_all(d.join(f).parent().unwrap()).unwrap();
+        fs::write(d.join(f), t).unwrap();
+    }
+    git(&d, &["add", "-A"]);
+    git(&d, &["commit", "-q", "-m", "init"]);
+    d
+}
+
+fn unit_in_code(fx: &Fx) {
+    put_all(
+        fx,
+        &[
+            ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
+            ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/hello.txt\"]\nrepo=\"code\"\ncheckpoint=\"K-1\"\n"),
+            ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+            ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"ls src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
+        ],
+    );
+}
+
+#[test]
+fn a_code_repository_inside_the_workspace_is_excluded_locally_and_never_committed_into_it() {
+    let fx = Fx::workspace(&["app"]);
+    let code = nested_repo(&fx, &[]);
+    let o = fx.must(&["repo", "add", "code", "code", "--json"]).json();
+    assert_eq!(o["excluded"][0], "/code/", "{o}");
+    let wsf = fs::read_to_string(fx.root.join("factory/workspace.toml")).unwrap();
+    assert!(wsf.contains("path = \"code\""), "{wsf}");
+    // The line is in the local exclude file once, and not in .gitignore.
+    let exclude = fs::read_to_string(fx.root.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches("/code/").count(), 1, "{exclude}");
+    assert!(!fs::read_to_string(fx.root.join(".gitignore"))
+        .unwrap()
+        .contains("code"));
+    // Running init again and doctor do not add it twice.
+    fx.must(&["init"]);
+    assert!(fx
+        .bf(&["doctor"])
+        .stdout
+        .contains("nested repositories: ok"));
+    assert_eq!(
+        fs::read_to_string(fx.root.join(".git/info/exclude"))
+            .unwrap()
+            .matches("/code/")
+            .count(),
+        1
+    );
+    // Nothing of it reaches the workspace's repository.
+    fx.commit_all("with the nested repository beside");
+    let tracked = git(&fx.root, &["ls-files"]);
+    assert!(!tracked.lines().any(|l| l.starts_with("code")), "{tracked}");
+    assert_eq!(git(&fx.root, &["status", "--porcelain"]), "");
+    assert!(code.join(".git").exists());
+    // A fresh clone has no exclude file: doctor puts the line back and says so.
+    fs::remove_file(fx.root.join(".git/info/exclude")).unwrap();
+    let d = fx.bf(&["doctor"]);
+    assert!(
+        d.stdout
+            .contains("was missing from .git/info/exclude and has been put back"),
+        "{}",
+        d.stdout
+    );
+    assert!(fs::read_to_string(fx.root.join(".git/info/exclude"))
+        .unwrap()
+        .contains("/code/"));
+    fs::remove_file(fx.root.join(".git/info/exclude")).unwrap();
+    fx.must(&["init"]);
+    assert!(fs::read_to_string(fx.root.join(".git/info/exclude"))
+        .unwrap()
+        .contains("/code/"));
+}
+
+#[test]
+fn a_nested_repository_must_be_its_own_git_repository_outside_the_factorys_folders() {
+    let fx = Fx::workspace(&["app"]);
+    for inside in ["factory/x", ".bf/x", ".claude/x"] {
+        let d = fx.root.join(inside);
+        fs::create_dir_all(&d).unwrap();
+        git(&d, &["init", "-q", "-b", "main"]);
+        let o = fx.refused(&["repo", "add", "x", inside]);
+        assert!(
+            o.stderr.contains("where the factory keeps its own files"),
+            "{}",
+            o.stderr
+        );
+    }
+    // A folder that is not the top of a repository.
+    let plain = fx.root.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    let o = fx.refused(&["repo", "add", "plain", "plain"]);
+    assert!(
+        o.stderr.contains("not the top of a git repository"),
+        "{}",
+        o.stderr
+    );
+}
+
+#[test]
+fn a_unit_in_a_nested_repository_goes_through_and_nothing_enters_the_workspace_repository() {
+    let fx = Fx::workspace(&["app"]);
+    let code = nested_repo(&fx, &[]);
+    fx.must(&["repo", "add", "code", "code"]);
+    unit_in_code(&fx);
+    approve_plan(&fx);
+    fx.must(&["run", "start"]);
+    build(
+        &fx,
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-2", "--", "ls", "src/hello.txt"],
+    );
+    let out = fx.merge_checkpoint("K-1");
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(code.join("src/hello.txt").exists());
+    // The workspace's repository holds the records and not one path of the code repository.
+    fx.commit_all("after the run");
+    let tracked = git(&fx.root, &["ls-files"]);
+    assert!(
+        !tracked.lines().any(|l| l.starts_with("code/")),
+        "{tracked}"
+    );
+    assert!(tracked.contains("factory/"), "{tracked}");
+    assert_eq!(git(&fx.root, &["status", "--porcelain"]), "");
+    assert_eq!(fx.bf(&["ledger", "check"]).code, 0);
+}
+
+#[test]
+fn a_worker_cannot_write_into_the_nested_checkout_and_the_workspace_wins_from_inside_it() {
+    let fx = Fx::workspace(&["app"]);
+    // The code repository has a folder named factory/ of its own, with a config.toml in it.
+    let code = nested_repo(
+        &fx,
+        &[
+            ("factory/config.toml", "project = \"not the workspace\"\n"),
+            ("factory/data.txt", "d\n"),
+        ],
+    );
+    fx.must(&["repo", "add", "code", "code"]);
+    put_all(
+        &fx,
+        &[
+            ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
+            ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"factory/data.txt\", \"src/hello.txt\"]\nrepo=\"code\"\ncheckpoint=\"K-1\"\n"),
+            ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+        ],
+    );
+    fx.start_test_run();
+    let wc = PathBuf::from(
+        fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    // Walking up from inside the nested checkout, or from a working copy that holds its own factory/
+    // folder, finds the workspace and not the code repository's folder.
+    for dir in [
+        code.clone(),
+        code.join("factory"),
+        wc.clone(),
+        wc.join("factory"),
+    ] {
+        let st = fx.must_in(&dir, &["status", "--json"]).json();
+        assert_eq!(st["project"], "ws", "from {}: {st}", dir.display());
+        assert_eq!(st["workspace"], true);
+    }
+    let decide = |cwd: &Path, tool: &str, input: serde_json::Value| -> String {
+        let payload = json!({"tool_name": tool, "tool_input": input, "cwd": cwd.to_string_lossy()});
+        let o = fx.bf_stdin(cwd, &["guard"], &payload.to_string());
+        assert_eq!(o.code, 0, "{}", o.all());
+        match o.stdout.trim() {
+            "" | "{}" => "abstain".into(),
+            s => serde_json::from_str::<serde_json::Value>(s).unwrap()["hookSpecificOutput"]
+                ["permissionDecision"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        }
+    };
+    // A worker: its own working copy (even a factory/ folder in the repository's content), yes; the nested
+    // checkout itself, no.
+    assert_ne!(
+        decide(
+            &wc,
+            "Write",
+            json!({"file_path": wc.join("factory/data.txt").to_string_lossy()})
+        ),
+        "deny"
+    );
+    assert_eq!(
+        decide(
+            &wc,
+            "Write",
+            json!({"file_path": code.join("src/hello.txt").to_string_lossy()})
+        ),
+        "deny"
+    );
+    assert_eq!(
+        decide(
+            &wc,
+            "Bash",
+            json!({"command": format!("echo x > {}/src/hello.txt", code.display())})
+        ),
+        "deny"
+    );
+    // The workspace's own factory/ stays protected, and the human and conductor read freely.
+    assert_eq!(
+        decide(
+            &fx.root,
+            "Write",
+            json!({"file_path": fx.root.join("factory/policy.toml").to_string_lossy()})
+        ),
+        "deny"
+    );
+    assert_ne!(
+        decide(
+            &fx.root,
+            "Read",
+            json!({"file_path": code.join("README.md").to_string_lossy()})
+        ),
+        "deny"
+    );
+    // The engine hashes the working copy whole, factory/ folder included.
+    fs::write(wc.join("factory/data.txt"), "changed\n").unwrap();
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/hello.txt"), "h\n").unwrap();
+    fx.must_in(
+        &wc,
+        &[
+            "evidence",
+            "run",
+            "X-1",
+            "--unit",
+            "U-1",
+            "--",
+            "test",
+            "-f",
+            "src/hello.txt",
+        ],
+    );
+    fx.must(&["report", "U-1", "--result", "built"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(git(&code, &["show", "bf/K-1:factory/data.txt"]), "changed");
 }

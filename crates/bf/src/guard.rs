@@ -181,6 +181,16 @@ fn is_protected_rel(table: &Value, rel: &str) -> bool {
     false
 }
 
+/// Protection inside a unit's or checkpoint's working copy. In a project folder the working copy holds a
+/// copy of the factory's own files, which are protected; in a workspace it is a copy of a code
+/// repository, whose own `factory/` or `.claude/` folders are its source like any other.
+fn is_protected_in_wc(table: &Value, rel: &str) -> bool {
+    if table["workspace"].as_bool() == Some(true) {
+        return false;
+    }
+    is_protected_rel(table, rel)
+}
+
 /// Where the conductor and planners may write inside the protected folders.
 fn is_open_rel(rel: &str) -> bool {
     rel.starts_with(".bf/drafts/")
@@ -315,7 +325,7 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
         return allow();
     }
     let rel = under(&abs, &zone.base).unwrap_or("");
-    if is_protected_rel(table, rel) || rel == ".git" || rel.starts_with(".git/") {
+    if is_protected_in_wc(table, rel) || rel == ".git" || rel.starts_with(".git/") {
         return deny(
             &format!("write {rel} in {}", zone.id),
             "that path belongs to the engine, the human or git, not to a unit's work",
@@ -466,7 +476,7 @@ fn is_protected_abs(table: &Value, abs: &str) -> bool {
                 continue;
             };
             if let Some(rel) = under(abs, base) {
-                if is_protected_rel(table, rel) {
+                if is_protected_in_wc(table, rel) {
                     return true;
                 }
             }
@@ -627,6 +637,7 @@ const BF_KNOWN: &[&str] = &[
     "head",
     "policy",
     "repo",
+    "page",
     "version",
     "help",
     "human-turn",

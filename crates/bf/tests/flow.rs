@@ -1071,3 +1071,75 @@ fn bf_next_carries_the_note_in_its_json_and_on_stderr() {
     );
     assert_eq!(o.json()["human_turns_note"], "");
 }
+
+#[test]
+fn a_new_session_finds_the_pages_an_earlier_one_published() {
+    let fx = Fx::new();
+    ordered(&fx);
+    whole_plan(&fx, false);
+    fs::write(fx.root.join("factory/idea.md"), "# idea\n").unwrap();
+    fx.must(&["run", "start"]);
+    // Only https links, with a plain page name.
+    for bad in [
+        vec!["page", "set", "questions", "http://example.com/q"],
+        vec!["page", "set", "questions", "not a link"],
+        vec!["page", "set", "../q", "https://example.com/q"],
+    ] {
+        let o = fx.refused(&bad);
+        assert_four_parts(&o.stderr);
+    }
+    fx.must(&["page", "set", "questions", "https://example.com/p/q1"]);
+    fx.must(&["page", "set", "gate-idea-r1", "https://example.com/p/g1"]);
+    // Setting a name again replaces the earlier link.
+    fx.must(&["page", "set", "questions", "https://example.com/p/q2"]);
+    let l = fx.must(&["page", "list", "--json"]).json();
+    let rows = l.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{l}");
+    let q = rows.iter().find(|r| r["name"] == "questions").unwrap();
+    assert_eq!(q["url"], "https://example.com/p/q2");
+    assert!(q["at"].as_str().unwrap().len() > 10);
+    assert!(fx
+        .must(&["page", "list"])
+        .stdout
+        .contains("questions https://example.com/p/q2"));
+    // The log keeps both events; status carries the pages.
+    assert_eq!(
+        fx.must(&["log", "--json"])
+            .stdout
+            .matches("page.published")
+            .count(),
+        3
+    );
+    let st = fx.must(&["status", "--json"]).json();
+    assert_eq!(st["pages"].as_array().unwrap().len(), 2);
+    assert!(fx
+        .must(&["status"])
+        .stdout
+        .contains("page gate-idea-r1: https://example.com/p/g1"));
+    // A directive that waits on the human carries the link.
+    fx.must(&["gate", "open", "idea"]);
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "decide-gate", "{n}");
+    assert_eq!(n["directives"][0]["page_url"], "https://example.com/p/g1");
+    // A link nobody recorded adds nothing.
+    fx.human("Idea approved.");
+    fx.must(&["gate", "approve", "idea", "--quote", "approved"]);
+    // A worker's question waits on the human too, and its directive carries the questions page.
+    let fx2 = Fx::new();
+    two_units_in_one_checkpoint(&fx2);
+    fx2.start_test_run();
+    fx2.must(&["unit", "start", "U-1"]);
+    fx2.must(&["page", "set", "questions", "https://example.com/p/q9"]);
+    fx2.must(&["ask", "--unit", "U-1", "--title", "Which colour?"]);
+    let n = fx2.must(&["next", "--json"]).json();
+    let d = n["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["action"] == "answer-question")
+        .unwrap();
+    assert_eq!(d["page_url"], "https://example.com/p/q9");
+    // Links stay in the workspace: no rendered record or brief holds one.
+    let all = fx.must(&["view", "index"]).json().to_string();
+    assert!(!all.contains("example.com"), "{all}");
+}

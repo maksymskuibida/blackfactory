@@ -881,6 +881,41 @@ fn dispatch(args: &Args) -> R<()> {
             Ok(())
         }
         "repo" => cmd_repo(args),
+        "page" => {
+            let p = project(args)?;
+            match args.pos_at(1, "`set` or `list`")? {
+                "set" => {
+                    let v = run::page_set(
+                        &p,
+                        args.pos_at(2, "a page name")?,
+                        args.pos_at(3, "the page's secure web address")?,
+                    )?;
+                    out(args, &v, || {
+                        format!("{} is at {}", s(&v, "name"), s(&v, "url"))
+                    });
+                }
+                "list" => {
+                    let st = events::replay(&p)?;
+                    let v = json!(run::pages_json(&st));
+                    out(args, &v, || {
+                        run::pages_json(&st)
+                            .iter()
+                            .map(|r| format!("{} {}", s(r, "name"), s(r, "url")))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    });
+                }
+                _ => {
+                    return Err(refuse(
+                        "run `bf page`",
+                        "unknown subcommand",
+                        &["Use `bf page set <name> <url>` or `bf page list`."],
+                        "The command prints the result.",
+                    ))
+                }
+            }
+            Ok(())
+        }
         "stuck" => {
             let p = project(args)?;
             let v = run::stuck(&p, args.has("dry-run"))?;
@@ -1027,6 +1062,13 @@ fn status_text(v: &Value) -> String {
     if let Some(n) = v["human_turns_note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
     }
+    for pg in v["pages"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "page {}: {}\n",
+            pg["name"].as_str().unwrap_or(""),
+            pg["url"].as_str().unwrap_or("")
+        ));
+    }
     for b in v["bad_records"].as_array().into_iter().flatten() {
         t.push_str(&format!(
             "record file {} cannot be read: {}\n",
@@ -1123,22 +1165,7 @@ fn cmd_repo(args: &Args) -> R<()> {
                     "`bf repo list` shows it.",
                 )
             })?;
-            if abs.starts_with(&p.root) || p.root.starts_with(&abs) {
-                return Err(refuse(
-                    "add a repository",
-                    "a code repository must be a folder apart from the workspace: nothing of the factory may be written into it",
-                    &["Give the path of a repository outside the workspace folder."],
-                    "`bf repo list` shows it.",
-                ));
-            }
-            if !gitx::is_repo(&abs) || !abs.join(".git").exists() {
-                return Err(refuse(
-                    "add a repository",
-                    format!("{} is not the top of a git repository", abs.display()),
-                    &["Give the main checkout of the repository (the folder that holds `.git`)."],
-                    "`bf repo list` shows it.",
-                ));
-            }
+            check_repo_path(&p, &abs)?;
             let branch = match args.flag("branch") {
                 Some(b) => b.to_string(),
                 None => gitx::current_branch(&abs).unwrap_or_else(|| "main".into()),
@@ -1155,10 +1182,7 @@ fn cmd_repo(args: &Args) -> R<()> {
                 ));
             }
             // Relative to the workspace when it lies beside it, otherwise absolute: the file is tracked.
-            let shown = match pathdiff(&abs, &p.root) {
-                Some(r) => r,
-                None => abs.to_string_lossy().to_string(),
-            };
+            let shown = shown_path(&p, &abs);
             let file = p.root.join("factory/workspace.toml");
             let mut text = fs::read_to_string(&file).unwrap_or_default();
             if !text.is_empty() && !text.ends_with('\n') {
@@ -1180,8 +1204,18 @@ fn cmd_repo(args: &Args) -> R<()> {
             events::write_head(&p2, &h)?;
             p2.reload_policy()?;
             p2.write_guard()?;
-            let v = json!({"name": name, "path": abs.to_string_lossy(), "branch": branch});
-            out(args, &v, || format!("added {name}: {}", abs.display()));
+            let added = p2.ensure_excludes()?;
+            let v = json!({"name": name, "path": abs.to_string_lossy(), "branch": branch, "excluded": added});
+            out(args, &v, || {
+                let mut t = format!("added {name}: {}", abs.display());
+                if !added.is_empty() {
+                    t.push_str(&format!(
+                        "\nadded {} to the workspace's local ignore file (.git/info/exclude): nothing of the code repository is committed into the workspace",
+                        added.join(", ")
+                    ));
+                }
+                t
+            });
         }
         "list" => {
             let st = events::replay(&p)?;
@@ -1217,6 +1251,52 @@ fn cmd_repo(args: &Args) -> R<()> {
                 "The command prints the result.",
             ))
         }
+    }
+    Ok(())
+}
+
+/// How a repository path is written in `factory/workspace.toml`: relative to the workspace (inside it, or
+/// a sibling), otherwise absolute.
+fn shown_path(p: &Project, abs: &Path) -> String {
+    if let Ok(rel) = abs.strip_prefix(&p.root) {
+        return rel.to_string_lossy().to_string();
+    }
+    pathdiff(abs, &p.root).unwrap_or_else(|| abs.to_string_lossy().to_string())
+}
+
+/// A code repository may be apart from the workspace or a folder inside it; it must be the top of its own
+/// git repository, and not the workspace itself or a place the factory keeps its own files.
+fn check_repo_path(p: &Project, abs: &Path) -> R<()> {
+    let bad = |why: String, step: &str| {
+        refuse("add a repository", why, &[step], "`bf repo list` shows it.")
+    };
+    if abs == p.root || p.root.starts_with(abs) {
+        return Err(bad(
+            "that is the workspace itself (or a folder above it), not a code repository".into(),
+            "Give the path of a code repository: a folder of its own with its own `.git`, beside the workspace or inside it.",
+        ));
+    }
+    if let Ok(rel) = abs.strip_prefix(&p.root) {
+        let first = rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_default();
+        if matches!(first.as_str(), "factory" | ".bf" | ".claude" | ".git") {
+            return Err(bad(
+                format!(
+                    "{} is inside `{first}/`, where the factory keeps its own files",
+                    abs.display()
+                ),
+                "Put the code repository in a folder of its own, for example `./app`.",
+            ));
+        }
+    }
+    if !gitx::is_repo(abs) || !abs.join(".git").exists() {
+        return Err(bad(
+            format!("{} is not the top of a git repository", abs.display()),
+            "Give the main checkout of the repository (the folder that holds `.git`).",
+        ));
     }
     Ok(())
 }
@@ -1356,6 +1436,8 @@ fn cmd_init(args: &Args) -> R<()> {
         p.reload_policy()?;
     }
     p.write_guard()?;
+    // A workspace whose code repositories live inside it keeps them out of its own git repository.
+    let _ = p.ensure_excludes()?;
     out(
         args,
         &json!({"initialised": !existed, "root": dir.to_string_lossy(), "project": p.config.project}),
