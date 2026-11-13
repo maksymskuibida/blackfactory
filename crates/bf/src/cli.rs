@@ -350,6 +350,7 @@ fn dispatch(args: &Args) -> R<()> {
             Ok(())
         }
         "record" => cmd_record(args),
+        "checks" | "scan" | "legal" | "preset" | "uiux" | "roles" => cmd_group(args, cmd),
         "ledger" => cmd_ledger(args),
         "plan" => {
             let p = project(args)?;
@@ -1691,6 +1692,29 @@ fn cmd_log(args: &Args) -> R<()> {
             println!("{}", serde_json::to_string(&m)?);
         }
     }
+    Ok(())
+}
+
+/// The new command groups, each served by a module of its own.
+fn cmd_group(args: &Args, group: &str) -> R<()> {
+    let _p = project(args)?;
+    let sub = args.pos.get(1).map(|x| x.as_str()).unwrap_or("");
+    let rest: Vec<String> = args.pos.iter().skip(2).cloned().collect();
+    let v = match group {
+        "checks" => crate::checks::run(sub, &rest)?,
+        "scan" => crate::scan::run(sub, &rest)?,
+        "legal" => crate::legal::run(sub, &rest)?,
+        "preset" => crate::preset::run(sub, &rest)?,
+        "uiux" => crate::uiux::run(sub, &rest)?,
+        _ => crate::roles::run(sub, &rest)?,
+    };
+    out(args, &v, || {
+        if group == "checks" {
+            crate::checks::text(&v)
+        } else {
+            pretty(&v)
+        }
+    });
     Ok(())
 }
 

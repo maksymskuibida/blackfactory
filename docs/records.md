@@ -20,6 +20,8 @@ An ID is a prefix, a dash and a number: `R-1`, `TH-12`. The prefix says the kind
 | `K` | checkpoint | no |
 | `X` | check | no |
 | `F` | finding | no |
+| `M` | markets statement | no |
+| `L` | legal finding | no |
 | `Q` | question | no |
 | `I` | idea | no |
 
@@ -47,6 +49,10 @@ Extra fields by kind:
 | threat | `mitigation` | string | How the design answers it |
 | decision | `chosen` | string | What was chosen |
 | decision | `rejected` | string | What was rejected and why |
+| decision | `maker` | `human` or `agent` | Who made the call. A call the agent makes by itself is a decision with `maker = "agent"`, not a new kind |
+| decision | `stage` | `idea`, `requirements`, `ui`, `architecture`, `plan` or `build` | The stage it was made in |
+| screen | `interface` | `web`, `mobile`, `desktop`, `terminal`, `voice` or `api` | The kind of interface the screen is |
+| journey | `steps` | list of strings | The steps of the journey, in order |
 
 ```toml
 id = "R-1"
@@ -139,6 +145,32 @@ A problem a reviewer found. Findings are created by `bf report ... --result find
 | `where` | string | no | File and line |
 | `action` | string | no | What must be done |
 | `outcome` | `open`, `fixed` or `accepted` | no | Starts as `open`. `bf report --result fixed` sets `fixed` |
+
+## Markets statement (`M`)
+
+The markets the product is offered in. The legal checks read it, not prose.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `title` | string | yes | |
+| `text` | string | no | |
+| `markets` | list of strings | yes | The markets, for example country or region names |
+| `links` | list of designed IDs | no | |
+
+## Legal finding (`L`)
+
+A legal problem found by the legal audit. It is a kind of its own because a finding (`F`) belongs to a unit and a legal finding does not.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `title` | string | yes | |
+| `text` | string | no | |
+| `severity` | `critical`, `high`, `medium` or `low` | no | |
+| `market` | string | no | The market it concerns |
+| `where` | string | no | File and line |
+| `action` | string | no | What must be done |
+| `outcome` | `open`, `fixed` or `accepted` | no | |
+| `links` | list of designed IDs | no | |
 
 ## Question (`Q`)
 
