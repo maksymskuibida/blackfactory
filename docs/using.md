@@ -33,7 +33,8 @@ There are two layouts. Pick one before you start.
 | | Project folder | Workspace |
 |---|---|---|
 | Where the factory's files live | In the code repository: `factory/` (records, receipts, the log) and `.claude/` are committed with your code | In a folder of its own, normally a private repository, that points at one or more code repositories |
-| Where Claude Code runs | In the project | In the workspace folder |
+| Where Claude Code runs | In the project | In the workspace folder, the root that holds `factory/` and `.claude/` |
+| Where the code lives | The project itself | In repositories inside the workspace folder (`./app`, ignored by the workspace's git) or beside it |
 | What the code repositories get | The factory's files | Nothing but branches and commits |
 | Use it for | A private project with one repository that you do not mind carrying the factory's files | A public project, a project with several repositories, or any code history you want to keep free of factory files |
 
@@ -76,18 +77,20 @@ Run `bf init` from a shell where the tools your project's checks need (`python3`
    mkdir myapp-factory && cd myapp-factory
    bf init --workspace --name myapp
    ```
-3. Point it at each code repository (a path, absolute or relative to the workspace, and the branch it is merged into, which defaults to the one checked out):
+3. Put each code repository inside the workspace folder (clone it, or move an existing one) and point the workspace at it. `bf repo add` takes the path, absolute or relative to the workspace, and the branch it is merged into, which defaults to the one checked out; it also writes the folder's name into the workspace's `.git/info/exclude`, so the workspace's git ignores it and nothing of the code repository is ever committed into the workspace:
    ```bash
-   bf repo add app ../app
+   git clone <url> app          # or: mv /path/to/app ./app
+   bf repo add app ./app
    bf repo list
    ```
+   A code repository outside the workspace works too (`bf repo add app ../app`), but then you open Claude Code in the workspace and the code is not in what you see. The recommended layout keeps both under one root.
 4. Install the harness into the workspace (section 3), then commit it:
    ```bash
    harness/claude/install.sh --workspace /path/to/myapp-factory
    git add -A && git commit -m "Add Black Factory"
    ```
    You may give the workspace a private remote; the engine never touches the network.
-5. Start Claude Code **in the workspace folder** and type `/factory`.
+5. Start Claude Code **in the workspace folder** (the root that holds `factory/` and `.claude/settings.json`, not the folder above it) and type `/factory`. If you open it elsewhere the hooks never load and none of your messages are recorded; the conductor notices and tells you.
 
 Then, in either layout, describe your idea in one message. The conductor takes it from there. In a workspace with several repositories the plan says which repository each unit changes.
 
@@ -128,7 +131,7 @@ After you approve the delivery plan, the conductor runs a loop: ask `bf next`, s
 - the budget cap,
 - the end of the run, after the last checkpoint closes. Each checkpoint's verifier is the verification of what it proves, and `bf ledger check` is the final test.
 
-For a human step that does not stop the run, the factory carries on with independent work and you answer when you can. If the conductor session ends, restart it with `/factory`: the engine holds all state and the run resumes where it was. Restarting it is your part for now; a supervisor that does it for you is not built yet. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
+For a human step that does not stop the run, the factory carries on with independent work and you answer when you can. If the conductor session ends, open Claude Code in the same folder and say "continue the build" (or "continue the <project> build", or `/factory`): a new session knows nothing, reads the state from the engine, tells you in a few lines where things stand and goes on, including a questions page it had already published. Restarting it is your part for now; a supervisor that does it for you is not built yet. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
 
 ## 8. Test runs
 
@@ -180,7 +183,7 @@ Add `--json` for data. To get a page, render one: `bf render run --template .cla
 
 Every refusal has four parts: what was refused, why, numbered steps, and how to tell it worked. Do the steps. The common ones:
 
-- **No human message followed the gate.** Type your decision in the session that is running the factory. The engine records your message as the hook delivers it.
+- **No human message followed the gate, or `bf status` says no message of yours has been recorded.** Claude Code was most likely opened in the wrong folder, so the hooks never loaded. Open it in the folder that holds `factory/` and `.claude/settings.json` (for a workspace, the workspace root), then say "continue the build".
 - **The policy file differs from the one you accepted.** Every command stops. Read the change with `bf policy diff`. If you agree, tell the conductor in chat and it runs `bf policy accept` with your words. If not, put the old file back. Only you decide this.
 - **A check failed or is unreachable.** The verifier recorded why (`bf next` shows it). Fix the cause or amend the plan, then the verifier runs the check again. On macOS checks run in a sandbox with no network and a short list of environment variables. A check that needs the network or more variables is allowed by setting `[exec] network = true` or `[exec] env = [...]` in `factory/policy.toml`, which you then accept with `bf policy accept`.
 - **The log does not match its head, or the main branch moved without the engine.** `bf doctor` and `bf status` say where. Only you decide to keep things as they are: tell the conductor in chat, and it runs `bf head accept` with your words. An ordinary commit of yours on the main branch is only a note, and blocks nothing; the engine objects only when work from a unit that never landed, or from a test run, reached it. Receipts of a cloned project must be run again.

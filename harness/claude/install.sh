@@ -33,6 +33,20 @@ if [ "$workspace_flag" = 1 ] && [ "$mode" != "workspace" ]; then
   exit 2
 fi
 
+# A folder inside a workspace is a code repository, not the place for the factory's files.
+if [ "$mode" = "project" ]; then
+  d="$(dirname "$project")"
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    if [ -f "$d/factory/workspace.toml" ]; then
+      echo "refused: $project is inside the workspace $d; its own files must stay free of the factory's." >&2
+      echo "  1. Run this script with the workspace instead: install.sh --workspace $d" >&2
+      echo "  2. Start Claude Code in the workspace folder." >&2
+      exit 2
+    fi
+    d="$(dirname "$d")"
+  done
+fi
+
 if [ ! -e "$project/.git" ]; then
   echo "refused: $project is not a git repository (no .git inside it)." >&2
   if [ "$workspace_flag" = 1 ]; then
