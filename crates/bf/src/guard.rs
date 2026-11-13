@@ -230,6 +230,17 @@ fn transcript_denial() -> Decision {
     )
 }
 
+/// The main checkout of a code repository (other than the project folder) that holds `abs`.
+fn repo_containing(table: &Value, abs: &str) -> Option<String> {
+    let root = table["root"].as_str().unwrap_or("");
+    table["repos"]
+        .as_array()?
+        .iter()
+        .filter_map(|r| r["path"].as_str())
+        .find(|p| *p != root && under(abs, p).is_some())
+        .map(|p| p.to_string())
+}
+
 fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
     let abs = resolve(raw, cwd);
     if in_state(table, &abs) {
@@ -242,6 +253,31 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
     let zone = zone_of(table, &abs);
     let here = zone_of(table, cwd);
     if zone.kind == "main" {
+        // A code repository that lies outside the workspace: nobody writes git's hooks or config there,
+        // and a worker does not write into the repository's own checkout (the human edits it freely).
+        if let Some(repo) = repo_containing(table, &abs) {
+            let rel = under(&abs, &repo).unwrap_or("");
+            if rel == ".git/config" || rel == ".git/hooks" || rel.starts_with(".git/hooks/") {
+                return deny(
+                    &format!("write {rel} in a code repository"),
+                    "git hooks and git config belong to git and the human",
+                    &["Change only files inside your unit's working copy."],
+                    "The path is inside your unit's `files` list.",
+                );
+            }
+            if here.kind == "unit" || here.kind == "checkpoint" {
+                return deny(
+                    &format!("write {raw}"),
+                    &format!(
+                        "that is the checkout of a code repository ({repo}); you work in {}",
+                        here.base
+                    ),
+                    &["Write inside your unit's working copy; landing merges it into the repository."],
+                    "The path starts with your working copy's folder.",
+                );
+            }
+            return allow();
+        }
         let Some(rel) = under(&abs, root) else {
             // Outside the project. A worker still stays out of the other working copies' parent folders.
             return allow();
@@ -590,6 +626,7 @@ const BF_KNOWN: &[&str] = &[
     "guard",
     "head",
     "policy",
+    "repo",
     "version",
     "help",
     "human-turn",
@@ -996,7 +1033,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
             let root = table["root"].as_str().unwrap_or("");
             for t in write_targets(&segc, &w) {
                 let abs = resolve(&t, cwd);
-                let inside_root = under(&abs, root).is_some();
+                let inside_root =
+                    under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
                 let own = under(&abs, &here.base).is_some();
                 if (in_cp && inside_root) || (in_worker && inside_root && !own) {
                     return deny(

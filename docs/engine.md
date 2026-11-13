@@ -38,6 +38,27 @@ bf status
 
 `<state>` is `$BF_STATE_HOME`, else `$XDG_STATE_HOME/blackfactory`, else `~/.local/state/blackfactory`. `bf init` creates `<state>/<project id>/` with owner-only permissions (0700; the key is 0600); the project's `factory/config.toml` stores only the id. A fresh clone has no key there, so it cannot verify the log or old receipts: run `bf init`, then the human runs `bf head accept` (see below) and the checks are run again. State is never stored in a database. Everything about a run (which unit is where, which gate is open) is replayed from the log each time, so a killed command leaves nothing half-written that a later command cannot read.
 
+## Workspaces: the factory apart from its code
+
+Two ways to set a project up, one code path. **A project folder** (`bf init` in a git repository) holds the factory and the code together: its one code repository is the folder itself. **A workspace** (`bf init --workspace` in a folder of its own) holds only the factory: `factory/` (records, receipts, the log), `.bf/` (derived files and the working copies) and the harness files. It is normally a private git repository of its own (`bf init --workspace` makes it one if the folder is not one yet), and points at one or more code repositories listed in `factory/workspace.toml`:
+
+```toml
+[[repo]]
+name = "app"
+path = "../app"        # absolute, or relative to the workspace
+main_branch = "main"
+```
+
+- `bf repo add <name> <path> [--branch B]` adds a repository (the path must be the top of a git repository, apart from the workspace, with that branch; the branch defaults to the one checked out) and notes where its main branch stands; `bf repo list` shows them. A project folder has exactly one repository, named `code`, at `.`.
+- All `bf` commands run from the workspace, or from inside a working copy: a command finds its project by walking up to the folder that holds `factory/`, so a working copy whose git data belongs to a code repository still finds the workspace.
+- A **unit** names the repository it changes with `repo = "<name>"` (the only repository is the default; with several, `bf plan check` refuses a unit that names none or an unknown one). Its `files` are relative to that repository, and two units in one wave clash only when they touch the same path of the same repository.
+- A unit's working copy is a git worktree of its repository, at `.bf/work/<U>` in the workspace, on branch `bf/<U>`. **Checkpoint branches live in each repository the checkpoint's units change**: a checkpoint over one repository has its working copy at `.bf/work/<K>`; over several it is a folder `.bf/work/<K>/` with one working copy per repository in `.bf/work/<K>/<repo>/`, and its checks run from that folder. Landing merges inside the unit's repository. Closing a checkpoint closes it in each repository, and a merge (with the human's go-ahead, as ever) merges the checkpoint branch onto the main branch of each, whose main checkout must be on it.
+- The content a receipt is bound to is the content of the unit's or checkpoint's working copy (for several repositories, a hash of the working copies' hashes by repository name). In a workspace nothing is left out of the hash; in a project folder `factory/` and `.bf/` are.
+- The **main-branch note is kept per repository**: the log head records, for each repository, the branch watched and the commit the engine last put there or the human accepted; `bf status` lists the repositories (`repos`) with where each stands, and its `main` is all of them together. `bf head accept` takes every repository as it stands, under the branch names the files give.
+- Code repositories get **nothing written into them** except branches, worktrees and the commits workers and landing make: no `factory/`, no harness, no ignore entries. The check sandbox also denies a check writing to their `.git/hooks` and `.git/config`.
+- The guard's root is the workspace: `factory/`, the harness files and the guard table are protected there as before. A worker may write only inside its own working copy, within its unit's files; a write by a worker into a code repository's own checkout is denied. Nobody writes git hooks or git config of a code repository through the Write tool; the human edits the checkouts freely.
+- Not covered: records that are not in git at all, and one unit changing two repositories.
+
 ## The run log
 
 One JSON object per line. Each event has `seq`, `at`, `kind`, its data, `prev` (the hash of the event before) and `h` (its own hash). `h` is an HMAC-SHA256 under the project's key, which lives outside the project tree: a line written by hand, with a correct `seq` and `prev` and a plain hash, does not verify. Editing or deleting a past line breaks the chain. A line cut short by a killed process is ignored and removed by the next write.
@@ -61,15 +82,15 @@ The policy in force is the copy the human accepted, kept in the state folder wit
 
 ## Commands
 
-### `bf init [--name N]`
+### `bf init [--name N] [--workspace]`
 
-Creates `factory/`, `.bf/`, a default policy and config, the sealing key, and the guard table, and adds `.bf/` to `.gitignore`. Safe to run again: it only refreshes the key, the guard table and the ignore line.
+Creates `factory/`, `.bf/`, a default policy and config, the sealing key, and the guard table, and adds `.bf/` to `.gitignore`. `--workspace` makes a workspace (see above): it needs no git repository to start from (it creates one) and adds `factory/workspace.toml`, which `bf repo add` fills. Safe to run again: it only refreshes the key, the guard table and the ignore line.
 
 ```bash
 bf init --name myproject
 ```
 
-Refuses when: the folder is not the top of a git repository.
+Refuses when: the folder is not the top of a git repository (not for `--workspace`).
 
 ### `bf record put <kind> --file <f>` / `get <id>` / `list [--kind k]`
 

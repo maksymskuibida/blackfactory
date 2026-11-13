@@ -43,13 +43,29 @@ pub fn event_hash(key: &str, prev: &str, ev: &Map<String, Value>) -> String {
 pub struct Head {
     pub count: u64,
     pub last_hash: String,
-    pub main_commit: Option<String>,
+    /// Per code repository: the main branch watched and the commit the engine last put there or the
+    /// human accepted. (A project with one repository at `.` has one entry.)
+    pub repos: std::collections::BTreeMap<String, RepoHead>,
     /// SHA-256 of the policy the human accepted, and when (seconds since the epoch).
     pub policy_hash: Option<String>,
     pub policy_at: Option<u64>,
-    /// The main branch the engine watches. It is kept here, outside the project, so an edit of
-    /// `factory/config.toml` cannot move the watch; `bf head accept` takes the config's value.
-    pub main_branch: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RepoHead {
+    /// The branch watched. It is kept here, outside the project, so an edit of `factory/config.toml` or
+    /// `factory/workspace.toml` cannot move the watch; `bf head accept` takes the file's value.
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+}
+
+impl Head {
+    pub fn commit_of(&self, repo: &str) -> Option<String> {
+        self.repos.get(repo).and_then(|r| r.commit.clone())
+    }
+    pub fn set_commit(&mut self, repo: &str, commit: Option<String>) {
+        self.repos.entry(repo.to_string()).or_default().commit = commit;
+    }
 }
 
 pub fn read_head(p: &Project) -> Option<Head> {
@@ -57,16 +73,43 @@ pub fn read_head(p: &Project) -> Option<Head> {
     Some(Head {
         count: v["count"].as_u64()?,
         last_hash: v["last_hash"].as_str()?.to_string(),
-        main_commit: v["main_commit"].as_str().map(|s| s.to_string()),
+        repos: {
+            let mut m = std::collections::BTreeMap::new();
+            if let Some(o) = v["repos"].as_object() {
+                for (k, r) in o {
+                    m.insert(
+                        k.clone(),
+                        RepoHead {
+                            branch: r["branch"].as_str().map(|s| s.to_string()),
+                            commit: r["commit"].as_str().map(|s| s.to_string()),
+                        },
+                    );
+                }
+            } else if v["main_commit"].is_string() || v["main_branch"].is_string() {
+                // The older shape: one repository.
+                m.insert(
+                    crate::store::CLASSIC_REPO.to_string(),
+                    RepoHead {
+                        branch: v["main_branch"].as_str().map(|s| s.to_string()),
+                        commit: v["main_commit"].as_str().map(|s| s.to_string()),
+                    },
+                );
+            }
+            m
+        },
         policy_hash: v["policy_hash"].as_str().map(|s| s.to_string()),
         policy_at: v["policy_at"].as_u64(),
-        main_branch: v["main_branch"].as_str().map(|s| s.to_string()),
     })
 }
 
 pub fn write_head(p: &Project, h: &Head) -> R<()> {
-    let v = json!({"count": h.count, "last_hash": h.last_hash, "main_commit": h.main_commit,
-        "policy_hash": h.policy_hash, "policy_at": h.policy_at, "main_branch": h.main_branch});
+    let repos: serde_json::Map<String, Value> = h
+        .repos
+        .iter()
+        .map(|(k, r)| (k.clone(), json!({"branch": r.branch, "commit": r.commit})))
+        .collect();
+    let v = json!({"count": h.count, "last_hash": h.last_hash, "repos": repos,
+        "policy_hash": h.policy_hash, "policy_at": h.policy_at});
     util::atomic_write(&p.head_path(), serde_json::to_string(&v)?.as_bytes())?;
     Ok(())
 }
@@ -233,10 +276,9 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
             &Head {
                 count: log.events.len() as u64 + 1,
                 last_hash: h,
-                main_commit: old.main_commit,
+                repos: old.repos,
                 policy_hash: old.policy_hash,
                 policy_at: old.policy_at,
-                main_branch: old.main_branch,
             },
         )?;
     }
@@ -872,21 +914,26 @@ pub fn accept_head(p: &Project, quote: &str) -> R<Value> {
     }
     util::atomic_write(&p.log_path(), out.as_bytes())?;
     let old = read_head(p).unwrap_or_default();
-    // The human also accepts where the main branch stands now.
-    let main_now = if crate::gitx::branch_exists(&p.root, &p.config_main_branch) {
-        crate::gitx::must(&p.root, &["rev-parse", &p.config_main_branch]).ok()
-    } else {
-        None
-    };
+    // The human also accepts where each repository's main branch stands now, under the branch name
+    // the config files give.
+    let mut repos = old.repos.clone();
+    for r in &p.repos {
+        let e = repos.entry(r.name.clone()).or_default();
+        e.branch = Some(r.configured.clone());
+        if crate::gitx::branch_exists(&r.path, &r.configured) {
+            if let Ok(c) = crate::gitx::must(&r.path, &["rev-parse", &r.configured]) {
+                e.commit = Some(c);
+            }
+        }
+    }
     write_head(
         p,
         &Head {
             count: log.events.len() as u64,
             last_hash: prev,
-            main_commit: main_now.or(old.main_commit.clone()),
+            repos,
             policy_hash: old.policy_hash.clone(),
             policy_at: old.policy_at,
-            main_branch: Some(p.config_main_branch.clone()),
         },
     )?;
     let _ = lock.unlock();

@@ -6,7 +6,6 @@
 //! hand has no valid seal and is ignored everywhere.
 
 use crate::events;
-use crate::gitx;
 use crate::refusal::{err, refuse, R};
 use crate::store::{s, Project};
 use crate::util;
@@ -292,7 +291,7 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
         }
     }
     let top = p.top.clone();
-    let before = gitx::content_hash(&top)?;
+    let before = p.content_hash(&top)?;
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;
@@ -300,7 +299,7 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
         eprintln!("note: {n}");
     }
     let (exit, tail, out_hash, total, sandboxed) = exec_capture(p, &top, argv, tail_bytes)?;
-    let after = gitx::content_hash(&top)?;
+    let after = p.content_hash(&top)?;
     if before != after {
         return Err(refuse(
             format!("write a receipt for {check_id}"),
@@ -396,6 +395,10 @@ fn exec_capture(
                 &dir.to_string_lossy(),
                 p.policy.exec.network,
                 &p.transcript_root(),
+                &p.repos
+                    .iter()
+                    .map(|r| r.path.to_string_lossy().to_string())
+                    .collect::<Vec<_>>(),
             ),
             CHECK_SHELL,
         )
@@ -531,7 +534,7 @@ pub fn attach(p: &Project, check_id: &str, file: &Path, unit: Option<&str>) -> R
     if !dest.exists() {
         fs::copy(file, &dest)?;
     }
-    let content = gitx::content_hash(&p.top)?;
+    let content = p.content_hash(&p.top)?;
     let v = json!({
         "type": "attach",
         "check": check_id,
@@ -578,7 +581,7 @@ pub fn outcome(
             "The command prints a receipt of type fail or unreachable.",
         ));
     }
-    let content = gitx::content_hash(&p.top)?;
+    let content = p.content_hash(&p.top)?;
     let v = json!({
         "type": kind,
         "check": check_id,
@@ -654,14 +657,14 @@ pub fn verify(
             .filter(|c| s(c, "unit") == u)
             .map(|c| s(c, "id").to_string())
             .collect();
-        current = Some((gitx::content_hash(&top)?, ids));
+        current = Some((p.content_hash(&top)?, ids));
     }
     if let Some(k) = checkpoint {
         let rec = p.require_record(k)?;
         let dir = p.work_dir().join(k);
         let top = if dir.is_dir() { dir } else { p.top.clone() };
         current = Some((
-            gitx::content_hash(&top)?,
+            p.content_hash(&top)?,
             crate::store::str_list(&rec, "checks"),
         ));
     }

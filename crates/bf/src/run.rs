@@ -8,7 +8,7 @@ use crate::gitx;
 use crate::plan::{self, Plan};
 use crate::refusal::{refuse, refuse_owned, R};
 use crate::schema;
-use crate::store::{s, str_list, Project};
+use crate::store::{s, str_list, Project, Repo};
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
@@ -92,6 +92,7 @@ pub fn unit_states(
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
     let main = main_position(p, &st)?;
+    let repo_positions = main_positions(p, &st)?;
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
     let states = unit_states(p, &pl, &st, &receipts);
@@ -121,6 +122,11 @@ pub fn status(p: &Project) -> R<Value> {
         "ignored_events": st.ignored,
         "frozen_drift": gates::drift(p, &st)?,
         "main": {"ok": !main.moved, "detail": main.detail, "note": main.note, "tip": main.tip},
+        "repos": p.repos.iter().zip(repo_positions.iter()).map(|(r, m)| json!({
+            "name": r.name, "path": r.path.to_string_lossy(), "branch": r.branch,
+            "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
+        })).collect::<Vec<_>>(),
+        "workspace": p.workspace,
         "policy": format!("{:?}", p.policy_state),
         "bad_records": pl.bad.iter().map(|(f, e)| json!({"file": f, "error": e})).collect::<Vec<_>>(),
     }))
@@ -242,7 +248,7 @@ fn next_raw(p: &Project) -> R<Value> {
         }
         if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
             let wc = p.work_dir().join(kid).to_string_lossy().to_string();
-            let content = gitx::content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+            let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
             let missing: Vec<String> = str_list(k, "checks")
                 .into_iter()
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
@@ -794,9 +800,19 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if role != "verifier" {
         md.push_str("## Where you work\n\n");
         md.push_str(&format!(
-            "Working copy: `{}`\n\nFiles you may change:\n",
+            "Working copy: `{}`\n\n",
             p.work_dir().join(unit).display()
         ));
+        if p.workspace {
+            if let Ok(r) = p.repo_of_unit(u) {
+                md.push_str(&format!(
+                    "Repository: `{}` (the working copy is a git worktree of {}; the paths below are relative to it)\n\n",
+                    r.name,
+                    r.path.display()
+                ));
+            }
+        }
+        md.push_str("Files you may change:\n");
         for f in str_list(u, "files") {
             md.push_str(&format!("- `{f}`\n"));
         }
@@ -895,42 +911,78 @@ pub fn previous_checkpoint(pl: &Plan, k: &str) -> Option<String> {
     }
 }
 
-fn ensure_checkpoint_worktree(p: &Project, k: &str) -> R<PathBuf> {
-    let main = &p.config.main_branch;
+/// The repositories a checkpoint's units change, in the workspace's order.
+pub fn checkpoint_repos<'a>(p: &'a Project, pl: &Plan, k: &str) -> R<Vec<&'a Repo>> {
+    let mut out: Vec<&Repo> = Vec::new();
+    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
+        let r = p.repo_of_unit(u)?;
+        if !out.iter().any(|x| x.name == r.name) {
+            out.push(r);
+        }
+    }
+    if out.is_empty() {
+        if let Some(r) = p.repos.first() {
+            out.push(r);
+        }
+    }
+    out.sort_by_key(|r| p.repos.iter().position(|x| x.name == r.name));
+    Ok(out)
+}
+
+/// Where a checkpoint's working copy of a repository lives: the checkpoint's folder itself when its
+/// units change one repository, otherwise a subfolder named for each repository.
+pub fn checkpoint_wt(p: &Project, pl: &Plan, k: &str, repo: &Repo) -> R<PathBuf> {
+    let root = p.work_dir().join(k);
+    Ok(if checkpoint_repos(p, pl, k)?.len() <= 1 {
+        root
+    } else {
+        root.join(&repo.name)
+    })
+}
+
+fn ensure_checkpoint_worktree(p: &Project, k: &str, repo: &Repo) -> R<PathBuf> {
+    let main = &repo.branch;
     // Each checkpoint builds on the one before it in plan order (the first on the main branch), so the
     // last checkpoint's content holds everything and the final verification runs over the whole result.
     let pl = plan::load(p)?;
     let st = events::replay(p)?;
     let prev = previous_checkpoint(&pl, k).filter(|c| st.closed.contains_key(c));
     let base = match &prev {
-        Some(c) if gitx::branch_exists(&p.root, &p.checkpoint_branch(c)) => p.checkpoint_branch(c),
+        Some(c) if gitx::branch_exists(&repo.path, &p.checkpoint_branch(c)) => {
+            p.checkpoint_branch(c)
+        }
         _ => main.clone(),
     };
-    if !gitx::branch_exists(&p.root, main) {
+    if !gitx::branch_exists(&repo.path, main) {
         return Err(refuse(
             "create a working copy",
-            format!("the main branch `{main}` does not exist or has no commit"),
+            format!("the main branch `{main}` of the repository `{}` does not exist or has no commit", repo.name),
             &[
                 "Make an initial commit on the main branch.",
-                "Or set `main_branch` in factory/config.toml to the branch you use.",
+                "Or set the branch the project files name (`main_branch` in factory/config.toml or factory/workspace.toml) to the branch you use.",
             ],
-            "`git rev-parse main` prints a commit.",
+            "`git rev-parse <branch>` prints a commit.",
         ));
     }
     let cpb = p.checkpoint_branch(k);
-    if !gitx::branch_exists(&p.root, &cpb) {
-        gitx::must(&p.root, &["branch", &cpb, &base])?;
+    if !gitx::branch_exists(&repo.path, &cpb) {
+        gitx::must(&repo.path, &["branch", &cpb, &base])?;
     }
-    let wt = p.work_dir().join(k);
+    let wt = checkpoint_wt(p, &pl, k, repo)?;
     if !wt.join(".git").exists() {
-        fs::create_dir_all(p.work_dir())?;
-        gitx::must(&p.root, &["worktree", "add", &wt.to_string_lossy(), &cpb])?;
+        if let Some(parent) = wt.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        gitx::must(
+            &repo.path,
+            &["worktree", "add", &wt.to_string_lossy(), &cpb],
+        )?;
     }
     // Work that landed in the earlier checkpoint after this one was cut (an amendment re-opened it) is
     // brought in before more lands here.
     if let Some(c) = &prev {
         let pb = p.checkpoint_branch(c);
-        if gitx::branch_exists(&p.root, &pb) && !gitx::is_ancestor(&p.root, &pb, &cpb) {
+        if gitx::branch_exists(&repo.path, &pb) && !gitx::is_ancestor(&repo.path, &pb, &cpb) {
             let out = gitx::run(
                 &wt,
                 &[
@@ -1004,32 +1056,36 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         }
     }
     let k = s(u, "checkpoint").to_string();
+    let repo = p.repo_of_unit(u)?.clone();
     let cpb = p.checkpoint_branch(&k);
-    ensure_checkpoint_worktree(p, &k)?;
+    ensure_checkpoint_worktree(p, &k, &repo)?;
     let ub = p.unit_branch(unit);
     let path = p.work_dir().join(unit);
     if !path.join(".git").exists() {
-        if gitx::branch_exists(&p.root, &ub) {
-            gitx::must(&p.root, &["worktree", "add", &path.to_string_lossy(), &ub])?;
+        if gitx::branch_exists(&repo.path, &ub) {
+            gitx::must(
+                &repo.path,
+                &["worktree", "add", &path.to_string_lossy(), &ub],
+            )?;
         } else {
             gitx::must(
-                &p.root,
+                &repo.path,
                 &["worktree", "add", "-b", &ub, &path.to_string_lossy(), &cpb],
             )?;
         }
     }
     crash_point("unit-start-after-git");
     if cur.is_empty() {
-        let base_commit = gitx::must(&p.root, &["rev-parse", &ub])?;
+        let base_commit = gitx::must(&repo.path, &["rev-parse", &ub])?;
         events::append(
             p,
             "unit.start",
-            json!({"unit": unit, "branch": ub, "path": path.to_string_lossy(), "base": cpb, "base_commit": base_commit}),
+            json!({"unit": unit, "repo": repo.name, "branch": ub, "path": path.to_string_lossy(), "base": cpb, "base_commit": base_commit}),
         )?;
     }
     p.write_guard()?;
     Ok(
-        json!({"unit": unit, "working_copy": path.to_string_lossy(), "branch": ub, "base": cpb, "resumed": !cur.is_empty()}),
+        json!({"unit": unit, "repo": repo.name, "working_copy": path.to_string_lossy(), "branch": ub, "base": cpb, "resumed": !cur.is_empty()}),
     )
 }
 
@@ -1080,6 +1136,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     let k = s(u, "checkpoint").to_string();
+    let repo = p.repo_of_unit(u)?.clone();
     let cpb = p.checkpoint_branch(&k);
     let ub = p.unit_branch(unit);
     let wt = p.work_dir().join(unit);
@@ -1100,7 +1157,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "`bf plan check` passes.",
         ));
     }
-    let content = gitx::content_hash(&wt)?;
+    let content = p.content_hash(&wt)?;
     let receipts = evidence::load_receipts(p)?;
     let mut missing: Vec<String> = Vec::new();
     for c in &checks {
@@ -1139,7 +1196,10 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         )?;
     }
     // Scope: every changed path must be inside the unit's files.
-    let diff = gitx::must(&p.root, &["diff", "--name-only", &format!("{cpb}...{ub}")])?;
+    let diff = gitx::must(
+        &repo.path,
+        &["diff", "--name-only", &format!("{cpb}...{ub}")],
+    )?;
     let scope = str_list(u, "files");
     let outside: Vec<&str> = diff
         .lines()
@@ -1153,8 +1213,8 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "`git diff --name-only` lists only files inside the scope.",
         ));
     }
-    let cpwt = ensure_checkpoint_worktree(p, &k)?;
-    if !gitx::is_ancestor(&p.root, &ub, &cpb) {
+    let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
+    if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
         let out = gitx::run(
             &cpwt,
             &[
@@ -1182,7 +1242,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     events::append(
         p,
         "unit.land",
-        json!({"unit": unit, "checkpoint": k, "hash": content, "merge": tip, "run": run}),
+        json!({"unit": unit, "repo": repo.name, "checkpoint": k, "hash": content, "merge": tip, "run": run}),
     )?;
     p.write_guard()?;
     Ok(
@@ -1192,6 +1252,8 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
 
 /// Where the main branch stands against what the engine recorded in the log head.
 pub struct MainPos {
+    /// The repository this is about.
+    pub repo: String,
     /// The branch is at a commit the engine did not put there and the human has not accepted.
     pub moved: bool,
     /// Why, in words: the work it holds that should not be there.
@@ -1205,18 +1267,24 @@ pub struct MainPos {
 /// or accepted by the human). A move by the human that only touches `factory/` and `.gitignore` is
 /// taken as theirs (they commit their records). Anything else is a move to account for. Independently,
 /// work of a unit that never landed, or landed in a test run, on the main branch is always one.
-pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
-    let main = &p.config.main_branch;
+pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
+    let main = &repo.branch;
+    let rname = repo.name.clone();
     let ok = |tip: &str| MainPos {
+        repo: rname.clone(),
         moved: false,
         detail: String::new(),
         tip: tip.to_string(),
         note: String::new(),
     };
-    if !gitx::branch_exists(&p.root, main) {
+    if !gitx::branch_exists(&repo.path, main) {
         // A branch that was there and is gone is a change to account for.
-        if events::read_head(p).and_then(|h| h.main_commit).is_some() {
+        if events::read_head(p)
+            .and_then(|h| h.commit_of(&repo.name))
+            .is_some()
+        {
             return Ok(MainPos {
+                repo: repo.name.clone(),
                 moved: true,
                 detail: format!("the main branch `{main}` does not exist any more"),
                 tip: String::new(),
@@ -1225,8 +1293,8 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
         }
         return Ok(ok(""));
     }
-    let tip = gitx::must(&p.root, &["rev-parse", main])?;
-    let recorded = events::read_head(p).and_then(|h| h.main_commit);
+    let tip = gitx::must(&repo.path, &["rev-parse", main])?;
+    let recorded = events::read_head(p).and_then(|h| h.commit_of(&repo.name));
     if recorded.as_deref() == Some(tip.as_str()) {
         return Ok(ok(&tip));
     }
@@ -1239,24 +1307,25 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
             continue;
         }
         let ub = p.unit_branch(id);
-        if !gitx::branch_exists(&p.root, &ub) {
+        if !gitx::branch_exists(&repo.path, &ub) {
             continue;
         }
         let work = gitx::must(
-            &p.root,
+            &repo.path,
             &["rev-list", "--count", &format!("{}..{}", u.base_commit, ub)],
         )
         .unwrap_or_default();
         if work.trim() == "0" || work.is_empty() {
             continue;
         }
-        if gitx::is_ancestor(&p.root, &ub, main) {
+        if gitx::is_ancestor(&repo.path, &ub, main) {
             let why = if test_landed {
                 "landed in a test run"
             } else {
                 "never landed"
             };
             return Ok(MainPos {
+                repo: repo.name.clone(),
                 moved: true,
                 detail: format!(
                     "the main branch (now at {}) contains the commits of {id}, which {why}",
@@ -1272,8 +1341,11 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
     let Some(rec) = recorded else {
         return Ok(ok(&tip));
     };
-    let count =
-        gitx::must(&p.root, &["rev-list", "--count", &format!("{rec}..{tip}")]).unwrap_or_default();
+    let count = gitx::must(
+        &repo.path,
+        &["rev-list", "--count", &format!("{rec}..{tip}")],
+    )
+    .unwrap_or_default();
     let mut m = ok(&tip);
     m.note = format!(
         "the main branch has moved on from {} to {} by commits the engine did not make ({} new); they hold no unlanded or test-run work",
@@ -1282,6 +1354,47 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
         if count.trim().is_empty() { "some".to_string() } else { count.trim().to_string() }
     );
     Ok(m)
+}
+
+/// Every repository's main branch against what the engine recorded.
+pub fn main_positions(p: &Project, st: &State) -> R<Vec<MainPos>> {
+    p.repos
+        .iter()
+        .map(|r| repo_main_position(p, st, r))
+        .collect()
+}
+
+/// All repositories together: moved if any is; the details and notes of each, named by repository when
+/// there are several.
+pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
+    let all = main_positions(p, st)?;
+    let several = all.len() > 1;
+    let label = |m: &MainPos, t: &str| {
+        if t.is_empty() {
+            String::new()
+        } else if several {
+            format!("[{}] {t}", m.repo)
+        } else {
+            t.to_string()
+        }
+    };
+    Ok(MainPos {
+        repo: all.first().map(|m| m.repo.clone()).unwrap_or_default(),
+        moved: all.iter().any(|m| m.moved),
+        detail: all
+            .iter()
+            .map(|m| label(m, &m.detail))
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join("; "),
+        tip: all.first().map(|m| m.tip.clone()).unwrap_or_default(),
+        note: all
+            .iter()
+            .map(|m| label(m, &m.note))
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join("; "),
+    })
 }
 
 fn short(c: &str) -> &str {
@@ -1338,24 +1451,33 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             "`bf status` shows them landed.",
         ));
     }
+    // The checkpoint's working copy: its folder, which holds one working copy per repository when its
+    // units change several.
     let cpwt = p.work_dir().join(k);
-    if !cpwt.join(".git").exists() {
-        return Err(refuse(
-            format!("close {k}"),
-            "the checkpoint's working copy does not exist",
-            &["Land a unit of this checkpoint first."],
-            "`bf checkpoint close` succeeds.",
-        ));
+    let cp_repos: Vec<Repo> = checkpoint_repos(p, &pl, k)?.into_iter().cloned().collect();
+    for r in &cp_repos {
+        let wt = checkpoint_wt(p, &pl, k, r)?;
+        if !wt.join(".git").exists() {
+            return Err(refuse(
+                format!("close {k}"),
+                format!(
+                    "the checkpoint's working copy in the repository `{}` does not exist",
+                    r.name
+                ),
+                &["Land a unit of this checkpoint in that repository first."],
+                "`bf checkpoint close` succeeds.",
+            ));
+        }
+        if gitx::has_uncommitted(&wt) {
+            return Err(refuse(
+                format!("close {k}"),
+                "the checkpoint's working copy has uncommitted changes, so no receipt describes the branch",
+                &[&format!("Inspect `git -C {} status`.", wt.display()), "Remove the changes; checkpoint content only changes by landing units."],
+                "The working copy is clean.",
+            ));
+        }
     }
-    if gitx::has_uncommitted(&cpwt) {
-        return Err(refuse(
-            format!("close {k}"),
-            "the checkpoint's working copy has uncommitted changes, so no receipt describes the branch",
-            &[&format!("Inspect `git -C {} status`.", cpwt.display()), "Remove the changes; checkpoint content only changes by landing units."],
-            "The working copy is clean.",
-        ));
-    }
-    let content = gitx::content_hash(&cpwt)?;
+    let content = p.content_hash(&cpwt)?;
     let receipts = evidence::load_receipts(p)?;
     let waived = gates::waived_ids(&st);
     let mut gaps: Vec<String> = Vec::new();
@@ -1431,7 +1553,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         let closed_seq = st.closed.get(k).map(|c| c.seq);
         let Some(closed_seq) = closed_seq else {
             return Err(refuse(
-                format!("merge {k} onto {}", p.config.main_branch),
+                format!("merge {k} onto the main branch"),
                 "the checkpoint is not closed yet; merging follows the closure and a human act",
                 &[&format!("Run `bf checkpoint close {k}` first.")],
                 "`bf status` lists the checkpoint as closed.",
@@ -1466,7 +1588,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 .unwrap_or(false);
         if tainted_unit || tainted_gate {
             return Err(refuse(
-                format!("merge {k} onto {}", p.config.main_branch),
+                format!("merge {k} onto the main branch"),
                 "the run contains a simulated approval or test-mode work; such a run can never land on the main branch",
                 &["Leave the checkpoint branch as it is for inspection.", "Redo the work in a real run: the human approves each gate in their own words."],
                 "`bf checkpoint close` without --merge still records the closure.",
@@ -1481,7 +1603,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         });
         if !approved_after {
             return Err(refuse(
-                format!("merge {k} onto {}", p.config.main_branch),
+                format!("merge {k} onto the main branch"),
                 "merging onto the main branch needs the human's go-ahead after the checkpoint closed",
                 &[
                     &format!("Open the gate: `bf gate open checkpoint-step --ref {k}` and show the human the checkpoint page."),
@@ -1491,48 +1613,57 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 "The command prints the merge.",
             ));
         }
-        let main = p.config.main_branch.clone();
-        if gitx::current_branch(&p.root).as_deref() != Some(main.as_str()) {
-            return Err(refuse(
-                format!("merge {k} onto {main}"),
-                format!("the main checkout is not on `{main}`"),
-                &[
-                    &format!("Switch the main checkout to `{main}` (the human's step)."),
-                    "Run the command again.",
-                ],
-                "The command prints the merge commit.",
-            ));
-        }
-        let cpb = p.checkpoint_branch(k);
-        if !gitx::is_ancestor(&p.root, &cpb, &main) {
-            let out = gitx::run(
-                &p.root,
-                &[
-                    "merge",
-                    "--no-ff",
-                    "--no-edit",
-                    "-m",
-                    &format!("Close {k}: {}", s(kr, "title")),
-                    &cpb,
-                ],
-                &[],
-            )?;
-            if !out.ok {
-                let _ = gitx::run(&p.root, &["merge", "--abort"], &[]);
+        // Every repository the checkpoint touches: its main checkout must be on its main branch first.
+        for r in &cp_repos {
+            let main = &r.branch;
+            if gitx::current_branch(&r.path).as_deref() != Some(main.as_str()) {
                 return Err(refuse(
                     format!("merge {k} onto {main}"),
-                    format!("git refused the merge: {}", out.stderr.lines().next().unwrap_or("")),
-                    &["Commit or stash local changes that touch the same files, or resolve the conflict by hand (the human's step).", "Run the command again."],
+                    format!("the main checkout of `{}` is not on `{main}`", r.name),
+                    &[
+                        &format!(
+                            "Switch the main checkout ({}) to `{main}` (the human's step).",
+                            r.path.display()
+                        ),
+                        "Run the command again.",
+                    ],
                     "The command prints the merge commit.",
                 ));
             }
         }
-        merged = true;
-        // Remember the commit the engine put on the main branch.
-        if let Ok(tip) = gitx::must(&p.root, &["rev-parse", &main]) {
-            let mut h = events::read_head(p).unwrap_or_default();
-            h.main_commit = Some(tip);
-            events::write_head(p, &h)?;
+        let cpb = p.checkpoint_branch(k);
+        for r in &cp_repos {
+            let main = r.branch.clone();
+            if !gitx::is_ancestor(&r.path, &cpb, &main) {
+                let out = gitx::run(
+                    &r.path,
+                    &[
+                        "merge",
+                        "--no-ff",
+                        "--no-edit",
+                        "-m",
+                        &format!("Close {k}: {}", s(kr, "title")),
+                        &cpb,
+                    ],
+                    &[],
+                )?;
+                if !out.ok {
+                    let _ = gitx::run(&r.path, &["merge", "--abort"], &[]);
+                    return Err(refuse(
+                        format!("merge {k} onto {main}"),
+                        format!("git refused the merge in `{}`: {}", r.name, out.stderr.lines().next().unwrap_or("")),
+                        &["Commit or stash local changes that touch the same files, or resolve the conflict by hand (the human's step).", "Run the command again."],
+                        "The command prints the merge commit.",
+                    ));
+                }
+            }
+            merged = true;
+            // Remember the commit the engine put on the main branch.
+            if let Ok(tip) = gitx::must(&r.path, &["rev-parse", &main]) {
+                let mut h = events::read_head(p).unwrap_or_default();
+                h.set_commit(&r.name, Some(tip));
+                events::write_head(p, &h)?;
+            }
         }
     }
     if !was_closed || merged {

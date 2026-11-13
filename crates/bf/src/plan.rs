@@ -83,11 +83,11 @@ pub fn load(p: &Project) -> R<Plan> {
         problems: vec![],
         bad,
     };
-    analyse(&mut plan, &ids);
+    analyse(p, &mut plan, &ids);
     Ok(plan)
 }
 
-fn analyse(pl: &mut Plan, ids: &HashSet<String>) {
+fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
     let mut bad: Vec<String> = Vec::new();
     let unit_ids: HashSet<String> = pl.units.iter().map(|u| s(u, "id").to_string()).collect();
     let cp_ids: HashSet<String> = pl
@@ -300,7 +300,28 @@ fn analyse(pl: &mut Plan, ids: &HashSet<String>) {
             bad.push(format!("{id} belongs to no checkpoint"));
         }
     }
-    // Units in one wave share no files.
+    // Each unit changes one repository: the one it names, or the only one the workspace has.
+    for u in &pl.units {
+        let named = s(u, "repo");
+        if named.is_empty() && p.repos.len() > 1 {
+            bad.push(format!(
+                "{} names no repository, and the workspace lists several ({}): add `repo = \"<name>\"`",
+                s(u, "id"),
+                p.repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        } else if !named.is_empty() && !p.repos.iter().any(|r| r.name == named) {
+            bad.push(format!(
+                "{} names the repository `{named}`, which the workspace does not list (`bf repo list`)",
+                s(u, "id")
+            ));
+        } else if p.repos.is_empty() {
+            bad.push(format!(
+                "{} has no repository: the workspace lists none (`bf repo add <name> <path>`)",
+                s(u, "id")
+            ));
+        }
+    }
+    // Units in one wave share no files of the same repository.
     let scopes: HashMap<String, Vec<(String, String)>> = pl
         .units
         .iter()
@@ -314,9 +335,19 @@ fn analyse(pl: &mut Plan, ids: &HashSet<String>) {
             )
         })
         .collect();
+    let repo_of = |id: &str| -> String {
+        pl.units
+            .iter()
+            .find(|u| s(u, "id") == id)
+            .and_then(|u| p.repo_of_unit(u).ok().map(|r| r.name.clone()))
+            .unwrap_or_default()
+    };
     for (w, members) in &pl.waves() {
         for i in 0..members.len() {
             for j in i + 1..members.len() {
+                if repo_of(&members[i]) != repo_of(&members[j]) {
+                    continue;
+                }
                 for (na, fa) in &scopes[&members[i]] {
                     for (nb, fb) in &scopes[&members[j]] {
                         if util::norm_overlap(na, nb) {
@@ -430,7 +461,9 @@ pub fn not_ready(
     if !k.is_empty() {
         if let Some(prev) = crate::run::previous_checkpoint(pl, k) {
             if !st.closed.contains_key(&prev)
-                && !gitx::branch_exists(&p.root, &p.checkpoint_branch(k))
+                && p.repo_of_unit(u)
+                    .map(|r| !gitx::branch_exists(&r.path, &p.checkpoint_branch(k)))
+                    .unwrap_or(false)
             {
                 return Some(format!(
                     "its checkpoint {k} builds on {prev}, which is not closed yet"
