@@ -5,9 +5,9 @@ The exact steps for trying Black Factory on a project of your own for the first 
 ## Before you start
 
 1. **Pick a small project.** A few hundred lines is plenty. A throwaway project is better for the first try.
-2. **Make sure it is a git repository with one commit.** Check with `git log --oneline`.
+2. **Make sure it is a git repository with one commit, and that it is clean.** Check with `git log --oneline` and `git status`. The order below matters: commit, install, `bf init`, commit again, start.
 3. **Add build output to `.gitignore`** (`target/`, `node_modules/`, `__pycache__/`, `dist/`). A receipt is bound to a hash of every file that is not ignored, and a stray build folder voids it.
-4. **Expect to be asked for your words.** Every decision (each gate, a test run, a merge) is your own typed message in the Claude Code session that runs the factory. Nothing else counts. Keep each one a plain sentence: "Approved." An approval with words like "no", "not" or "change" in it ("approved, no changes needed") is refused, and the conductor will ask you to say it again.
+4. **Expect to be asked for your words.** Every decision (each gate, a test run, a merge) is your own typed message in the Claude Code session that runs the factory. Nothing else counts. Say it plainly ("Approved."). The conductor quotes the words it took as your decision, and the gate page shows them.
 
 ## Install it
 
@@ -33,7 +33,12 @@ The exact steps for trying Black Factory on a project of your own for the first 
    cd /path/to/your/project
    bf init --name myproject
    ```
-5. Restart Claude Code if it was already open in that folder, so it reads the new settings.
+5. Commit the new files (`.claude/`, `factory/` and `.gitignore`), so that the factory begins on a quiet project:
+   ```bash
+   git add -A && git commit -m "Add Black Factory"
+   ```
+   `bf status` now prints one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error: an ordinary commit of yours blocks nothing.
+6. Restart Claude Code if it was already open in that folder, so it reads the new settings.
 
 ## Run it
 
@@ -42,6 +47,7 @@ The exact steps for trying Black Factory on a project of your own for the first 
 3. The conductor works through five gates. At each one:
    - It may first publish a **questions page**. Answer it, then write `done` in chat.
    - It then publishes a **gate page** and shows the link. Read it. Use "Needs you" and "Unread" to find what matters.
+   - Pages are published as private pages through the Claude app's artifact feature, which needs a Claude app that supports it. Without it the conductor asks the questions in chat and describes each gate there instead.
    - Reply in chat in your own words. "Approved" or "looks good, go ahead" approves. "Change the second requirement to ..." asks for a new round. A question approves nothing.
    - Approve each gate in its own message.
 
@@ -72,12 +78,11 @@ Every refusal prints four parts: what was refused, why, numbered steps, and how 
 
 | You see | Do this |
 |---|---|
-| `no human turn was recorded after the gate opened` | Type your decision in the Claude Code session that is running the factory. If you did and it still happens, see [using.md](using.md), section 12, about `transcript_match`. |
-| `the message mixes approval and refusal words`, `not a whole sentence` | Say the decision again in one plain sentence. |
+| `no human turn was recorded after the gate opened` | Type your decision in the Claude Code session that is running the factory. If you did and it still happens, check that the hooks are installed (`.claude/settings.json`) and restart Claude Code. |
 | `factory/policy.toml differs from the policy the human accepted` | Run `bf policy diff`. If you agree with the change, tell the conductor in chat and it accepts it with your words. Otherwise restore the file. |
 | `the main branch moved` | Run `bf status`. If you made that commit, tell the conductor and it accepts the position with your words. |
-| `a role token was already handed out` | Tell the conductor to reset the tokens with your words (`bf tokens reset`). |
-| a folder on the check `PATH` is refused | A folder inside your project (a virtual environment, `node_modules/.bin`) is on the `PATH` captured at `bf init`. Run `bf init` from a shell without it, edit `[exec] path` in `factory/policy.toml` and accept the change. |
+| a role token problem | Tell the conductor to reset the tokens with your words (`bf tokens reset`). |
+| a check cannot find a program, or needs the network | Checks run with the `PATH` captured at `bf init` and, on macOS, in a sandbox with no network. Edit `[exec] path`, `[exec] network = true` or `[exec] env` in `factory/policy.toml` and accept the change with `bf policy accept`. |
 | `these questions for the stage are unanswered` | Answer the questions page and write `done`. |
 | `the plan has N problem(s)` | The conductor fixes them and reopens the gate. |
 | `a check failed` or `is unreachable` | Read the reason with `bf next`. Fix the cause or ask for an amendment. |
@@ -87,7 +92,7 @@ Every refusal prints four parts: what was refused, why, numbered steps, and how 
 
 ## What to know before you rely on it
 
-- It is a first version. Read [using.md](using.md), section 14, "What the factory does not stop yet": an agent with an unrestricted shell under your account can still reach the engine's secrets.
+- It is a first version. Read [using.md](using.md), section 14, "What the factory checks, and what it leaves to Claude Code": the engine makes sure nothing is skipped, and Claude Code's own permission checks are the layer against deceptive behaviour.
 - On macOS checks run in a sandbox with no network; on other systems they run unsandboxed and the receipt says so.
 - Look at the words the engine took as your decision: `bf gate status` prints them, and so does each gate page.
-- To stop for the day, just stop. State is kept in `factory/` and the state folder, and `/factory` resumes where it was. Do not delete `~/.local/state/blackfactory`: it holds the key that seals the log and receipts.
+- To stop for the day, just stop. State is kept in `factory/` and the state folder, and `/factory` resumes where it was. If the conductor session ends in the middle of a run, start it again the same way: that restart is your part for now. Do not delete `~/.local/state/blackfactory`: it holds the key that seals the log and receipts.
