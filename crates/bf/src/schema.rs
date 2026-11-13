@@ -43,6 +43,20 @@ const fn fe(name: &'static str, ty: Ty, required: bool, allowed: &'static [&'sta
 
 pub const LABELS: &[&str] = &["critical", "high", "medium", "low", "core", "main", "minor"];
 
+/// The interface kinds a screen can have.
+pub const INTERFACES: &[&str] = &["web", "mobile", "desktop", "terminal", "voice", "api"];
+/// Who made a decision: the human, or the agent by itself (D-20).
+pub const MAKERS: &[&str] = &["human", "agent"];
+/// The stage a decision was made in.
+pub const DECISION_STAGES: &[&str] = &[
+    "idea",
+    "requirements",
+    "ui",
+    "architecture",
+    "plan",
+    "build",
+];
+
 pub struct Kind {
     pub name: &'static str,
     pub prefix: &'static str,
@@ -81,13 +95,13 @@ pub static KINDS: &[Kind] = &[
         name: "screen",
         prefix: "S",
         designed: true,
-        fields: design_fields!(),
+        fields: design_fields!(fe("interface", Ty::Str, false, INTERFACES)),
     },
     Kind {
         name: "journey",
         prefix: "J",
         designed: true,
-        fields: design_fields!(),
+        fields: design_fields!(f("steps", Ty::StrList, false)),
     },
     Kind {
         name: "target",
@@ -105,7 +119,12 @@ pub static KINDS: &[Kind] = &[
         name: "decision",
         prefix: "D",
         designed: true,
-        fields: design_fields!(f("chosen", Ty::Str, false), f("rejected", Ty::Str, false)),
+        fields: design_fields!(
+            f("chosen", Ty::Str, false),
+            f("rejected", Ty::Str, false),
+            fe("maker", Ty::Str, false, MAKERS),
+            fe("stage", Ty::Str, false, DECISION_STAGES)
+        ),
     },
     Kind {
         name: "idea",
@@ -202,6 +221,41 @@ pub static KINDS: &[Kind] = &[
             f("where", Ty::Str, false),
             f("action", Ty::Str, false),
             fe("outcome", Ty::Str, false, &["open", "fixed", "accepted"]),
+        ],
+    },
+    Kind {
+        name: "markets",
+        prefix: "M",
+        designed: false,
+        fields: &[
+            f("id", Ty::Str, true),
+            f("kind", Ty::Str, true),
+            f("title", Ty::Str, true),
+            f("text", Ty::Str, false),
+            f("markets", Ty::StrList, true),
+            f("links", Ty::Ids(""), false),
+        ],
+    },
+    Kind {
+        name: "legal",
+        prefix: "L",
+        designed: false,
+        fields: &[
+            f("id", Ty::Str, true),
+            f("kind", Ty::Str, true),
+            f("title", Ty::Str, true),
+            f("text", Ty::Str, false),
+            fe(
+                "severity",
+                Ty::Str,
+                false,
+                &["critical", "high", "medium", "low"],
+            ),
+            f("market", Ty::Str, false),
+            f("where", Ty::Str, false),
+            f("action", Ty::Str, false),
+            fe("outcome", Ty::Str, false, &["open", "fixed", "accepted"]),
+            f("links", Ty::Ids(""), false),
         ],
     },
     Kind {
