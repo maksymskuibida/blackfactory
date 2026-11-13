@@ -421,6 +421,9 @@ pub fn git_dir_of(top: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The readable records, and the files that could not be read (file name, reason).
+pub type Scanned = (Vec<Value>, Vec<(String, String)>);
+
 impl Project {
     pub fn discover(start: &Path) -> R<Project> {
         let start = fs::canonicalize(start)
@@ -538,6 +541,78 @@ impl Project {
             .unwrap_or(abs)
     }
 
+    /// A file the engine is about to read for the caller: resolved again now, symlinks and all, and
+    /// refused if it ended up in the state folder.
+    pub fn safe_input(&self, path: &Path) -> R<PathBuf> {
+        let canon = fs::canonicalize(path).map_err(|e| {
+            refuse(
+                format!("read {}", path.display()),
+                format!("the file cannot be read: {e}"),
+                &["Give the path of an existing file."],
+                "The command prints its result.",
+            )
+        })?;
+        if canon.starts_with(self.state_dir_resolved()) {
+            return Err(refuse(
+                format!("read {}", path.display()),
+                "that path leads into the project's state folder (it may be a link): the engine does not read from there for a caller",
+                &["Copy the file you mean into the project and give that path."],
+                "The command reads the file.",
+            ));
+        }
+        Ok(canon)
+    }
+
+    /// A file the engine is about to write for the caller: the folder (and the file, if it is a link)
+    /// resolved again now, and refused if it leads into the state folder, `factory/`, `.git/`, the
+    /// private part of `.bf/` or the transcripts.
+    pub fn safe_output(&self, path: &Path) -> R<PathBuf> {
+        let abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let name = abs
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        let parent = abs.parent().unwrap_or(Path::new("/"));
+        fs::create_dir_all(parent)?;
+        let mut target = fs::canonicalize(parent)?.join(&name);
+        if target.is_symlink() {
+            target = fs::canonicalize(&target).unwrap_or(target);
+        }
+        let root = &self.root;
+        let bad = |why: &str| {
+            refuse(
+                format!("write {}", path.display()),
+                format!("that path leads into {why}"),
+                &["Write the page somewhere else, for example under .bf/pages/."],
+                "The command writes the file.",
+            )
+        };
+        if target.starts_with(self.state_dir_resolved()) {
+            return Err(bad("the state folder"));
+        }
+        if target.starts_with(root.join("factory")) {
+            return Err(bad("factory/"));
+        }
+        if target.starts_with(root.join(".git")) {
+            return Err(bad(".git/"));
+        }
+        let tr = self.transcript_root();
+        if !tr.is_empty() && target.starts_with(&tr) {
+            return Err(bad("the harness's transcripts"));
+        }
+        if let Ok(rel) = target.strip_prefix(root.join(".bf")) {
+            let r = rel.to_string_lossy();
+            if !(r.starts_with("pages/") || r.starts_with("drafts/") || r.starts_with("work/")) {
+                return Err(bad("the private part of .bf/"));
+            }
+        }
+        Ok(target)
+    }
+
     pub fn accepted_policy_path(&self) -> PathBuf {
         self.state_dir().join("policy.accepted.toml")
     }
@@ -604,6 +679,9 @@ impl Project {
     }
     pub fn head_path(&self) -> PathBuf {
         self.state_dir().join("head.json")
+    }
+    pub fn offers_path(&self) -> PathBuf {
+        self.state_dir().join("offers.json")
     }
     pub fn tokens_path(&self) -> PathBuf {
         self.state_dir().join("tokens.json")
@@ -675,7 +753,20 @@ impl Project {
     pub fn get_record(&self, id: &str) -> R<Option<Value>> {
         let p = self.record_path(id)?;
         match fs::read_to_string(&p) {
-            Ok(s) => Ok(Some(toml::from_str::<Value>(&s)?)),
+            Ok(s) => toml::from_str::<Value>(&s).map(Some).map_err(|e| {
+                refuse(
+                    format!("read record {id}"),
+                    format!(
+                        "the file factory/records/{id}.toml cannot be read as a record: {}",
+                        e.to_string().replace('\n', " ")
+                    ),
+                    &[
+                        "Fix the file, or restore it from git history (the human's step).",
+                        "`bf status` lists every record file that cannot be read.",
+                    ],
+                    format!("`bf record get {id}` prints the record."),
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -706,11 +797,18 @@ impl Project {
 
     /// Load every record (optionally of one kind), sorted by kind then number.
     pub fn list_records(&self, kind: Option<&Kind>) -> R<Vec<Value>> {
+        Ok(self.scan_records(kind)?.0)
+    }
+
+    /// Every record that can be read, and the files that cannot (name and error). One bad file
+    /// never hides the others: status and doctor name it, and the plan check counts it as a problem.
+    pub fn scan_records(&self, kind: Option<&Kind>) -> R<Scanned> {
         let mut out: Vec<(String, u32, Value)> = Vec::new();
+        let mut bad: Vec<(String, String)> = Vec::new();
         let dir = self.records_dir();
         let rd = match fs::read_dir(&dir) {
             Ok(r) => r,
-            Err(_) => return Ok(vec![]),
+            Err(_) => return Ok((vec![], vec![])),
         };
         for ent in rd.flatten() {
             let name = ent.file_name().to_string_lossy().to_string();
@@ -725,12 +823,19 @@ impl Project {
                     continue;
                 }
             }
-            let s = fs::read_to_string(ent.path())?;
-            let v: Value = toml::from_str(&s).map_err(|e| err(format!("{name}: {e}")))?;
-            out.push((p.to_string(), n, v));
+            let parsed = fs::read_to_string(ent.path())
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    toml::from_str::<Value>(&s).map_err(|e| e.to_string().replace('\n', " "))
+                });
+            match parsed {
+                Ok(v) => out.push((p.to_string(), n, v)),
+                Err(e) => bad.push((name, e)),
+            }
         }
         out.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
-        Ok(out.into_iter().map(|x| x.2).collect())
+        bad.sort();
+        Ok((out.into_iter().map(|x| x.2).collect(), bad))
     }
 
     pub fn next_id(&self, kind: &Kind) -> R<String> {
@@ -819,6 +924,14 @@ impl Project {
                 "files": [],
             }));
         }
+        // Each table is newer than the last: the guard refuses a signed table older than the counter
+        // kept next to the key, so putting an old table back loosens nothing.
+        let gen_path = self.state_dir().join("guard.gen");
+        let gen = fs::read_to_string(&gen_path)
+            .ok()
+            .and_then(|t| t.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+            + 1;
         let table = json!({
             "v": 1,
             "root": self.root.to_string_lossy(),
@@ -832,6 +945,7 @@ impl Project {
                 {"words": ["git", "merge"], "reason": "Merging onto a checkpoint branch or the main branch is done by `bf unit land` and `bf checkpoint close`.", "outside_units_only": true}
             ],
             "transcript_root": self.transcript_root(),
+            "gen": gen,
             "state_dir": self.state_dir().to_string_lossy(),
             "worktrees": worktrees,
             "main_branch": self.config.main_branch,
@@ -848,6 +962,7 @@ impl Project {
             &self.guard_path(),
             serde_json::to_string_pretty(&table)?.as_bytes(),
         )?;
+        util::atomic_write(&gen_path, gen.to_string().as_bytes())?;
         Ok(())
     }
 }

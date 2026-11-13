@@ -223,3 +223,56 @@ fn t12_the_guard_needs_only_stdin_and_one_file() {
     assert_eq!(o.code, 0, "{}", o.all());
     assert_eq!(o.json()["hookSpecificOutput"]["permissionDecision"], "deny");
 }
+
+/// Append `n` well-formed, correctly chained events straight to the log and move the head with them.
+fn long_log(fx: &Fx, n: usize) {
+    use serde_json::{json, Map, Value};
+    let p = fx.project();
+    let key = p.read_key().unwrap();
+    let log = p.log_path();
+    let text = fs::read_to_string(&log).unwrap();
+    let mut count = text.lines().count();
+    let mut prev = text
+        .lines()
+        .last()
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["h"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .unwrap_or_default();
+    let mut out = text;
+    for _ in 0..n {
+        count += 1;
+        let mut m = Map::new();
+        m.insert("seq".into(), json!(count));
+        m.insert("at".into(), json!("2026-01-01T00:00:00Z"));
+        m.insert("kind".into(), json!("note"));
+        m.insert("prev".into(), json!(prev));
+        m.insert("text".into(), json!(format!("filler event {count}")));
+        let h = bf::events::event_hash(&key, &prev, &m);
+        m.insert("h".into(), json!(h));
+        prev = h;
+        out.push_str(&serde_json::to_string(&Value::Object(m)).unwrap());
+        out.push('\n');
+    }
+    fs::write(&log, out).unwrap();
+    let mut head = bf::events::read_head(&p).unwrap_or_default();
+    head.count = count as u64;
+    head.last_hash = prev;
+    bf::events::write_head(&p, &head).unwrap();
+}
+
+#[test]
+fn t13_status_on_a_long_log_stays_quick() {
+    let fx = Fx::new();
+    long_log(&fx, 20_000);
+    assert_eq!(fx.bf(&["log", "--verify"]).code, 0);
+    let (med, p99) = time_cmd(&fx, &["status"], 5);
+    println!("status on a 20,000-event log: median {med:.0} ms, p99 {p99:.0} ms");
+    assert!(med < 1500.0, "status took {med:.0} ms");
+    let (med, _) = time_cmd(&fx, &["next"], 3);
+    println!("next on a 20,000-event log: median {med:.0} ms");
+    assert!(med < 1500.0, "next took {med:.0} ms");
+}

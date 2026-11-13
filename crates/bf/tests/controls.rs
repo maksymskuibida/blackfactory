@@ -44,10 +44,8 @@ fn a_policy_edited_by_hand_stops_every_command_until_the_human_accepts_it() {
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     let wc = started_unit(&fx);
-    let tok = fx.must(&["next", "--json"]).json()["directives"][0]["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    fx.must(&["next", "--json"]);
+    let tok = fx.take_token("U-1", "builder");
     // One evaded write turns the safety settings off.
     let pol = fx.root.join("factory/policy.toml");
     let t = fs::read_to_string(&pol).unwrap();
@@ -465,26 +463,41 @@ fn a_check_does_not_start_when_a_folder_on_its_path_changed_after_the_policy_was
     assert!(d.stdout.contains("check path: PROBLEM"), "{}", d.stdout);
 }
 
-// ------------------------------------------------------------ tokens shown once
+// ------------------------------------------------------------ tokens taken once
 
 #[test]
-fn a_role_token_is_shown_once_and_only_the_human_resets_it() {
+fn a_role_token_is_taken_once_for_a_directive_just_given_and_a_second_request_fails_loudly() {
     let fx = Fx::new();
     fx.tiny();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
+    // Nothing is handed out before a directive has been given.
+    let o = fx.refused(&["token", "take", "U-1", "--role", "builder"]);
+    assert!(
+        o.stderr.contains("did not give that directive"),
+        "{}",
+        o.stderr
+    );
     let first = fx.must(&["next", "--json"]).json();
-    let tok = first["directives"][0]["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // A second call, for instance from a script, gets no token for the same directive.
-    let second = fx.must(&["next", "--json"]).json();
-    assert!(second["directives"][0]["token"].is_null(), "{second}");
-    assert!(second["directives"][0]["token_note"]
-        .as_str()
-        .unwrap()
-        .contains("already handed out"));
+    assert!(
+        first["directives"][0]["token"].is_null(),
+        "`bf next` shows no token itself: {first}"
+    );
+    assert_eq!(
+        first["directives"][0]["token_command"],
+        "bf token take U-1 --role builder"
+    );
+    let tok = fx.take_token("U-1", "builder");
+    // A second request, from a script for instance, fails and says someone may hold the token.
+    let o = fx.refused(&["token", "take", "U-1", "--role", "builder"]);
+    assert!(
+        o.stderr.contains("already taken") && o.stderr.contains("another caller"),
+        "{}",
+        o.stderr
+    );
+    // `bf next` again does not make it available again while it is unspent.
+    fx.must(&["next", "--json"]);
+    fx.refused(&["token", "take", "U-1", "--role", "builder"]);
     let wc = started_unit(&fx);
     assert_eq!(
         fx.bf_in(
@@ -494,24 +507,28 @@ fn a_role_token_is_shown_once_and_only_the_human_resets_it() {
         .code,
         2
     );
-    // The reviewer's token is created only once the unit is in review, and shown once as well.
+    // A worker cannot ask for tokens.
+    assert_eq!(
+        fx.bf_in(&wc, &["token", "take", "U-1", "--role", "reviewer"])
+            .code,
+        2
+    );
     fx.must_in(
         &wc,
         &["report", "U-1", "--result", "built", "--token", &tok],
     );
+    // The reviewer's directive is new, so its token can be taken, once.
     let n = fx.must(&["next", "--json"]).json();
-    let rt = n["directives"][0]["token"].as_str().unwrap().to_string();
-    assert!(fx.must(&["next", "--json"]).json()["directives"][0]["token"].is_null());
-    // Lost: the human resets, and the next call hands out a new one.
+    assert_eq!(n["directives"][0]["role"], "reviewer");
+    let rt = fx.take_token("U-1", "reviewer");
+    fx.refused(&["token", "take", "U-1", "--role", "reviewer"]);
+    // Lost, or taken by someone else: the human resets, and the next call can be taken again.
     let o = fx.bf(&["tokens", "reset", "--quote", "Yes, reset them."]);
     assert_eq!(o.code, 2, "needs a human turn");
     fx.human("Yes, reset them.");
     fx.must(&["tokens", "reset", "--quote", "Yes, reset them."]);
-    let again = fx.must(&["next", "--json"]).json();
-    let rt2 = again["directives"][0]["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    fx.must(&["next", "--json"]);
+    let rt2 = fx.take_token("U-1", "reviewer");
     assert_ne!(rt, rt2);
     assert_eq!(
         fx.bf_in(
@@ -528,7 +545,6 @@ fn a_role_token_is_shown_once_and_only_the_human_resets_it() {
             "report", "U-1", "--result", "built", "--role", "reviewer", "--token", &rt2,
         ],
     );
-    // And a worker cannot reset them.
     assert_eq!(fx.bf_in(&wc, &["tokens", "reset", "--quote", "x"]).code, 2);
 }
 
@@ -658,4 +674,144 @@ fn a_named_project_is_the_only_project_the_guard_looks_at() {
         ),
         "deny"
     );
+}
+
+// ------------------------------------------------------------ the table counter, bad records, programs
+
+#[test]
+fn an_older_guard_table_put_back_is_not_trusted() {
+    let fx = Fx::new();
+    fx.tiny();
+    let table = fx.root.join(".bf/guard.json");
+    let old = fs::read_to_string(&table).unwrap();
+    // A later command writes a newer table.
+    fx.start_test_run();
+    started_unit(&fx);
+    let newer = fs::read_to_string(&table).unwrap();
+    assert_ne!(old, newer, "the table should have changed");
+    // The newer table works: a read inside the project is not denied.
+    let probe = json!({"file_path": fx.root.join("README.md").to_string_lossy()});
+    assert_ne!(
+        guard_decision(&fx, &fx.root, "Read", probe.clone()),
+        "deny",
+        "the current table must not refuse a plain read"
+    );
+    // The older copy, signature intact, is refused.
+    fs::write(&table, &old).unwrap();
+    let o = fx.bf_stdin(
+        &fx.root,
+        &["guard"],
+        &json!({"tool_name": "Read", "tool_input": probe, "cwd": fx.root.to_string_lossy()})
+            .to_string(),
+    );
+    assert!(
+        o.stdout.contains("deny") && o.stdout.contains("older"),
+        "{}",
+        o.all()
+    );
+    // Writing the table again (any engine command that does) heals it.
+    fs::write(&table, &newer).unwrap();
+    assert_ne!(
+        guard_decision(
+            &fx,
+            &fx.root,
+            "Read",
+            json!({"file_path": fx.root.join("README.md").to_string_lossy()})
+        ),
+        "deny"
+    );
+}
+
+#[test]
+fn one_unreadable_record_file_does_not_break_status_and_is_named() {
+    let fx = Fx::new();
+    fx.tiny();
+    fs::write(
+        fx.root.join("factory/records/R-9.toml"),
+        "id = \"R-9\"\nkind = [ this is not toml\n",
+    )
+    .unwrap();
+    let st = fx.bf(&["status", "--json"]);
+    assert_eq!(st.code, 0, "{}", st.all());
+    let j = st.json();
+    let bad = j["bad_records"].as_array().unwrap();
+    assert_eq!(bad.len(), 1, "{j}");
+    assert!(bad[0]["file"].as_str().unwrap().contains("R-9"), "{j}");
+    // The text form names it too, and the other records still show.
+    let t = fx.bf(&["status"]);
+    assert_eq!(t.code, 0, "{}", t.all());
+    assert!(t.stdout.contains("R-9"), "{}", t.stdout);
+    // Ordinary commands carry on with the rest.
+    assert_eq!(fx.bf(&["record", "list", "--kind", "unit"]).code, 0);
+    // Asking for the broken record by id says which file and why.
+    let g = fx.refused(&["record", "get", "R-9"]);
+    assert!(g.all().contains("R-9"), "{}", g.all());
+    // The plan check flags it.
+    let c = fx.bf(&["plan", "check"]);
+    assert!(c.all().contains("R-9"), "{}", c.all());
+    assert_eq!(fx.bf(&["doctor"]).code, 2);
+    fs::remove_file(fx.root.join("factory/records/R-9.toml")).unwrap();
+    assert_eq!(fx.bf(&["status"]).code, 0);
+}
+
+#[test]
+fn a_program_replaced_after_the_plan_gate_stops_its_check_until_the_human_accepts() {
+    let fx = Fx::new();
+    fx.tiny();
+    let tools = fx.root.parent().unwrap().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("checkit");
+    fs::write(&tool, "#!/bin/sh\ntest -f src/hello.txt\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let rec = fx.root.join("factory/records/X-1.toml");
+    let t = fs::read_to_string(&rec).unwrap();
+    fs::write(
+        &rec,
+        t.replace("test -f src/hello.txt", tool.to_str().unwrap()),
+    )
+    .unwrap();
+    fx.commit_all("check uses a tool");
+    fx.start_test_run();
+    let wc = started_unit(&fx);
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/hello.txt"), "hi\n").unwrap();
+    let run = |fx: &Fx| {
+        fx.bf_in(
+            &wc,
+            &[
+                "evidence",
+                "run",
+                "X-1",
+                "--unit",
+                "U-1",
+                "--",
+                tool.to_str().unwrap(),
+            ],
+        )
+    };
+    let o = run(&fx);
+    assert_eq!(o.code, 0, "the recorded program runs: {}", o.all());
+    // Replace the program's contents (a longer file, so size differs whatever the clock says).
+    fs::write(&tool, "#!/bin/sh\n# changed\ntrue\n").unwrap();
+    let o = run(&fx);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(
+        o.stderr.contains("checkit") && o.stderr.contains("programs accept"),
+        "{}",
+        o.stderr
+    );
+    // The human says it is theirs.
+    fx.human("Yes, I changed that tool myself, go on.");
+    fx.must(&[
+        "programs",
+        "accept",
+        "--quote",
+        "Yes, I changed that tool myself, go on.",
+    ]);
+    let o = run(&fx);
+    assert_eq!(o.code, 0, "after the human accepts: {}", o.all());
 }

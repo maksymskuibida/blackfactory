@@ -107,6 +107,11 @@ fn read_stdin() -> String {
     s
 }
 
+fn read_data_in(p: &Project, path: &str) -> R<Value> {
+    let safe = p.safe_input(Path::new(path))?;
+    read_data(&safe.to_string_lossy())
+}
+
 fn read_data(path: &str) -> R<Value> {
     let text = fs::read_to_string(path).map_err(|e| {
         refuse(
@@ -439,7 +444,7 @@ fn dispatch(args: &Args) -> R<()> {
                         "The command prints the new state of the unit.",
                     )
                 })?),
-                Some(f) => Some(read_data(f)?),
+                Some(f) => Some(read_data_in(&p, f)?),
                 None => None,
             };
             // The spend is the conductor's to report, from the session's real usage. With a budget cap
@@ -574,8 +579,9 @@ fn dispatch(args: &Args) -> R<()> {
             let tpl = args.need("template", "an HTML template")?;
             let outp = args.need("out", "an output file")?;
             let v = view::build(&p, kind, args.pos.get(2).map(|x| x.as_str()))?;
-            let html = view::render(&v, Path::new(tpl))?;
-            util::atomic_write(Path::new(outp), html.as_bytes())?;
+            let html = view::render(&v, &p.safe_input(Path::new(tpl))?)?;
+            let target = p.safe_output(Path::new(outp))?;
+            util::atomic_write(&target, html.as_bytes())?;
             out(args, &json!({"out": outp, "bytes": html.len()}), || {
                 format!("wrote {outp} ({} bytes)", html.len())
             });
@@ -583,10 +589,13 @@ fn dispatch(args: &Args) -> R<()> {
         }
         "ask" => {
             let p = project(args)?;
-            let f = read_data(args.need(
-                "file",
-                "a question file (a JSON list, or a table with `questions`)",
-            )?)?;
+            let f = read_data_in(
+                &p,
+                args.need(
+                    "file",
+                    "a question file (a JSON list, or a table with `questions`)",
+                )?,
+            )?;
             let items: Vec<Value> = match &f {
                 Value::Array(a) => a.clone(),
                 o => match o.get("questions").and_then(|q| q.as_array()) {
@@ -643,7 +652,7 @@ fn dispatch(args: &Args) -> R<()> {
         "answer" => {
             let p = project(args)?;
             let id = args.pos_at(1, "a question ID")?;
-            let f = read_data(args.need("file", "an answer file (JSON or TOML)")?)?;
+            let f = read_data_in(&p, args.need("file", "an answer file (JSON or TOML)")?)?;
             let mut q = p.require_record(id)?;
             if s(&q, "kind") != "question" {
                 return Err(refuse(
@@ -719,9 +728,10 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = match args.pos.get(1).map(|x| x.as_str()) {
                 Some("open") => gates::amend_open(&p, &args.pos[2..])?,
-                Some("narrow") => {
-                    gates::amend_narrow(&p, &read_data(args.need("file", "a narrowing file")?)?)?
-                }
+                Some("narrow") => gates::amend_narrow(
+                    &p,
+                    &read_data_in(&p, args.need("file", "a narrowing file")?)?,
+                )?,
                 Some("approve") => gates::amend_approve(
                     &p,
                     args.pos.get(2).map(|x| x.as_str()),
@@ -756,6 +766,40 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = run::stuck(&p, args.has("dry-run"))?;
             out(args, &v, || pretty(&v));
+            Ok(())
+        }
+        "programs" => {
+            let p = project(args)?;
+            if args.pos.get(1).map(|x| x.as_str()) != Some("accept") {
+                return Err(refuse(
+                    "run `bf programs`",
+                    "only `bf programs accept` exists",
+                    &["After the human says in chat that a program change is theirs: `bf programs accept --quote \"<their words>\"`."],
+                    "`bf evidence run` starts the check.",
+                ));
+            }
+            let v = crate::programs::accept(&p, args.flag("quote").unwrap_or(""))?;
+            out(args, &v, || "programs accepted".to_string());
+            Ok(())
+        }
+        "token" => {
+            let p = project(args)?;
+            if args.pos.get(1).map(|x| x.as_str()) != Some("take") {
+                return Err(refuse(
+                    "run `bf token`",
+                    "only `bf token take <unit> --role <builder|reviewer>` exists",
+                    &["Run `bf next --json` and use the `token_command` of the directive."],
+                    "The command prints the token.",
+                ));
+            }
+            let unit = args.pos_at(2, "a unit ID")?;
+            let role = args.need("role", "the role: builder or reviewer")?;
+            let t = run::take_token(&p, unit, role)?;
+            out(
+                args,
+                &json!({"token": t, "unit": unit, "role": role}),
+                || t.clone(),
+            );
             Ok(())
         }
         "tokens" => {
@@ -906,6 +950,16 @@ fn status_text(v: &Value) -> String {
             "BROKEN"
         }
     );
+    if let Some(n) = v["main"]["note"].as_str().filter(|n| !n.is_empty()) {
+        t.push_str(&format!("note: {n}\n"));
+    }
+    for b in v["bad_records"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "record file {} cannot be read: {}\n",
+            b["file"].as_str().unwrap_or(""),
+            b["error"].as_str().unwrap_or("")
+        ));
+    }
     if v["main"]["ok"] == false {
         t.push_str(&format!(
             "main: MOVED - {}\n",
@@ -1098,7 +1152,7 @@ fn lock_records(p: &Project) -> R<fs::File> {
 
 fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let kind = kind_arg(args.pos_at(2, "a record kind")?)?;
-    let mut rec = read_data(args.need("file", "a record file (TOML or JSON)")?)?;
+    let mut rec = read_data_in(p, args.need("file", "a record file (TOML or JSON)")?)?;
     let _lock = lock_records(p)?;
     // A worker's only record is a new, open finding for a unit that is in review. Marking a finding
     // fixed or accepted is not a worker's to do.

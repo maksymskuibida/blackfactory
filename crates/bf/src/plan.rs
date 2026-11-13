@@ -17,6 +17,8 @@ pub struct Plan {
     pub designed: Vec<Value>,
     pub wave: HashMap<String, u32>,
     pub problems: Vec<String>,
+    /// Record files that cannot be read.
+    pub bad: Vec<(String, String)>,
 }
 
 impl Plan {
@@ -46,7 +48,7 @@ impl Plan {
 }
 
 pub fn load(p: &Project) -> R<Plan> {
-    let recs = p.list_records(None)?;
+    let (recs, bad) = p.scan_records(None)?;
     let mut by: HashMap<&str, Vec<Value>> = HashMap::new();
     let mut ids: HashSet<String> = HashSet::new();
     for r in &recs {
@@ -78,6 +80,7 @@ pub fn load(p: &Project) -> R<Plan> {
         designed,
         wave: HashMap::new(),
         problems: vec![],
+        bad,
     };
     analyse(&mut plan, &ids);
     Ok(plan)
@@ -314,6 +317,11 @@ fn analyse(pl: &mut Plan, ids: &HashSet<String>) {
                 }
             }
         }
+    }
+    for (name, e) in &pl.bad {
+        bad.push(format!(
+            "record file {name} cannot be read ({e}), so what it holds is not in the plan"
+        ));
     }
     pl.problems = bad;
 }

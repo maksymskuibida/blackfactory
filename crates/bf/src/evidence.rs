@@ -271,6 +271,7 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
     check_exec_path(p)?;
+    crate::programs::verify(p, check_id, &argv[0])?;
     let (exit, tail, out_hash, total, sandboxed) = exec_capture(p, &top, argv, tail_bytes)?;
     let after = gitx::content_hash(&top)?;
     if before != after {
@@ -469,6 +470,9 @@ pub fn check_exec_path(p: &Project) -> R<()> {
 
 /// `bf evidence attach <check> <file>`
 pub fn attach(p: &Project, check_id: &str, file: &Path, unit: Option<&str>) -> R<Value> {
+    // Resolved again now: a link that leads into the state folder is refused.
+    let resolved = p.safe_input(file)?;
+    let file = resolved.as_path();
     let chk = p.require_record(check_id)?;
     if s(&chk, "kind") != "check" {
         return Err(refuse(

@@ -287,6 +287,14 @@ impl Fx {
         self.must(&["gate", "approve", "plan", "--simulated"]);
     }
 
+    /// `bf next` gives the directive; the conductor takes the token for it (once).
+    pub fn take_token(&self, unit: &str, role: &str) -> String {
+        self.must(&["token", "take", unit, "--role", role])
+            .stdout
+            .trim()
+            .to_string()
+    }
+
     /// A real run's way to main: close the checkpoint, the human says merge in chat, the step gate is
     /// approved with their words, and only then does `--merge` work. Returns the output of the merge.
     pub fn merge_checkpoint(&self, k: &str) -> Out {

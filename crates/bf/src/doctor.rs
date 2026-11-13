@@ -105,6 +105,19 @@ pub fn doctor(p: &Project) -> R<Value> {
     );
     let pl = plan::load(p)?;
     add(
+        "record files",
+        pl.bad.is_empty(),
+        if pl.bad.is_empty() {
+            "every record file can be read".to_string()
+        } else {
+            pl.bad
+                .iter()
+                .map(|(f, e)| format!("{f}: {e}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+    );
+    add(
         "plan",
         pl.problems.is_empty(),
         format!("{} problem(s)", pl.problems.len()),
