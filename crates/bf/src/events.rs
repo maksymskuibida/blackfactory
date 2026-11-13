@@ -390,6 +390,8 @@ pub struct State {
     pub cost: f64,
     /// Check ID -> highest receipt number that no longer counts (an amendment re-opened the work).
     pub reopen_floor: BTreeMap<String, u64>,
+    /// Design gates the human skipped: (kind, the words, seq). Only `ui` can be skipped.
+    pub skipped: Vec<(String, String, u64)>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -409,6 +411,13 @@ impl State {
             .find(|g| g.kind == kind && g.refr.as_deref() == refr)
     }
     /// A gate kind counts as passed when its latest round is approved.
+    /// The words the human gave to skip this gate, if they did.
+    pub fn skipped_words(&self, kind: &str) -> Option<&str> {
+        self.skipped
+            .iter()
+            .find(|(k, _, _)| k == kind)
+            .map(|(_, q, _)| q.as_str())
+    }
     pub fn gate_passed(&self, kind: &str, refr: Option<&str>) -> bool {
         self.latest_gate(kind, refr)
             .map(|g| g.status == "approved")
@@ -715,6 +724,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         u.attempts += 1;
                     }
                 }
+            }
+            "gate.skip" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
+                    || sv("gate_kind") != "ui"
+                {
+                    st.ignored.push(format!(
+                        "event {seq}: a gate skip cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                st.skipped.push((sv("gate_kind"), sv("quote"), seq));
             }
             "unit.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);

@@ -119,7 +119,7 @@ How one or more parts are proven.
 |---|---|---|---|
 | `title` | string | yes | |
 | `text` | string | no | |
-| `how` | `command`, `agent` or `human` | yes | `command` checks are run by `bf evidence run`. `agent` and `human` checks are proven by `bf evidence attach` |
+| `how` | `command`, `agent` or `human` | yes | `command` checks are run by `bf evidence run`. an `agent` check is settled by `bf evidence attach` with a stated outcome (the verifier's token), a `human` check by the checkpoint's gate |
 | `command` | string or list of strings | for `how = "command"` | The exact command. `bf evidence run` accepts only this command |
 | `proves` | list of designed or handoff IDs | yes | What a passing receipt of this check proves |
 | `scope` | `unit` or `checkpoint` | yes | Where it runs: in a unit's working copy before landing, or in a checkpoint's working copy before closing |
@@ -195,6 +195,7 @@ Only the human edits it. The guard keeps agents away from it.
 | `[ledger]` | `kinds` | Which record kinds the ledger holds to account |
 | `[evidence]` | `tail_bytes`, `max_attach_bytes` | Output kept in a receipt; attachment size limit |
 | `[human]` | `sessions`, `approval_words`, `refusal_words`, `transcript_root`, `transcript_match` | Session ids that count as the human's own (empty means any); two word lists that only add a caution beside a decision (English, German, French and Spanish by default), never a refusal; where the harness keeps transcripts (`~/.claude/projects`); `soft` (default: the transcript is noted beside each turn) or `strict` (refuse a turn unless the transcript already ends with the prompt) |
+| `[gates]` | `in_order` | Design gates open in order (idea, requirements, ui, architecture, plan) and only with records behind them (default true) |
 | `[roles]` | `tokens` | `bf report` needs the one-use token `bf next` handed out (default true) |
 | `[exec]` | `path`, `git`, `sandbox`, `network`, `env` | The `PATH` checks run with and the `git` program, captured at `bf init`; whether checks and git run under the system's sandbox where there is one; whether checks may use the network under it (default no); more environment variable names a check may see. Only the human edits them, and a change takes effect when the human accepts it |
 | `[guard]` | `allow`, `protected_extra` | `abstain` (default: the guard says nothing about calls it does not deny) or `allow`; more protected paths |
@@ -206,14 +207,14 @@ Written only by `bf evidence`. Sealed with the key in `.bf/key`.
 | Field | Meaning |
 |---|---|
 | `id` | `rc-00001` |
-| `type` | `run`, `attach`, `fail` or `unreachable` |
+| `type` | `run`, `attach` (outcome met), `fail`, `unreachable`, or `support` (a file with no outcome: settles nothing) |
 | `check` | The check's ID |
 | `unit` | The unit, when given |
 | `command`, `exit` | For a run: the command and its exit code |
 | `content_hash` | The content hash the command ran on (defined in engine.md) |
 | `output_hash`, `bytes`, `output_tail` | SHA-256 of the full output, its length, and the last bytes of it |
 | `file_hash`, `file_name` | For an attachment: the stored file |
-| `reason` | For `fail` and `unreachable`: what the verifier saw or what blocked it |
+| `reason` | For `fail` and `unreachable`: what the verifier saw or what blocked it; for an `attach` with an outcome, the sentence saying what was looked at |
 | `at`, `seconds`, `working_copy` | When, how long, and where |
 | `program` | The program that ran the command (`/bin/sh`) |
 | `sandbox` | `sandbox-exec` if the command ran in the sandbox, `none` if it did not |
@@ -224,6 +225,6 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
 
 Gates, approvals, test-mode grants and amendments live here, not in record files, so nothing can change them after the fact: a decision is valid only when the replayed log accepts it. A `gate.approve` counts only if it cites a human turn recorded after the gate opened and not used before, with a quote that is in that turn's text (the turn is not only a question), or is simulated inside a run that holds a test-mode grant (or, for a design gate, a grant waiting for its run).

@@ -237,6 +237,7 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
     let w = Walk::new(&fx);
     // The shipped policy has role tokens on; the fixture turns them off for tests that do not need them.
     fx.set_policy("tokens = false", "tokens = true");
+    fx.set_policy("in_order = false", "in_order = true");
 
     // Start or resume: `bf status --json`.
     let st = w.conductor(&["status", "--json"]).json();
@@ -679,16 +680,26 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
         &c1,
         "kind = \"component\"\ntitle = \"The messages module.\"\n",
     );
+    let d1 = w.new_id("decision");
+    w.put(
+        "decision",
+        &d1,
+        "kind = \"decision\"\ntitle = \"Keep it in one module.\"\nchosen = \"one module\"\nrejected = \"two\"\n",
+    );
+    // The gates open in order: the architecture waits for the ui.
+    let o = w.bf(&fx.root, &["gate", "open", "architecture"]);
+    assert_eq!(o.code, 2);
+    assert!(o.stderr.contains("`ui` gate comes first"), "{}", o.stderr);
     w.conductor(&["gate", "open", "ui"]);
-    w.conductor(&["gate", "open", "architecture"]);
-    fx.human("Both look good, approve ui and architecture.");
+    fx.human("The screen looks good, approve ui and architecture.");
     w.conductor(&[
         "gate",
         "approve",
         "ui-r1",
         "--quote",
-        "Both look good, approve ui and architecture.",
+        "The screen looks good, approve ui and architecture.",
     ]);
+    w.conductor(&["gate", "open", "architecture"]);
     let o = w.bf(
         &fx.root,
         &[
@@ -696,7 +707,7 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
             "approve",
             "architecture-r1",
             "--quote",
-            "Both look good, approve ui and architecture.",
+            "The screen looks good, approve ui and architecture.",
         ],
     );
     assert_eq!(o.code, 2, "the second approval needs its own message");
@@ -712,7 +723,7 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
 
     // Plan: `bf gate open plan` refuses while `bf plan check` fails, then passes once the plan is whole.
     let (u1, x1, k1) = (w.new_id("unit"), w.new_id("check"), w.new_id("checkpoint"));
-    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"All of it\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\"]\nfiles = [\"src/\"]\ncheckpoint = \"{k1}\"\n"));
+    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"All of it\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nfiles = [\"src/\"]\ncheckpoint = \"{k1}\"\n"));
     let o = w.bf(&fx.root, &["gate", "open", "plan"]);
     assert_eq!(o.code, 2);
     assert!(
@@ -720,8 +731,8 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
         "{}",
         o.stderr
     );
-    w.put("check", &x1, &format!("kind = \"check\"\ntitle = \"It exists\"\nhow = \"command\"\ncommand = \"test -f src/a.txt\"\nproves = [\"{r1}\", \"{s1}\", \"{c1}\"]\nscope = \"unit\"\nunit = \"{u1}\"\n"));
-    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\ntitle = \"Done\"\nafter = [\"{u1}\"]\nproves = [\"{r1}\", \"{s1}\", \"{c1}\"]\nchecks = [\"{x1}\"]\n"));
+    w.put("check", &x1, &format!("kind = \"check\"\ntitle = \"It exists\"\nhow = \"command\"\ncommand = \"test -f src/a.txt\"\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nscope = \"unit\"\nunit = \"{u1}\"\n"));
+    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\ntitle = \"Done\"\nafter = [\"{u1}\"]\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nchecks = [\"{x1}\"]\n"));
     w.conductor(&["plan", "check"]);
     let gp = w
         .conductor(&["gate", "open", "plan"])

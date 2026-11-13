@@ -49,6 +49,9 @@ transcript_root = "~/.claude/projects"   # where the harness keeps its transcrip
 # with the prompt; the harness may write the transcript only after the hook runs.
 transcript_match = "soft"
 
+[gates]
+in_order = true       # a design gate opens only after the earlier ones are approved, and only with records behind it
+
 [roles]
 tokens = true         # `bf report` needs the one-use token that `bf next` handed out for the role
 
@@ -311,6 +314,18 @@ pub const DEFAULT_REFUSAL: &[&str] = &[
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
+pub struct GatesPol {
+    /// Design gates open in order and never empty (see `bf gate open`).
+    pub in_order: bool,
+}
+impl Default for GatesPol {
+    fn default() -> Self {
+        GatesPol { in_order: true }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct RolesPol {
     pub tokens: bool,
 }
@@ -347,6 +362,7 @@ impl Default for ExecPol {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Policy {
+    pub gates: GatesPol,
     pub human: HumanPol,
     pub roles: RolesPol,
     pub exec: ExecPol,

@@ -391,6 +391,22 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             fact("Records", records.len(), "shown on this page"),
         ],
     );
+    if kind == "architecture" {
+        if let Some(q) = st.skipped_words("ui") {
+            v["page"]["facts"].as_array_mut().unwrap().push(fact(
+                "UI gate skipped",
+                q,
+                "the human skipped the ui gate: this product has no interface",
+            ));
+        }
+        if p.list_records(schema::kind_by_name("threat"))?.is_empty() {
+            v["page"]["facts"].as_array_mut().unwrap().push(fact(
+                "Caution",
+                "No threat was recorded",
+                "the architecture has no threat record: nobody wrote down what could go wrong",
+            ));
+        }
+    }
     if let Some(g) = gate.filter(|g| !g.quote.is_empty()) {
         v["page"]["facts"].as_array_mut().unwrap().push(fact(
             "Decided on the words",
@@ -532,6 +548,10 @@ fn proof_row(p: &Project, pl: &Plan, rc: &[Receipt], id: &str, content: Option<&
             if r.passes() && current {
                 proven = true;
             }
+            if let Some(t) = judgment_text(r) {
+                body.push(text(&t));
+                continue;
+            }
             body.push(json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
                 "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")}));
         }
@@ -613,6 +633,28 @@ fn coverage_state(r: &ledger::Row) -> &'static str {
     } else {
         "proven"
     }
+}
+
+/// What a check judged by an agent says: the outcome, the sentence about what was looked at, and the
+/// file kept with it. `None` for a receipt that is a command run.
+fn judgment_text(r: &evidence::Receipt) -> Option<String> {
+    let kind = match s(&r.v, "type") {
+        "attach" => "met",
+        "fail" if !s(&r.v, "file_hash").is_empty() => "failed",
+        "unreachable" if !s(&r.v, "file_hash").is_empty() => "unreachable",
+        "support" => "supporting file only (settles nothing)",
+        _ => return None,
+    };
+    let file = format!(
+        "{} ({})",
+        s(&r.v, "file_name"),
+        &s(&r.v, "file_hash")[..s(&r.v, "file_hash").len().min(12)]
+    );
+    Some(if s(&r.v, "reason").is_empty() {
+        format!("{}: {kind}. File: {file}.", r.check())
+    } else {
+        format!("{}: {kind}. {} File: {file}.", r.check(), s(&r.v, "reason"))
+    })
 }
 
 fn coverage_block(rows: &[ledger::Row]) -> Value {
@@ -698,6 +740,16 @@ fn coverage_view(p: &Project) -> R<Value> {
     );
     v["sections"] = json!([{"id": "coverage", "title": "Coverage", "hint": "One row per designed part", "open": true,
         "blocks": [coverage_block(&rows), {"type": "meter", "label": "Proven", "value": proven, "max": rows.len(), "unit": "parts"}], "rows": []}]);
+    // Checks judged by an agent: the outcome, what was looked at, and the file kept with it.
+    let judged: Vec<Value> = evidence::load_receipts(p)?
+        .iter()
+        .filter_map(|r| {
+            judgment_text(r).map(|t| json!({"id": r.id(), "title": r.check(), "needs_you": false, "body": [text(&t)]}))
+        })
+        .collect();
+    if !judged.is_empty() {
+        v["sections"].as_array_mut().unwrap().push(json!({"id": "judged", "title": "Judged by an agent", "hint": "Outcome, what was looked at, the file", "open": true, "blocks": [], "rows": judged}));
+    }
     Ok(v)
 }
 
@@ -998,6 +1050,15 @@ fn index_view(p: &Project, st: &State) -> R<Value> {
             "Proven, planned or missing a link",
         ),
     ];
+    if let Some(q) = st.skipped_words("ui") {
+        state_rows.push(page_row(
+            "ui-skipped",
+            &format!("The ui gate was skipped: \"{q}\""),
+            "run.html",
+            &when(&st.last_at),
+            "No interface in this product, by the human's word",
+        ));
+    }
     if !all_q.is_empty() {
         state_rows.push(page_row(
             "questions-all",

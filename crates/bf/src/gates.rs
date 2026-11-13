@@ -426,6 +426,9 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
             ));
         }
     }
+    if p.policy.gates.in_order && DESIGN_ORDER.contains(&kind) {
+        check_order_and_content(p, &st, kind)?;
+    }
     // Decision D-19: a stage's questions come before its gate.
     let open_q: Vec<String> = p
         .list_records(schema::kind_by_name("question"))?
@@ -461,6 +464,130 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     p.write_guard()?;
     let st = events::replay(p)?;
     Ok(st.gate(&id).cloned().unwrap())
+}
+
+/// The design gates, in the order they are approved.
+const DESIGN_ORDER: &[&str] = &["idea", "requirements", "ui", "architecture", "plan"];
+
+/// A design gate opens when the earlier ones are approved (a rejected gate's next round is not held by
+/// that), and when the stage has something to approve.
+fn check_order_and_content(p: &Project, st: &State, kind: &str) -> R<()> {
+    let i = DESIGN_ORDER.iter().position(|k| *k == kind).unwrap_or(0);
+    let retry = st
+        .latest_gate(kind, None)
+        .map(|g| g.status == "rejected")
+        .unwrap_or(false);
+    if !retry {
+        for e in &DESIGN_ORDER[..i] {
+            if st.gate_passed(e, None) || (*e == "ui" && st.skipped_words("ui").is_some()) {
+                continue;
+            }
+            return Err(refuse(
+                format!("open the `{kind}` gate"),
+                format!("the `{e}` gate comes first and is not approved"),
+                &[
+                    &format!("Open the `{e}` gate (`bf gate open {e}`), show the human its page and get their decision in chat."),
+                    if *e == "ui" {
+                        "A product with no interface: the human can skip the ui gate once, in their words: `bf gate skip ui --quote \"<their words>\"`."
+                    } else {
+                        "Gates are approved in this order: idea, requirements, ui, architecture, plan."
+                    },
+                ],
+                format!("`bf gate status` shows `{e}` approved, then `bf gate open {kind}` works."),
+            ));
+        }
+    }
+    let count = |k: &str| -> R<usize> { Ok(p.list_records(schema::kind_by_name(k))?.len()) };
+    let (empty, what, how): (bool, &str, &str) = match kind {
+        "idea" => {
+            let file = std::fs::read_to_string(p.root.join("factory/idea.md"))
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
+            (
+                count("idea")? == 0 && !file,
+                "an idea record or the idea file (factory/idea.md)",
+                "Write the idea in `factory/idea.md` or put an idea record (`bf id new idea`).",
+            )
+        }
+        "requirements" => (
+            count("requirement")? == 0,
+            "at least one requirement",
+            "Put requirement records (`bf id new requirement`, then `bf record put requirement --file <f>`).",
+        ),
+        "ui" => (
+            count("screen")? + count("journey")? == 0,
+            "at least one screen or journey",
+            "Put screen or journey records. A product with no interface skips this gate: `bf gate skip ui --quote \"<the human's words>\"`.",
+        ),
+        "architecture" => (
+            count("component")? == 0 || count("decision")? == 0,
+            "at least one component and one decision",
+            "Put component and decision records (threat records are welcome too).",
+        ),
+        "plan" => {
+            let pl = plan::load(p)?;
+            plan::check_or_refuse(&pl)?;
+            (
+                pl.units.is_empty() || pl.checkpoints.is_empty(),
+                "a plan with at least one unit and one checkpoint",
+                "Put unit, check and checkpoint records, then `bf plan check`.",
+            )
+        }
+        _ => (false, "", ""),
+    };
+    if empty {
+        return Err(refuse(
+            format!("open the `{kind}` gate"),
+            format!("there is nothing to approve yet: the stage needs {what}"),
+            &[how, "Then open the gate again."],
+            format!("`bf gate open {kind}` prints a gate ID."),
+        ));
+    }
+    Ok(())
+}
+
+/// `bf gate skip ui --quote "..."`: the human skips the ui gate once (a product with no interface). The
+/// words are recorded; the skipped gate counts as passed for the order rule, and the index and the
+/// architecture page say so.
+pub fn skip(p: &Project, kind: &str, quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    if kind != "ui" {
+        return Err(refuse(
+            format!("skip the `{kind}` gate"),
+            "only the ui gate can be skipped, for a product with no interface",
+            &["Open the gate and have it decided like any other."],
+            "`bf gate status` lists the gate.",
+        ));
+    }
+    if st.skipped_words("ui").is_some() {
+        return Err(refuse(
+            "skip the ui gate",
+            "it was skipped already",
+            &["Nothing more to do: the architecture gate can open once the requirements are approved."],
+            "`bf gate status` shows the earlier gates.",
+        ));
+    }
+    if st.gate_passed("ui", None)
+        || st
+            .latest_gate("ui", None)
+            .map(|g| g.status == "open")
+            .unwrap_or(false)
+    {
+        return Err(refuse(
+            "skip the ui gate",
+            "the ui gate has been opened or approved; it is decided there",
+            &["Decide the open gate, or leave the approved one as it is."],
+            "`bf gate status` shows the ui gate.",
+        ));
+    }
+    let (seq, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "gate.skip",
+        json!({"gate_kind": "ui", "turn": seq, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"skipped": "ui", "quote": quote.trim()}))
 }
 
 pub fn find_gate<'a>(st: &'a State, arg: &str) -> R<&'a Gate> {
