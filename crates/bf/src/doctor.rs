@@ -48,15 +48,17 @@ pub fn doctor(p: &Project) -> R<Value> {
             "checks and git run WITHOUT a sandbox (not available here, or switched off in the policy); receipts say `sandbox = \"none\"`".to_string()
         },
     );
-    if p.config_main_branch != p.config.main_branch {
-        add(
-            "main branch",
-            false,
-            format!(
-                "factory/config.toml says `{}` but the engine watches `{}`, the branch it recorded at the start. If the change is on purpose, the human says so in chat and `bf head accept --quote \"<their words>\"` takes it",
-                p.config_main_branch, p.config.main_branch
-            ),
-        );
+    for r in &p.repos {
+        if r.configured != r.branch {
+            add(
+                "main branch",
+                false,
+                format!(
+                    "the project files say `{}` for the repository `{}` but the engine watches `{}`, the branch it recorded at the start. If the change is on purpose, the human says so in chat and `bf head accept --quote \"<their words>\"` takes it",
+                    r.configured, r.name, r.branch
+                ),
+            );
+        }
     }
     let notes = crate::evidence::path_notes(p);
     add(

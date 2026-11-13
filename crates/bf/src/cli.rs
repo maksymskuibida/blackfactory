@@ -24,6 +24,7 @@ const VALUE_FLAGS: &[&str] = &[
     "checkpoint",
     "tail",
     "name",
+    "branch",
     "stage",
     "title",
     "context",
@@ -824,6 +825,7 @@ fn dispatch(args: &Args) -> R<()> {
             });
             Ok(())
         }
+        "repo" => cmd_repo(args),
         "stuck" => {
             let p = project(args)?;
             let v = run::stuck(&p, args.has("dry-run"))?;
@@ -974,6 +976,23 @@ fn status_text(v: &Value) -> String {
             b["error"].as_str().unwrap_or("")
         ));
     }
+    if v["workspace"] == true {
+        for r in v["repos"].as_array().into_iter().flatten() {
+            t.push_str(&format!(
+                "repository {}: {} at {} ({}){}\n",
+                r["name"].as_str().unwrap_or(""),
+                r["branch"].as_str().unwrap_or(""),
+                r["tip"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(10)
+                    .collect::<String>(),
+                r["path"].as_str().unwrap_or(""),
+                if r["ok"] == false { " - MOVED" } else { "" }
+            ));
+        }
+    }
     if v["main"]["ok"] == false {
         t.push_str(&format!(
             "main: MOVED - {}\n",
@@ -997,9 +1016,188 @@ fn status_text(v: &Value) -> String {
     t
 }
 
+/// `bf repo add <name> <path> [--branch B]` and `bf repo list`: the code repositories of a workspace.
+fn cmd_repo(args: &Args) -> R<()> {
+    let p = project(args)?;
+    match args.pos_at(1, "`add` or `list`")? {
+        "add" => {
+            if !p.workspace {
+                return Err(refuse(
+                    "add a repository",
+                    "this project is not a workspace: its one repository is the project folder",
+                    &["Run `bf init --workspace` in a new folder to make a workspace that points at code repositories."],
+                    "`bf repo list` shows the repositories.",
+                ));
+            }
+            let name = args.pos_at(2, "a short name")?;
+            let path = args.pos_at(3, "the path of the repository")?;
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(refuse(
+                    "add a repository",
+                    "the name must be letters, digits, `-` or `_`",
+                    &["Pick a short name such as `app` or `api`."],
+                    "`bf repo list` shows it.",
+                ));
+            }
+            if p.repos.iter().any(|r| r.name == name) {
+                return Err(refuse(
+                    "add a repository",
+                    format!("the workspace already lists `{name}`"),
+                    &["Pick another name, or edit factory/workspace.toml by hand."],
+                    "`bf repo list` shows it once.",
+                ));
+            }
+            let given = Path::new(path);
+            let joined = if given.is_absolute() {
+                given.to_path_buf()
+            } else {
+                std::env::current_dir()?.join(given)
+            };
+            let abs = fs::canonicalize(&joined).map_err(|e| {
+                refuse(
+                    "add a repository",
+                    format!("{} cannot be opened: {e}", joined.display()),
+                    &["Give the path of an existing git repository."],
+                    "`bf repo list` shows it.",
+                )
+            })?;
+            if abs.starts_with(&p.root) || p.root.starts_with(&abs) {
+                return Err(refuse(
+                    "add a repository",
+                    "a code repository must be a folder apart from the workspace: nothing of the factory may be written into it",
+                    &["Give the path of a repository outside the workspace folder."],
+                    "`bf repo list` shows it.",
+                ));
+            }
+            if !gitx::is_repo(&abs) || !abs.join(".git").exists() {
+                return Err(refuse(
+                    "add a repository",
+                    format!("{} is not the top of a git repository", abs.display()),
+                    &["Give the main checkout of the repository (the folder that holds `.git`)."],
+                    "`bf repo list` shows it.",
+                ));
+            }
+            let branch = match args.flag("branch") {
+                Some(b) => b.to_string(),
+                None => gitx::current_branch(&abs).unwrap_or_else(|| "main".into()),
+            };
+            if !gitx::branch_exists(&abs, &branch) {
+                return Err(refuse(
+                    "add a repository",
+                    format!(
+                        "the branch `{branch}` does not exist or has no commit in {}",
+                        abs.display()
+                    ),
+                    &["Make an initial commit, or name the main branch with `--branch`."],
+                    "`bf repo list` shows it.",
+                ));
+            }
+            // Relative to the workspace when it lies beside it, otherwise absolute: the file is tracked.
+            let shown = match pathdiff(&abs, &p.root) {
+                Some(r) => r,
+                None => abs.to_string_lossy().to_string(),
+            };
+            let file = p.root.join("factory/workspace.toml");
+            let mut text = fs::read_to_string(&file).unwrap_or_default();
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "\n[[repo]]\nname = {}\npath = {}\nmain_branch = {}\n",
+                toml::Value::String(name.to_string()),
+                toml::Value::String(shown),
+                toml::Value::String(branch.clone()),
+            ));
+            util::atomic_write(&file, text.as_bytes())?;
+            let mut p2 = Project::discover(&p.root)?;
+            let mut h = events::read_head(&p2).unwrap_or_default();
+            let tip = gitx::must(&abs, &["rev-parse", &branch]).ok();
+            let e = h.repos.entry(name.to_string()).or_default();
+            e.branch = Some(branch.clone());
+            e.commit = tip;
+            events::write_head(&p2, &h)?;
+            p2.reload_policy()?;
+            p2.write_guard()?;
+            let v = json!({"name": name, "path": abs.to_string_lossy(), "branch": branch});
+            out(args, &v, || format!("added {name}: {}", abs.display()));
+        }
+        "list" => {
+            let st = events::replay(&p)?;
+            let pos = run::main_positions(&p, &st)?;
+            let v = json!(p
+                .repos
+                .iter()
+                .zip(pos.iter())
+                .map(|(r, m)| json!({"name": r.name, "path": r.path.to_string_lossy(), "branch": r.branch, "tip": m.tip, "ok": !m.moved}))
+                .collect::<Vec<_>>());
+            out(args, &v, || {
+                p.repos
+                    .iter()
+                    .zip(pos.iter())
+                    .map(|(r, m)| {
+                        format!(
+                            "{} {} {} at {}",
+                            r.name,
+                            r.path.display(),
+                            r.branch,
+                            m.tip.chars().take(10).collect::<String>()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+        }
+        _ => {
+            return Err(refuse(
+                "run `bf repo`",
+                "unknown subcommand",
+                &["Use `bf repo add <name> <path> [--branch B]` or `bf repo list`."],
+                "The command prints the result.",
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// `path` relative to `base` when both are absolute and `path` is not below `base` (a sibling folder).
+fn pathdiff(path: &Path, base: &Path) -> Option<String> {
+    let pc: Vec<_> = path.components().collect();
+    let bc: Vec<_> = base.components().collect();
+    let common = pc.iter().zip(bc.iter()).take_while(|(a, b)| a == b).count();
+    if common == 0 || common < 2 {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for _ in common..bc.len() {
+        out.push("..");
+    }
+    for c in &pc[common..] {
+        out.push(c.as_os_str());
+    }
+    Some(out.to_string_lossy().to_string())
+}
+
 fn cmd_init(args: &Args) -> R<()> {
     let dir = fs::canonicalize(start_dir(args))?;
-    if !dir.join(".git").exists() {
+    let workspace = args.has("workspace");
+    // A workspace is a folder of its own that holds the factory and points at code repositories; it is
+    // normally a private git repository, and gets one here if it is not one yet.
+    if workspace && !dir.join(".git").exists() {
+        let o = gitx::run(&dir, &["init", "-q", "-b", "main"], &[])?;
+        if !o.ok {
+            return Err(refuse(
+                "create the workspace's git repository",
+                format!("git init failed: {}", o.stderr),
+                &["Run `git init` in the folder yourself, then `bf init --workspace` again."],
+                "`bf status` prints the project name.",
+            ));
+        }
+    }
+    if !workspace && !dir.join(".git").exists() {
         return Err(refuse(
             "initialise a project here",
             "this folder is not the top of a git repository",
@@ -1029,13 +1227,23 @@ fn cmd_init(args: &Args) -> R<()> {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "project".into())
         });
-        let main = gitx::current_branch(&dir).unwrap_or_else(|| "main".into());
+        let main = if workspace {
+            "main".to_string()
+        } else {
+            gitx::current_branch(&dir).unwrap_or_else(|| "main".into())
+        };
         let cfg = format!(
             "# Black Factory project config.\nproject = {}\nproject_id = \"{project_id}\"\nmain_branch = {}\nbranch_prefix = \"bf/\"\n",
             toml::Value::String(name),
             toml::Value::String(main)
         );
         fs::write(dir.join("factory/config.toml"), cfg)?;
+        if workspace && !dir.join("factory/workspace.toml").exists() {
+            fs::write(
+                dir.join("factory/workspace.toml"),
+                "# The code repositories this workspace works on. `bf repo add <name> <path>` adds one.\n",
+            )?;
+        }
         // The PATH and the git program that checks and git calls will use are captured from this shell.
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
         let git = find_in_path("git", &path).unwrap_or_else(|| "/usr/bin/git".into());
@@ -1080,17 +1288,7 @@ fn cmd_init(args: &Args) -> R<()> {
     // The main branch as it stands now is where the engine starts counting.
     {
         let mut h = events::read_head(&p).unwrap_or_default();
-        let mut changed = false;
-        if h.main_branch.is_none() {
-            h.main_branch = Some(p.config_main_branch.clone());
-            changed = true;
-        }
-        let main = h.main_branch.clone().unwrap_or_default();
-        if h.main_commit.is_none() && crate::gitx::branch_exists(&p.root, &main) {
-            h.main_commit = crate::gitx::must(&p.root, &["rev-parse", &main]).ok();
-            changed = true;
-        }
-        if changed {
+        if record_repo_heads(&p, &mut h) {
             events::write_head(&p, &h)?;
         }
     }
@@ -1112,6 +1310,24 @@ fn cmd_init(args: &Args) -> R<()> {
         },
     );
     Ok(())
+}
+
+/// Note, for every repository that has none yet, the branch to watch and where it stands now.
+fn record_repo_heads(p: &Project, h: &mut events::Head) -> bool {
+    let mut changed = false;
+    for r in &p.repos {
+        let e = h.repos.entry(r.name.clone()).or_default();
+        if e.branch.is_none() {
+            e.branch = Some(r.configured.clone());
+            changed = true;
+        }
+        let main = e.branch.clone().unwrap_or_default();
+        if e.commit.is_none() && gitx::branch_exists(&r.path, &main) {
+            e.commit = gitx::must(&r.path, &["rev-parse", &main]).ok();
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The first executable `name` in a PATH string, as an absolute path.

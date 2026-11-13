@@ -3,7 +3,6 @@
 use crate::events::{self, Gate, State};
 use crate::evidence::{self, Receipt};
 use crate::gates::GATE_KINDS;
-use crate::gitx;
 use crate::ledger;
 use crate::plan::{self, Plan};
 use crate::refusal::{refuse, R};
@@ -258,7 +257,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             };
             let mut row = if *k == "unit" || *k == "handoff" || *k == "checkpoint" || *k == "check"
             {
-                plan_row(r, &pl)
+                plan_row(p, r, &pl)
             } else {
                 design_row(r, mark.clone())
             };
@@ -453,7 +452,7 @@ fn proves_refs(pl: &Plan, ids: &[String]) -> Vec<Value> {
         .collect()
 }
 
-fn plan_row(r: &Value, pl: &Plan) -> Value {
+fn plan_row(p: &Project, r: &Value, pl: &Plan) -> Value {
     let id = s(r, "id");
     let mut body = Vec::new();
     match s(r, "kind") {
@@ -463,7 +462,15 @@ fn plan_row(r: &Value, pl: &Plan) -> Value {
                 str_list(r, "delivers").join(", "),
                 s(r, "checkpoint")
             )));
-            body.push(json!({"type": "list", "items": str_list(r, "files").iter().map(|f| format!("May touch {f}")).collect::<Vec<_>>()}));
+            // Where a row names a file, it says which repository the file is in (in a workspace).
+            let repo = if p.workspace {
+                p.repo_of_unit(r)
+                    .map(|x| format!(" in {}", x.name))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            body.push(json!({"type": "list", "items": str_list(r, "files").iter().map(|f| format!("May touch {f}{repo}")).collect::<Vec<_>>()}));
             let deps = str_list(r, "depends_on");
             if !deps.is_empty() {
                 body.push(text(&format!("Waits for {}.", deps.join(", "))));
@@ -702,7 +709,7 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
     for u in &pl.units {
         let id = s(u, "id");
         let stt = states.get(id).cloned().unwrap_or_default();
-        let mut row = plan_row(u, &pl);
+        let mut row = plan_row(p, u, &pl);
         row["handled"] = json!({"tone": tone_of_state(&stt), "text": stt});
         unit_rows.push(row);
     }
@@ -710,9 +717,9 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
         json!({"id": "units", "title": "Units", "hint": "In waves; units in one wave share no files", "open": true, "blocks": [wave_block(&pl, &states)], "rows": unit_rows}),
     ];
     sections.push(json!({"id": "handoffs", "title": "Handoffs", "hint": "What passes between units", "open": false, "blocks": [],
-        "rows": pl.handoffs.iter().map(|h| plan_row(h, &pl)).collect::<Vec<_>>()}));
+        "rows": pl.handoffs.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
     sections.push(json!({"id": "checkpoints", "title": "Checkpoints", "hint": "What each one proves", "open": false, "blocks": [],
-        "rows": pl.checkpoints.iter().map(|h| plan_row(h, &pl)).collect::<Vec<_>>()}));
+        "rows": pl.checkpoints.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
     if !pl.problems.is_empty() {
         sections.insert(0, json!({"id": "problems", "title": "Plan problems", "hint": "`bf plan check` refuses until these are fixed", "open": true, "blocks": [],
             "rows": pl.problems.iter().enumerate().map(|(i, x)| json!({"id": format!("P-{}", i + 1), "title": x, "needs_you": false, "label": "high", "body": []})).collect::<Vec<_>>()}));
@@ -857,7 +864,7 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
     let rc = evidence::load_receipts(p)?;
     let wt = p.work_dir().join(&kid);
     let content = if wt.join(".git").exists() {
-        gitx::content_hash(&wt).ok()
+        p.content_hash(&wt).ok()
     } else {
         None
     };

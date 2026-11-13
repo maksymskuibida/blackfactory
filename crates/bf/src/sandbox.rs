@@ -44,6 +44,7 @@ pub fn check_profile(
     wc: &str,
     network: bool,
     transcripts: &str,
+    repos: &[String],
 ) -> String {
     let mut p = String::from("(version 1)\n(allow default)\n");
     if !network {
@@ -63,13 +64,20 @@ pub fn check_profile(
     ));
     // Git runs a hook or reads its config outside the sandbox later, so a check may not plant either; the
     // harness's settings and the transcripts are not a check's to write.
-    for deny in [format!("{root}/.git/hooks"), format!("{root}/.claude")] {
-        p.push_str(&format!("(deny file-write* (subpath {}))\n", q(&deny)));
-    }
     p.push_str(&format!(
-        "(deny file-write* (literal {}))\n",
-        q(&format!("{root}/.git/config"))
+        "(deny file-write* (subpath {}))\n",
+        q(&format!("{root}/.claude"))
     ));
+    for base in std::iter::once(root).chain(repos.iter().map(|r| r.as_str())) {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            q(&format!("{base}/.git/hooks"))
+        ));
+        p.push_str(&format!(
+            "(deny file-write* (literal {}))\n",
+            q(&format!("{base}/.git/config"))
+        ));
+    }
     if !transcripts.is_empty() {
         p.push_str(&format!(
             "(deny file-write* (subpath {}))\n",

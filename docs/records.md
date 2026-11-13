@@ -74,7 +74,8 @@ A slice of work that one builder does in its own working copy.
 | `title` | string | yes | What the unit does |
 | `text` | string | no | More detail for the brief |
 | `delivers` | list of designed IDs | yes, not empty | The parts this unit builds |
-| `files` | list of strings | yes | File scope: paths or folders (`src/a.rs`, `src/ui/`, `src/*.rs`) the unit may change |
+| `files` | list of strings | yes | File scope: paths or folders (`src/a.rs`, `src/ui/`, `src/*.rs`) the unit may change, relative to its repository |
+| `repo` | string | one repository: no; several: yes | The repository (a name in `factory/workspace.toml`) the unit changes |
 | `checkpoint` | `K-` ID | yes | The checkpoint the unit lands on |
 | `depends_on` | list of `U-` IDs | no | Units that must land first |
 | `estimate` | integer | no | Story points |
@@ -167,6 +168,19 @@ project_id = "3f9c1a7e5b2d4c60"   # names the state folder outside the project
 main_branch = "main"
 branch_prefix = "bf/"
 ```
+
+### `factory/workspace.toml`
+
+Present in a workspace only (see `docs/engine.md`, "Workspaces"). One table per code repository:
+
+```toml
+[[repo]]
+name = "app"            # letters, digits, - and _
+path = "../app"         # absolute, or relative to the workspace folder
+main_branch = "main"
+```
+
+The log head, kept outside the project, records for each repository the branch watched and the commit the engine last put there or the human accepted; an edit of this file cannot move the watch (`bf doctor` shows the difference, `bf head accept` takes it).
 
 ### `factory/policy.toml`
 

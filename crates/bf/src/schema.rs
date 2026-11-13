@@ -131,6 +131,7 @@ pub static KINDS: &[Kind] = &[
             f("delivers", Ty::Ids(""), true),
             f("depends_on", Ty::Ids("U"), false),
             f("files", Ty::StrList, true),
+            f("repo", Ty::Str, false),
             f("checkpoint", Ty::Id("K"), true),
             f("estimate", Ty::Int, false),
             fe("tier", Ty::Str, false, &["cheap", "standard", "strong"]),

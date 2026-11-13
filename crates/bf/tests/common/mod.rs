@@ -78,13 +78,43 @@ impl Fx {
     }
 
     fn build(tokens_off: bool) -> Fx {
+        Fx::build_with(tokens_off, &[])
+    }
+
+    /// A workspace (its own git repository, with `bf init --workspace` done) that points at the named
+    /// code repositories, each a sibling folder with one commit and a README.
+    pub fn workspace(repos: &[&str]) -> Fx {
+        Fx::build_with(true, repos)
+    }
+
+    /// The main checkout of a code repository made by `workspace`.
+    pub fn repo_dir(&self, name: &str) -> PathBuf {
+        self.root.parent().unwrap().join(name)
+    }
+
+    fn build_with(tokens_off: bool, repos: &[&str]) -> Fx {
+        let workspace = !repos.is_empty();
         let tmp = TempDir::new().unwrap();
-        let root = fs::canonicalize(tmp.path()).unwrap().join("proj");
+        let root =
+            fs::canonicalize(tmp.path())
+                .unwrap()
+                .join(if workspace { "ws" } else { "proj" });
         fs::create_dir_all(&root).unwrap();
-        git(&root, &["init", "-q", "-b", "main"]);
-        fs::write(root.join("README.md"), "# toy\n").unwrap();
-        git(&root, &["add", "-A"]);
-        git(&root, &["commit", "-q", "-m", "init"]);
+        if workspace {
+            for r in repos {
+                let d = root.parent().unwrap().join(r);
+                fs::create_dir_all(&d).unwrap();
+                git(&d, &["init", "-q", "-b", "main"]);
+                fs::write(d.join("README.md"), format!("# {r}\n")).unwrap();
+                git(&d, &["add", "-A"]);
+                git(&d, &["commit", "-q", "-m", "init"]);
+            }
+        } else {
+            git(&root, &["init", "-q", "-b", "main"]);
+            fs::write(root.join("README.md"), "# toy\n").unwrap();
+            git(&root, &["add", "-A"]);
+            git(&root, &["commit", "-q", "-m", "init"]);
+        }
         let state_base = root.parent().unwrap().join("state");
         let tr_root = root.parent().unwrap().join("transcripts");
         fs::create_dir_all(&tr_root).unwrap();
@@ -119,8 +149,16 @@ impl Fx {
             root,
             state_base,
         };
-        let o = fx.bf(&["init", "--name", "toy"]);
+        let o = if workspace {
+            fx.bf(&["init", "--workspace", "--name", "ws"])
+        } else {
+            fx.bf(&["init", "--name", "toy"])
+        };
         assert_eq!(o.code, 0, "{}", o.all());
+        for r in repos {
+            let o = fx.bf(&["repo", "add", r, &format!("../{r}")]);
+            assert_eq!(o.code, 0, "{}", o.all());
+        }
         git(&fx.root, &["add", "-A"]);
         git(&fx.root, &["commit", "-q", "-m", "bf init"]);
         fx

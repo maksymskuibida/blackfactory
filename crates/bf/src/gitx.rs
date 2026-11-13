@@ -152,6 +152,35 @@ pub fn is_repo(dir: &Path) -> bool {
 /// repository history are not touched. Three git calls: `add -A`,
 /// `rm --cached` (drops stale tracked `factory/` and `.bf/` entries), `write-tree`.
 pub fn content_hash(top: &Path) -> R<String> {
+    content_hash_with(top, true)
+}
+
+/// The hash of a working copy, or, for a folder that holds one working copy per repository (a
+/// checkpoint over several repositories), a hash of their hashes by repository name.
+pub fn workdir_hash(dir: &Path, exclude_factory: bool) -> R<String> {
+    if dir.join(".git").exists() {
+        return content_hash_with(dir, exclude_factory);
+    }
+    let mut names: Vec<String> = fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| e.path().join(".git").exists())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        return Err(err(format!("{} holds no git working copy", dir.display())));
+    }
+    let mut text = String::new();
+    for n in names {
+        text.push_str(&format!(
+            "{n} {}\n",
+            content_hash_with(&dir.join(&n), exclude_factory)?
+        ));
+    }
+    Ok(crate::util::sha256_hex(text.as_bytes()))
+}
+
+fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let gitdir = git_dir_of(top)
         .ok_or_else(|| err(format!("{} is not a git working copy", top.display())))?;
     let tmp = gitdir.join(format!("bf-index-{}", std::process::id()));
@@ -164,26 +193,33 @@ pub fn content_hash(top: &Path) -> R<String> {
     let tmp_s = tmp.to_string_lossy().to_string();
     let envs = [("GIT_INDEX_FILE", tmp_s.as_str())];
     let result = (|| -> R<String> {
-        let o = run(top, &["add", "-A", "--", ".", ":(exclude)factory"], &envs)?;
+        let add: &[&str] = if exclude_factory {
+            &["add", "-A", "--", ".", ":(exclude)factory"]
+        } else {
+            &["add", "-A"]
+        };
+        let o = run(top, add, &envs)?;
         if !o.ok {
             return Err(err(format!("git add failed: {}", o.stderr)));
         }
-        let o = run(
-            top,
-            &[
-                "rm",
-                "-r",
-                "--cached",
-                "-q",
-                "--ignore-unmatch",
-                "--",
-                "factory",
-                ".bf",
-            ],
-            &envs,
-        )?;
-        if !o.ok {
-            return Err(err(format!("git rm --cached failed: {}", o.stderr)));
+        if exclude_factory {
+            let o = run(
+                top,
+                &[
+                    "rm",
+                    "-r",
+                    "--cached",
+                    "-q",
+                    "--ignore-unmatch",
+                    "--",
+                    "factory",
+                    ".bf",
+                ],
+                &envs,
+            )?;
+            if !o.ok {
+                return Err(err(format!("git rm --cached failed: {}", o.stderr)));
+            }
         }
         let o = run(top, &["write-tree"], &envs)?;
         if !o.ok {

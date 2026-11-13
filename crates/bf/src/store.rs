@@ -379,6 +379,21 @@ impl Default for Config {
     }
 }
 
+/// The name of the one repository of a project that was not set up as a workspace: the folder itself.
+pub const CLASSIC_REPO: &str = "code";
+
+/// A code repository the factory works on.
+#[derive(Clone, Debug)]
+pub struct Repo {
+    pub name: String,
+    /// Absolute path of its main checkout. In a project without a workspace file, the project folder.
+    pub path: PathBuf,
+    /// The main branch the file names.
+    pub configured: String,
+    /// The main branch in force: the one recorded in the log head when the project started.
+    pub branch: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Project {
     /// The main checkout, where `factory/` and `.bf/` live.
@@ -391,9 +406,10 @@ pub struct Project {
     pub state_base: Option<PathBuf>,
     /// Whether the policy file on disk is the one the human accepted.
     pub policy_state: PolicyState,
-    /// What `factory/config.toml` says the main branch is. The branch in force (`config.main_branch`)
-    /// is the one kept in the log head; `bf head accept` takes this one.
-    pub config_main_branch: String,
+    /// The code repositories: those listed in `factory/workspace.toml`, or the project folder itself.
+    pub repos: Vec<Repo>,
+    /// Whether `factory/workspace.toml` exists (the factory lives apart from its code).
+    pub workspace: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -475,7 +491,11 @@ impl Project {
                 if let Some(gd) = read_gitdir_file(&dot) {
                     if let Some(main) = main_root_from_gitdir(&gd) {
                         if main.join("factory/config.toml").is_file() {
-                            return Project::open(main, top.unwrap_or_else(|| dir.to_path_buf()));
+                            return Project::open(
+                                main,
+                                top.unwrap_or_else(|| dir.to_path_buf()),
+                                &start,
+                            );
                         }
                     }
                 }
@@ -483,7 +503,7 @@ impl Project {
             }
             if dir.join("factory/config.toml").is_file() {
                 let t = top.unwrap_or_else(|| dir.to_path_buf());
-                return Project::open(dir.to_path_buf(), t);
+                return Project::open(dir.to_path_buf(), t, &start);
             }
         }
         Err(refuse(
@@ -497,7 +517,16 @@ impl Project {
         ))
     }
 
-    fn open(root: PathBuf, top: PathBuf) -> R<Project> {
+    fn open(root: PathBuf, top: PathBuf, start: &Path) -> R<Project> {
+        // Inside `.bf/work/<name>` the working copy is that folder, whatever git repository it belongs
+        // to (a checkpoint over several repositories is a plain folder of working copies).
+        let top = match start.strip_prefix(root.join(".bf/work")) {
+            Ok(rel) => match rel.components().next() {
+                Some(c) => root.join(".bf/work").join(c),
+                None => top,
+            },
+            Err(_) => top,
+        };
         let p = Project::open_inner(root, top)?;
         if p.config.project_id.is_empty() {
             return Err(refuse(
@@ -513,11 +542,13 @@ impl Project {
     /// Load the policy from the accepted copy in the state folder, never from the file on disk, and
     /// note whether the file on disk still equals it. (`state_base` may be set after `open`.)
     pub fn reload_policy(&mut self) -> R<()> {
-        if self.config_main_branch.is_empty() {
-            self.config_main_branch = self.config.main_branch.clone();
-        }
-        if let Some(b) = crate::events::read_head(self).and_then(|h| h.main_branch) {
-            self.config.main_branch = b;
+        let head = crate::events::read_head(self);
+        for r in self.repos.iter_mut() {
+            r.branch = head
+                .as_ref()
+                .and_then(|h| h.repos.get(&r.name))
+                .and_then(|x| x.branch.clone())
+                .unwrap_or_else(|| r.configured.clone());
         }
         let disk = fs::read(self.root.join("factory/policy.toml")).unwrap_or_default();
         match fs::read(self.accepted_policy_path()) {
@@ -674,10 +705,101 @@ impl Project {
             policy,
             state_base: None,
             policy_state: PolicyState::NeverAccepted,
-            config_main_branch: String::new(),
+            repos: vec![],
+            workspace: false,
         };
+        p.load_repos()?;
         p.reload_policy()?;
         Ok(p)
+    }
+
+    /// Read the repository list: `factory/workspace.toml`, or the project folder as the one repository.
+    fn load_repos(&mut self) -> R<()> {
+        let file = self.root.join("factory/workspace.toml");
+        self.workspace = file.is_file();
+        self.repos = if self.workspace {
+            let v: toml::Value = toml::from_str(&fs::read_to_string(&file)?)?;
+            let mut out = Vec::new();
+            for r in v
+                .get("repo")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = r
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let path = r.get("path").and_then(|x| x.as_str()).unwrap_or(".");
+                let main = r
+                    .get("main_branch")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("main")
+                    .to_string();
+                let joined = if Path::new(path).is_absolute() {
+                    PathBuf::from(path)
+                } else {
+                    self.root.join(path)
+                };
+                out.push(Repo {
+                    name,
+                    path: fs::canonicalize(&joined).unwrap_or(joined),
+                    configured: main.clone(),
+                    branch: main,
+                });
+            }
+            out
+        } else {
+            vec![Repo {
+                name: CLASSIC_REPO.into(),
+                path: self.root.clone(),
+                configured: self.config.main_branch.clone(),
+                branch: self.config.main_branch.clone(),
+            }]
+        };
+        Ok(())
+    }
+
+    pub fn repo(&self, name: &str) -> R<&Repo> {
+        self.repos.iter().find(|r| r.name == name).ok_or_else(|| {
+            refuse(
+                format!("use the repository `{name}`"),
+                "the workspace lists no such repository",
+                &["`bf repo list` shows the repositories; `bf repo add <name> <path>` adds one."],
+                "`bf repo list` shows it.",
+            )
+        })
+    }
+
+    /// The repository a unit changes: the one it names, or the only one there is.
+    pub fn repo_of_unit(&self, unit: &Value) -> R<&Repo> {
+        let n = s(unit, "repo");
+        if n.is_empty() {
+            match self.repos.as_slice() {
+                [only] => Ok(only),
+                [] => Err(refuse(
+                    "find the unit's repository",
+                    "the workspace lists no repository",
+                    &["`bf repo add <name> <path>` adds one."],
+                    "`bf repo list` shows it.",
+                )),
+                _ => Err(refuse(
+                    format!("find the repository of {}", s(unit, "id")),
+                    "the workspace lists several repositories and the unit names none",
+                    &["Add `repo = \"<name>\"` to the unit (the plan problem says which)."],
+                    "`bf plan check` passes.",
+                )),
+            }
+        } else {
+            self.repo(n)
+        }
+    }
+
+    /// Content hash of a working copy. In a project whose one repository is the folder itself, `factory/`
+    /// and `.bf/` are left out (they hold the factory's own files); a code repository is hashed whole.
+    pub fn content_hash(&self, dir: &Path) -> R<String> {
+        crate::gitx::workdir_hash(dir, !self.workspace)
     }
 
     pub fn factory(&self) -> PathBuf {
@@ -987,7 +1109,8 @@ impl Project {
             "gen": gen,
             "state_dir": self.state_dir().to_string_lossy(),
             "worktrees": worktrees,
-            "main_branch": self.config.main_branch,
+            "main_branch": self.repos.first().map(|r| r.branch.clone()).unwrap_or_else(|| self.config.main_branch.clone()),
+            "repos": self.repos.iter().map(|r| json!({"name": r.name, "path": r.path.to_string_lossy(), "branch": r.branch})).collect::<Vec<_>>(),
             "branch_prefix": self.config.branch_prefix,
         });
         // Sign the table with the key, so a table planted or emptied by hand does not pass.
