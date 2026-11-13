@@ -768,20 +768,6 @@ fn dispatch(args: &Args) -> R<()> {
             out(args, &v, || pretty(&v));
             Ok(())
         }
-        "programs" => {
-            let p = project(args)?;
-            if args.pos.get(1).map(|x| x.as_str()) != Some("accept") {
-                return Err(refuse(
-                    "run `bf programs`",
-                    "only `bf programs accept` exists",
-                    &["After the human says in chat that a program change is theirs: `bf programs accept --quote \"<their words>\"`."],
-                    "`bf evidence run` starts the check.",
-                ));
-            }
-            let v = crate::programs::accept(&p, args.flag("quote").unwrap_or(""))?;
-            out(args, &v, || "programs accepted".to_string());
-            Ok(())
-        }
         "token" => {
             let p = project(args)?;
             if args.pos.get(1).map(|x| x.as_str()) != Some("take") {
@@ -1064,10 +1050,19 @@ fn cmd_init(args: &Args) -> R<()> {
     // The first policy of a project on this machine is accepted by `bf init`; a later change on disk is
     // the human's to accept with `bf policy accept`.
     // The main branch as it stands now is where the engine starts counting.
-    if crate::gitx::branch_exists(&p.root, &p.config.main_branch) {
+    {
         let mut h = events::read_head(&p).unwrap_or_default();
-        if h.main_commit.is_none() {
-            h.main_commit = crate::gitx::must(&p.root, &["rev-parse", &p.config.main_branch]).ok();
+        let mut changed = false;
+        if h.main_branch.is_none() {
+            h.main_branch = Some(p.config_main_branch.clone());
+            changed = true;
+        }
+        let main = h.main_branch.clone().unwrap_or_default();
+        if h.main_commit.is_none() && crate::gitx::branch_exists(&p.root, &main) {
+            h.main_commit = crate::gitx::must(&p.root, &["rev-parse", &main]).ok();
+            changed = true;
+        }
+        if changed {
             events::write_head(&p, &h)?;
         }
     }
@@ -1438,8 +1433,18 @@ fn cmd_gate(args: &Args) -> R<()> {
                                     String::new()
                                 } else {
                                     format!(
-                                        " - decided on the words: \"{}\" (the human's whole message: \"{}\")",
-                                        g.quote, g.message
+                                        " - decided on the words: \"{}\" (the human's whole message: \"{}\"){}",
+                                        g.quote,
+                                        g.message,
+                                        if g.caution.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" - caution: {}", g.caution)
+                                        } + &if g.transcript.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" - transcript: {}", g.transcript)
+                                        }
                                     )
                                 }
                             )

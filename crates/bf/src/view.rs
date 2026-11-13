@@ -403,6 +403,20 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             &g.message,
             "so you can see what the quote was cut from",
         ));
+        if !g.transcript.is_empty() {
+            v["page"]["facts"].as_array_mut().unwrap().push(fact(
+                "Transcript",
+                &g.transcript,
+                "what the harness's transcript said about this message (information only)",
+            ));
+        }
+        if !g.caution.is_empty() {
+            v["page"]["facts"].as_array_mut().unwrap().push(fact(
+                "Caution",
+                &g.caution,
+                "not a refusal: check that the words above say what you meant",
+            ));
+        }
     }
     v["page"]["round"] = json!({"n": round, "prev": if prev.is_some() { json!(round - 1) } else { Value::Null }, "changed": changed, "new": new, "removed": removed});
     v["sections"] = json!(sections);

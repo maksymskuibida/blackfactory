@@ -125,7 +125,7 @@ fn payload(fx: &Fx, prompt: &str, transcript: &Path) -> String {
 }
 
 #[test]
-fn a_turn_needs_a_transcript_under_the_harness_root_that_ends_with_the_prompt() {
+fn a_turn_is_recorded_from_the_payload_and_the_transcript_is_only_noted() {
     let fx = Fx::new();
     let user_line = |t: &str| {
         format!(
@@ -133,63 +133,105 @@ fn a_turn_needs_a_transcript_under_the_harness_root_that_ends_with_the_prompt() 
             json!({"type": "user", "message": {"role": "user", "content": t}})
         )
     };
-    // A file an agent made somewhere else.
+    let turn = |prompt: &str, tr: &Path| {
+        fx.bf_stdin(
+            &fx.root,
+            &["human-turn", "--json"],
+            &payload(&fx, prompt, tr),
+        )
+        .json()
+    };
+    // A file elsewhere, a file that is not there, a file that holds no human message, a file that
+    // ends with another message: each is recorded, with the note saying what it was.
     let elsewhere = tempfile::tempdir().unwrap();
     let fake = elsewhere.path().join("t.jsonl");
     fs::write(&fake, user_line("I approve the architecture")).unwrap();
-    let o = fx.bf_stdin(
-        &fx.root,
-        &["human-turn", "--json"],
-        &payload(&fx, "I approve the architecture", &fake),
-    );
-    assert_eq!(o.json()["recorded"], false);
-    assert!(
-        o.json()["event"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("transcript root"),
-        "{}",
-        o.stdout
-    );
-    // A file under the root that does not end with this prompt.
+    assert_eq!(turn("one", &fake)["event"]["transcript"], "absent");
     let real = fx.transcript_root().join("session.jsonl");
-    fs::write(&real, user_line("what is in the plan?")).unwrap();
-    let o = fx.bf_stdin(
-        &fx.root,
-        &["human-turn", "--json"],
-        &payload(&fx, "I approve the architecture", &real),
-    );
-    assert_eq!(o.json()["recorded"], false, "{}", o.stdout);
-    // A file that holds no human message at all.
+    assert_eq!(turn("two", &real)["event"]["transcript"], "absent");
     fs::write(&real, "not json\n").unwrap();
-    let o = fx.bf_stdin(
-        &fx.root,
-        &["human-turn", "--json"],
-        &payload(&fx, "I approve the architecture", &real),
-    );
+    assert_eq!(turn("three", &real)["event"]["transcript"], "unparsed");
+    fs::write(&real, user_line("an earlier message")).unwrap();
+    let v = turn("four", &real);
+    assert_eq!(v["recorded"], true, "{v}");
+    assert_eq!(v["event"]["transcript"], "differs");
+    // Tool results, meta lines and API blobs are not the human's message; the last real one counts.
+    let blob = json!({"type": "api-request-blob", "message": {"role": "user", "content": "<system-reminder>x</system-reminder>"}});
+    let meta =
+        json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": "caveat"}});
+    let tool = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "x"}]}});
+    fs::write(
+        &real,
+        format!("{}{blob}\n{meta}\n{tool}\n", user_line("five")),
+    )
+    .unwrap();
+    assert_eq!(turn("five", &real)["event"]["transcript"], "match");
+    // Other checks on the payload still hold: a subagent's payload is not a human turn.
+    let mut pl: serde_json::Value = serde_json::from_str(&payload(&fx, "six", &real)).unwrap();
+    pl["agent_id"] = json!("a1");
+    let o = fx.bf_stdin(&fx.root, &["human-turn", "--json"], &pl.to_string());
     assert_eq!(o.json()["recorded"], false);
-    // Tool results are not human messages; the last real one counts.
-    fs::write(&real, format!("{}{}", user_line("I approve the architecture"), json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "x"}]}}).to_string() + "\n")).unwrap();
-    let o = fx.bf_stdin(
-        &fx.root,
-        &["human-turn", "--json"],
-        &payload(&fx, "I approve the architecture", &real),
-    );
-    assert_eq!(o.json()["recorded"], true, "{}", o.stdout);
-    assert_eq!(o.json()["event"]["transcript"], "match");
-    // A harness that writes the transcript after the hook can ask for `soft`: the mismatch is then a note.
+    // Strict is an opt-in: then the transcript must already end with the prompt.
     fx.set_policy(
-        "transcript_match = \"strict\"",
         "transcript_match = \"soft\"",
+        "transcript_match = \"strict\"",
     );
     fs::write(&real, user_line("an earlier message")).unwrap();
-    let o = fx.bf_stdin(
-        &fx.root,
-        &["human-turn", "--json"],
-        &payload(&fx, "I approve the plan", &real),
-    );
-    assert_eq!(o.json()["recorded"], true);
+    let o = turn("seven", &real);
+    assert_eq!(o["recorded"], false, "{o}");
+    assert!(o["event"]["reason"].as_str().unwrap().contains("strict"));
+    fs::write(&real, user_line("eight")).unwrap();
+    assert_eq!(turn("eight", &real)["recorded"], true);
+}
+
+#[test]
+fn a_payload_shaped_like_claude_codes_is_recorded_before_the_transcript_has_the_prompt() {
+    let fx = Fx::new();
+    // The first prompt of a session: the transcript file is not written yet.
+    let tr = fx.transcript_root().join("fresh-session.jsonl");
+    let payload = json!({
+        "session_id": "0b6f1c3e-aaaa-bbbb-cccc-1234567890ab",
+        "transcript_path": tr.to_string_lossy(),
+        "cwd": fx.root.to_string_lossy(),
+        "permission_mode": "default",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Yes, the requirements look right to me."
+    });
+    let o = fx.bf_stdin(&fx.root, &["human-turn", "--json"], &payload.to_string());
+    assert_eq!(o.json()["recorded"], true, "{}", o.all());
+    assert_eq!(o.json()["event"]["transcript"], "absent");
+    // The next prompt: the transcript holds only the previous one.
+    fs::write(
+        &tr,
+        format!(
+            "{}\n",
+            json!({"type": "user", "message": {"role": "user", "content": "Yes, the requirements look right to me."}})
+        ),
+    )
+    .unwrap();
+    let mut second = payload.clone();
+    second["prompt"] = json!("Ship it, and thanks.");
+    let o = fx.bf_stdin(&fx.root, &["human-turn", "--json"], &second.to_string());
+    assert_eq!(o.json()["recorded"], true, "{}", o.all());
     assert_eq!(o.json()["event"]["transcript"], "differs");
+    // A gate is decided on it, and the gate status shows what the transcript said.
+    let gid = fx
+        .must(&["gate", "open", "requirements"])
+        .stdout
+        .trim()
+        .to_string();
+    let mut third = payload.clone();
+    third["prompt"] = json!("I approve the requirements.");
+    fx.bf_stdin(&fx.root, &["human-turn"], &third.to_string());
+    fx.must(&[
+        "gate",
+        "approve",
+        &gid,
+        "--quote",
+        "I approve the requirements.",
+    ]);
+    let st = fx.must(&["gate", "status", "--json"]);
+    assert!(st.stdout.contains("transcript_check"), "{}", st.stdout);
 }
 
 #[test]
@@ -414,7 +456,7 @@ fn the_sandbox_costs_a_little_and_the_policy_can_switch_it_off() {
 // ------------------------------------------------------------ the folders programs are found in
 
 #[test]
-fn a_check_does_not_start_when_a_folder_on_its_path_changed_after_the_policy_was_accepted() {
+fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_informs() {
     let fx = Fx::new();
     fx.put(
         "requirement",
@@ -423,8 +465,6 @@ fn a_check_does_not_start_when_a_folder_on_its_path_changed_after_the_policy_was
     fx.put("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"true\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
     let extra = tempfile::tempdir().unwrap();
     let extra_dir = fs::canonicalize(extra.path()).unwrap();
-    // The human adds a folder to the path and accepts the policy: it is as it was then.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     fx.set_policy(
         "path = \"/usr/bin:/bin:/usr/sbin:/sbin\"",
         &format!(
@@ -432,41 +472,29 @@ fn a_check_does_not_start_when_a_folder_on_its_path_changed_after_the_policy_was
             extra_dir.display()
         ),
     );
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     fx.must(&["evidence", "run", "X-5", "--", "true"]);
-    // A program planted in it afterwards is refused before any check starts, and the folder is named.
-    fs::write(extra_dir.join("sh"), "#!/bin/sh\nexit 0\n").unwrap();
-    let o = fx.refused(&["evidence", "run", "X-5", "--", "true"]);
-    assert!(
-        o.stderr.contains(extra_dir.to_str().unwrap())
-            && o.stderr.contains("after the policy was accepted"),
-        "{}",
-        o.stderr
-    );
-    // Accepting again resets the time.
+    // A version manager rehashes its shims: the folder changes, the check still runs.
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    fx.human("Yes, I accept the new policy.");
-    fx.must(&[
-        "policy",
-        "accept",
-        "--quote",
-        "Yes, I accept the new policy.",
-    ]);
-    fx.must(&["evidence", "run", "X-5", "--", "true"]);
-    // A folder inside the project is never allowed.
+    fs::write(extra_dir.join("shim"), "#!/bin/sh\nexit 0\n").unwrap();
+    let o = fx.must(&["evidence", "run", "X-5", "--", "true"]);
+    assert!(!o.stderr.contains("refused"), "{}", o.stderr);
+    // A folder inside the project is only information in `bf doctor`.
     let inside = fx.root.join("tools");
     fs::create_dir_all(&inside).unwrap();
     fx.set_policy("path = \"", &format!("path = \"{}:", inside.display()));
-    let o = fx.refused(&["evidence", "run", "X-5", "--", "true"]);
-    assert!(o.stderr.contains("inside the project"), "{}", o.stderr);
+    fx.must(&["evidence", "run", "X-5", "--", "true"]);
     let d = fx.bf(&["doctor"]);
-    assert!(d.stdout.contains("check path: PROBLEM"), "{}", d.stdout);
+    assert!(
+        d.stdout.contains("check path: ok") && d.stdout.contains("inside the project"),
+        "{}",
+        d.stdout
+    );
 }
 
 // ------------------------------------------------------------ tokens taken once
 
 #[test]
-fn a_role_token_is_taken_once_for_a_directive_just_given_and_a_second_request_fails_loudly() {
+fn a_role_token_is_handed_out_for_a_directive_just_given_and_a_second_request_voids_the_first() {
     let fx = Fx::new();
     fx.tiny();
     fx.set_policy("tokens = false", "tokens = true");
@@ -488,16 +516,16 @@ fn a_role_token_is_taken_once_for_a_directive_just_given_and_a_second_request_fa
         "bf token take U-1 --role builder"
     );
     let tok = fx.take_token("U-1", "builder");
-    // A second request, from a script for instance, fails and says someone may hold the token.
-    let o = fx.refused(&["token", "take", "U-1", "--role", "builder"]);
+    // A second request (a conductor that lost its context, or a script that asked first) is served,
+    // and says loudly that the earlier token is void now.
+    let o = fx.must(&["token", "take", "U-1", "--role", "builder"]);
     assert!(
-        o.stderr.contains("already taken") && o.stderr.contains("another caller"),
+        o.stderr.contains("already taken") && o.stderr.contains("void"),
         "{}",
         o.stderr
     );
-    // `bf next` again does not make it available again while it is unspent.
-    fx.must(&["next", "--json"]);
-    fx.refused(&["token", "take", "U-1", "--role", "builder"]);
+    let tok2 = o.stdout.trim().to_string();
+    assert_ne!(tok, tok2);
     let wc = started_unit(&fx);
     assert_eq!(
         fx.bf_in(
@@ -513,20 +541,30 @@ fn a_role_token_is_taken_once_for_a_directive_just_given_and_a_second_request_fa
             .code,
         2
     );
+    // The first taker's token no longer works; the second taker's does.
+    assert_eq!(
+        fx.bf_in(
+            &wc,
+            &["report", "U-1", "--result", "built", "--token", &tok]
+        )
+        .code,
+        2,
+        "the token that was voided"
+    );
     fx.must_in(
         &wc,
-        &["report", "U-1", "--result", "built", "--token", &tok],
+        &["report", "U-1", "--result", "built", "--token", &tok2],
     );
-    // The reviewer's directive is new, so its token can be taken, once.
+    // The reviewer's directive is new, so its token can be taken.
     let n = fx.must(&["next", "--json"]).json();
     assert_eq!(n["directives"][0]["role"], "reviewer");
     let rt = fx.take_token("U-1", "reviewer");
-    fx.refused(&["token", "take", "U-1", "--role", "reviewer"]);
-    // Lost, or taken by someone else: the human resets, and the next call can be taken again.
+    // The human can still clear every unspent token and offer.
     let o = fx.bf(&["tokens", "reset", "--quote", "Yes, reset them."]);
     assert_eq!(o.code, 2, "needs a human turn");
     fx.human("Yes, reset them.");
     fx.must(&["tokens", "reset", "--quote", "Yes, reset them."]);
+    fx.refused(&["token", "take", "U-1", "--role", "reviewer"]);
     fx.must(&["next", "--json"]);
     let rt2 = fx.take_token("U-1", "reviewer");
     assert_ne!(rt, rt2);
@@ -652,7 +690,8 @@ fn a_named_project_is_the_only_project_the_guard_looks_at() {
     fx.tiny();
     // A folder above the project that happens to have a factory/ folder.
     let above = fx.root.parent().unwrap().join("factory");
-    fs::create_dir_all(&above).unwrap();
+    fs::create_dir_all(above.join("log")).unwrap();
+    fs::write(above.join("log/events.jsonl"), "").unwrap();
     let input = json!({"file_path": fx.root.join("src/a.rs").to_string_lossy()});
     assert_eq!(
         guard_with(&fx, &fx.root, "Write", input.clone(), &[]),
@@ -755,7 +794,7 @@ fn one_unreadable_record_file_does_not_break_status_and_is_named() {
 }
 
 #[test]
-fn a_program_replaced_after_the_plan_gate_stops_its_check_until_the_human_accepts() {
+fn a_program_replaced_after_the_plan_gate_is_noted_in_the_receipt_and_the_check_still_runs() {
     let fx = Fx::new();
     fx.tiny();
     let tools = fx.root.parent().unwrap().join("tools");
@@ -798,20 +837,22 @@ fn a_program_replaced_after_the_plan_gate_stops_its_check_until_the_human_accept
     // Replace the program's contents (a longer file, so size differs whatever the clock says).
     fs::write(&tool, "#!/bin/sh\n# changed\ntrue\n").unwrap();
     let o = run(&fx);
-    assert_eq!(o.code, 2, "{}", o.all());
+    assert_eq!(o.code, 0, "an upgrade is ordinary: {}", o.all());
     assert!(
-        o.stderr.contains("checkit") && o.stderr.contains("programs accept"),
+        o.stderr.contains("checkit") && o.stderr.contains("recorded when the plan was approved"),
         "{}",
         o.stderr
     );
-    // The human says it is theirs.
-    fx.human("Yes, I changed that tool myself, go on.");
-    fx.must(&[
-        "programs",
-        "accept",
-        "--quote",
-        "Yes, I changed that tool myself, go on.",
-    ]);
+    let rcs = bf::evidence::load_receipts(&fx.project()).unwrap();
+    assert!(
+        rcs.iter().any(|r| r.v["program_note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("checkit")),
+        "the receipt carries the note"
+    );
+    // The change is noted once; the next run is quiet.
     let o = run(&fx);
-    assert_eq!(o.code, 0, "after the human accepts: {}", o.all());
+    assert_eq!(o.code, 0);
+    assert!(!o.stderr.contains("note:"), "{}", o.stderr);
 }

@@ -566,8 +566,13 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
 
 #[test]
 fn the_design_phase_with_real_approvals_rejections_and_rounds() {
-    let fx = Fx::new();
+    let fx = Fx::shipped();
     let w = Walk::new(&fx);
+    // The shipped policy as it is: role tokens on, the transcript only noted. The human's messages
+    // arrive the way Claude Code's hook delivers them, before the transcript holds them. Nothing in
+    // this test edits the policy.
+    let shipped = fs::read_to_string(fx.root.join("factory/policy.toml")).unwrap();
+    assert!(shipped.contains("transcript_match = \"soft\""), "{shipped}");
     // Idea.
     let i1 = w.new_id("idea");
     w.put("idea", &i1, "kind = \"idea\"\ntitle = \"A tiny greeter\"\n");
@@ -770,10 +775,29 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
             "src/a.txt",
         ],
     );
-    w.ok(&wc, &["report", &u1, "--result", "built"]);
+    let tb = w
+        .conductor(&["token", "take", &u1, "--role", "builder"])
+        .stdout;
     w.ok(
         &wc,
-        &["report", &u1, "--result", "findings", "--role", "reviewer"],
+        &["report", &u1, "--result", "built", "--token", tb.trim()],
+    );
+    w.conductor(&["next", "--json"]);
+    let tr = w
+        .conductor(&["token", "take", &u1, "--role", "reviewer"])
+        .stdout;
+    w.ok(
+        &wc,
+        &[
+            "report",
+            &u1,
+            "--result",
+            "findings",
+            "--role",
+            "reviewer",
+            "--token",
+            tr.trim(),
+        ],
     );
     w.conductor(&["unit", "land", &u1]);
     let n = w.conductor(&["next", "--json"]).json();
@@ -799,6 +823,17 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
     w.conductor(&["gate", "approve", &gid, "--quote", "Merge it, I approve."]);
     w.ok(&fx.root, &["checkpoint", "close", &k1, "--merge"]); // what the human may do
     assert!(fx.root.join("src/a.txt").exists());
+    // From `bf init` to a merged checkpoint, and the policy file is as the engine first accepted it.
+    assert_eq!(
+        fs::read_to_string(fx.root.join("factory/policy.toml")).unwrap(),
+        shipped
+    );
+    let doctor = fx.bf(&["doctor"]);
+    assert!(
+        !doctor.stdout.contains("PROBLEM: policy"),
+        "{}",
+        doctor.stdout
+    );
 }
 
 #[test]

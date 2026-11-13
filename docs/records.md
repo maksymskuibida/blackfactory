@@ -179,9 +179,9 @@ Only the human edits it. The guard keeps agents away from it.
 | `[review]` | `required` | A unit needs a clean review before landing |
 | `[ledger]` | `kinds` | Which record kinds the ledger holds to account |
 | `[evidence]` | `tail_bytes`, `max_attach_bytes` | Output kept in a receipt; attachment size limit |
-| `[human]` | `sessions`, `approval_words`, `refusal_words`, `transcript_root`, `transcript_match` | Session ids that count as the human's own (empty means any); the words an approval must hold and a refusal must not (lists in English, German, French and Spanish by default); where the harness keeps transcripts (`~/.claude/projects`); `strict` or `soft` comparison of the transcript's last message with the prompt |
+| `[human]` | `sessions`, `approval_words`, `refusal_words`, `transcript_root`, `transcript_match` | Session ids that count as the human's own (empty means any); two word lists that only add a caution beside a decision (English, German, French and Spanish by default), never a refusal; where the harness keeps transcripts (`~/.claude/projects`); `soft` (default: the transcript is noted beside each turn) or `strict` (refuse a turn unless the transcript already ends with the prompt) |
 | `[roles]` | `tokens` | `bf report` needs the one-use token `bf next` handed out (default true) |
-| `[exec]` | `path`, `git`, `sandbox` | The `PATH` checks run with and the `git` program, captured at `bf init`; whether checks and git run under the system's sandbox where there is one. Only the human edits them, and a change takes effect when the human accepts it |
+| `[exec]` | `path`, `git`, `sandbox`, `network`, `env` | The `PATH` checks run with and the `git` program, captured at `bf init`; whether checks and git run under the system's sandbox where there is one; whether checks may use the network under it (default no); more environment variable names a check may see. Only the human edits them, and a change takes effect when the human accepts it |
 | `[guard]` | `allow`, `protected_extra` | `abstain` (default: the guard says nothing about calls it does not deny) or `allow`; more protected paths |
 
 ### `factory/receipts/rc-NNNNN.toml`
@@ -209,6 +209,6 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `tokens.reset`, `programs.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `tokens.reset`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
 
 Gates, approvals, test-mode grants and amendments live here, not in record files, so nothing can change them after the fact: a decision is valid only when the replayed log accepts it. A `gate.approve` counts only if it cites a human turn recorded after the gate opened and not used before, with a quote that is in that turn's text (the turn is not only a question), or is simulated inside a run that holds a test-mode grant (or, for a design gate, a grant waiting for its run).

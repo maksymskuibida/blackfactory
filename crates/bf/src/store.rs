@@ -37,12 +37,16 @@ max_attach_bytes = 5242880
 
 [human]
 sessions = []         # session ids that count as the human's own; empty means any session
-# A decision is a whole sentence of the human's message. An approval needs a word of the first list in
-# it and no word of the second anywhere in the message; a rejection the other way round.
+# A decision is the quote the conductor names from the human's message; the engine stores both. These
+# two lists only add a visible caution beside the decision ("the message also contains: not"). They
+# never refuse anything.
 approval_words = {approve}
 refusal_words = {refuse}
-transcript_root = "~/.claude/projects"   # a turn counts only if its transcript file is under here
-transcript_match = "strict"              # "soft" only notes a transcript that does not end with the prompt
+transcript_root = "~/.claude/projects"   # where the harness keeps its transcripts
+# "soft" records the turn from the hook payload and only notes what the transcript says (match, differs,
+# unparsed, absent). "strict" refuses a turn unless the transcript, under the root above, already ends
+# with the prompt; the harness may write the transcript only after the hook runs.
+transcript_match = "soft"
 
 [roles]
 tokens = true         # `bf report` needs the one-use token that `bf next` handed out for the role
@@ -53,6 +57,8 @@ tokens = true         # `bf report` needs the one-use token that `bf next` hande
 path = {path}
 git = {git}
 sandbox = true        # run checks and git under sandbox-exec where it works (macOS); see `bf doctor`
+network = false       # true lets checks reach the network under the sandbox
+env = []              # extra environment variable names a check may see, e.g. ["JAVA_HOME"]
 
 [guard]
 allow = "abstain"     # "abstain" prints {{}} and leaves the decision to the harness's own prompts; "allow" approves
@@ -192,8 +198,8 @@ pub struct HumanPol {
     pub refusal_words: Vec<String>,
     /// Where the harness keeps its transcripts. A turn is recorded only if its transcript is there.
     pub transcript_root: String,
-    /// `strict`: the transcript's last human message must be the prompt. `soft`: a different last
-    /// message is recorded as a note only (for a harness that writes the transcript after the hook).
+    /// `soft` (the default): the turn is recorded from the payload, and what the transcript says is a
+    /// note only. `strict`: the transcript's last human message must already be the prompt.
     pub transcript_match: String,
 }
 fn words(l: &[&str]) -> Vec<String> {
@@ -206,7 +212,7 @@ impl Default for HumanPol {
             approval_words: words(DEFAULT_APPROVAL),
             refusal_words: words(DEFAULT_REFUSAL),
             transcript_root: "~/.claude/projects".into(),
-            transcript_match: "strict".into(),
+            transcript_match: "soft".into(),
         }
     }
 }
@@ -318,6 +324,10 @@ pub struct ExecPol {
     pub git: String,
     /// Run checks and git under the system's sandbox where there is one.
     pub sandbox: bool,
+    /// Let checks use the network under the sandbox (default no).
+    pub network: bool,
+    /// More environment variable names a check may see, beyond the short built-in list.
+    pub env: Vec<String>,
 }
 impl Default for ExecPol {
     fn default() -> Self {
@@ -325,6 +335,8 @@ impl Default for ExecPol {
             path: String::new(),
             git: String::new(),
             sandbox: true,
+            network: false,
+            env: Vec::new(),
         }
     }
 }
@@ -376,6 +388,9 @@ pub struct Project {
     pub state_base: Option<PathBuf>,
     /// Whether the policy file on disk is the one the human accepted.
     pub policy_state: PolicyState,
+    /// What `factory/config.toml` says the main branch is. The branch in force (`config.main_branch`)
+    /// is the one kept in the log head; `bf head accept` takes this one.
+    pub config_main_branch: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -423,6 +438,25 @@ pub fn git_dir_of(top: &Path) -> Option<PathBuf> {
 
 /// The readable records, and the files that could not be read (file name, reason).
 pub type Scanned = (Vec<Value>, Vec<(String, String)>);
+
+/// An environment variable that holds an absolute path. An empty or relative value counts as unset, so
+/// it cannot put the state folder (and the key) inside the project.
+fn absolute_env(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// The same policy once read: a comment, spacing or order changed on disk is not a change.
+fn same_policy(a: &[u8], b: &[u8]) -> bool {
+    match (
+        toml::from_str::<toml::Value>(&String::from_utf8_lossy(a)),
+        toml::from_str::<toml::Value>(&String::from_utf8_lossy(b)),
+    ) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
 
 impl Project {
     pub fn discover(start: &Path) -> R<Project> {
@@ -476,6 +510,12 @@ impl Project {
     /// Load the policy from the accepted copy in the state folder, never from the file on disk, and
     /// note whether the file on disk still equals it. (`state_base` may be set after `open`.)
     pub fn reload_policy(&mut self) -> R<()> {
+        if self.config_main_branch.is_empty() {
+            self.config_main_branch = self.config.main_branch.clone();
+        }
+        if let Some(b) = crate::events::read_head(self).and_then(|h| h.main_branch) {
+            self.config.main_branch = b;
+        }
         let disk = fs::read(self.root.join("factory/policy.toml")).unwrap_or_default();
         match fs::read(self.accepted_policy_path()) {
             Ok(acc) => {
@@ -483,7 +523,7 @@ impl Project {
                 let head_hash = crate::events::read_head(self).and_then(|h| h.policy_hash);
                 self.policy_state = if head_hash.as_deref() != Some(acc_hash.as_str()) {
                     PolicyState::CopyDamaged
-                } else if util::sha256_hex(&disk) != acc_hash {
+                } else if util::sha256_hex(&disk) != acc_hash && !same_policy(&disk, &acc) {
                     PolicyState::Changed
                 } else {
                     PolicyState::Accepted
@@ -631,6 +671,7 @@ impl Project {
             policy,
             state_base: None,
             policy_state: PolicyState::NeverAccepted,
+            config_main_branch: String::new(),
         };
         p.reload_policy()?;
         Ok(p)
@@ -664,13 +705,9 @@ impl Project {
         let base = self
             .state_base
             .clone()
-            .or_else(|| std::env::var_os("BF_STATE_HOME").map(PathBuf::from))
-            .or_else(|| {
-                std::env::var_os("XDG_STATE_HOME").map(|x| PathBuf::from(x).join("blackfactory"))
-            })
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state/blackfactory"))
-            })
+            .or_else(|| absolute_env("BF_STATE_HOME"))
+            .or_else(|| absolute_env("XDG_STATE_HOME").map(|x| x.join("blackfactory")))
+            .or_else(|| absolute_env("HOME").map(|h| h.join(".local/state/blackfactory")))
             .unwrap_or_else(|| PathBuf::from("/nonexistent-state"));
         base.join(&self.config.project_id)
     }
@@ -888,6 +925,8 @@ impl Project {
             ".bf/".into(),
             ".claude/settings.json".into(),
             ".claude/settings.local.json".into(),
+            ".git/hooks/".into(),
+            ".git/config".into(),
         ];
         protected.extend(self.policy.guard.protected_extra.iter().cloned());
 

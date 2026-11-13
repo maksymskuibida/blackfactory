@@ -61,25 +61,6 @@ pub fn classify_prompt(
     {
         return Err("the payload has no `session_id`".into());
     }
-    let tp = payload
-        .get("transcript_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if tp.is_empty() {
-        return Err("the payload names no `transcript_path`".into());
-    }
-    // The transcript must be a file under the harness's own transcript root, so that a file an agent
-    // made elsewhere cannot stand in for the human's conversation.
-    let root = expand_home(&pol.transcript_root);
-    let (Ok(canon_tp), Ok(canon_root)) = (std::fs::canonicalize(tp), std::fs::canonicalize(&root))
-    else {
-        return Err(format!("the transcript `{tp}` does not exist, or the policy's transcript root `{root}` does not"));
-    };
-    if !canon_tp.is_file() || !canon_tp.starts_with(&canon_root) {
-        return Err(format!(
-            "the transcript is not under the harness's transcript root `{root}`"
-        ));
-    }
     for key in [
         "agent_id",
         "agent_type",
@@ -139,11 +120,11 @@ pub fn classify_prompt(
             return Err("the session is not on the policy's list of the human's sessions".into());
         }
     }
-    let check = transcript_check(payload);
-    let strict = pol.transcript_match != "soft";
-    if check == "unparsed" || (strict && check != "match") {
+    let strict = pol.transcript_match == "strict";
+    let check = transcript_status(payload, &pol.transcript_root);
+    if strict && check != "match" {
         return Err(format!(
-            "the transcript's last human message is not this prompt (check: {check}); a turn is recorded only when the harness's own transcript ends with it"
+            "strict mode: the transcript's last human message is not this prompt (check: {check}); a turn is recorded only when the harness's own transcript already ends with it"
         ));
     }
     Ok((text.to_string(), check))
@@ -156,24 +137,40 @@ fn expand_home(p: &str) -> String {
     }
 }
 
-/// What the transcript says about this prompt: `match` when the last human message in the file is the
-/// prompt, `differs` when it is another message (the file may not be written yet when the hook runs),
-/// `unparsed` when no human message could be read. Recorded with the turn; only a missing file rejects.
-pub fn transcript_check(payload: &Value) -> &'static str {
-    let (Some(tp), Some(prompt)) = (
-        payload.get("transcript_path").and_then(|v| v.as_str()),
-        payload.get("prompt").and_then(|v| v.as_str()),
+/// What the transcript says about this prompt, for information: `absent` when the payload names no
+/// transcript, or the file does not exist or is not under the harness's transcript root; `unparsed`
+/// when no human message could be read in it; `match` when the last human message is the prompt;
+/// `differs` when it is another message (the harness may write the file only after the hook runs).
+pub fn transcript_status(payload: &Value, root: &str) -> &'static str {
+    let tp = payload
+        .get("transcript_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if tp.is_empty() {
+        return "absent";
+    }
+    let (Ok(canon_tp), Ok(canon_root)) = (
+        std::fs::canonicalize(tp),
+        std::fs::canonicalize(expand_home(root)),
     ) else {
-        return "unparsed";
+        return "absent";
     };
-    let Ok(text) = std::fs::read_to_string(tp) else {
+    if !canon_tp.is_file() || !canon_tp.starts_with(&canon_root) {
+        return "absent";
+    }
+    transcript_check(payload)
+}
+
+/// The human's lines in a transcript: type `user`, not a tool result, not a meta line.
+pub fn transcript_says(path: &str, prompt: &str) -> &'static str {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return "unparsed";
     };
     for line in text.lines().rev() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v["type"] != "user" && v["message"]["role"] != "user" {
+        if v["type"] != "user" || v["isMeta"] == true {
             continue;
         }
         let c = &v["message"]["content"];
@@ -197,6 +194,16 @@ pub fn transcript_check(payload: &Value) -> &'static str {
         };
     }
     "unparsed"
+}
+
+pub fn transcript_check(payload: &Value) -> &'static str {
+    match (
+        payload.get("transcript_path").and_then(|v| v.as_str()),
+        payload.get("prompt").and_then(|v| v.as_str()),
+    ) {
+        (Some(tp), Some(prompt)) => transcript_says(tp, prompt),
+        _ => "unparsed",
+    }
 }
 
 /// Record a human turn from the hook payload. Returns Ok(Some(event)) or Ok(None) when rejected.
@@ -563,7 +570,7 @@ pub fn reject(p: &Project, arg: &str, note: &str, quote: &str) -> R<Gate> {
 pub fn gate_json(g: &Gate) -> Value {
     json!({
         "id": g.id, "kind": g.kind, "ref": g.refr, "round": g.round, "status": g.status,
-        "opened_at": g.open_at, "simulated": g.simulated, "human_turn": g.turn, "note": g.note, "quote": g.quote, "human_message": g.message,
+        "opened_at": g.open_at, "simulated": g.simulated, "human_turn": g.turn, "note": g.note, "quote": g.quote, "human_message": g.message, "caution": g.caution, "transcript_check": g.transcript,
     })
 }
 

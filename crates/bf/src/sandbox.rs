@@ -38,8 +38,17 @@ fn q(p: &str) -> String {
 }
 
 /// The profile for a check command run in `wc` (the working copy in use).
-pub fn check_profile(state_dir: &str, root: &str, wc: &str) -> String {
-    let mut p = String::from("(version 1)\n(allow default)\n(deny network*)\n");
+pub fn check_profile(
+    state_dir: &str,
+    root: &str,
+    wc: &str,
+    network: bool,
+    transcripts: &str,
+) -> String {
+    let mut p = String::from("(version 1)\n(allow default)\n");
+    if !network {
+        p.push_str("(deny network*)\n");
+    }
     p.push_str(&format!(
         "(deny file-read* file-write* (subpath {}))\n",
         q(state_dir)
@@ -52,6 +61,21 @@ pub fn check_profile(state_dir: &str, root: &str, wc: &str) -> String {
         "(deny file-write* (subpath {}))\n",
         q(&format!("{root}/.bf"))
     ));
+    // Git runs a hook or reads its config outside the sandbox later, so a check may not plant either; the
+    // harness's settings and the transcripts are not a check's to write.
+    for deny in [format!("{root}/.git/hooks"), format!("{root}/.claude")] {
+        p.push_str(&format!("(deny file-write* (subpath {}))\n", q(&deny)));
+    }
+    p.push_str(&format!(
+        "(deny file-write* (literal {}))\n",
+        q(&format!("{root}/.git/config"))
+    ));
+    if !transcripts.is_empty() {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            q(transcripts)
+        ));
+    }
     if wc != root {
         p.push_str(&format!("(allow file-write* (subpath {}))\n", q(wc)));
         p.push_str(&format!(

@@ -47,6 +47,9 @@ pub struct Head {
     /// SHA-256 of the policy the human accepted, and when (seconds since the epoch).
     pub policy_hash: Option<String>,
     pub policy_at: Option<u64>,
+    /// The main branch the engine watches. It is kept here, outside the project, so an edit of
+    /// `factory/config.toml` cannot move the watch; `bf head accept` takes the config's value.
+    pub main_branch: Option<String>,
 }
 
 pub fn read_head(p: &Project) -> Option<Head> {
@@ -57,12 +60,13 @@ pub fn read_head(p: &Project) -> Option<Head> {
         main_commit: v["main_commit"].as_str().map(|s| s.to_string()),
         policy_hash: v["policy_hash"].as_str().map(|s| s.to_string()),
         policy_at: v["policy_at"].as_u64(),
+        main_branch: v["main_branch"].as_str().map(|s| s.to_string()),
     })
 }
 
 pub fn write_head(p: &Project, h: &Head) -> R<()> {
     let v = json!({"count": h.count, "last_hash": h.last_hash, "main_commit": h.main_commit,
-        "policy_hash": h.policy_hash, "policy_at": h.policy_at});
+        "policy_hash": h.policy_hash, "policy_at": h.policy_at, "main_branch": h.main_branch});
     util::atomic_write(&p.head_path(), serde_json::to_string(&v)?.as_bytes())?;
     Ok(())
 }
@@ -232,6 +236,7 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
                 main_commit: old.main_commit,
                 policy_hash: old.policy_hash,
                 policy_at: old.policy_at,
+                main_branch: old.main_branch,
             },
         )?;
     }
@@ -245,6 +250,9 @@ pub struct Turn {
     pub text: String,
     pub at: String,
     pub used: bool,
+    /// What the harness's transcript said about this prompt when it was recorded:
+    /// `match`, `differs`, `unparsed` or `absent`. Information only.
+    pub transcript: String,
 }
 
 #[derive(Clone, Debug)]
@@ -264,6 +272,10 @@ pub struct Gate {
     pub quote: String,
     /// The whole message of the human that the decision rests on.
     pub message: String,
+    /// A visible caution about the message (see `caution`); empty when there is none.
+    pub caution: String,
+    /// What the transcript said about the human's message when it was recorded (information only).
+    pub transcript: String,
     pub snapshot: Value,
 }
 
@@ -444,6 +456,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     text: sv("text"),
                     at,
                     used: false,
+                    transcript: sv("transcript"),
                 });
             }
             "gate.open" => {
@@ -464,6 +477,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     note: String::new(),
                     quote: String::new(),
                     message: String::new(),
+                    caution: String::new(),
+                    transcript: String::new(),
                     snapshot: ev.get("snapshot").cloned().unwrap_or(Value::Null),
                 });
             }
@@ -532,8 +547,10 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                     st.turns[turn_ix[&tseq]].used = true;
                     let message = st.turns[turn_ix[&tseq]].text.clone();
+                    let tcheck = st.turns[turn_ix[&tseq]].transcript.clone();
                     let g = &mut st.gates[gi];
                     g.message = message;
+                    g.transcript = tcheck;
                     g.status = if approve {
                         "approved".into()
                     } else {
@@ -543,6 +560,18 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     g.turn = Some(tseq);
                     g.note = sv("note");
                     g.quote = sv("quote");
+                    g.caution = caution(
+                        &g.message,
+                        if approve {
+                            Decide::Approve
+                        } else {
+                            Decide::Reject
+                        },
+                        &Words {
+                            approve: st.words_approve.clone(),
+                            refuse: st.words_refuse.clone(),
+                        },
+                    );
                 }
             }
             "testmode.grant" => {
@@ -675,12 +704,6 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     st.turns[turn_ix[&tseq]].used = true;
                 }
             }
-            "programs.accept" => {
-                let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
-                    st.turns[turn_ix[&tseq]].used = true;
-                }
-            }
             "tokens.reset" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 if decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
@@ -777,8 +800,8 @@ pub fn accept_head(p: &Project, quote: &str) -> R<Value> {
     util::atomic_write(&p.log_path(), out.as_bytes())?;
     let old = read_head(p).unwrap_or_default();
     // The human also accepts where the main branch stands now.
-    let main_now = if crate::gitx::branch_exists(&p.root, &p.config.main_branch) {
-        crate::gitx::must(&p.root, &["rev-parse", &p.config.main_branch]).ok()
+    let main_now = if crate::gitx::branch_exists(&p.root, &p.config_main_branch) {
+        crate::gitx::must(&p.root, &["rev-parse", &p.config_main_branch]).ok()
     } else {
         None
     };
@@ -790,6 +813,7 @@ pub fn accept_head(p: &Project, quote: &str) -> R<Value> {
             main_commit: main_now.or(old.main_commit.clone()),
             policy_hash: old.policy_hash.clone(),
             policy_at: old.policy_at,
+            main_branch: Some(p.config_main_branch.clone()),
         },
     )?;
     let _ = lock.unlock();
@@ -843,12 +867,6 @@ fn first_hit(text: &str, list: &[String]) -> Option<String> {
     toks.iter().find(|t| t.ends_with("n't")).cloned()
 }
 
-fn sentence_end(s: &str) -> &str {
-    s.trim()
-        .trim_end_matches(['.', '!', '?', ';', ',', ' '])
-        .trim()
-}
-
 /// The sentences of a message, each trimmed, with its closing punctuation.
 fn sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -868,42 +886,43 @@ fn sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// Is this message, with this quote, a decision of the given kind? The engine cannot understand a
-/// sentence, so it applies strict rules and refuses anything that is not plain:
-/// the quote is the whole message or one whole sentence of it; an approval holds a word of the
-/// approval list in the quote and no refusal word anywhere in the message; a rejection holds a
-/// refusal word in the quote and no approval word anywhere; a message with both kinds of words is
-/// refused and the human is asked to say it again plainly; a question is never an approval.
-pub fn check_decision(text: &str, quote: &str, kind: Decide, w: &Words) -> Result<(), String> {
+/// A message that is only questions asks; it does not decide.
+fn only_questions(text: &str) -> bool {
+    let ss = sentences(text);
+    !ss.is_empty() && ss.iter().all(|s| s.trim_end().ends_with('?'))
+}
+
+/// A visible caution, never a refusal: the message also holds a word that points the other way
+/// ("the message also contains: not"). Shown beside the decision in `bf gate status` and on the gate
+/// page, so the human can see what the conductor read as a decision.
+pub fn caution(text: &str, kind: Decide, w: &Words) -> String {
+    let (list, what) = match kind {
+        Decide::Approve | Decide::Grant => (&w.refuse, "a word that can mean no"),
+        Decide::Reject => (&w.approve, "a word that can mean yes"),
+    };
+    match first_hit(text, list) {
+        Some(h) => format!("the message also contains {what}: \"{h}\""),
+        None => String::new(),
+    }
+}
+
+/// Is this message, with this quote, a decision of the given kind? The conductor names the words it
+/// took as the decision; the engine checks only what it can check: the quote is in the human's
+/// message, an approval is not a question, and a test-mode grant speaks of a test run. The quote and
+/// the whole message are stored and shown, with a caution when the message holds a word pointing the
+/// other way (see `caution`). The engine does not decide what the human meant.
+pub fn check_decision(text: &str, quote: &str, kind: Decide, _w: &Words) -> Result<(), String> {
     let q = quote.trim();
-    if q.chars().count() < 2 || !text.contains(q) {
+    if q.is_empty() || !text.contains(q) {
         return Err("the quote is not in the human's message".into());
     }
-    let nq = sentence_end(q);
-    let whole = sentence_end(text) == nq || sentences(text).iter().any(|s| sentence_end(s) == nq);
-    if !whole {
-        return Err("the quote must be the whole message or one whole sentence of it, not a few words cut out of it".into());
-    }
-    let msg_refuse = first_hit(text, &w.refuse).filter(|_| true);
-    let msg_approve = first_hit(text, &w.approve);
-    let again = "ask the human to say it again plainly, in one sentence";
     match kind {
         Decide::Approve | Decide::Grant => {
-            if q.trim_end().ends_with('?') {
+            if q.ends_with('?') {
                 return Err("a question is not an approval".into());
             }
-            if let (Some(r), Some(a)) = (&msg_refuse, &msg_approve) {
-                return Err(format!(
-                    "the message holds both \"{a}\" and \"{r}\": {again}"
-                ));
-            }
-            if let Some(r) = msg_refuse {
-                return Err(format!(
-                    "the message holds the refusal word \"{r}\": it is not an approval"
-                ));
-            }
-            if first_hit(q, &w.approve).is_none() {
-                return Err("the quote holds no word of the approval list".into());
+            if only_questions(text) {
+                return Err("a message that only asks questions is not an approval".into());
             }
             if kind == Decide::Grant {
                 let lower = text.to_lowercase();
@@ -915,22 +934,7 @@ pub fn check_decision(text: &str, quote: &str, kind: Decide, w: &Words) -> Resul
             }
             Ok(())
         }
-        Decide::Reject => {
-            if let (Some(r), Some(a)) = (&msg_refuse, &msg_approve) {
-                return Err(format!(
-                    "the message holds both \"{a}\" and \"{r}\": {again}"
-                ));
-            }
-            if let Some(a) = msg_approve {
-                return Err(format!(
-                    "the message holds the approval word \"{a}\": it is not a rejection"
-                ));
-            }
-            if first_hit(q, &w.refuse).is_none() {
-                return Err("the quote holds no word of the refusal list".into());
-            }
-            Ok(())
-        }
+        Decide::Reject => Ok(()),
     }
 }
 
@@ -938,11 +942,11 @@ pub fn check_decision(text: &str, quote: &str, kind: Decide, w: &Words) -> Resul
 /// the quote; the decision rules above apply. Returns (seq, text).
 pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u64, String)> {
     let q = quote.trim();
-    if q.chars().count() < 2 {
+    if q.is_empty() {
         return Err(refuse(
             "record a decision without the words that decide it",
             "no quote was given; the engine cannot understand a sentence, so the words taken as the decision are stored and shown for the human to audit",
-            &["Run the command again with `--quote \"<the whole sentence of the human's message that decides this>\"`."],
+            &["Run the command again with `--quote \"<the words of the human's message that you took as the decision>\"`."],
             "`bf gate status` shows the quote beside the decision.",
         ));
     }
@@ -975,7 +979,7 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
         return Err(refuse(
             "record a decision with this quote",
             format!("the quote is not in the human's message, which says: \"{}\"", last.chars().take(300).collect::<String>()),
-            &["Copy the whole sentence that decides it from that message exactly, and run the command again with `--quote`."],
+            &["Copy the words that decide it from that message exactly, and run the command again with `--quote`."],
             "`bf gate status` shows the decision with its quote.",
         ));
     };
@@ -988,8 +992,8 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
             "record a decision from this message",
             format!("{why}. The human's message says: \"{}\"", t.text.chars().take(300).collect::<String>()),
             &[
-                "Do not guess what the human meant. Ask them in chat to say it again plainly: one sentence that approves (or rejects), with no refusal (or approval) word in the message.",
-                "Then run the command again with `--quote` set to that whole sentence.",
+                "Do not guess what the human meant. Ask them in chat for their decision in their own words.",
+                "Then run the command again with `--quote` set to the words that decide it.",
             ],
             "`bf gate status` shows the decision with its quote and the human's whole message.",
         ));
