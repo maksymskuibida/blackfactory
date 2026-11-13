@@ -2,12 +2,17 @@
 
 The exact steps for trying Black Factory on a project of your own for the first time. For the full picture, see [using.md](using.md). You need Rust, Claude Code, `git` and `python3`.
 
+## Choose a layout
+
+- **Project folder.** The factory's files (`factory/`, `.claude/`) live in your code repository and are committed with your code. Simplest for a private project with one repository.
+- **Workspace.** The factory lives in a folder of its own, normally a private repository, and points at one or more code repositories. Nothing but branches and commits is written into the code repositories. Use it for a public project, for several repositories, or whenever you want the code history free of factory files.
+
 ## Before you start
 
 1. **Pick a small project.** A few hundred lines is plenty. A throwaway project is better for the first try.
-2. **Make sure it is a git repository with one commit, and that it is clean.** Check with `git log --oneline` and `git status`. The order below matters: commit, install, `bf init`, commit again, start.
-3. **Add build output to `.gitignore`** (`target/`, `node_modules/`, `__pycache__/`, `dist/`). A receipt is bound to a hash of every file that is not ignored, and a stray build folder voids it.
-4. **Expect to be asked for your words.** Every decision (each gate, a test run, a merge) is your own typed message in the Claude Code session that runs the factory. Nothing else counts. Say it plainly ("Approved."). The conductor quotes the words it took as your decision, and the gate page shows them.
+2. **Make sure the code repository has one commit on its main branch and is clean.** Check with `git log --oneline` and `git status`.
+3. **Add build output to the code repository's `.gitignore`** (`target/`, `node_modules/`, `__pycache__/`, `dist/`). A receipt is bound to a hash of every file that is not ignored, and a stray build folder voids it.
+4. **Expect to be asked for your words.** Every decision (each gate, a test run, releasing a stuck unit, a merge) is your own typed message in the Claude Code session that runs the factory. Nothing else counts. Say it plainly ("Approved."). The conductor quotes the words it took as your decision, and the gate page shows them.
 
 ## Install it
 
@@ -23,26 +28,31 @@ The exact steps for trying Black Factory on a project of your own for the first 
    ```bash
    bf --help
    ```
-3. Install the harness into your project:
+3. Set up the factory, from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`. Checks run with the `PATH` captured now. The order matters.
+
+   **Project folder:** install the harness, create the factory, commit.
    ```bash
    harness/claude/install.sh /path/to/your/project
-   ```
-   It lists what it created. It adds two hooks and two permission rules to `.claude/settings.json`, keeps a `.bak` copy of anything it changed, and can be run again safely.
-4. Create the factory in your project, from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`. Checks run with the `PATH` captured now:
-   ```bash
    cd /path/to/your/project
    bf init --name myproject
-   ```
-5. Commit the new files (`.claude/`, `factory/` and `.gitignore`), so that the factory begins on a quiet project:
-   ```bash
    git add -A && git commit -m "Add Black Factory"
    ```
-   `bf status` now prints one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error: an ordinary commit of yours blocks nothing.
-6. Restart Claude Code if it was already open in that folder, so it reads the new settings.
+
+   **Workspace:** create the workspace, point it at each code repository, install the harness into the workspace, commit.
+   ```bash
+   mkdir myapp-factory && cd myapp-factory
+   bf init --workspace --name myapp
+   bf repo add app /path/to/app
+   /path/to/blackfactory/harness/claude/install.sh --workspace "$PWD"
+   git add -A && git commit -m "Add Black Factory"
+   ```
+
+   The installer lists what it created. It adds two hooks and two permission rules to `.claude/settings.json`, keeps a `.bak` copy of anything it changed, touches nothing outside the folder it is given and can be run again safely. `bf status` after the commit may print one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error: an ordinary commit of yours blocks nothing.
+4. Restart Claude Code if it was already open in that folder, so it reads the new settings.
 
 ## Run it
 
-1. In your project folder, start Claude Code and type `/factory`.
+1. Start Claude Code in your project folder, or in the workspace folder for a workspace (not in a code repository), and type `/factory`.
 2. Describe your idea in one message: the problem, who it is for, how you will know it works.
 3. The conductor works through five gates. At each one:
    - It may first publish a **questions page**. Answer it, then write `done` in chat.
@@ -55,12 +65,12 @@ The exact steps for trying Black Factory on a project of your own for the first 
    |---|---|
    | Idea and evaluation | Is this the right thing to build, and what does v1 leave out? |
    | Requirements | Is this what you mean? From here every item is tracked to done. |
-   | UI design | Do the screens and flows look right? (Skipped if there is no interface.) |
+   | UI design | Do the screens and flows look right? (For a product with no interface it asks whether to skip this gate, and you say so in your own words.) |
    | Architecture | Are the parts, targets and threats right? |
    | Delivery plan | Start building? The plan is frozen once you approve it. |
 
 4. After the plan gate the conductor builds on its own. It stops for a human step the plan names, a stuck unit, a failed check or the budget cap, and tells you why in chat.
-5. At the end it runs the ledger check and tells you what was built and proven. The result is on a branch named `bf/K-1` (one per checkpoint). Merge it yourself, `git merge --no-ff bf/K-1`, or ask the conductor in chat to merge it.
+5. At the end it runs the ledger check and tells you what was built and proven. Checkpoints are stacked, so the last one (a branch named `bf/K-<last>` in each code repository it touched) holds the whole result. Merge it yourself, `git merge --no-ff bf/K-<last>`, or ask the conductor in chat to merge it.
 
 ## A test run, with no gate approvals
 
@@ -70,7 +80,7 @@ Use this on a throwaway project to see the whole loop.
 2. Type `/factory` and describe a tiny idea.
 3. When the conductor is about to ask for the first approval, write in your own words that you grant a test run, for example: "I grant a test run, simulate the approvals."
 4. The conductor drafts every stage, starts the run and approves the gates with records marked **simulated**. It says so in each message.
-5. A test run can never be merged onto `main`. Delete the branches and try a real run.
+5. A test run can never be merged onto the main branch. Delete the branches and try a real run.
 
 ## When something is refused
 
@@ -81,12 +91,13 @@ Every refusal prints four parts: what was refused, why, numbered steps, and how 
 | `no human turn was recorded after the gate opened` | Type your decision in the Claude Code session that is running the factory. If you did and it still happens, check that the hooks are installed (`.claude/settings.json`) and restart Claude Code. |
 | `factory/policy.toml differs from the policy the human accepted` | Run `bf policy diff`. If you agree with the change, tell the conductor in chat and it accepts it with your words. Otherwise restore the file. |
 | `the main branch moved` | Run `bf status`. If you made that commit, tell the conductor and it accepts the position with your words. |
-| a role token problem | Tell the conductor to reset the tokens with your words (`bf tokens reset`). |
+| a gate will not open | Gates open in order and only with their records in place. Read what the engine says, or tell the conductor to skip the UI gate if there is no interface. |
 | a check cannot find a program, or needs the network | Checks run with the `PATH` captured at `bf init` and, on macOS, in a sandbox with no network. Edit `[exec] path`, `[exec] network = true` or `[exec] env` in `factory/policy.toml` and accept the change with `bf policy accept`. |
 | `these questions for the stage are unanswered` | Answer the questions page and write `done`. |
 | `the plan has N problem(s)` | The conductor fixes them and reopens the gate. |
 | `a check failed` or `is unreachable` | Read the reason with `bf next`. Fix the cause or ask for an amendment. |
-| `a unit is parked` | Run `bf stuck`, read the findings, and tell the conductor what to do (see [using.md](using.md), section 13). |
+| `a unit is parked` or blocked | Read its findings, and tell the conductor in your own words to release it, or to re-plan it (see [using.md](using.md), section 13). |
+| a worker's question appears in chat | Answer it in chat. Only that unit waits. |
 | `the log does not match its head` | Run `bf doctor`. If you accept the log as it is, tell the conductor in chat, and it runs `bf head accept` with your words. |
 | `bf: command not found` | `bf` is not on your `PATH`. Repeat step 2 of "Install it". |
 

@@ -16,14 +16,22 @@ Not built yet: plugins, the unattended supervisor, opening pull requests, other 
 
 ## Quick start
 
+Two layouts: a **project folder** (the factory's files live in your code repository) or a **workspace** (the factory in a folder of its own, normally private, pointing at code repositories; nothing but branches and commits is written into them: use it for a public project).
+
 ```bash
 cargo build --release                                  # binary: target/release/bf
+# Project folder:
 harness/claude/install.sh /path/to/your/project        # skill, roles, hooks
 cd /path/to/your/project && bf init --name myproject   # creates factory/
 git add -A && git commit -m "Add Black Factory"        # then start Claude Code here and type /factory
+# Workspace:
+mkdir myapp-factory && cd myapp-factory && bf init --workspace --name myapp
+bf repo add app /path/to/app                           # once per code repository
+/path/to/blackfactory/harness/claude/install.sh --workspace "$PWD"
+git add -A && git commit -m "Add Black Factory"        # then start Claude Code in this folder and type /factory
 ```
 
-Put `target/release/bf` on your `PATH` first, and give the project one commit before the installer. The questions and gate pages are published as private pages through the Claude app's artifact feature, which needs a Claude app that supports it. Without it the conductor asks in chat instead. Your first run: [docs/first-run.md](docs/first-run.md). The full walkthrough: [docs/using.md](docs/using.md).
+Put `target/release/bf` on your `PATH` first, and give each code repository one commit before you start. The questions and gate pages are published as private pages through the Claude app's artifact feature, which needs a Claude app that supports it. Without it the conductor asks in chat instead. Your first run: [docs/first-run.md](docs/first-run.md). The full walkthrough: [docs/using.md](docs/using.md).
 
 ## Layout
 
