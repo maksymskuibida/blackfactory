@@ -390,6 +390,11 @@ pub struct State {
     pub cost: f64,
     /// Check ID -> highest receipt number that no longer counts (an amendment re-opened the work).
     pub reopen_floor: BTreeMap<String, u64>,
+    /// Events of the human's messages, recorded or rejected (`human.turn`, `human.turn.rejected`).
+    pub human_events: usize,
+    /// Events from a conductor at work: anything but the project's start, the human's messages and
+    /// the acceptance of the policy or the log.
+    pub work_events: usize,
     /// Design gates the human skipped: (kind, the words, seq). Only `ui` can be skipped.
     pub skipped: Vec<(String, String, u64)>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
@@ -412,6 +417,15 @@ impl State {
     }
     /// A gate kind counts as passed when its latest round is approved.
     /// The words the human gave to skip this gate, if they did.
+    /// One line of information when the factory has been at work and not one message of the human has
+    /// been recorded or rejected since the project started: the hook that records them is not loaded.
+    pub fn human_turns_note(&self) -> Option<String> {
+        if self.work_events > 0 && self.human_events == 0 {
+            Some("no message of the human has been recorded since the project started, although the factory is at work: the hook that records them is not loaded. Start Claude Code in the folder that holds factory/ and .claude/settings.json (for a workspace, the workspace folder itself), then type a message.".to_string())
+        } else {
+            None
+        }
+    }
     pub fn skipped_words(&self, kind: &str) -> Option<&str> {
         self.skipped
             .iter()
@@ -506,6 +520,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 us.last_seq = seq;
                 us.last_at = at.clone();
             }
+        }
+        match ev["kind"].as_str().unwrap_or("") {
+            "human.turn" | "human.turn.rejected" => st.human_events += 1,
+            "project.init" | "head.accept" | "policy.accept" => {}
+            _ => st.work_events += 1,
         }
         match ev["kind"].as_str().unwrap_or("") {
             "human.turn" => {
@@ -1099,11 +1118,20 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
         .filter(|t| t.seq > after_seq && !t.used)
         .peekable();
     if candidates.peek().is_none() {
+        let cause = st.human_turns_note();
+        let first = cause.clone().unwrap_or_else(|| {
+            "Ask the human in chat for their decision, in their own words.".to_string()
+        });
         return Err(refuse(
             "record a decision",
-            "no human turn was recorded after this opened that can decide it: the human has not written since, or the message was already used for another decision",
+            if cause.is_some() {
+                "no human turn was recorded at all: the hook that records the human's messages is not loaded"
+            } else {
+                "no human turn was recorded after this opened that can decide it: the human has not written since, or the message was already used for another decision"
+            },
             &[
-                "Ask the human in chat for their decision, in their own words.",
+                &first,
+                "Then ask the human in chat for their decision, in their own words.",
                 "The harness hook records their message with `bf human-turn`; check with `bf log --tail 5`.",
                 "Then run the command again with `--quote` set to the sentence that decides it.",
             ],

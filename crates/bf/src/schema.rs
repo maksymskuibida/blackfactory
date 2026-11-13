@@ -217,6 +217,7 @@ pub static KINDS: &[Kind] = &[
             f("options", Ty::Tables, false),
             f("stage", Ty::Str, false),
             f("unit", Ty::Str, false),
+            f("other", Ty::Bool, false),
             f("answer", Ty::Any, false),
             f("answered_at", Ty::Str, false),
             f("answered_turn", Ty::Int, false),

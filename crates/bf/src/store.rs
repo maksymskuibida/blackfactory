@@ -474,6 +474,64 @@ pub fn git_dir_of(top: &Path) -> Option<PathBuf> {
 /// The readable records, and the files that could not be read (file name, reason).
 pub type Scanned = (Vec<Value>, Vec<(String, String)>);
 
+/// Whether a choice question takes an \"Other\" answer: on unless the record says `other = false`. A
+/// text question has no choices, so no Other.
+pub fn question_takes_other(q: &Value) -> bool {
+    s(q, "answer_kind") != "text" && q.get("other").and_then(|v| v.as_bool()) != Some(false)
+}
+
+/// An answer in the human's words: the text of an \"Other\" answer instead of the bare key, the choices
+/// as given, and the note. Records from earlier builds (no `other`) read as they always did.
+pub fn answer_text(q: &Value) -> String {
+    let Some(a) = q.get("answer") else {
+        return String::new();
+    };
+    let Value::Object(o) = a else {
+        return match a {
+            Value::String(x) => x.clone(),
+            other => other.to_string(),
+        };
+    };
+    let other_text = o
+        .get("other")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let show = |k: &str| {
+        if k == "other" && !other_text.is_empty() {
+            other_text.clone()
+        } else {
+            k.to_string()
+        }
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(c) = o.get("choice").and_then(|v| v.as_str()) {
+        parts.push(show(c));
+    }
+    if let Some(cs) = o.get("choices").and_then(|v| v.as_array()) {
+        parts.push(
+            cs.iter()
+                .filter_map(|c| c.as_str())
+                .map(show)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    if let Some(n) = o
+        .get("note")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.trim().is_empty())
+    {
+        parts.push(format!("({})", n.trim()));
+    }
+    if parts.is_empty() {
+        a.to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 /// An environment variable that holds an absolute path. An empty or relative value counts as unset, so
 /// it cannot put the state folder (and the key) inside the project.
 fn absolute_env(name: &str) -> Option<PathBuf> {

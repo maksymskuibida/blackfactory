@@ -127,6 +127,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
+        "human_turns_note": st.human_turns_note().unwrap_or_default(),
         "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
         "policy": format!("{:?}", p.policy_state),
         "bad_records": pl.bad.iter().map(|(f, e)| json!({"file": f, "error": e})).collect::<Vec<_>>(),
@@ -476,6 +477,10 @@ pub fn next(p: &Project) -> R<Value> {
             }
         ))
     };
+    v["human_turns_note"] = json!(st.human_turns_note().unwrap_or_default());
+    if let Some(n) = st.human_turns_note() {
+        eprintln!("note: {n}");
+    }
     v["can_start"] = json!(can_start);
     v["human_needed"] = json!(human_needed);
     v["idle_reason"] = reason;
@@ -876,14 +881,11 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         md.push_str("## Questions you asked the human\n\n");
         for q in asked {
             match q.get("answer") {
-                Some(a) => md.push_str(&format!(
+                Some(_) => md.push_str(&format!(
                     "- {} {}: answered: {}\n",
                     s(q, "id"),
                     s(q, "title"),
-                    match a {
-                        Value::String(x) => x.clone(),
-                        o => o.to_string(),
-                    }
+                    crate::store::answer_text(q)
                 )),
                 None => md.push_str(&format!(
                     "- {} {}: not answered yet; do not guess, wait for the answer\n",
