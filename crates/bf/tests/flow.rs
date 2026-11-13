@@ -4,6 +4,7 @@
 mod common;
 use common::*;
 use std::fs;
+use std::path::PathBuf;
 
 /// Two checkpoints in plan order: K-1 holds U-1, K-2 holds U-2, and U-2's checkpoint check needs the
 /// file U-1 made.
@@ -829,4 +830,244 @@ fn bf_next_never_offers_a_later_gate_while_an_earlier_one_waits() {
     assert_eq!(d["action"], "decide-gate", "{n}");
     assert_eq!(d["gate"], "idea-r1");
     assert!(!n.to_string().contains("bf gate open plan"), "{n}");
+}
+
+fn ask_file(fx: &Fx, name: &str, body: serde_json::Value) -> PathBuf {
+    let f = fx.root.join(".bf").join(name);
+    fs::create_dir_all(fx.root.join(".bf")).unwrap();
+    fs::write(&f, body.to_string()).unwrap();
+    f
+}
+
+fn answer_file(fx: &Fx, body: serde_json::Value) -> PathBuf {
+    ask_file(fx, "answer.json", body)
+}
+
+#[test]
+fn every_choice_question_takes_an_other_answer_in_the_humans_words() {
+    let fx = Fx::new();
+    let q = ask_file(
+        &fx,
+        "q.json",
+        serde_json::json!([
+            {"title": "Which store?", "kind": "single", "stage": "architecture", "options": [{"key": "A", "text": "Files"}, {"key": "B", "text": "A database"}]},
+            {"title": "Which extras?", "kind": "multi", "stage": "architecture", "options": [{"key": "A", "text": "Cache"}, {"key": "B", "text": "Search"}]},
+            {"title": "Closed list", "kind": "single", "other": false, "stage": "architecture", "options": [{"key": "A", "text": "Yes"}]},
+            {"title": "Say it", "kind": "text", "stage": "architecture"}
+        ]),
+    );
+    fx.must(&["ask", "--file", q.to_str().unwrap()]);
+    // The view says which questions take Other: choice questions by default, not text, not when switched off.
+    let v = fx.must(&["view", "questions"]).json();
+    let qs = v["questions"].as_array().unwrap();
+    assert_eq!(qs[0]["other"], true);
+    assert_eq!(qs[1]["other"], true);
+    assert_eq!(qs[2]["other"], false);
+    assert!(qs[3].get("other").is_none(), "{}", qs[3]);
+    // `other` is reserved: a question whose own option uses it is refused.
+    let bad = ask_file(
+        &fx,
+        "bad.json",
+        serde_json::json!([{"title": "x", "kind": "single", "stage": "ui", "options": [{"key": "other", "text": "Something else"}]}]),
+    );
+    let o = fx.refused(&["ask", "--file", bad.to_str().unwrap()]);
+    assert_four_parts(&o.stderr);
+    assert!(o.stderr.contains("reserved"), "{}", o.stderr);
+    fx.human("I filled in the form.");
+    // Other chosen without text is refused; with text it is kept.
+    let a = answer_file(&fx, serde_json::json!({"choice": "other"}));
+    let o = fx.refused(&["answer", "Q-1", "--file", a.to_str().unwrap()]);
+    assert_four_parts(&o.stderr);
+    assert!(o.stderr.contains("no text"), "{}", o.stderr);
+    let a = answer_file(&fx, serde_json::json!({"choice": "other", "other": "   "}));
+    fx.refused(&["answer", "Q-1", "--file", a.to_str().unwrap()]);
+    let a = answer_file(
+        &fx,
+        serde_json::json!({"choice": "other", "other": " Plain text on a USB stick ", "note": "for now"}),
+    );
+    let r = fx
+        .must(&["answer", "Q-1", "--file", a.to_str().unwrap(), "--json"])
+        .json();
+    assert_eq!(r["answer"]["choice"], "other");
+    assert_eq!(r["answer"]["other"], "Plain text on a USB stick");
+    // A multi question: the choices and the text.
+    let a = answer_file(&fx, serde_json::json!({"choices": ["A", "other"]}));
+    fx.refused(&["answer", "Q-2", "--file", a.to_str().unwrap()]);
+    let a = answer_file(
+        &fx,
+        serde_json::json!({"choices": ["A", "other"], "other": "A mirror"}),
+    );
+    fx.must(&["answer", "Q-2", "--file", a.to_str().unwrap()]);
+    // Text without the key chosen is kept as given and does not count as the choice.
+    let a = answer_file(
+        &fx,
+        serde_json::json!({"choice": "A", "other": "never mind"}),
+    );
+    let r = fx
+        .must(&["answer", "Q-3", "--file", a.to_str().unwrap(), "--json"])
+        .json();
+    assert_eq!(r["answer"]["other"], "never mind");
+    assert_eq!(r["answer"]["choice"], "A");
+    // Other is switched off for Q-3: it cannot be chosen there (a fresh question, since Q-3 is answered).
+    let off = ask_file(
+        &fx,
+        "off.json",
+        serde_json::json!([{"title": "Closed again", "kind": "single", "other": false, "stage": "ui", "options": [{"key": "A", "text": "Yes"}]}]),
+    );
+    let id = fx
+        .must(&["ask", "--file", off.to_str().unwrap(), "--json"])
+        .json()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fx.human("And this one too.");
+    let a = answer_file(&fx, serde_json::json!({"choice": "other", "other": "x"}));
+    let o = fx.refused(&["answer", &id, "--file", a.to_str().unwrap()]);
+    assert!(o.stderr.contains("does not take an Other"), "{}", o.stderr);
+    // The human's text is what every view and listing shows, never the bare word.
+    let listing = fx.must(&["questions"]).stdout;
+    assert!(
+        listing.contains("Plain text on a USB stick") && !listing.contains("answered: other"),
+        "{listing}"
+    );
+    let v = fx.must(&["view", "questions"]).json();
+    assert_eq!(
+        v["questions"][0]["answer"]["other"],
+        "Plain text on a USB stick"
+    );
+    assert_eq!(v["questions"][1]["answer"]["other"], "A mirror");
+    // An answer from an earlier build (no `other`) reads as before, and the view gives it an empty one.
+    assert_eq!(v["questions"][2]["answer"]["choice"], "A");
+}
+
+#[test]
+fn a_unit_brief_quotes_the_text_of_an_other_answer() {
+    let fx = Fx::new();
+    two_units_in_one_checkpoint(&fx);
+    fx.start_test_run();
+    let wc = std::path::PathBuf::from(
+        fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    fx.must_in(
+        &wc,
+        &[
+            "ask",
+            "--title",
+            "Which greeting?",
+            "--options",
+            "A=Hello;B=Hi",
+        ],
+    );
+    fx.human("Answered.");
+    let a = answer_file(
+        &fx,
+        serde_json::json!({"choice": "other", "other": "Good morning"}),
+    );
+    fx.must(&["answer", "Q-1", "--file", a.to_str().unwrap()]);
+    let brief = fs::read_to_string(
+        fx.must(&["brief", "U-1", "--role", "builder"])
+            .stdout
+            .trim(),
+    )
+    .unwrap();
+    assert!(
+        brief.contains("answered: Good morning") && !brief.contains("answered: other"),
+        "{brief}"
+    );
+}
+
+#[test]
+fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
+    let fx = Fx::new();
+    // A conductor at work (questions asked), and not one message of the human recorded.
+    let q = ask_file(
+        &fx,
+        "q.json",
+        serde_json::json!([{"title": "Which store?", "kind": "text", "stage": "architecture"}]),
+    );
+    let o = fx.must(&["ask", "--file", q.to_str().unwrap()]);
+    assert!(
+        o.stderr
+            .contains("note: no message of the human has been recorded"),
+        "{}",
+        o.stderr
+    );
+    assert!(
+        o.stderr.contains("factory/") && o.stderr.contains("settings.json"),
+        "{}",
+        o.stderr
+    );
+    let st = fx.must(&["status", "--json"]).json();
+    assert!(
+        st["human_turns_note"]
+            .as_str()
+            .unwrap()
+            .contains("Start Claude Code"),
+        "{st}"
+    );
+    assert!(fx
+        .must(&["status"])
+        .stdout
+        .contains("note: no message of the human"));
+    let d = fx.bf(&["doctor"]);
+    assert!(
+        d.stdout
+            .contains("human turns: ok (note: no message of the human"),
+        "{}",
+        d.stdout
+    );
+    // The refusal at a decision points at the same cause first.
+    fx.must(&["gate", "open", "idea"]);
+    let o = fx.refused(&["gate", "approve", "idea", "--quote", "Approved."]);
+    assert!(
+        o.stderr.contains("no human turn was recorded at all"),
+        "{}",
+        o.stderr
+    );
+    assert!(o.stderr.contains("Start Claude Code"), "{}", o.stderr);
+    // Once a message is recorded, nothing is printed.
+    fx.human("Hello, I am here.");
+    let st = fx.must(&["status", "--json"]).json();
+    assert_eq!(st["human_turns_note"], "");
+    assert!(!fx
+        .must(&["status"])
+        .stdout
+        .contains("no message of the human"));
+    let o = fx.must(&["ask", "--file", q.to_str().unwrap()]);
+    assert!(
+        !o.stderr.contains("no message of the human"),
+        "{}",
+        o.stderr
+    );
+    assert!(fx
+        .bf(&["doctor"])
+        .stdout
+        .contains("human turns: ok (1 message(s)"));
+}
+
+#[test]
+fn bf_next_carries_the_note_in_its_json_and_on_stderr() {
+    let fx = Fx::new();
+    whole_plan(&fx, false);
+    fx.must(&["run", "start"]);
+    let o = fx.must(&["next", "--json"]);
+    assert!(
+        o.stderr.contains("note: no message of the human"),
+        "{}",
+        o.stderr
+    );
+    assert!(o.json()["human_turns_note"]
+        .as_str()
+        .unwrap()
+        .contains("hook"));
+    fx.human("Here.");
+    let o = fx.must(&["next", "--json"]);
+    assert!(
+        !o.stderr.contains("no message of the human"),
+        "{}",
+        o.stderr
+    );
+    assert_eq!(o.json()["human_turns_note"], "");
 }

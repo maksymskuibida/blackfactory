@@ -60,6 +60,17 @@ pub fn doctor(p: &Project) -> R<Value> {
             );
         }
     }
+    add(
+        "human turns",
+        true,
+        match st.human_turns_note() {
+            Some(n) => format!("note: {n}"),
+            None => format!(
+                "{} message(s) of the human recorded or rejected",
+                st.human_events
+            ),
+        },
+    );
     let notes = crate::evidence::path_notes(p);
     add(
         "check path",

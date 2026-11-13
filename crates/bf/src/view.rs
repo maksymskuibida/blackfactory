@@ -596,10 +596,22 @@ fn questions_view(p: &Project, arg: Option<&str>) -> R<Value> {
             .and_then(|o| o.as_array())
             .cloned()
             .unwrap_or_default();
-        out.push(json!({
+        // An answer with an Other choice carries the human's text in `other`; an answer to a choice
+        // question always has the field (empty when there is none).
+        let mut answer = q.get("answer").cloned().unwrap_or(Value::Null);
+        if let Value::Object(o) = &mut answer {
+            if s(q, "answer_kind") != "text" {
+                o.entry("other").or_insert_with(|| json!(""));
+            }
+        }
+        let mut item = json!({
             "id": s(q, "id"), "title": s(q, "title"), "context": s(q, "context"), "kind": s(q, "answer_kind"),
-            "options": opts, "answer": q.get("answer").cloned().unwrap_or(Value::Null),
-        }));
+            "options": opts, "answer": answer,
+        });
+        if s(q, "answer_kind") != "text" {
+            item["other"] = json!(crate::store::question_takes_other(q));
+        }
+        out.push(item);
     }
     let open = out.iter().filter(|q| q["answer"].is_null()).count();
     let mut v = base(

@@ -676,6 +676,23 @@ fn dispatch(args: &Args) -> R<()> {
                         rec[k] = v.clone();
                     }
                 }
+                // `other` is the reserved key of the Other answer the engine adds to every choice question.
+                if let Some(opts) = rec.get("options").and_then(|o| o.as_array()) {
+                    if opts
+                        .iter()
+                        .any(|o| s(o, "key").eq_ignore_ascii_case("other"))
+                    {
+                        return Err(refuse(
+                            format!("ask {}", f.get("title").and_then(|t| t.as_str()).unwrap_or("a question")),
+                            "an option uses the key `other`, which is reserved: every choice question already takes an Other answer in the human's own words",
+                            &["Give that option another key (A, B, C ...), or drop it.", "To switch the Other answer off for this question, put `\"other\": false` in it."],
+                            "`bf questions` lists the question.",
+                        ));
+                    }
+                }
+                if let Some(b) = f.get("other").and_then(|v| v.as_bool()) {
+                    rec["other"] = json!(b);
+                }
                 if rec.get("stage").is_none() {
                     if let Some(st) = args.flag("stage") {
                         rec["stage"] = json!(st);
@@ -706,6 +723,9 @@ fn dispatch(args: &Args) -> R<()> {
                 made.push(rec.clone());
             }
             p.write_guard()?;
+            if let Some(n) = events::replay(&p)?.human_turns_note() {
+                eprintln!("note: {n}");
+            }
             out(args, &json!(made), || {
                 made.iter()
                     .map(|r| s(r, "id").to_string())
@@ -749,7 +769,40 @@ fn dispatch(args: &Args) -> R<()> {
                 ));
             };
             let turn_seq = turn.seq;
-            let ans = f.get("answer").cloned().unwrap_or(f);
+            let mut ans = f.get("answer").cloned().unwrap_or(f);
+            // An Other answer is the human's own words: the key `other` chosen needs the text.
+            if let Value::Object(o) = &mut ans {
+                let chose_other = o.get("choice").and_then(|v| v.as_str()) == Some("other")
+                    || o.get("choices")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().any(|c| c.as_str() == Some("other")))
+                        .unwrap_or(false);
+                if chose_other {
+                    if !crate::store::question_takes_other(&q) {
+                        return Err(refuse(
+                            format!("answer {id} with Other"),
+                            "this question does not take an Other answer",
+                            &["Answer with one of its options."],
+                            "`bf questions` lists the question as answered.",
+                        ));
+                    }
+                    let text = o
+                        .get("other")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if text.is_empty() {
+                        return Err(refuse(
+                            format!("answer {id} with Other"),
+                            "the answer chooses `other` but gives no text; Other means the human's own answer",
+                            &["Put the human's own words in `other`: `{\"choice\": \"other\", \"other\": \"<their answer>\"}` (for a multi question `{\"choices\": [\"A\", \"other\"], \"other\": \"<text>\"}`).", "Run `bf answer` again."],
+                            "`bf questions` lists the question as answered, with their text.",
+                        ));
+                    }
+                    o.insert("other".into(), json!(text));
+                }
+            }
             q["answer"] = ans;
             q["answered_at"] = json!(util::now());
             q["answered_turn"] = json!(turn_seq);
@@ -778,9 +831,9 @@ fn dispatch(args: &Args) -> R<()> {
                             s(q, "id"),
                             s(q, "title"),
                             if q.get("answer").is_some() {
-                                "answered"
+                                format!("answered: {}", crate::store::answer_text(q))
                             } else {
-                                "open"
+                                "open".to_string()
                             }
                         )
                     })
@@ -969,6 +1022,9 @@ fn status_text(v: &Value) -> String {
         }
     );
     if let Some(n) = v["main"]["note"].as_str().filter(|n| !n.is_empty()) {
+        t.push_str(&format!("note: {n}\n"));
+    }
+    if let Some(n) = v["human_turns_note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
     }
     for b in v["bad_records"].as_array().into_iter().flatten() {

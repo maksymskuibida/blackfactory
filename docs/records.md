@@ -151,8 +151,9 @@ Asked before a stage's gate.
 | `answer_kind` | `single`, `multi` or `text` | yes | (`kind` in the file given to `bf ask`) |
 | `options` | list of tables | no | Each with `key`, `text`, `proposed` (boolean) and `why` |
 | `stage` | string | one of `stage` and `unit` | The gate kind it must be answered before |
+| `other` | boolean | no | `false` switches off the Other answer of a `single` or `multi` question (default on; text questions have none) |
 | `unit` | string | one of `stage` and `unit` | The unit (or checkpoint) that asked: only it waits for the answer. Set by `bf ask` from a working copy or with `--unit` |
-| `answer` | any | set by `bf answer` | |
+| `answer` | any | set by `bf answer` | The answer as given. For a choice question: `{"choice": "A"}` or `{"choices": ["A", "B"]}`, optionally with `note`; **Other** is `{"choice": "other", "other": "<the human's own answer>"}` (multi: `{"choices": ["A", "other"], "other": "<text>"}`), the text kept in `other`. `other` is a reserved key. Records from earlier builds have no `other` and read as before |
 | `answered_at` | string | set by `bf answer` | |
 | `answered_turn` | integer | set by `bf answer` | The human turn after the question that the answer rests on |
 
