@@ -3,7 +3,7 @@
 
     python3 views/dev/build.py            rewrite the token block in views/templates/page.html
     python3 views/dev/build.py --check    exit 1 if the template is out of date (for CI)
-    python3 views/dev/build.py --css FILE write tokens + component styles as one stylesheet (for the design system)
+    python3 views/dev/build.py --css FILE write tokens + component styles as one stylesheet other tools can import
 
 Source of values: views/tokens/tokens.json. Standard library only.
 """

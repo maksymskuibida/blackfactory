@@ -2,13 +2,13 @@
   "contract": 1,
   "kind": "gate",
   "id": "design-r2",
-  "project": "trailmark",
-  "built_at": "2026-11-13T05:00:00Z",
+  "project": "example-app",
+  "built_at": "2026-01-15T10:00:00Z",
   "page": {
-    "crumbs": ["All pages", "Trailmark", "Design", "Design gate"],
+    "crumbs": ["All pages", "Example app", "Design", "Design gate"],
     "status": {"text": "Design gate · answer in chat", "tone": "wait"},
-    "title": "Approve the design of Trailmark",
-    "lede": "Trailmark lets hikers report trail conditions and read the latest report for a trail before they set out.",
+    "title": "Approve the design of Example app",
+    "lede": "Example app lets people report place conditions and read the latest report for a place before they go.",
     "facts": [
       {"label": "Round", "value": "2", "sub": "after your changes"},
       {"label": "Decisions", "value": "6", "sub": "1 needs you"},
@@ -35,8 +35,8 @@
         ]}
       ],
       "rows": [
-        {"id": "LF-1", "title": "Offline reports are queued on the phone, but the sync rule for two reports on one trail is not decided.", "label": "high", "look_first": true, "needs_you": true, "round": null,
-         "body": [{"type": "text", "text": "A hiker with no signal files a report. Another files one for the same trail an hour later with a signal. Which one is shown first is not yet decided."}, {"type": "list", "items": ["Newest report wins (simple, but loses the first hiker's detail).", "Both are shown, newest on top (more to read)."]}],
+        {"id": "LF-1", "title": "Offline reports are queued on the phone, but the sync rule for two reports on one place is not decided.", "label": "high", "look_first": true, "needs_you": true, "round": null,
+         "body": [{"type": "text", "text": "A person with no signal files a report. Another files one for the same place an hour later with a signal. Which one is shown first is not yet decided."}, {"type": "list", "items": ["Newest report wins (simple, but loses the first person's detail).", "Both are shown, newest on top (more to read)."]}],
          "refs": [{"label": "D-4", "tip": "Offline queue", "target": "D-4"}],
          "picks": [{"key": "newest", "text": "Newest wins"}, {"key": "both", "text": "Show both"}]}
       ]
@@ -45,9 +45,9 @@
       "id": "structure", "title": "Structure", "hint": "Three layers, one way in", "open": true,
       "blocks": [
         {"type": "layers", "layers": [
-          {"title": "Apps", "hint": "Where hikers work", "boxes": [{"title": "Phone app", "hint": "reports, trail view"}, {"title": "Web page", "hint": "read only"}]},
-          {"title": "Service", "hint": "One small server", "emphasis": true, "boxes": [{"title": "Reports", "hint": "validate, store"}, {"title": "Trails", "hint": "names, maps"}, {"title": "Sync", "hint": "queue, merge"}]},
-          {"title": "Storage", "hint": "One database", "boxes": [{"title": "Trail records"}, {"title": "Report records"}]}
+          {"title": "Apps", "hint": "Where people work", "boxes": [{"title": "Phone app", "hint": "reports, place view"}, {"title": "Web page", "hint": "read only"}]},
+          {"title": "Service", "hint": "One small server", "emphasis": true, "boxes": [{"title": "Reports", "hint": "validate, store"}, {"title": "Places", "hint": "names, maps"}, {"title": "Sync", "hint": "queue, merge"}]},
+          {"title": "Storage", "hint": "One database", "boxes": [{"title": "Place records"}, {"title": "Report records"}]}
         ], "flows": [["requests", "pages"], ["reads and writes", "rows"]]}
       ],
       "rows": []
@@ -55,16 +55,16 @@
     {
       "id": "decisions", "title": "Decisions", "hint": "Each with what was rejected", "open": true,
       "rows": [
-        {"id": "D-1", "title": "Reports are plain records with a trail, a time and a condition from a fixed list.", "label": "medium", "round": null,
+        {"id": "D-1", "title": "Reports are plain records with a place, a time and a condition from a fixed list.", "label": "medium", "round": null,
          "body": [{"type": "text", "text": "The condition list is: clear, wet, muddy, snow, blocked. Free text is kept as a note."}, {"type": "was", "label": "Rejected", "text": "Free-text reports: they cannot be filtered or compared."}]},
-        {"id": "D-2", "title": "Accounts are optional: a hiker can report with only a nickname.", "label": "high", "round": "changed",
+        {"id": "D-2", "title": "Accounts are optional: a person can report with only a nickname.", "label": "high", "round": "changed",
          "round_note": "You asked for fewer sign-in steps, so a nickname is enough to report.",
          "handled": {"tone": "ok", "text": "Applied"},
          "body": [{"type": "text", "text": "A nickname is stored with each report. A nickname is not an identity, so edits and deletes are only possible within the hour after filing, from the same phone."}, {"type": "was", "label": "Round 1", "text": "Every report needed an account with an e-mail address."}]},
-        {"id": "D-3", "title": "Trail data comes from a public map source and is refreshed once a week.", "label": "low", "round": null,
-         "body": [{"type": "text", "text": "The source's licence allows reuse with credit. The credit is shown on the trail page."}]},
+        {"id": "D-3", "title": "Place data comes from a public map source and is refreshed once a week.", "label": "low", "round": null,
+         "body": [{"type": "text", "text": "The source's licence allows reuse with credit. The credit is shown on the place page."}]},
         {"id": "D-4", "title": "Reports filed without signal wait in a queue on the phone and are sent when it is back online.", "label": "critical", "look_first": true, "needs_you": true, "round": "new",
-         "round_note": "Added after you asked what happens on a trail with no signal.",
+         "round_note": "Added after you asked what happens on a place with no signal.",
          "body": [{"type": "text", "text": "The queue holds up to 50 reports and keeps the time the report was filed, not the time it was sent."}, {"type": "table", "head": ["Case", "What happens"], "rows": [["Phone is back online", "Queue is sent, oldest first"], ["Queue is full", "Oldest report is kept, newest is refused with a message"], ["App is removed", "Queue is lost; the form warns before this"]]}],
          "refs": [{"label": "LF-1", "tip": "Sync rule not decided", "target": "LF-1"}, {"label": "TH-2", "tip": "Fake reports", "target": "TH-2"}]},
         {"id": "D-5", "title": "Photos are not part of version 1.", "label": "low", "round": "removed",
@@ -72,22 +72,22 @@
          "handled": {"tone": "accepted", "text": "Moved to later"},
          "body": [{"type": "text", "text": "Photos need storage, size limits and review of what is shown. They return as their own change."}]},
         {"id": "D-6", "title": "The server keeps the last 90 days of reports and removes older ones each night.", "label": "medium", "round": "changed",
-         "round_note": "The window was 30 days; you asked for 90 so that seasonal trails keep their history.",
+         "round_note": "The window was 30 days; you asked for 90 so that seasonal places keep their history.",
          "body": [{"type": "text", "text": "Removal is a nightly job and is logged. Reports older than 90 days are not recoverable."}, {"type": "was", "label": "Round 1", "text": "The server keeps the last 30 days of reports."}]}
       ]
     },
     {
       "id": "threats", "title": "Threats", "hint": "Ordered by how costly each is to get wrong", "open": false,
       "rows": [
-        {"id": "TH-1", "title": "Someone reports a blocked trail that is open.", "label": "high", "round": null, "body": [{"type": "text", "text": "A report older than 7 days is shown as old. Three recent reports outweigh one."}]},
+        {"id": "TH-1", "title": "Someone reports a blocked place that is open.", "label": "high", "round": null, "body": [{"type": "text", "text": "A report older than 7 days is shown as old. Three recent reports outweigh one."}]},
         {"id": "TH-2", "title": "A script files thousands of fake reports.", "label": "critical", "round": null, "body": [{"type": "text", "text": "Reports are limited per phone and per network address. The limit is checked by the server, not the app."}]},
         {"id": "TH-3", "title": "A nickname contains something offensive.", "label": "low", "round": null, "body": [{"type": "text", "text": "A short blocklist is checked when the nickname is saved."}]},
-        {"id": "TH-4", "title": "The map source disappears.", "label": "medium", "round": null, "body": [{"type": "text", "text": "The last good copy of trail data is kept and used."}]}
+        {"id": "TH-4", "title": "The map source disappears.", "label": "medium", "round": null, "body": [{"type": "text", "text": "The last good copy of place data is kept and used."}]}
       ]
     }
   ],
   "records": [
-    {"title": "design.md", "format": "markdown", "text": "# Trailmark design\n\nReports, trails, sync. See the decisions above.\n\n| ID | Decision |\n|---|---|\n| D-1 | Plain records |\n| D-4 | Offline queue |\n"}
+    {"title": "design.md", "format": "markdown", "text": "# Example app design\n\nReports, places, sync. See the decisions above.\n\n| ID | Decision |\n|---|---|\n| D-1 | Plain records |\n| D-4 | Offline queue |\n"}
   ],
   "answer": {"how": "chat", "prompt": "Approve the design or ask for changes in chat."}
 }

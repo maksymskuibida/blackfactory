@@ -2,12 +2,12 @@
  "contract": 1,
  "kind": "gate",
  "id": "plan-r1",
- "project": "trailmark",
- "built_at": "2026-11-13T05:00:00Z",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
  "page": {
   "crumbs": [
    "All pages",
-   "Trailmark",
+   "Example app",
    "Plan",
    "Plan gate"
   ],
@@ -54,7 +54,7 @@
      "rows": [
       {
        "id": "R-1",
-       "title": "Hikers can file a trail report",
+       "title": "People can file a place report",
        "unit": "U-1",
        "checkpoint": "K-1",
        "checks": 2,
@@ -70,7 +70,7 @@
       },
       {
        "id": "R-3",
-       "title": "The trail page shows the latest report",
+       "title": "The place page shows the latest report",
        "unit": "U-4",
        "checkpoint": "K-2",
        "checks": 1,
@@ -166,7 +166,7 @@
       },
       {
        "id": "R-15",
-       "title": "Trail names come from the public map source",
+       "title": "Place names come from the public map source",
        "unit": "U-2",
        "checkpoint": "K-1",
        "checks": 1,
@@ -174,7 +174,7 @@
       },
       {
        "id": "R-16",
-       "title": "Trail data is refreshed once a week",
+       "title": "Place data is refreshed once a week",
        "unit": "U-3",
        "checkpoint": "K-1",
        "checks": 2,
@@ -182,7 +182,7 @@
       },
       {
        "id": "R-17",
-       "title": "The map credit is shown on the trail page",
+       "title": "The map credit is shown on the place page",
        "unit": "U-4",
        "checkpoint": "K-2",
        "checks": 3,
@@ -190,7 +190,7 @@
       },
       {
        "id": "R-18",
-       "title": "The last good copy of trail data is kept",
+       "title": "The last good copy of place data is kept",
        "unit": "U-5",
        "checkpoint": "K-2",
        "checks": 1,
@@ -222,7 +222,7 @@
       },
       {
        "id": "R-22",
-       "title": "The trail list can be searched by name",
+       "title": "The place list can be searched by name",
        "unit": "U-2",
        "checkpoint": "K-1",
        "checks": 2,
@@ -230,7 +230,7 @@
       },
       {
        "id": "R-23",
-       "title": "The trail list can be sorted by distance",
+       "title": "The place list can be sorted by distance",
        "unit": "U-3",
        "checkpoint": "K-1",
        "checks": 3,
@@ -238,7 +238,7 @@
       },
       {
        "id": "R-24",
-       "title": "A trail can be saved to a favourites list",
+       "title": "A place can be saved to a favourites list",
        "unit": "U-4",
        "checkpoint": "K-2",
        "checks": 1,
@@ -375,7 +375,7 @@
         },
         {
          "id": "U-2",
-         "title": "Trail data import",
+         "title": "Place data import",
          "state": "planned",
          "points": 3
         }
@@ -392,7 +392,7 @@
         },
         {
          "id": "U-4",
-         "title": "Trail page",
+         "title": "Place page",
          "state": "planned",
          "points": 2
         },
@@ -553,7 +553,7 @@
    "rows": [
     {
      "id": "X-1",
-     "title": "Record tests: reports and trails are stored and read back.",
+     "title": "Record tests: reports and places are stored and read back.",
      "label": "high",
      "refs_label": "Proves",
      "refs": [
@@ -642,7 +642,7 @@
     },
     {
      "id": "X-9",
-     "title": "Real phone: file a report and read it back on the trail page.",
+     "title": "Real phone: file a report and read it back on the place page.",
      "label": "main",
      "refs_label": "Proves",
      "refs": [

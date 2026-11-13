@@ -1,11 +1,11 @@
 {
-  "contract": 1, "kind": "run", "id": "run-3", "project": "trailmark", "built_at": "2026-11-13T05:00:00Z",
+  "contract": 1, "kind": "run", "id": "run-3", "project": "example-app", "built_at": "2026-01-15T10:00:00Z",
   "page": {
-    "crumbs": ["All pages", "Trailmark", "Run 3"],
+    "crumbs": ["All pages", "Example app", "Run 3"],
     "status": {"text": "Running · wave 2", "tone": "info"},
     "title": "Run 3: wave 2 of 3",
     "lede": "One unit is being built, one is in review, one is waiting for a dependency.",
-    "facts": [{"label": "Started", "value": "04:10", "sub": "UTC"}, {"label": "Landed", "value": "2 of 7"}, {"label": "Attempts", "value": "5", "sub": "limit 3 per unit"}]
+    "facts": [{"label": "Started", "value": "10:00", "sub": "UTC"}, {"label": "Landed", "value": "2 of 7"}, {"label": "Attempts", "value": "5", "sub": "limit 3 per unit"}]
   },
   "sections": [
     {"id": "progress", "title": "Progress", "hint": "Where the run is and what it has used", "open": true,
@@ -24,13 +24,13 @@
      "rows": [
        {"id": "U-3", "title": "Report API is in cold review.", "label": "main", "round": "changed", "round_note": "Moved from build to review 6 minutes ago.", "body": [{"type": "text", "text": "Two findings so far, both small. The builder has one fix round left."}]},
        {"id": "U-5", "title": "Offline queue has used all three attempts.", "label": "critical", "needs_you": true, "look_first": true, "handled": {"tone": "open", "text": "At limit"},
-        "body": [{"type": "text", "text": "The third attempt failed the queue-size check. The unit will be parked at the next report unless you say otherwise."}, {"type": "evidence", "check": "X-7", "command": "cargo test queue", "exit": 101, "commit": "9f8e7d6c5b", "at": "2026-11-13T04:48:00Z", "output_tail": "thread 'queue_full' panicked at src/queue.rs:88\nassertion failed: refused.is_some()"}]}
+        "body": [{"type": "text", "text": "The third attempt failed the queue-size check. The unit will be parked at the next report unless you say otherwise."}, {"type": "evidence", "check": "X-7", "command": "cargo test queue", "exit": 101, "commit": "9f8e7d6c5b", "at": "2026-01-15T10:00:00Z", "output_tail": "thread 'queue_full' panicked at src/queue.rs:88\nassertion failed: refused.is_some()"}]}
      ]},
     {"id": "log", "title": "Latest events", "hint": "The last five, newest first", "open": false,
      "rows": [
-       {"id": "E-41", "title": "U-3 moved to review.", "body": [{"type": "text", "text": "04:52 UTC"}]},
-       {"id": "E-40", "title": "U-5 attempt 3 failed check X-7.", "body": [{"type": "text", "text": "04:48 UTC"}]},
-       {"id": "E-39", "title": "U-2 landed on checkpoint branch K-1.", "body": [{"type": "text", "text": "04:31 UTC"}]}
+       {"id": "E-41", "title": "U-3 moved to review.", "body": [{"type": "text", "text": "10:00 UTC"}]},
+       {"id": "E-40", "title": "U-5 attempt 3 failed check X-7.", "body": [{"type": "text", "text": "10:00 UTC"}]},
+       {"id": "E-39", "title": "U-2 landed on checkpoint branch K-1.", "body": [{"type": "text", "text": "10:00 UTC"}]}
      ]}
   ],
   "answer": {"how": "chat", "prompt": "Say go on to continue, or tell the conductor what to change."}

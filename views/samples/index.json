@@ -2,12 +2,12 @@
  "contract": 1,
  "kind": "index",
  "id": "index",
- "project": "trailmark",
- "built_at": "2026-11-13T05:00:00Z",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
  "page": {
   "crumbs": [
    "All pages",
-   "Trailmark"
+   "Example app"
   ],
   "status": {
    "text": "2 pages need you",
@@ -35,14 +35,14 @@
    "rows": [
     {
      "id": "design-r2",
-     "title": "Approve the design of Trailmark",
+     "title": "Approve the design of Example app",
      "href": "gate.html",
      "round": "changed",
      "handled": {
       "tone": "open",
       "text": "Round 2"
      },
-     "meta": "13 Nov 05:00",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -54,7 +54,7 @@
      "id": "requirements-q1",
      "title": "Three questions before the requirements are written",
      "href": "questions.html",
-     "meta": "12 Nov 18:20",
+     "meta": "14 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -66,7 +66,7 @@
      "id": "plan-r1",
      "title": "Approve the delivery plan",
      "href": "plan-gate.html",
-     "meta": "13 Nov 05:10",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -86,7 +86,7 @@
      "id": "run-3",
      "title": "Run 3: wave 2 of 3",
      "href": "run.html",
-     "meta": "13 Nov 04:52",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -98,7 +98,7 @@
      "id": "plan",
      "title": "Delivery plan: seven units in three waves",
      "href": "plan.html",
-     "meta": "12 Nov 21:05",
+     "meta": "14 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -110,7 +110,7 @@
      "id": "ledger",
      "title": "Every designed part and what is linked to it",
      "href": "ledger.html",
-     "meta": "13 Nov 04:40",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -122,7 +122,7 @@
      "id": "coverage",
      "title": "Requirements coverage",
      "href": "coverage.html",
-     "meta": "13 Nov 04:40",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",
@@ -134,7 +134,7 @@
      "id": "K-1",
      "title": "Checkpoint K-1: reports can be filed and read back",
      "href": "checkpoint.html",
-     "meta": "13 Nov 04:33",
+     "meta": "15 Jan 10:00",
      "body": [
       {
        "type": "text",

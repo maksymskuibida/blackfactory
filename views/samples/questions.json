@@ -2,10 +2,10 @@
   "contract": 1,
   "kind": "questions",
   "id": "requirements-q1",
-  "project": "trailmark",
-  "built_at": "2026-11-13T05:00:00Z",
+  "project": "example-app",
+  "built_at": "2026-01-15T10:00:00Z",
   "page": {
-    "crumbs": ["All pages", "Trailmark", "Requirements", "Questions"],
+    "crumbs": ["All pages", "Example app", "Requirements", "Questions"],
     "status": {"text": "Requirements · 3 questions", "tone": "wait"},
     "title": "Three questions before the requirements are written",
     "lede": "Your answers decide the requirements. Pick an option or write your own; nothing is chosen for you.",
@@ -15,13 +15,13 @@
   "questions": [
     {"id": "Q-1", "title": "Who can file a report?", "context": "This sets how much sign-in the app needs.", "kind": "single",
      "options": [
-       {"key": "A", "text": "Anyone, with a nickname", "proposed": true, "why": "Hikers on a trail want to report in seconds. A nickname is enough for conditions."},
+       {"key": "A", "text": "Anyone, with a nickname", "proposed": true, "why": "People on site want to report in seconds. A nickname is enough for conditions."},
        {"key": "B", "text": "Only people with an account"},
        {"key": "C", "text": "Anyone, but reports from accounts count more"}
      ], "answer": null},
     {"id": "Q-2", "title": "Which kinds of report are in the first version?", "context": "Choose every kind that should be there.", "kind": "multi",
      "options": [
-       {"key": "A", "text": "Trail condition (clear, wet, muddy, snow, blocked)", "proposed": true, "why": "It is the one thing every hiker wants to know."},
+       {"key": "A", "text": "Place condition (clear, wet, muddy, snow, blocked)", "proposed": true, "why": "It is the one thing every person wants to know."},
        {"key": "B", "text": "Water sources"},
        {"key": "C", "text": "Wildlife sightings"},
        {"key": "D", "text": "Parking and access"}

@@ -1,7 +1,7 @@
 {
-  "contract": 1, "kind": "plan", "id": "plan", "project": "trailmark", "built_at": "2026-11-13T05:00:00Z",
+  "contract": 1, "kind": "plan", "id": "plan", "project": "example-app", "built_at": "2026-01-15T10:00:00Z",
   "page": {
-    "crumbs": ["All pages", "Trailmark", "Plan"],
+    "crumbs": ["All pages", "Example app", "Plan"],
     "status": {"text": "Plan gate · answer in chat", "tone": "wait"},
     "title": "Delivery plan: seven units in three waves",
     "lede": "Units in one wave share no files, so they can be built side by side.",
@@ -13,11 +13,11 @@
        {"type": "waves", "waves": [
          {"n": 1, "units": [
            {"id": "U-1", "title": "Record store and schemas", "state": "landed", "points": 5},
-           {"id": "U-2", "title": "Trail data import", "state": "running", "points": 3}
+           {"id": "U-2", "title": "Place data import", "state": "running", "points": 3}
          ]},
          {"n": 2, "units": [
            {"id": "U-3", "title": "Report API", "state": "ready", "points": 3},
-           {"id": "U-4", "title": "Trail page", "state": "planned", "points": 2},
+           {"id": "U-4", "title": "Place page", "state": "planned", "points": 2},
            {"id": "U-5", "title": "Offline queue on the phone", "state": "planned", "points": 5}
          ]},
          {"n": 3, "units": [
