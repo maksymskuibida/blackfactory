@@ -64,7 +64,7 @@ All of these reflow to one column at phone width. Wide tables and code scroll in
 
 ## Questions
 
-`{id, title, context, kind, options, answer}` with kind `single`, `multi` or `text`. Options are `{key, text, proposed, why}`. A proposed option is tagged and its `why` shows in a box with a Choose button; it is never chosen for the viewer. Every question has a note box. Single and multi questions are required (set `optional: true` to relax), text questions are optional (set `required: true` to require). When any question is required the bar shows a Done button that unlocks once all required ones are answered. The page only records Done; the viewer tells the agent in chat.
+`{id, title, context, kind, options, answer}` with kind `single`, `multi` or `text`. Options are `{key, text, proposed, why}`. A proposed option is tagged and its `why` shows in a box with a Choose button; it is never chosen for the viewer. Every single and multi question also shows "Other" after its own options (the template draws it; set `other: false` on the question to turn it off). Choosing Other opens a text field for the person's own answer, and the question counts as answered with Other only when that text is not empty. In a single question Other replaces the listed options; in a multi question it can be combined with them. The saved answer lists the reserved key `other` in `choices` and holds the text in a field `other`; `answer.other` in the data shows it filled in. Every question has a note box. Single and multi questions are required (set `optional: true` to relax), text questions are optional (set `required: true` to require). When any question is required the bar shows a Done button that unlocks once all required ones are answered. The page only records Done; the viewer tells the agent in chat.
 
 ## Page rules the template follows
 
@@ -83,7 +83,7 @@ Published as an artifact with the `db` and `user` capabilities, the page keeps:
 |---|---|---|
 | Read marks `{marks: {"<section>~<row>": hash}}` | `data/users/<id>/reads-<page id>` | the viewer only |
 | Row notes `{notes: {"<section>~<row>": text}}` | `data/users/<id>/notes-<page id>` | the viewer only |
-| Question answers `{id, question, choice, choices, note, at}` | `answers/<question id>` | everyone with access |
+| Question answers `{id, question, choice, choices, other, note, at}` (`choices` may hold the key `other`, its text is in `other`) | `answers/<question id>` | everyone with access |
 | "Done" on a form `{id, done, at}` | `answers/done.<page id>` | everyone with access |
 | Row picks `{page, row, pick, at}` | `picks/<page id>.<row id>` | everyone with access |
 

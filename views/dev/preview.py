@@ -215,6 +215,7 @@ SELFTEST_PAGE = r"""<!doctype html><meta charset=utf-8><title>Black Factory self
   function status(f) { var e = f.contentDocument.getElementById('savestat'); return e ? e.textContent : ''; }
   var sfails = [];
   function sok(c, m) { if (!c) sfails.push(m); }
+  try {
   clearAll();
   var f = await load('gate.html'); await sleep(900);
   dot(f, 0).click(); await sleep(1300); dot(f, 1).click(); await sleep(60);
@@ -250,8 +251,32 @@ SELFTEST_PAGE = r"""<!doctype html><meta charset=utf-8><title>Black Factory self
   sok(Object.keys(f.contentWindow.localStorage).some(function (k) { return /:marks$/.test(k); }), 'no store: the mark is kept in the browser'); f.remove();
   clearAll(); f = await load('questions.html'); await sleep(900);
   var qd = f.contentDocument, qi = qd.querySelectorAll('#q-Q-2 input');
-  qi[0].click(); await sleep(1500); qi[1].click(); await sleep(60);
-  sok(qd.querySelectorAll('#q-Q-2 input:checked').length === 2, 'questions: a second choice after the first save is applied');
+  sok(qd.querySelectorAll('#q-Q-2 input:checked').length === 2 && qd.getElementById('q-Q-2-othertext').value === 'Closures that last more than a week', 'other: the starting answer is shown filled in');
+  qi[1].click(); await sleep(1500); qi[2].click(); await sleep(60);
+  sok(qd.querySelectorAll('#q-Q-2 input:checked').length === 4, 'questions: a choice after the first save is applied (' + qd.querySelectorAll('#q-Q-2 input:checked').length + ' checked, expected 4)');
+  sok(qd.querySelectorAll('#q-Q-4 input').length === 2, 'other: a question with "other": false has no Other option');
+  var o1 = qd.querySelectorAll('#q-Q-1 input'), prog = function () { return qd.getElementById('qprog').textContent; };
+  sok(o1.length === 4 && o1[3].value === 'other', 'other: a single question offers Other after its own options');
+  sok(qd.getElementById('q-Q-1-othertext').closest('.otherbox').hidden === true, 'other: the text field is hidden until Other is picked');
+  var pq = prog(); o1[3].click(); await sleep(60);
+  sok(qd.getElementById('q-Q-1-othertext').closest('.otherbox').hidden === false, 'other: picking Other opens the text field');
+  sok(qd.activeElement === qd.getElementById('q-Q-1-othertext') || !qd.hasFocus(), 'other: the text field takes focus');
+  sok(/own answer/.test(qd.getElementById('q-Q-1-miss').textContent), 'other: a short line says what is missing');
+  sok(prog() === pq && !qd.querySelector('#q-Q-1.done'), 'other: empty Other does not count as answered (' + prog() + ')');
+  var ot = qd.getElementById('q-Q-1-othertext'); ot.value = 'Only on weekends'; ot.dispatchEvent(new Event('input', { bubbles: true })); await sleep(60);
+  sok(!!qd.querySelector('#q-Q-1.done') && qd.getElementById('q-Q-1-miss').textContent === '', 'other: with text it counts as answered');
+  await sleep(2800); var d1 = f.contentWindow.__bfstub.dump()['answers/Q-1'];
+  sok(d1 && d1.choices.join() === 'other' && d1.choice === 'other' && d1.other === 'Only on weekends', 'other: saved as choices [other] with the text (' + JSON.stringify(d1 && [d1.choices, d1.other]) + ')');
+  sok(/Only on weekends/.test(qd.getElementById('ansbody').textContent), 'other: the summary shows the person\'s own text');
+  qd.querySelector('#q-Q-1 input[value=A]').click(); await sleep(60);
+  sok(qd.querySelectorAll('#q-Q-1 input:checked').length === 1 && qd.querySelector('#q-Q-1 input[value=other]').checked === false, 'other: in a single question the listed options replace Other');
+  await sleep(2800); d1 = f.contentWindow.__bfstub.dump()['answers/Q-1']; sok(d1 && d1.choices.join() === 'A' && d1.other === '', 'other: unticking Other saves no Other text');
+  qd.querySelector('#q-Q-1 input[value=other]').click(); await sleep(60); sok(qd.getElementById('q-Q-1-othertext').value === 'Only on weekends', 'other: the typed text is kept when Other is picked again'); await sleep(2800);
+  var f2 = await load('questions.html'); await sleep(1500); var qd2 = f2.contentDocument;
+  sok(qd2.querySelector('#q-Q-1 input[value=other]').checked && qd2.getElementById('q-Q-1-othertext').value === 'Only on weekends' && !!qd2.querySelector('#q-Q-1.done'), 'other: after a reload the answer comes back');
+  qd2.querySelector('#q-Q-1 input[value=A]').click(); await sleep(60); sok(qd2.querySelectorAll('#q-Q-1 input:checked').length === 1, 'other: a choice after loading saved data is applied');
+  sok(!(f2.contentWindow.__bfErrors || []).length, 'other: no script error after reload: ' + (f2.contentWindow.__bfErrors || [])[0]); f2.remove();
+
   var qn = qd.getElementById('q-Q-3-note'); qn.value = 'one'; qn.dispatchEvent(new Event('input', { bubbles: true })); await sleep(2800); qn.value = 'one two'; qn.dispatchEvent(new Event('input', { bubbles: true })); await sleep(2800);
   var qs = f.contentWindow.__bfstub.dump()['answers/Q-3']; sok(qs && qs.note === 'one two', 'questions: a note typed after the first save is saved (' + JSON.stringify(qs && qs.note) + ')');
   sok(!(f.contentWindow.__bfErrors || []).length, 'questions: no script error: ' + (f.contentWindow.__bfErrors || [])[0]); f.remove();
@@ -263,6 +288,7 @@ SELFTEST_PAGE = r"""<!doctype html><meta charset=utf-8><title>Black Factory self
   var nk = Object.keys(f.contentWindow.__bfstub.dump()).filter(function (x) { return /notes-/.test(x); })[0];
   sok(nk && Object.values(f.contentWindow.__bfstub.dump()[nk].notes)[0] === 'ab', 'row note: a note edited after the first save is saved');
   sok(!(f.contentWindow.__bfErrors || []).length, 'row note: no script error: ' + (f.contentWindow.__bfErrors || [])[0]); f.remove();
+  } catch (e) { sfails.push('exception: ' + e.message); }
   clearAll();
   if (sfails.length) { bad++; lines.push('FAIL  saved data\n      ' + sfails.join('\n      ')); } else lines.push('pass  saved data (ok, reload, slow, failing, late, none)');
   out.textContent = lines.join('\n') + '\n' + (bad ? bad + ' page(s) failed' : 'all passed');
