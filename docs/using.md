@@ -28,14 +28,13 @@ You give an idea and make the design decisions. The factory builds the product o
 
 ## 3. Install the harness into your project
 
-Your project must be a git repository with at least one commit.
+Your project must be a git repository with at least one commit. The order matters: commit, install, `bf init`, commit again, start.
 
 1. From this repository:
    ```bash
    harness/claude/install.sh /path/to/your/project
    ```
 2. It copies the conductor skill, the three worker roles and the page template into the project's `.claude/`, and adds to `.claude/settings.json` two hooks and two permission rules that keep Claude out of the engine's state folder. It keeps a `.bak` copy of anything it changes, touches nothing outside the project, and is safe to run again.
-3. Commit the new files in your project if you want them versioned.
 
 The hooks and rules are explained in `harness/claude/README.md`.
 
@@ -46,13 +45,18 @@ The hooks and rules are explained in `harness/claude/README.md`.
    cd /path/to/your/project
    bf init --name myproject
    ```
-   This creates `factory/` (records, policy, config), `.bf/` (derived files, added to `.gitignore`) and the state folder, and accepts the policy as it is. Run it from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`: checks run with the `PATH` captured here, in `[exec] path` of `factory/policy.toml`. A folder inside the project on that `PATH` (a virtual environment's `bin`, `node_modules/.bin`) is refused.
+   This creates `factory/` (records, policy, config), `.bf/` (derived files, added to `.gitignore`) and the state folder, and accepts the policy as it is. Run it from a shell where the tools your project's checks need (`python3`, `cargo`, `node`) are on the `PATH`: checks run with the `PATH` captured here, in `[exec] path` of `factory/policy.toml`. `bf doctor` lists folders of that `PATH` inside the project or your home folder, as information.
    Make sure `.gitignore` also lists your build output (`target/`, `node_modules/`, `__pycache__/`). A receipt is bound to a hash of every file that is not ignored, so a stray build folder changes the hash and voids the receipt.
-2. Start Claude Code in the same folder and type:
+2. Commit the new files (`.claude/`, `factory/` and `.gitignore`), so that the factory begins on a quiet project:
+   ```bash
+   git add -A && git commit -m "Add Black Factory"
+   ```
+   `bf status` then prints one `note:` line saying the main branch moved on by a commit the engine did not make. It is information, not an error.
+3. Start Claude Code in the same folder and type:
    ```
    /factory
    ```
-3. Describe your idea in one message. The conductor takes it from there.
+4. Describe your idea in one message. The conductor takes it from there.
 
 ## 5. The five gates
 
@@ -63,7 +67,7 @@ At every gate the same things happen:
 3. It then publishes the **gate page**. You read it and reply in chat in your own words: approve, or say what to change.
 4. On "change", it revises, and the page for the next round shows what changed.
 
-Pages are private artifacts. Each item has a read mark, and filters show what needs you, what is unread and what changed. The page never takes the decision. You give it in chat.
+The questions and gate pages are published as private pages through the Claude app's artifact feature, which needs a Claude app that supports it. Without it the conductor asks in chat instead and you answer there. On a page, each item has a read mark, and filters show what needs you, what is unread and what changed. The page never takes the decision. You give it in chat.
 
 | Gate | What you read | What you decide |
 |---|---|---|
@@ -76,9 +80,8 @@ Pages are private artifacts. Each item has a read mark, and filters show what ne
 ## 6. Answering and approving
 
 - **Questions.** Pick an option or write a note. Proposals are shown but never preselected. Then type `done` in the chat.
-- **Approving.** Type it yourself, in the chat of the session that is running the factory, in one plain sentence: "Approved." or "Looks good, go ahead." A message from another session, an agent or the page does not count, and neither does a question ("is this ready?" approves nothing). One message approves one thing, so approve each gate in its own message.
-- **Keep it plain.** The engine reads your message with simple word lists, in English, German, French and Spanish. An approval needs a word like "approved", "yes" or "go ahead" and no word like "no", "not", "change", "wait" anywhere in the message. "Approved, no changes needed" is refused because of "no" and "changes". If the engine cannot tell what you meant, the conductor tells you and asks you to say it again plainly. It never rephrases your words for you.
-- **The quote.** The conductor passes the whole message, or one whole sentence of it, as the quote. The engine stores the quote and your whole message and shows both on the gate page ("Decided on the words", "The human's whole message") and in `bf gate status`. Read them. If they are not what you meant, tell the conductor in chat.
+- **Approving.** Type it yourself, in the chat of the session that is running the factory, and say it plainly: "Approved." or "Looks good, go ahead." A message from another session, an agent or the page does not count, and neither does a question ("is this ready?" approves nothing). One message decides one thing, so approve each gate in its own message.
+- **The quote.** The conductor reads your message and passes the words it took as the decision. The engine stores the quote and your whole message and shows both on the gate page ("Decided on the words", "The human's whole message") and in `bf gate status`. If your message also holds a word that can mean no ("wait", "change"), a caution appears beside it. Read them. If they are not what you meant, tell the conductor in chat.
 - **Changing.** Say what to change, in one sentence that says no to the current version: "No, change the second requirement to ...". Nothing is approved until you say so.
 - If the engine refuses a decision, the conductor tells you why. The usual cause is that your message did not reach this session, or that it mixed yes and no words.
 
@@ -91,13 +94,13 @@ After you approve the delivery plan, the conductor runs a loop: ask `bf next`, s
 - the budget cap,
 - the end of the run, after the last checkpoint closes. Each checkpoint's verifier is the verification of what it proves, and `bf ledger check` is the final test.
 
-For a human step that does not stop the run, the factory carries on with independent work and you answer when you can. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
+For a human step that does not stop the run, the factory carries on with independent work and you answer when you can. If the conductor session ends, restart it with `/factory`: the engine holds all state and the run resumes where it was. Restarting it is your part for now; a supervisor that does it for you is not built yet. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
 
 ## 8. Test runs
 
 A test run completes a whole factory run without you approving each gate. It is for trying the factory on a toy project.
 
-1. Say in chat that you grant a test run, in one plain sentence that speaks of a test run (the engine refuses a grant that does not).
+1. Say in chat that you grant a test run, in a sentence that speaks of a test run (the engine refuses a grant that does not).
 2. The conductor runs `bf test-mode grant` with your words as the quote.
 3. The conductor drafts the records of every stage, then starts the run (`bf run start`), then opens and approves each gate in order with a record marked **simulated**.
 
@@ -142,12 +145,11 @@ Add `--json` for data. To get a page, render one: `bf render run --template .cla
 
 Every refusal has four parts: what was refused, why, numbered steps, and how to tell it worked. Do the steps. The common ones:
 
-- **No human message followed the gate.** Type your decision in the session that is running the factory. If you did type it and the engine still never records a message, the harness may write its transcript after the hook runs. Then open `factory/policy.toml`, set `transcript_match = "soft"` under `[human]`, and accept the change as described below. This is the one point that has not been tried against a live session.
-- **The message mixes yes and no words, or is not a whole sentence.** Say it again plainly, in one sentence.
+- **No human message followed the gate.** Type your decision in the session that is running the factory. The engine records your message as the hook delivers it.
 - **The policy file differs from the one you accepted.** Every command stops. Read the change with `bf policy diff`. If you agree, tell the conductor in chat and it runs `bf policy accept` with your words. If not, put the old file back. Only you decide this.
-- **A check failed or is unreachable.** The verifier recorded why (`bf next` shows it). Fix the cause or amend the plan, then the verifier runs the check again. On macOS checks run in a sandbox with no network.
+- **A check failed or is unreachable.** The verifier recorded why (`bf next` shows it). Fix the cause or amend the plan, then the verifier runs the check again. On macOS checks run in a sandbox with no network and a short list of environment variables. A check that needs the network or more variables is allowed by setting `[exec] network = true` or `[exec] env = [...]` in `factory/policy.toml`, which you then accept with `bf policy accept`.
 - **The log does not match its head, or the main branch moved without the engine.** `bf doctor` and `bf status` say where. Only you decide to keep things as they are: tell the conductor in chat, and it runs `bf head accept` with your words. A commit that touches only `factory/` and `.gitignore` is not a move. Receipts of a cloned project must be run again.
-- **A role token is lost.** Tokens are shown once, to the conductor. Only you can reset them: tell the conductor in chat, and it runs `bf tokens reset` with your words.
+- **A role token is lost or stolen.** The conductor takes tokens with `bf token take`; asking again voids the earlier one. Only you can clear them all: tell the conductor in chat, and it runs `bf tokens reset` with your words.
 
 ## 13. When a unit is parked
 
@@ -158,22 +160,21 @@ A unit is parked when it passes its limit of review rounds or sits idle too long
 3. Decide, then tell the conductor in chat: re-plan the unit through an amendment (`bf amend open <ID>`), raise the limit in `factory/policy.toml` (only you edit that file), or accept a finding by setting its `outcome = "accepted"`. The engine has no command that releases a parked unit by itself.
 4. The rest of the run carries on meanwhile.
 
-## 14. What the factory does not stop yet
+## 14. What the factory checks, and what it leaves to Claude Code
 
-The guard and the checks stop mistakes, drift and casual cheating, and make deliberate cheating visible. They do not make a determined agent honest. There are two cases.
+The engine makes sure every designed part is built and proven and nothing is skipped. It refuses to land a unit, close a checkpoint or finish a run until each part has a receipt it wrote itself, it freezes approved records, and it stores your decisions with your own words. It is the way to make sure nothing is forgotten. It is not a cage.
 
-**A worker with only the guarded tools** (Write, Edit, Read, Grep, Glob and Bash through the hook) can no longer, in a few calls, record a human turn, approve a gate with your refusal, edit the policy or the check records unnoticed, add a unit to an approved plan, read the key by name or move the main branch without the engine saying so. It can still:
+Claude Code's own permission checks are the layer against deceptive behaviour, and they stay on: the guard hook only refuses what the factory must protect (the log, receipts, gates, policy, other units' files) and otherwise leaves every permission prompt to Claude Code.
 
-- **Hide a path.** The guard reads command text. A path built at run time, a variable, a glob or a script file that does the work is not seen. The sandbox around checks and git helps only where the engine starts the process.
-- **Run its own code as a check.** A check runs the unit's code. On macOS the engine runs it in a sandbox (no state folder, no network, no writes to `factory/` or other working copies). Elsewhere it runs unsandboxed and the receipt says so. Either way, what a check proves rests on someone reading that code.
-- **Plant a program where checks look.** A program replaced inside an unchanged folder on the check `PATH` is not seen.
-- **Take the reviewer's token** by running `bf next` from a script before the conductor does.
-- **Use an older, still valid guard table**, and **race a symlink**.
-- **Move the main branch, then be noticed.** The engine refuses to continue until you accept the position. Only a host's branch protection stops the move.
+How it works, in plain terms:
 
-**An agent with an unrestricted shell under your account** can read the state folder: with the key it can seal receipts, chain log lines, sign a guard table, rewrite the log and its head together, and hand itself role tokens. It can write anywhere you can, including the policy and the transcripts. Nothing in this engine stops that. Real separation needs the harness's sandbox, so that worker sessions cannot touch the state folder, `factory/`, `.bf/`, the transcripts and other working copies at all, and a host identity the agent does not hold: a pull request that only you merge, with required checks that re-verify every receipt.
+- **Approval is the conductor's reading of your words.** That is how it works. The engine checks that the quote is in your message and is not a question, and shows the quote and your whole message on the gate page, so you can see what was taken.
+- **Checks run the unit's own code.** On macOS the engine runs them in a sandbox (no network, no access to the state folder, no writes to `factory/` or other working copies). Elsewhere they run unsandboxed and the receipt says so. What a check proves rests on the check being a good one.
+- **The cost of a piece of work is the number the conductor reports.**
+- **The engine's state folder is protected from the guarded tools and by permission rules, not from an unrestricted shell.** An agent that already has full shell access under your account can reach it. If you want separation beyond Claude Code's checks, use Claude Code's sandbox and a host where only you can merge.
+- **Moving the main branch** by git is noticed and the engine waits for you; only a host's branch protection prevents it.
 
-Two limits of reading your words: the engine cannot understand a sentence, so it cannot tell "Yes, but only if..." from "Yes" (the quote and your whole message are shown for you to audit), and the cost of a piece of work is the conductor's word. The full table is in [engine.md](engine.md), section "What the engine does not stop".
+The full table is in [engine.md](engine.md), section "What the engine does not stop".
 
 ## 15. What is not built yet
 

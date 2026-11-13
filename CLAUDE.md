@@ -11,7 +11,7 @@ Anything committed here is read by strangers. Never commit:
 - links to private pages or artifacts, tokens, keys, `.env` files
 - text copied from private requests, notes or planning files
 
-If a file starts with "local only", it does not belong here. Write as if the reader knows nothing about who built this.
+Keep private notes out of the repository. Write as if the reader knows nothing about who built this.
 
 ## How changes land
 
