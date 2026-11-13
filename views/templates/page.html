@@ -330,6 +330,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
 .foot { color: var(--muted); font-size: var(--fs-sm); text-align: center; }
 .msg { padding: 28px 24px; display: flex; flex-direction: column; gap: 6px; }
 .msg p { margin: 0; color: var(--fg-2); max-width: 70ch; }
+#toast button { height: 26px; margin-left: 10px; padding: 0 10px; border: 1px solid var(--tip-fg); border-radius: var(--r-ctl); background: transparent; color: var(--tip-fg); font-size: var(--fs-md); }
+.quiet { margin: 0; padding: 28px 16px; text-align: center; color: var(--muted); }
+.row, section.card { transition: opacity .15s; } .row.leaving, section.card.leaving { opacity: 0; }
 #toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--tip-bg); color: var(--tip-fg); border: 1px solid var(--tip-line); padding: 8px 14px; border-radius: var(--r-box); font-size: var(--fs-md); z-index: 20; }
 
 @media (max-width: 767px) {
@@ -356,7 +359,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
 /*COMPONENTS:END*/
 </style>
 <div class="wrap" id="app"><div class="card msg" id="boot"><b>Black Factory</b><p>Loading the page…</p></div></div>
-<div id="toast" hidden></div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
 <script type="application/json" id="bf-data">/*BF_DATA*/</script>
 <script>
 (function () {
@@ -389,7 +392,23 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
   function plural(n, a, b) { return n + ' ' + (n === 1 ? a : (b || a + 's')); }
   function fmt(iso) { try { var d = new Date(iso); if (isNaN(d)) return ''; return d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'; } catch (e) { return ''; } }
   var toastT;
+  function toastUndo(msg, snapshot, restore) {
+    var t = $('toast'); t.textContent = ''; t.appendChild(T(msg));
+    var b = el('button', null, 'Undo', { type: 'button' });
+    b.addEventListener('click', function () { t.hidden = true; restore(snapshot); });
+    t.appendChild(b); t.hidden = false; clearTimeout(toastT); toastT = setTimeout(function () { t.hidden = true; }, 6000);
+  }
   function toast(msg) { var t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(function () { t.hidden = true; }, 2600); }
+  var REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  /* show or hide an element at once in the data (data-show), and with a short fade in the page */
+  function setVisible(e, show, animate) {
+    e.setAttribute('data-show', show ? '1' : '0');
+    if (show) { clearTimeout(e._hideT); e._hideT = null; e.classList.remove('leaving'); e.hidden = false; return; }
+    if (e.hidden || e._hideT) return;
+    if (!animate || REDUCED) { e.hidden = true; return; }
+    e.classList.add('leaving');
+    e._hideT = setTimeout(function () { e._hideT = null; e.classList.remove('leaving'); if (e.getAttribute('data-show') === '0') e.hidden = true; }, 150);
+  }
   function cyrb53(str) {
     var h1 = 0xdeadbeef, h2 = 0x41c6ce57;
     for (var i = 0; i < str.length; i++) { var ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
@@ -406,6 +425,8 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
   }
   /* the read mark is tied to this hash: the row's title plus the text of its body, nothing else */
   function rowHash(row) { return cyrb53((row.title || '') + '\n' + leaves(row.body || [], []).join('\n')); }
+  /* data from the saved-data service is frozen: always copy it before it becomes the page's own state */
+  function thaw(x) { try { return JSON.parse(JSON.stringify(x)); } catch (e) { return x; } }
   function lsGet(k) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } }
 
@@ -463,33 +484,50 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     var p = lsGet(LSK + 'picks'); if (p && typeof p === 'object') S.picks = p;
     var d = lsGet(LSK + 'done'); if (d === true) S.done = true;
   })();
-  var STORE = { db: null, uid: null };
+  var STORE = { db: null, uid: null, pending: !!(window.claude && window.claude.use) };
   var writers = {};
+  /* One writer per document: writes one at a time, only after a change, never from a snapshot callback. A click never waits for it.
+     A failed or silent write is retried in the background (2 s, 4 s, 8 s, up to 30 s) and the status says so. */
   function writer(name, ref, makeDoc, delay) {
     if (writers[name]) return writers[name];
-    var t = null, busy = false, again = false, w = {
-      dirty: false,
-      touch: function () { w.dirty = true; clearTimeout(t); t = setTimeout(w.flush, delay); setStatus('busy'); },
+    var t = null, rt = null, busy = 0, again = false, fails = 0, token = 0, ver = 0, sent = 0;   // ver counts changes, sent is the change a write carried
+    var w = {
+      dirty: false, waiting: false,
+      touch: function () { ver++; w.dirty = true; fails = 0; clearTimeout(t); clearTimeout(rt); t = setTimeout(w.flush, delay); setStatus('busy'); },
       flush: function () {
-        clearTimeout(t);
+        clearTimeout(t); clearTimeout(rt);
         if (busy) { again = true; return; }
-        var r = ref(); if (!r) { w.dirty = false; setStatus(STORE.db ? 'fail' : 'local'); return; }
-        busy = true; again = false; var snap = makeDoc();
-        r.set(snap).then(function () { busy = false; if (again) w.flush(); else { w.dirty = false; setStatus('ok'); } },
-          function () { busy = false; w.dirty = false; setStatus('fail'); });
+        var r = null; try { r = ref(); } catch (e) { r = null; }
+        if (!r) {
+          if (STORE.pending) { w.waiting = true; return; }           // the services are still loading: written when they are ready
+          w.dirty = false; setStatus('local'); return;               // no store here: the browser keeps it
+        }
+        var snap; try { snap = makeDoc(); } catch (e) { w.dirty = false; return; }
+        sent = ver; var my = ++token; busy = my; again = false;
+        var guard = setTimeout(function () { if (busy === my) { busy = 0; failed(); } }, 15000);   // the service never answered
+        var p; try { p = r.set(snap); } catch (e) { clearTimeout(guard); busy = 0; failed(); return; }
+        Promise.resolve(p).then(function () {
+          if (busy !== my) return; clearTimeout(guard); busy = 0; fails = 0;
+          if (again) w.flush(); else if (ver === sent) { w.dirty = false; setStatus('ok'); }   // a newer change waits for its own timer: stay dirty
+        }, function () { if (busy !== my) return; clearTimeout(guard); busy = 0; failed(); });
       }
     };
+    function failed() { fails++; setStatus(fails >= 3 ? 'fail' : 'retry'); rt = setTimeout(w.flush, Math.min(30000, 2000 * Math.pow(2, fails - 1))); }
     writers[name] = w; return w;
+  }
+  function storeReady() {
+    STORE.pending = false;
+    Object.keys(writers).forEach(function (k) { var w = writers[k]; if (w.waiting) { w.waiting = false; w.flush(); } });
   }
   function setStatus(s) {
     S.status = s;
     var e = $('savestat'); if (!e) return;
-    var txt = { local: 'Kept in this browser', busy: 'Saving…', ok: 'Saved', fail: 'Not saved: tell Claude in chat', wait: 'Connecting…', slow: 'Saved data cannot be reached yet' }[s] || '';
-    e.className = 'savestat ' + (s === 'ok' ? 'ok' : s === 'busy' || s === 'wait' || s === 'slow' ? 'busy' : s === 'fail' ? 'fail' : '');
+    var txt = { local: 'Kept in this browser', busy: 'Saving…', ok: 'Saved', retry: 'Not saved yet, trying again', fail: 'Not saved. Still trying; tell Claude in chat if it stays', wait: 'Connecting…', slow: 'Saved data cannot be reached yet' }[s] || '';
+    e.className = 'savestat ' + (s === 'ok' ? 'ok' : s === 'busy' || s === 'wait' || s === 'slow' || s === 'retry' ? 'busy' : s === 'fail' ? 'fail' : '');
     e.title = txt; e.lastChild.textContent = txt;
   }
-  function marksWriter() { return writer('marks', function () { return STORE.db && STORE.uid ? STORE.db.doc('data/users/' + STORE.uid + '/reads-' + PID) : null; }, function () { return { marks: S.marks, at: new Date().toISOString() }; }, 500); }
-  function notesWriter() { return writer('notes', function () { return STORE.db && STORE.uid ? STORE.db.doc('data/users/' + STORE.uid + '/notes-' + PID) : null; }, function () { return { notes: S.notes, at: new Date().toISOString() }; }, 1200); }
+  function marksWriter() { return writer('marks', function () { return STORE.db && STORE.uid ? STORE.db.doc('data/users/' + STORE.uid + '/reads-' + PID) : null; }, function () { return { marks: thaw(S.marks), at: new Date().toISOString() }; }, 500); }
+  function notesWriter() { return writer('notes', function () { return STORE.db && STORE.uid ? STORE.db.doc('data/users/' + STORE.uid + '/notes-' + PID) : null; }, function () { return { notes: thaw(S.notes), at: new Date().toISOString() }; }, 1200); }
   function answerWriter(q) {
     return writer('a:' + q.id, function () { return STORE.db ? STORE.db.doc('answers/' + seg(q.id)) : null; }, function () {
       var a = S.answers[q.id] || {};
@@ -502,8 +540,8 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     }, 100);
   }
   function doneWriter() { return writer('done', function () { return STORE.db ? STORE.db.doc('answers/done.' + PID) : null; }, function () { return { id: 'done.' + PID, done: !!S.done, at: new Date().toISOString() }; }, 100); }
-  function saveMarks() { lsSet(LSK + 'marks', S.marks); marksWriter().touch(); }
-  function saveNotes() { lsSet(LSK + 'notes', S.notes); notesWriter().touch(); }
+  function saveMarks() { try { lsSet(LSK + 'marks', S.marks); marksWriter().touch(); } catch (e) { } }
+  function saveNotes() { try { lsSet(LSK + 'notes', S.notes); notesWriter().touch(); } catch (e) { } }
 
   /* ------------------------------------------------------------------ block renderers */
   var B = {};
@@ -628,7 +666,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     app.innerHTML = '';
     var q = D.questions || [];
     app.appendChild(buildHead());
-    if (kind !== 'index') app.appendChild(buildBar());
+    if (kind !== 'index') { app.appendChild(buildBar()); app.appendChild(el('p', 'quiet', '', { id: 'nothing', hidden: true })); }
     var main = el('main', null, null, { id: 'main' });
     sections.forEach(function (s) { main.appendChild(buildSection(s)); });
     if (q.length) main.appendChild(buildQuestions(q));
@@ -680,7 +718,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     var save = el('span', 'savestat', [el('i'), el('span', null, '')], { id: 'savestat', 'aria-live': 'polite' });
     var markAll = el('button', 'btn', 'Mark all read', { type: 'button', id: 'markall' });
     if (!sections.some(function (x) { return (x.rows || []).length; })) { f.hidden = true; markAll.hidden = true; }
-    markAll.addEventListener('click', function () { ROWS.forEach(function (r) { S.marks[r.key] = r.hash; }); saveMarks(); paint(); toast('All rows marked read'); });
+    markAll.addEventListener('click', function () { markMany(ROWS, 'All rows marked read'); });
     var end = el('div', 'barend', [rdy, save, markAll]);
     if ((D.questions || []).some(qRequired)) {
       var done = el('button', 'btn primary', 'Done', { type: 'button', id: 'donebtn' });
@@ -691,7 +729,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
   }
 
   function setFilter(f) {
-    S.filter = f; ROWS.forEach(function (r) { r.keep = false; }); paint();
+    S.filter = f; ROWS.forEach(function (r) { r.keep = false; }); paint(false);
     var ps = document.querySelectorAll('.pill'); [].forEach.call(ps, function (p) { p.setAttribute('aria-pressed', p.getAttribute('data-f') === f ? 'true' : 'false'); });
   }
   function matches(r) {
@@ -728,7 +766,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     } else if (rows.length) {
       var bar = el('div', 'secbar');
       var mk = el('button', 'btn ghost', 'Mark this section read', { type: 'button' });
-      mk.addEventListener('click', function () { so.rows.forEach(function (r) { S.marks[r.key] = r.hash; }); saveMarks(); paint(); });
+      mk.addEventListener('click', function () { markMany(so.rows, 'Section marked read'); });
       var ex = el('button', 'btn ghost', 'Open all rows', { type: 'button' });
       ex.addEventListener('click', function () { var any = so.rows.some(function (r) { return !r.open; }); so.rows.forEach(function (r) { setRowOpen(r, any); }); ex.textContent = any ? 'Close all rows' : 'Open all rows'; });
       bar.appendChild(mk); bar.appendChild(el('span', 'grow')); bar.appendChild(ex);
@@ -756,6 +794,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     if (row.round) tags.appendChild(el('span', 'tag rt-' + row.round, (P.round && P.round.n ? 'v' + P.round.n + ' ' : '') + row.round));
     if (row.look_first) tags.appendChild(el('span', 'tag look', 'Look first'));
     if (row.needs_you) tags.appendChild(el('span', 'tag need', 'Needs you'));
+    if (row.needs_you) { ro.doneTag = el('span', 'tag handled ok', '✓ Read'); ro.doneTag.hidden = true; tags.appendChild(ro.doneTag); }
     if (row.handled) tags.appendChild(el('span', 'handled ' + (row.handled.tone || 'open'), (row.handled.tone === 'ok' ? '✓ ' : '') + row.handled.text));
     if (row.label) tags.appendChild(el('span', 'lab l-' + row.label, row.label));
     var dot = el('button', 'dot', el('i'), { type: 'button', 'aria-pressed': 'false', title: 'Mark read' });
@@ -791,7 +830,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
         var nbox = el('div', 'notebox'); nbox.hidden = true;
         var ta = el('textarea', 'in', null, { id: 'note-' + seg(key), 'aria-label': 'Your note on ' + (row.id || plain(row.title)), placeholder: 'A note for this row. It stays with you; tell Claude in chat.' });
         ta.value = S.notes[key] || '';
-        ta.addEventListener('input', function () { if (ta.value) S.notes[key] = ta.value; else delete S.notes[key]; saveNotes(); paintAnswer(); });
+        ta.addEventListener('input', function () { if (ta.value) S.notes[key] = ta.value; else delete S.notes[key]; saveNotes(); paint(); });
         nbox.appendChild(el('label', null, 'Your note on ' + (row.id || 'this row'), { for: ta.id })); nbox.appendChild(ta);
         nb.addEventListener('click', function () { nbox.hidden = !nbox.hidden; nb.textContent = nbox.hidden ? (ta.value ? 'Show note' : 'Add a note') : 'Hide note'; if (!nbox.hidden) ta.focus(); });
         ro.ta = ta; ro.nbox = nbox; ro.nb = nb;
@@ -815,9 +854,33 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     ro.open = open; if (open) ro.fill();
     ro.body.hidden = !open; ro.tw.setAttribute('aria-expanded', String(open)); ro.root.classList.toggle('open', open);
   }
+  function cloneMarks() { return JSON.parse(JSON.stringify(S.marks)); }
+  function restoreMarks(snap) { S.marks = snap; saveMarks(); paint(false); }
+  /* when the element in focus leaves the list, focus goes to the next row's dot, else the one before, else the active filter */
+  function moveFocusFrom(idx) {
+    var order = [];
+    for (var i = idx + 1; i < ROWS.length; i++) order.push(ROWS[i]);
+    for (var j = Math.min(idx, ROWS.length) - 1; j >= 0; j--) order.push(ROWS[j]);
+    for (var k = 0; k < order.length; k++) {
+      var r = order[k];
+      if (r.root.getAttribute('data-show') === '1' && r.sec.open && r.sec.root.getAttribute('data-show') !== '0') { r.dot.focus(); return; }
+    }
+    var pill = document.querySelector('.pill[aria-pressed="true"]'); if (pill) pill.focus();
+  }
   function toggleRead(ro) {
+    var before = cloneMarks(), active = document.activeElement, had = active && ro.root.contains(active);
     if (S.marks[ro.key] === ro.hash) delete S.marks[ro.key]; else S.marks[ro.key] = ro.hash;
-    ro.keep = true; saveMarks(); paint();
+    ro.keep = false; saveMarks(); paint(true);
+    var gone = ro.root.getAttribute('data-show') === '0';
+    if (gone && had) moveFocusFrom(ROWS.indexOf(ro));
+    if (gone) toastUndo('Marked read', before, restoreMarks);
+  }
+  function markMany(list, msg) {
+    var before = cloneMarks(), active = document.activeElement, first = list.length ? ROWS.indexOf(list[list.length - 1]) : 0;
+    list.forEach(function (r) { S.marks[r.key] = r.hash; r.keep = false; });
+    saveMarks(); paint(true);
+    if (active && active.closest && active.closest('[data-show="0"]')) moveFocusFrom(first);
+    toastUndo(msg, before, restoreMarks);
   }
 
   /* questions */
@@ -934,8 +997,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
 
   /* ------------------------------------------------------------------ paint */
   function count(fn) { var n = 0; ROWS.forEach(function (r) { if (fn(r)) n++; }); return n; }
-  function paint() {
+  function paint(animate) {
     var isRead = function (r) { return S.marks[r.key] === r.hash; };
+    var isDone = function (r) { return r.row.picks && r.row.picks.length ? !!S.picks[r.key] : isRead(r); };
     ROWS.forEach(function (r) {
       var read = isRead(r);
       r.root.classList.toggle('read', read);
@@ -943,13 +1007,15 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
       r.dot.setAttribute('aria-label', read ? 'Read. Mark unread' : 'Unread. Mark read');
       if (r.readBtn) r.readBtn.textContent = read ? 'Mark unread' : 'Mark read';
       if (r.pk) [].forEach.call(r.pk.children, function (b) { b.setAttribute('aria-pressed', String(S.picks[r.key] === b.getAttribute('data-pick'))); });
-      r.root.hidden = !(r.keep || matches(r));
+      r.show = !!(r.keep || matches(r));
+      setVisible(r.root, r.show, animate);
+      if (r.doneTag) { var dn = !!r.row.needs_you && isDone(r); r.doneTag.hidden = !dn; r.doneTag.textContent = r.row.picks && r.row.picks.length ? '✓ Picked' : '✓ Read'; }
       syncNote(r);
     });
     SECS.forEach(function (so) {
-      if (!so.rows.length) { so.root.hidden = kind !== 'index' && S.filter !== 'all'; return; }
-      var tot = so.rows.length, vis = so.rows.filter(function (r) { return !r.root.hidden; }).length, unread = so.rows.filter(function (r) { return !isRead(r); }).length;
-      so.root.hidden = vis === 0 && S.filter !== 'all';
+      if (!so.rows.length) { so.show = !(kind !== 'index' && S.filter !== 'all'); setVisible(so.root, so.show, animate); return; }
+      var tot = so.rows.length, vis = so.rows.filter(function (r) { return r.show; }).length, unread = so.rows.filter(function (r) { return !isRead(r); }).length;
+      so.show = !(vis === 0 && S.filter !== 'all'); setVisible(so.root, so.show, animate);
       so.empty.hidden = vis !== 0;
       var cnt = {}; so.rows.forEach(function (r) { if (r.row.label) cnt[r.row.label] = (cnt[r.row.label] || 0) + 1; });
       so.counts.innerHTML = '';
@@ -960,10 +1026,16 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     });
     // bar
     var nUnread = count(function (r) { return !isRead(r); });
-    var nNeeds = count(function (r) { return r.row.needs_you; });
+    var nNeeds = count(function (r) { return r.row.needs_you && !isDone(r); });
     var nChanged = count(function (r) { return r.row.round === 'new' || r.row.round === 'changed' || r.row.round === 'removed'; });
     var counts = { all: ROWS.length, needs: nNeeds, unread: nUnread, changed: nChanged };
     [].forEach.call(document.querySelectorAll('.pill'), function (p) { p.querySelector('.n').textContent = counts[p.getAttribute('data-f')]; });
+    var nothing = $('nothing');
+    if (nothing) {
+      var any = ROWS.some(function (r) { return r.show; }) || (S.filter === 'needs' && (D.questions || []).length > 0);
+      nothing.hidden = S.filter === 'all' || any;
+      nothing.textContent = { unread: 'All read. Switch to All to see every row.', needs: 'Nothing needs you.', changed: 'Nothing changed in this round.' }[S.filter] || '';
+    }
     var decide = count(function (r) { return r.row.needs_you && (r.row.picks && r.row.picks.length ? !S.picks[r.key] : !isRead(r)); });
     var qs = D.questions || [], qLeft = qs.filter(function (q) { return qRequired(q) && !qAnswered(q); }).length;
     var rdy = $('rdy');
@@ -1042,9 +1114,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     setStatus('wait');
     Promise.all([useCap('db'), useCap('user')]).then(function (r) {
       var db = r[0], user = r[1];
-      if (!db) { setStatus('local'); return; }
+      if (!db) { setStatus('local'); storeReady(); return; }
       return (user && user.id ? user.id() : Promise.resolve(null)).then(function (uid) {
-        STORE.db = db; STORE.uid = uid || null;
+        STORE.db = db; STORE.uid = uid || null; storeReady();
         var slow = setTimeout(function () { setStatus('slow'); }, 10000);
         var first = true;
         function fresh(snap) { if (!snap.metadata.fromCache) { clearTimeout(slow); if (first) { first = false; if (!(writers.marks && writers.marks.dirty)) setStatus('ok'); } } }
@@ -1057,7 +1129,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
             if (d.id === 'done.' + PID) { if (!(writers.done && writers.done.dirty)) { S.done = !!v.done; lsSet(LSK + 'done', S.done); } return; }
             var q = (D.questions || []).filter(function (x) { return seg(x.id) === d.id; })[0]; if (!q) return;
             var w = writers['a:' + q.id]; if (w && w.dirty) return;
-            S.answers[q.id] = { choices: Array.isArray(v.choices) ? v.choices : (v.choice ? String(v.choice).split(', ').filter(Boolean) : []), note: typeof v.note === 'string' ? v.note : '' };
+            S.answers[q.id] = { choices: Array.isArray(v.choices) ? v.choices.slice() : (v.choice ? String(v.choice).split(', ').filter(Boolean) : []), note: typeof v.note === 'string' ? v.note : '' };
           });
           lsSet(LSK + 'answers', S.answers); paint();
         }, bad);
@@ -1073,15 +1145,15 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
         if (STORE.uid) {
           db.doc('data/users/' + STORE.uid + '/reads-' + PID).onSnapshot(function (s) {
             var v = s.exists ? s.data() : null;
-            if (v && v.marks && typeof v.marks === 'object' && !(writers.marks && writers.marks.dirty)) { S.marks = v.marks; lsSet(LSK + 'marks', S.marks); paint(); }
+            if (v && v.marks && typeof v.marks === 'object' && !(writers.marks && writers.marks.dirty)) { S.marks = thaw(v.marks); lsSet(LSK + 'marks', S.marks); paint(); }
           }, function () { });
           db.doc('data/users/' + STORE.uid + '/notes-' + PID).onSnapshot(function (s) {
             var v = s.exists ? s.data() : null;
-            if (v && v.notes && typeof v.notes === 'object' && !(writers.notes && writers.notes.dirty)) { S.notes = v.notes; lsSet(LSK + 'notes', S.notes); paint(); }
+            if (v && v.notes && typeof v.notes === 'object' && !(writers.notes && writers.notes.dirty)) { S.notes = thaw(v.notes); lsSet(LSK + 'notes', S.notes); paint(); }
           }, function () { });
         } else toast('Read marks and notes stay in this browser: no viewer id here.');
       });
-    }, function () { setStatus('local'); });
+    }, function () { setStatus('local'); storeReady(); });
   }
 })();
 </script>
