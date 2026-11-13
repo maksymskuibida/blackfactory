@@ -1,0 +1,203 @@
+{
+ "contract": 1,
+ "kind": "checkpoint",
+ "id": "K-1",
+ "project": "trailmark",
+ "built_at": "2026-11-13T05:00:00Z",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Trailmark",
+   "Checkpoints",
+   "K-1"
+  ],
+  "status": {
+   "text": "Checkpoint K-1 · your step",
+   "tone": "wait"
+  },
+  "title": "Checkpoint K-1: reports can be filed and read back",
+  "lede": "Three proofs have receipts, one failed, one could not run, and one human step is waiting for you.",
+  "facts": [
+   {
+    "label": "Proves",
+    "value": "4",
+    "sub": "D-1, D-2, D-3, S-1"
+   },
+   {
+    "label": "Receipts",
+    "value": "3"
+   },
+   {
+    "label": "Your step",
+    "value": "1"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "criteria",
+   "title": "What this checkpoint proves",
+   "hint": "By the engine's receipts",
+   "open": true,
+   "blocks": [
+    {
+     "type": "criteria",
+     "groups": [
+      {
+       "name": "Proofs",
+       "items": [
+        {
+         "id": "D-1",
+         "text": "Reports are stored as plain records",
+         "verdict": "holds"
+        },
+        {
+         "id": "D-2",
+         "text": "A nickname is enough to report",
+         "verdict": "holds"
+        },
+        {
+         "id": "D-3",
+         "text": "Trail data refreshes weekly",
+         "verdict": "holds"
+        },
+        {
+         "id": "S-1",
+         "text": "The report form works on a real phone",
+         "verdict": "partly"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "rows": [
+    {
+     "id": "X-9",
+     "title": "File one report from your own phone and read it back on the trail page.",
+     "label": "main",
+     "needs_you": true,
+     "look_first": true,
+     "body": [
+      {
+       "type": "list",
+       "items": [
+        "Open the app on a phone.",
+        "File a report for any trail with the condition \"wet\".",
+        "Open the trail page and check that the report is there."
+       ]
+      },
+      {
+       "type": "text",
+       "text": "Tell Claude in chat whether it worked."
+      }
+     ],
+     "picks": [
+      {
+       "key": "worked",
+       "text": "It worked"
+      },
+      {
+       "key": "failed",
+       "text": "It failed"
+      }
+     ]
+    },
+    {
+     "id": "X-1",
+     "title": "Record tests pass.",
+     "label": "core",
+     "body": [
+      {
+       "type": "evidence",
+       "check": "X-1",
+       "command": "cargo test records",
+       "exit": 0,
+       "commit": "a1b2c3d4e5",
+       "at": "2026-11-13T04:31:00Z",
+       "output_tail": "test result: ok. 12 passed; 0 failed"
+      }
+     ]
+    },
+    {
+     "id": "X-2",
+     "title": "Nickname tests pass.",
+     "label": "core",
+     "body": [
+      {
+       "type": "evidence",
+       "check": "X-2",
+       "command": "cargo test nickname",
+       "exit": 0,
+       "commit": "a1b2c3d4e5",
+       "at": "2026-11-13T04:32:00Z",
+       "output_tail": "test result: ok. 5 passed; 0 failed"
+      }
+     ]
+    },
+    {
+     "id": "X-3",
+     "title": "Trail refresh tests pass.",
+     "label": "main",
+     "body": [
+      {
+       "type": "evidence",
+       "check": "X-3",
+       "command": "cargo test refresh",
+       "exit": 0,
+       "commit": "a1b2c3d4e5",
+       "at": "2026-11-13T04:33:00Z",
+       "output_tail": "test result: ok. 3 passed; 0 failed"
+      }
+     ]
+    },
+    {
+     "id": "X-4",
+     "title": "Offline queue tests fail: a full queue accepts a 51st report.",
+     "label": "critical",
+     "handled": {
+      "tone": "open",
+      "text": "Failed"
+     },
+     "body": [
+      {
+       "type": "evidence",
+       "check": "X-4",
+       "command": "cargo test queue",
+       "exit": 101,
+       "outcome": "failed",
+       "reason": "Test queue_full expected a refusal and got an accepted report.",
+       "commit": "a1b2c3d4e5",
+       "at": "2026-11-13T04:34:00Z",
+       "output_tail": "thread 'queue_full' panicked at src/queue.rs:88\nassertion failed: refused.is_some()"
+      }
+     ]
+    },
+    {
+     "id": "X-6",
+     "title": "Screen reader check could not run on this machine.",
+     "label": "high",
+     "handled": {
+      "tone": "accepted",
+      "text": "Unreachable"
+     },
+     "body": [
+      {
+       "type": "evidence",
+       "check": "X-6",
+       "command": "scripts/screen-reader-check",
+       "outcome": "unreachable",
+       "reason": "The screen reader is not installed here, so the check never started. It is not a failure of the app.",
+       "commit": "a1b2c3d4e5",
+       "at": "2026-11-13T04:36:00Z"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "answer": {
+  "how": "chat",
+  "prompt": "Do the step, then say stop or carry on in chat."
+ }
+}

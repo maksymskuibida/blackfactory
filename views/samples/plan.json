@@ -1,0 +1,40 @@
+{
+  "contract": 1, "kind": "plan", "id": "plan", "project": "trailmark", "built_at": "2026-11-13T05:00:00Z",
+  "page": {
+    "crumbs": ["All pages", "Trailmark", "Plan"],
+    "status": {"text": "Plan gate · answer in chat", "tone": "wait"},
+    "title": "Delivery plan: seven units in three waves",
+    "lede": "Units in one wave share no files, so they can be built side by side.",
+    "facts": [{"label": "Units", "value": "7"}, {"label": "Waves", "value": "3"}, {"label": "Points", "value": "21", "sub": "estimate"}, {"label": "Checkpoints", "value": "2"}]
+  },
+  "sections": [
+    {"id": "waves", "title": "Waves", "hint": "What can be built when", "open": true,
+     "blocks": [
+       {"type": "waves", "waves": [
+         {"n": 1, "units": [
+           {"id": "U-1", "title": "Record store and schemas", "state": "landed", "points": 5},
+           {"id": "U-2", "title": "Trail data import", "state": "running", "points": 3}
+         ]},
+         {"n": 2, "units": [
+           {"id": "U-3", "title": "Report API", "state": "ready", "points": 3},
+           {"id": "U-4", "title": "Trail page", "state": "planned", "points": 2},
+           {"id": "U-5", "title": "Offline queue on the phone", "state": "planned", "points": 5}
+         ]},
+         {"n": 3, "units": [
+           {"id": "U-6", "title": "Rate limits", "state": "planned", "points": 2},
+           {"id": "U-7", "title": "Nightly clean-up", "state": "parked", "points": 1}
+         ]}
+       ], "edges": [["U-1", "U-3"], ["U-1", "U-4"], ["U-2", "U-4"], ["U-3", "U-5"], ["U-3", "U-6"], ["U-1", "U-7"]]}
+     ],
+     "rows": [
+       {"id": "U-7", "title": "Nightly clean-up is parked: it waited three rounds on a decision.", "label": "medium", "needs_you": true, "handled": {"tone": "open", "text": "Parked"},
+        "body": [{"type": "text", "text": "The retention window was changed from 30 to 90 days while this unit was being built. The unit's brief still says 30."}], "picks": [{"key": "rebrief", "text": "Rewrite the brief"}, {"key": "drop", "text": "Drop the unit"}]}
+     ]},
+    {"id": "checkpoints", "title": "Checkpoints", "hint": "What each one proves", "open": true,
+     "rows": [
+       {"id": "K-1", "title": "Reports can be filed and read back (U-1, U-2, U-3).", "label": "core", "body": [{"type": "list", "items": ["Proves D-1, D-2, D-3", "Human step: file one report from a real phone"]}]},
+       {"id": "K-2", "title": "The app works offline and resists abuse (U-4, U-5, U-6, U-7).", "label": "main", "body": [{"type": "list", "items": ["Proves D-4, D-6, TH-2", "Pull request opens here"]}]}
+     ]}
+  ],
+  "answer": {"how": "chat", "prompt": "Approve the plan or ask for changes in chat."}
+}

@@ -1,0 +1,152 @@
+{
+ "contract": 1,
+ "kind": "index",
+ "id": "index",
+ "project": "trailmark",
+ "built_at": "2026-11-13T05:00:00Z",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Trailmark"
+  ],
+  "status": {
+   "text": "2 pages need you",
+   "tone": "wait"
+  },
+  "title": "All pages",
+  "lede": "Every page the factory has built for this project, newest first.",
+  "facts": [
+   {
+    "label": "Pages",
+    "value": "7"
+   },
+   {
+    "label": "Need you",
+    "value": "2"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "open",
+   "title": "Waiting for you",
+   "hint": "Open these first",
+   "open": true,
+   "rows": [
+    {
+     "id": "design-r2",
+     "title": "Approve the design of Trailmark",
+     "href": "gate.html",
+     "round": "changed",
+     "handled": {
+      "tone": "open",
+      "text": "Round 2"
+     },
+     "meta": "13 Nov 05:00",
+     "body": [
+      {
+       "type": "text",
+       "text": "Design gate · answer in chat"
+      }
+     ]
+    },
+    {
+     "id": "requirements-q1",
+     "title": "Three questions before the requirements are written",
+     "href": "questions.html",
+     "meta": "12 Nov 18:20",
+     "body": [
+      {
+       "type": "text",
+       "text": "Requirements · 3 questions"
+      }
+     ]
+    },
+    {
+     "id": "plan-r1",
+     "title": "Approve the delivery plan",
+     "href": "plan-gate.html",
+     "meta": "13 Nov 05:10",
+     "body": [
+      {
+       "type": "text",
+       "text": "Plan gate · answer in chat"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "state",
+   "title": "Project state",
+   "hint": "Live views",
+   "open": true,
+   "rows": [
+    {
+     "id": "run-3",
+     "title": "Run 3: wave 2 of 3",
+     "href": "run.html",
+     "meta": "13 Nov 04:52",
+     "body": [
+      {
+       "type": "text",
+       "text": "Running · wave 2"
+      }
+     ]
+    },
+    {
+     "id": "plan",
+     "title": "Delivery plan: seven units in three waves",
+     "href": "plan.html",
+     "meta": "12 Nov 21:05",
+     "body": [
+      {
+       "type": "text",
+       "text": "Approved"
+      }
+     ]
+    },
+    {
+     "id": "ledger",
+     "title": "Every designed part and what is linked to it",
+     "href": "ledger.html",
+     "meta": "13 Nov 04:40",
+     "body": [
+      {
+       "type": "text",
+       "text": "3 parts without a link"
+      }
+     ]
+    },
+    {
+     "id": "coverage",
+     "title": "Requirements coverage",
+     "href": "coverage.html",
+     "meta": "13 Nov 04:40",
+     "body": [
+      {
+       "type": "text",
+       "text": "9 of 12 proven"
+      }
+     ]
+    },
+    {
+     "id": "K-1",
+     "title": "Checkpoint K-1: reports can be filed and read back",
+     "href": "checkpoint.html",
+     "meta": "13 Nov 04:33",
+     "body": [
+      {
+       "type": "text",
+       "text": "Your step is waiting; it follows run-3 and checks the plan."
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "answer": {
+  "how": "chat",
+  "prompt": "Open a page, or ask for another in chat."
+ }
+}

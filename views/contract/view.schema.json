@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/black-factory/view.schema.json",
+  "title": "Black Factory view contract, version 1",
+  "description": "The JSON that `bf view` prints and views/templates/page.html renders. Fields marked 'optional addition' were added by the page layer; the rest are the fixed contract. Any field except contract, kind, id, page.title and sections may be absent.",
+  "type": "object",
+  "required": ["contract", "kind", "id", "page", "sections"],
+  "properties": {
+    "contract": { "const": 1 },
+    "kind": { "enum": ["index", "gate", "questions", "ledger", "plan", "run", "checkpoint", "coverage", "report"] },
+    "id": { "type": "string", "minLength": 1, "description": "Stable id of the page. Used as the key for stored marks, notes and answers." },
+    "project": { "type": "string" },
+    "built_at": { "type": "string", "format": "date-time" },
+    "page": { "$ref": "#/$defs/page" },
+    "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } },
+    "records": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+    "questions": { "type": "array", "items": { "$ref": "#/$defs/question" } },
+    "answer": {
+      "type": "object",
+      "properties": {
+        "how": { "type": "string", "description": "Where the decision is given. Always 'chat' today." },
+        "prompt": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "tone": { "enum": ["wait", "ok", "info"] },
+    "label": { "enum": ["critical", "high", "medium", "low", "core", "main", "minor", null] },
+    "roundMark": { "enum": ["new", "changed", "removed", null] },
+    "page": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "crumbs": { "type": "array", "items": { "type": "string" } },
+        "crumb_hrefs": { "type": "array", "items": { "type": ["string", "null"] }, "description": "Optional addition. A link per crumb, same order as crumbs; null or missing means no link." },
+        "status": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "text": { "type": "string" }, "tone": { "$ref": "#/$defs/tone" } }
+        },
+        "title": { "type": "string" },
+        "lede": { "type": "string" },
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "value"],
+            "properties": { "label": { "type": "string" }, "value": { "type": ["string", "number"] }, "sub": { "type": "string" } }
+          }
+        },
+        "round": {
+          "type": "object",
+          "required": ["n"],
+          "properties": {
+            "n": { "type": "integer", "minimum": 1 },
+            "prev": { "type": ["integer", "null"] },
+            "changed": { "type": "integer", "minimum": 0 },
+            "new": { "type": "integer", "minimum": 0 },
+            "removed": { "type": "integer", "minimum": 0 }
+          },
+          "description": "The page counts rows itself when any row carries a round mark; these counts are used only when no row does."
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "hint": { "type": "string" },
+        "open": { "type": "boolean", "default": true },
+        "blocks": { "type": "array", "items": { "$ref": "#/$defs/sectionBlock" } },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "id": { "type": "string", "description": "Shown in mono type. Any id on the page that appears in text becomes a link to its row." },
+        "title": { "type": "string", "description": "One sentence that states the point, not just the topic. May use **bold** and `code`." },
+        "label": { "$ref": "#/$defs/label" },
+        "look_first": { "type": "boolean" },
+        "needs_you": { "type": "boolean" },
+        "round": { "$ref": "#/$defs/roundMark" },
+        "round_note": { "type": "string", "description": "Why the row changed in this round. Shown as 'New in v2: ...' above the body." },
+        "handled": {
+          "type": "object",
+          "required": ["text"],
+          "properties": { "tone": { "enum": ["ok", "accepted", "open"] }, "text": { "type": "string" } }
+        },
+        "body": { "type": "array", "items": { "$ref": "#/$defs/bodyBlock" } },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label"],
+            "properties": { "label": { "type": "string" }, "tip": { "type": "string" }, "target": { "type": ["string", "null"], "description": "A row id on this page, or a link." } }
+          }
+        },
+        "picks": {
+          "type": "array",
+          "items": { "type": "object", "required": ["key", "text"], "properties": { "key": { "type": "string" }, "text": { "type": "string" } } }
+        },
+        "refs_label": { "type": "string", "description": "Optional addition. The word before the linked ids; default 'Linked'. Use 'Proves' on a check or checkpoint that lists the ids it proves." },
+        "note": { "type": "boolean", "default": true, "description": "Optional addition. False hides the 'Add a note' control on this row." },
+        "href": { "type": "string", "description": "Optional addition, kind index only: the page this row opens." },
+        "meta": { "type": "string", "description": "Optional addition, kind index only: a short muted text on the right, such as a date." }
+      }
+    },
+    "bodyBlock": {
+      "oneOf": [
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "text" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["type", "items"], "properties": { "type": { "const": "list" }, "items": { "type": "array", "items": { "type": "string" } } } },
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "was" }, "text": { "type": "string" }, "label": { "type": "string", "description": "Optional addition. Default 'Before'." } } },
+        { "type": "object", "required": ["type", "rows"], "properties": { "type": { "const": "table" }, "head": { "type": "array", "items": { "type": "string" } }, "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } } } },
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "code" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["type"], "properties": { "type": { "const": "evidence" }, "check": { "type": "string" }, "command": { "type": "string" }, "exit": { "type": ["integer", "null"] }, "outcome": { "enum": ["passed", "failed", "unreachable"], "description": "Optional addition. Absent: passed when exit is 0, failed when exit is another number. unreachable means the check could not run, which is not a failure of the thing checked." }, "reason": { "type": "string", "description": "Optional addition. Why the check failed or could not run; shown under the header." }, "commit": { "type": "string" }, "at": { "type": "string" }, "output_tail": { "type": "string" } } },
+        { "type": "object", "required": ["type", "path"], "properties": { "type": { "const": "image" }, "path": { "type": "string" }, "alt": { "type": "string" } } }
+      ]
+    },
+    "sectionBlock": {
+      "oneOf": [
+        { "type": "object", "required": ["type", "groups"], "properties": { "type": { "const": "criteria" }, "groups": { "type": "array", "items": { "type": "object", "required": ["name", "items"], "properties": { "name": { "type": "string" }, "items": { "type": "array", "items": { "type": "object", "required": ["text", "verdict"], "properties": { "id": { "type": "string" }, "text": { "type": "string" }, "verdict": { "enum": ["holds", "fails", "partly", "na"] } } } } } } } } },
+        { "type": "object", "required": ["type", "layers"], "properties": { "type": { "const": "layers" }, "layers": { "type": "array", "items": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" }, "hint": { "type": "string" }, "emphasis": { "type": "boolean" }, "boxes": { "type": "array", "items": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" }, "hint": { "type": "string" } } } } } } }, "flows": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "maxItems": 2, "description": "[text for the way down, text for the way up]; an empty string leaves that arrow out." } } } },
+        { "type": "object", "required": ["type", "steps"], "properties": { "type": { "const": "steps" }, "steps": { "type": "array", "items": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" }, "text": { "type": "string" }, "human": { "type": "boolean" } } } } } },
+        { "type": "object", "required": ["type", "waves"], "properties": { "type": { "const": "waves" }, "waves": { "type": "array", "items": { "type": "object", "required": ["n", "units"], "properties": { "n": { "type": "integer" }, "units": { "type": "array", "items": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "state": { "enum": ["planned", "ready", "running", "landed", "parked"] }, "points": { "type": "number" } } } } } } }, "edges": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 } } } },
+        { "type": "object", "required": ["type", "rows"], "properties": { "type": { "const": "coverage" }, "rows": { "type": "array", "items": { "type": "object", "required": ["id", "title", "state"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "unit": { "type": ["string", "null"] }, "checkpoint": { "type": ["string", "null"] }, "checks": { "type": "integer" }, "state": { "enum": ["proven", "planned", "gap"] } } } } } },
+        { "type": "object", "required": ["type", "label", "value", "max"], "properties": { "type": { "const": "meter" }, "label": { "type": "string" }, "value": { "type": "number" }, "max": { "type": "number" }, "unit": { "type": "string" } } }
+      ]
+    },
+    "record": {
+      "type": "object",
+      "required": ["title", "text"],
+      "properties": { "title": { "type": "string" }, "format": { "enum": ["markdown", "toml", "json", "text"] }, "text": { "type": "string" } }
+    },
+    "question": {
+      "type": "object",
+      "required": ["id", "title", "kind"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "context": { "type": "string" },
+        "kind": { "enum": ["single", "multi", "text"] },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "text"],
+            "properties": { "key": { "type": "string" }, "text": { "type": "string" }, "proposed": { "type": "boolean" }, "why": { "type": "string" } }
+          }
+        },
+        "answer": {
+          "type": ["object", "null"],
+          "description": "An answer already on record. The page shows it as the starting state; an answer saved on the page replaces it.",
+          "properties": { "choice": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } }, "note": { "type": "string" } }
+        },
+        "required": { "type": "boolean", "description": "Optional addition. Single and multi questions are required unless optional is true; text questions are optional unless required is true." },
+        "optional": { "type": "boolean", "description": "Optional addition." }
+      }
+    }
+  }
+}

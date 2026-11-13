@@ -1,0 +1,673 @@
+{
+ "contract": 1,
+ "kind": "gate",
+ "id": "plan-r1",
+ "project": "trailmark",
+ "built_at": "2026-11-13T05:00:00Z",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Trailmark",
+   "Plan",
+   "Plan gate"
+  ],
+  "status": {
+   "text": "Plan gate · answer in chat",
+   "tone": "wait"
+  },
+  "title": "Approve the delivery plan",
+  "lede": "Seven units in three waves; three requirements have no unit yet.",
+  "facts": [
+   {
+    "label": "Units",
+    "value": "7",
+    "sub": "3 waves"
+   },
+   {
+    "label": "Requirements",
+    "value": "34",
+    "sub": "31 planned"
+   },
+   {
+    "label": "Gaps",
+    "value": "3",
+    "sub": "no unit"
+   },
+   {
+    "label": "Checkpoints",
+    "value": "2"
+   }
+  ],
+  "round": {
+   "n": 1
+  }
+ },
+ "sections": [
+  {
+   "id": "coverage",
+   "title": "What the plan covers",
+   "hint": "Gaps first",
+   "open": true,
+   "blocks": [
+    {
+     "type": "coverage",
+     "rows": [
+      {
+       "id": "R-1",
+       "title": "Hikers can file a trail report",
+       "unit": "U-1",
+       "checkpoint": "K-1",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-2",
+       "title": "A report needs only a nickname",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-3",
+       "title": "The trail page shows the latest report",
+       "unit": "U-4",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-4",
+       "title": "Reports show the time they were filed",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-5",
+       "title": "Reports filed offline are sent later",
+       "unit": "U-5",
+       "checkpoint": "K-2",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-6",
+       "title": "The queue holds up to 50 reports",
+       "unit": "U-5",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-7",
+       "title": "Reports older than 90 days are removed",
+       "unit": "U-7",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-8",
+       "title": "A report has one condition from a fixed list",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-9",
+       "title": "A report can carry a short note",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-10",
+       "title": "The newest report is shown first",
+       "unit": "U-4",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-11",
+       "title": "Reports older than 7 days are shown as old",
+       "unit": "U-5",
+       "checkpoint": "K-2",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-12",
+       "title": "Three recent reports outweigh one",
+       "unit": "U-6",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-13",
+       "title": "A report can be edited within the hour",
+       "unit": "U-7",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-14",
+       "title": "A report can be deleted within the hour",
+       "unit": "U-1",
+       "checkpoint": "K-1",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-15",
+       "title": "Trail names come from the public map source",
+       "unit": "U-2",
+       "checkpoint": "K-1",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-16",
+       "title": "Trail data is refreshed once a week",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-17",
+       "title": "The map credit is shown on the trail page",
+       "unit": "U-4",
+       "checkpoint": "K-2",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-18",
+       "title": "The last good copy of trail data is kept",
+       "unit": "U-5",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-19",
+       "title": "Filing is limited per phone",
+       "unit": "U-6",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-20",
+       "title": "Filing is limited per network address",
+       "unit": "U-7",
+       "checkpoint": "K-2",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-21",
+       "title": "A nickname is checked against a short blocklist",
+       "unit": "U-1",
+       "checkpoint": "K-1",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-22",
+       "title": "The trail list can be searched by name",
+       "unit": "U-2",
+       "checkpoint": "K-1",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-23",
+       "title": "The trail list can be sorted by distance",
+       "unit": "U-3",
+       "checkpoint": "K-1",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-24",
+       "title": "A trail can be saved to a favourites list",
+       "unit": "U-4",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-25",
+       "title": "Favourites work without signal",
+       "unit": "U-5",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-26",
+       "title": "The app shows when the queue is not empty",
+       "unit": "U-6",
+       "checkpoint": "K-2",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-27",
+       "title": "The app says when a report was refused and why",
+       "unit": "U-7",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-28",
+       "title": "The web page is read only",
+       "unit": "U-1",
+       "checkpoint": "K-1",
+       "checks": 2,
+       "state": "planned"
+      },
+      {
+       "id": "R-29",
+       "title": "The web page works without an account",
+       "unit": "U-2",
+       "checkpoint": "K-1",
+       "checks": 3,
+       "state": "planned"
+      },
+      {
+       "id": "R-30",
+       "title": "Labels and focus order work with a screen reader",
+       "unit": null,
+       "checkpoint": null,
+       "checks": 0,
+       "state": "gap"
+      },
+      {
+       "id": "R-31",
+       "title": "Text keeps a readable size at 200 percent zoom",
+       "unit": null,
+       "checkpoint": null,
+       "checks": 0,
+       "state": "gap"
+      },
+      {
+       "id": "R-32",
+       "title": "The app starts in under two seconds",
+       "unit": null,
+       "checkpoint": null,
+       "checks": 0,
+       "state": "gap"
+      },
+      {
+       "id": "R-33",
+       "title": "A report is stored within one second of arriving",
+       "unit": "U-6",
+       "checkpoint": "K-2",
+       "checks": 1,
+       "state": "planned"
+      },
+      {
+       "id": "R-34",
+       "title": "The nightly clean-up is logged",
+       "unit": "U-7",
+       "checkpoint": "K-2",
+       "checks": 2,
+       "state": "planned"
+      }
+     ]
+    }
+   ],
+   "rows": [
+    {
+     "id": "GAP",
+     "title": "Three requirements have no unit: R-30, R-31 and R-32.",
+     "label": "critical",
+     "needs_you": true,
+     "look_first": true,
+     "refs_label": "Without a unit",
+     "refs": [
+      {
+       "label": "R-30"
+      },
+      {
+       "label": "R-31"
+      },
+      {
+       "label": "R-32"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "They are about screen reader support, zoom and start-up time. Approving the plan as it is leaves them unbuilt."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "waves",
+   "title": "Waves",
+   "hint": "What can be built when",
+   "open": true,
+   "blocks": [
+    {
+     "type": "waves",
+     "waves": [
+      {
+       "n": 1,
+       "units": [
+        {
+         "id": "U-1",
+         "title": "Record store and schemas",
+         "state": "planned",
+         "points": 5
+        },
+        {
+         "id": "U-2",
+         "title": "Trail data import",
+         "state": "planned",
+         "points": 3
+        }
+       ]
+      },
+      {
+       "n": 2,
+       "units": [
+        {
+         "id": "U-3",
+         "title": "Report API",
+         "state": "planned",
+         "points": 3
+        },
+        {
+         "id": "U-4",
+         "title": "Trail page",
+         "state": "planned",
+         "points": 2
+        },
+        {
+         "id": "U-5",
+         "title": "Offline queue on the phone",
+         "state": "planned",
+         "points": 5
+        }
+       ]
+      },
+      {
+       "n": 3,
+       "units": [
+        {
+         "id": "U-6",
+         "title": "Rate limits",
+         "state": "planned",
+         "points": 2
+        },
+        {
+         "id": "U-7",
+         "title": "Nightly clean-up",
+         "state": "planned",
+         "points": 1
+        }
+       ]
+      }
+     ],
+     "edges": [
+      [
+       "U-1",
+       "U-3"
+      ],
+      [
+       "U-1",
+       "U-4"
+      ],
+      [
+       "U-2",
+       "U-4"
+      ],
+      [
+       "U-3",
+       "U-5"
+      ],
+      [
+       "U-3",
+       "U-6"
+      ],
+      [
+       "U-1",
+       "U-7"
+      ]
+     ]
+    }
+   ],
+   "rows": []
+  },
+  {
+   "id": "checkpoints",
+   "title": "Checkpoints",
+   "hint": "What each one proves",
+   "open": true,
+   "rows": [
+    {
+     "id": "K-1",
+     "title": "Reports can be filed and read back (U-1, U-2, U-3, U-4).",
+     "label": "core",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-1"
+      },
+      {
+       "label": "R-2"
+      },
+      {
+       "label": "R-3"
+      },
+      {
+       "label": "R-4"
+      },
+      {
+       "label": "R-8"
+      },
+      {
+       "label": "R-9"
+      },
+      {
+       "label": "R-10"
+      },
+      {
+       "label": "R-15"
+      },
+      {
+       "label": "R-16"
+      },
+      {
+       "label": "R-17"
+      },
+      {
+       "label": "R-18"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Human step: file one report from a real phone."
+      }
+     ]
+    },
+    {
+     "id": "K-2",
+     "title": "The app works offline and resists abuse (U-5, U-6, U-7).",
+     "label": "main",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-5"
+      },
+      {
+       "label": "R-6"
+      },
+      {
+       "label": "R-7"
+      },
+      {
+       "label": "R-19"
+      },
+      {
+       "label": "R-20"
+      },
+      {
+       "label": "R-21"
+      },
+      {
+       "label": "R-25"
+      },
+      {
+       "label": "R-26"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "A pull request opens here."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "checks",
+   "title": "Checks",
+   "hint": "Each says which requirements it proves",
+   "open": false,
+   "rows": [
+    {
+     "id": "X-1",
+     "title": "Record tests: reports and trails are stored and read back.",
+     "label": "high",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-1"
+      },
+      {
+       "label": "R-3"
+      },
+      {
+       "label": "R-4"
+      },
+      {
+       "label": "R-8"
+      }
+     ],
+     "body": [
+      {
+       "type": "code",
+       "text": "cargo test records"
+      }
+     ]
+    },
+    {
+     "id": "X-2",
+     "title": "Nickname tests: a report needs only a nickname and a blocked nickname is refused.",
+     "label": "high",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-2"
+      },
+      {
+       "label": "R-21"
+      }
+     ],
+     "body": [
+      {
+       "type": "code",
+       "text": "cargo test nickname"
+      }
+     ]
+    },
+    {
+     "id": "X-5",
+     "title": "Queue tests: filed offline, sent later, oldest first, full queue refused.",
+     "label": "critical",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-5"
+      },
+      {
+       "label": "R-6"
+      },
+      {
+       "label": "R-26"
+      }
+     ],
+     "body": [
+      {
+       "type": "code",
+       "text": "cargo test queue"
+      }
+     ]
+    },
+    {
+     "id": "X-7",
+     "title": "Rate limit test: the 101st report from one phone in an hour is refused.",
+     "label": "critical",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-19"
+      },
+      {
+       "label": "R-20"
+      }
+     ],
+     "body": [
+      {
+       "type": "code",
+       "text": "cargo test rate_limit"
+      }
+     ]
+    },
+    {
+     "id": "X-9",
+     "title": "Real phone: file a report and read it back on the trail page.",
+     "label": "main",
+     "refs_label": "Proves",
+     "refs": [
+      {
+       "label": "R-1"
+      },
+      {
+       "label": "R-3"
+      },
+      {
+       "label": "R-10"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "A human step at checkpoint K-1."
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "answer": {
+  "how": "chat",
+  "prompt": "Approve the plan or ask for changes in chat."
+ }
+}

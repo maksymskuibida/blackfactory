@@ -1,0 +1,26 @@
+{
+  "contract": 1, "kind": "coverage", "id": "coverage", "project": "trailmark", "built_at": "2026-11-13T05:00:00Z",
+  "page": {
+    "crumbs": ["All pages", "Trailmark", "Coverage"],
+    "status": {"text": "9 of 12 proven", "tone": "info"},
+    "title": "Requirements coverage",
+    "lede": "Each requirement, the unit that builds it, the checkpoint that proves it and the checks behind it.",
+    "facts": [{"label": "Proven", "value": "9"}, {"label": "Planned", "value": "2"}, {"label": "Gaps", "value": "1", "sub": "R-9"}]
+  },
+  "sections": [
+    {"id": "map", "title": "Requirements", "hint": "Sorted by state", "open": true,
+     "blocks": [{"type": "coverage", "rows": [
+       {"id": "R-1", "title": "Hikers can file a trail report", "unit": "U-3", "checkpoint": "K-1", "checks": 3, "state": "proven"},
+       {"id": "R-2", "title": "A report needs only a nickname", "unit": "U-3", "checkpoint": "K-1", "checks": 2, "state": "proven"},
+       {"id": "R-3", "title": "The trail page shows the latest report", "unit": "U-4", "checkpoint": "K-1", "checks": 2, "state": "proven"},
+       {"id": "R-4", "title": "Reports filed offline are sent later", "unit": "U-5", "checkpoint": "K-2", "checks": 4, "state": "planned"},
+       {"id": "R-5", "title": "Reports older than 90 days are removed", "unit": "U-7", "checkpoint": "K-2", "checks": 1, "state": "planned"},
+       {"id": "R-9", "title": "The app is usable with a screen reader", "unit": null, "checkpoint": null, "checks": 0, "state": "gap"}
+     ]}],
+     "rows": [
+       {"id": "R-9", "title": "No unit, checkpoint or check covers the screen reader requirement.", "label": "high", "needs_you": true, "handled": {"tone": "open", "text": "Gap"},
+        "body": [{"type": "text", "text": "Add a unit for labels and focus order, and a check that runs the form with a screen reader."}]}
+     ]}
+  ],
+  "answer": {"how": "chat", "prompt": "Ask for the plan to be amended to close the gap."}
+}
