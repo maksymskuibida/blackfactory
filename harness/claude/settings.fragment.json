@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.local/state/blackfactory/**)",
+      "Edit(~/.local/state/blackfactory/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bf guard --root \"$CLAUDE_PROJECT_DIR\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bf human-turn",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
