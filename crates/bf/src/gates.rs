@@ -520,6 +520,10 @@ pub fn approve(p: &Project, arg: &str, simulated: bool, quote: &str) -> R<Gate> 
             json!({"gate": g.id, "turn": seq, "simulated": false, "quote": quote.trim()}),
         )?;
     }
+    // The programs the plan's checks start are recorded as they are when the plan is approved.
+    if g.kind == "plan" {
+        let _ = crate::programs::record_all(p);
+    }
     p.write_guard()?;
     let st = events::replay(p)?;
     let ng = st.gate(&g.id).cloned().unwrap();

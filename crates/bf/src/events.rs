@@ -30,7 +30,7 @@ pub struct Log {
 
 /// The keyed hash of one event: HMAC-SHA256 with the project's key over the previous hash and the
 /// event's own fields. Without the key (it lives outside the project) no line can be made to verify.
-fn event_hash(key: &str, prev: &str, ev: &Map<String, Value>) -> String {
+pub fn event_hash(key: &str, prev: &str, ev: &Map<String, Value>) -> String {
     let mut m = ev.clone();
     m.remove("h");
     let body = serde_json::to_string(&Value::Object(m)).unwrap_or_default();
@@ -672,6 +672,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     .find(|a| a.id == id && a.status == "narrowed")
                 {
                     a.status = "approved".into();
+                    st.turns[turn_ix[&tseq]].used = true;
+                }
+            }
+            "programs.accept" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
                     st.turns[turn_ix[&tseq]].used = true;
                 }
             }

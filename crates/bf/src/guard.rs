@@ -591,6 +591,8 @@ const BF_KNOWN: &[&str] = &[
     "head",
     "policy",
     "tokens",
+    "token",
+    "programs",
     "version",
     "help",
     "human-turn",
@@ -1207,6 +1209,16 @@ fn load_table(loc: &Loc) -> Result<Value, String> {
                 return Err("the guard table is not signed".into());
             }
         }
+    }
+    // A table older than the newest one the engine wrote is a copy put back.
+    let counter = fs::read_to_string(
+        Path::new(table["state_dir"].as_str().unwrap_or("/nonexistent")).join("guard.gen"),
+    )
+    .ok()
+    .and_then(|t| t.trim().parse::<u64>().ok())
+    .unwrap_or(0);
+    if table["gen"].as_u64().unwrap_or(0) < counter {
+        return Err("the guard table is older than the newest one the engine wrote: an old copy was put back".into());
     }
     Ok(table)
 }

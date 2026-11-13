@@ -563,13 +563,28 @@ fn a_check_record_edited_after_the_plan_gate_is_noticed_and_its_receipts_stop_co
     fx.start_test_run();
     let wc = started_unit(&fx);
     fs::create_dir_all(wc.join("src")).unwrap();
-    // The code is broken (the file the check wants is missing); the agent edits the check to `true`.
+    // The code is broken (the file the check wants is missing); the agent edits the check to look at a
+    // file that exists (the same program, so only the record's change gives it away).
     let rec = fx.root.join("factory/records/X-1.toml");
     let text = fs::read_to_string(&rec).unwrap();
-    fs::write(&rec, text.replace("test -f src/hello.txt", "true")).unwrap();
+    fs::write(
+        &rec,
+        text.replace("test -f src/hello.txt", "test -f README.md"),
+    )
+    .unwrap();
     let o = fx.bf_in(
         &wc,
-        &["evidence", "run", "X-1", "--unit", "U-1", "--", "true"],
+        &[
+            "evidence",
+            "run",
+            "X-1",
+            "--unit",
+            "U-1",
+            "--",
+            "test",
+            "-f",
+            "README.md",
+        ],
     );
     assert_eq!(o.code, 0, "the edited check runs: {}", o.all());
     fx.must(&["report", "U-1", "--result", "built"]);
@@ -641,15 +656,15 @@ fn tokens_on(fx: &Fx) {
 
 fn token_for(fx: &Fx, unit: &str, role: &str) -> String {
     let n = fx.must(&["next", "--json"]).json();
-    n["directives"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|d| d["unit"] == unit && d["role"] == role)
-        .unwrap_or_else(|| panic!("no {role} directive for {unit}: {n}"))["token"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    assert!(
+        n["directives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["unit"] == unit && d["role"] == role && d["token_command"].is_string()),
+        "no {role} directive for {unit}: {n}"
+    );
+    fx.take_token(unit, role)
 }
 
 #[test]
@@ -982,7 +997,7 @@ fn work_from_a_test_run_that_reaches_main_by_git_is_refused_by_the_engine() {
 }
 
 #[test]
-fn a_git_alias_that_moves_main_is_noticed_and_the_human_decides() {
+fn a_git_alias_that_moves_main_is_noted_in_status_and_denied_to_agents() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
@@ -995,27 +1010,27 @@ fn a_git_alias_that_moves_main_is_noticed_and_the_human_decides() {
         "X-1",
         &["test", "-f", "src/hello.txt"],
     );
-    // main starts where the engine left it.
     assert_eq!(fx.must(&["status", "--json"]).json()["main"]["ok"], true);
-    // A worker's way: an alias for update-ref, then main jumps to an unclosed checkpoint's branch.
+    // main jumps to the checkpoint branch by an alias: the work is a landed unit's, so nothing stops, but
+    // the status says in one line that commits came that the engine did not make.
     git(&fx.root, &["config", "alias.up", "update-ref"]);
     git(&fx.root, &["up", "refs/heads/main", "bf/K-1"]);
     let st = fx.must(&["status", "--json"]).json();
-    assert_eq!(st["main"]["ok"], false, "{st}");
-    assert!(st["main"]["detail"]
-        .as_str()
-        .unwrap()
-        .contains("did not move it"));
-    for cmd in [
-        vec!["checkpoint", "close", "K-1"],
-        vec!["unit", "land", "U-2"],
-        vec!["ledger", "check"],
-    ] {
-        let o = fx.bf(&cmd);
-        assert_eq!(o.code, 2, "{cmd:?}: {}", o.all());
-        assert!(o.stderr.contains("head accept"), "{}", o.stderr);
-    }
-    // The guard also refuses the alias and any git subcommand it does not know.
+    assert_eq!(st["main"]["ok"], true, "{st}");
+    assert!(
+        st["main"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("did not make"),
+        "{st}"
+    );
+    let text = fx.must(&["status"]);
+    assert!(
+        text.stdout.contains("note: the main branch has moved on"),
+        "{}",
+        text.stdout
+    );
+    // The guard denies the alias and any git subcommand it does not know.
     let wc = fx.work("U-1");
     for cmd in [
         "git config alias.up update-ref",
@@ -1041,37 +1056,45 @@ fn a_git_alias_that_moves_main_is_noticed_and_the_human_decides() {
         ),
         "deny"
     );
-    // The human accepts the new position with their words.
-    fx.human("Yes, I moved main on purpose.");
-    fx.must(&["head", "accept", "--quote", "Yes, I moved main on purpose."]);
-    assert_eq!(fx.must(&["status", "--json"]).json()["main"]["ok"], true);
 }
 
 #[test]
-fn a_human_commit_of_records_is_not_a_move_but_other_files_are() {
+fn the_projects_first_commit_blocks_nothing_and_other_commits_are_only_noted() {
     let fx = Fx::new();
     fx.tiny();
-    // The records, the log and the ignore file are what the human commits all the time.
-    fs::write(
-        fx.root.join("factory/records/R-1.toml"),
-        fs::read_to_string(fx.root.join("factory/records/R-1.toml")).unwrap() + "\n",
-    )
-    .unwrap();
-    fx.commit_all("records");
-    assert_eq!(fx.must(&["status", "--json"]).json()["main"]["ok"], true);
-    // Any other file is a move to account for: the status says so, the commands that need a clean main wait.
+    // The scaffolding the first commit holds: the records, the log, the ignore file, the harness folder.
+    fs::create_dir_all(fx.root.join(".claude/skills/factory")).unwrap();
+    fs::write(fx.root.join(".claude/skills/factory/SKILL.md"), "x\n").unwrap();
     fs::write(fx.root.join("notes.txt"), "mine\n").unwrap();
-    fx.commit_all("my own change");
+    fx.commit_all("scaffolding and a note");
     let st = fx.must(&["status", "--json"]).json();
-    assert_eq!(st["main"]["ok"], false);
-    assert!(st["main"]["detail"].as_str().unwrap().contains("notes.txt"));
-    assert_eq!(fx.bf(&["ledger", "check"]).code, 2);
-    fx.human("Yes, that commit is mine.");
-    fx.must(&["head", "accept", "--quote", "Yes, that commit is mine."]);
-    assert_eq!(fx.must(&["status", "--json"]).json()["main"]["ok"], true);
+    assert_eq!(st["main"]["ok"], true);
+    assert!(st["main"]["note"].as_str().unwrap().contains("moved on"));
+    // Nothing is refused on account of it, and nothing asks for the human's words.
+    fx.must(&["plan", "check"]);
+    fx.start_test_run();
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    fx.must_in(
+        &fx.work("K-1"),
+        &[
+            "evidence",
+            "run",
+            "X-3",
+            "--",
+            "ls",
+            "src/hello.txt",
+            "src/bye.txt",
+        ],
+    );
+    fx.must(&["checkpoint", "close", "K-1"]);
+    fx.must(&["ledger", "check"]);
 }
-
-// ----------------------------------------------------------------
 
 #[test]
 fn parallel_puts_never_lose_a_record() {
@@ -1291,4 +1314,55 @@ fn a_folder_that_only_starts_with_the_project_path_is_not_inside_it() {
         .as_str()
         .unwrap()
         .contains("outside"));
+}
+
+#[test]
+fn a_link_into_the_state_folder_is_not_read_or_written_for_the_caller() {
+    let fx = Fx::new();
+    fx.put(
+        "requirement",
+        "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\n",
+    );
+    fx.put("check", "id=\"X-6\"\nkind=\"check\"\ntitle=\"screenshot\"\nhow=\"agent\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
+    let state = fx.state_dir();
+    fs::create_dir_all(fx.root.join(".bf/pages")).unwrap();
+    // A file that looks harmless but is a link to the key.
+    let link = fx.root.join(".bf/pages/shot.png");
+    std::os::unix::fs::symlink(state.join("key"), &link).unwrap();
+    let o = fx.refused(&["evidence", "attach", "X-6", link.to_str().unwrap()]);
+    assert!(o.all().contains("state folder"), "{}", o.all());
+    // The same for a file read as input.
+    let q = fx.root.join(".bf/pages/q.json");
+    std::os::unix::fs::symlink(state.join("key"), &q).unwrap();
+    let o = fx.refused(&["answer", "Q-1", "--file", q.to_str().unwrap()]);
+    assert!(o.all().contains("state folder"), "{}", o.all());
+    // A page written through a link into factory/ is refused, and the target is untouched.
+    let before = fs::read_to_string(fx.root.join("factory/config.toml")).unwrap();
+    let out = fx.root.join(".bf/pages/out.html");
+    std::os::unix::fs::symlink(fx.root.join("factory/config.toml"), &out).unwrap();
+    let o = fx.refused(&[
+        "render",
+        "plan",
+        "--template",
+        fixture("template.html").to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(o.all().contains("factory/"), "{}", o.all());
+    assert_eq!(
+        fs::read_to_string(fx.root.join("factory/config.toml")).unwrap(),
+        before
+    );
+    // A folder that is a link into the state folder is refused too.
+    let dir_link = fx.root.join(".bf/pages/d");
+    std::os::unix::fs::symlink(&state, &dir_link).unwrap();
+    let o = fx.refused(&[
+        "render",
+        "plan",
+        "--template",
+        fixture("template.html").to_str().unwrap(),
+        "--out",
+        dir_link.join("page.html").to_str().unwrap(),
+    ]);
+    assert!(o.all().contains("state folder"), "{}", o.all());
 }

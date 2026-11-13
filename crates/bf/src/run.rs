@@ -120,8 +120,9 @@ pub fn status(p: &Project) -> R<Value> {
         "budget_cap": p.policy.budget.cap,
         "ignored_events": st.ignored,
         "frozen_drift": gates::drift(p, &st)?,
-        "main": {"ok": !main.moved, "detail": main.detail, "tip": main.tip},
+        "main": {"ok": !main.moved, "detail": main.detail, "note": main.note, "tip": main.tip},
         "policy": format!("{:?}", p.policy_state),
+        "bad_records": pl.bad.iter().map(|(f, e)| json!({"file": f, "error": e})).collect::<Vec<_>>(),
     }))
 }
 
@@ -265,31 +266,57 @@ fn read_tokens(p: &Project) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// A one-use token for a unit and a role, kept (as a hash) in the state folder. `bf next` hands it to
-/// the conductor, who passes it to the worker; `bf report` needs it. It is shown once: while the token
-/// for this unit and role is unspent, `bf next` prints no second one.
-fn issue_token(p: &Project, unit: &str, role: &str) -> R<Option<String>> {
-    let mut v = read_tokens(p);
-    if v.as_object()
-        .map(|o| o.values().any(|e| e["unit"] == unit && e["role"] == role))
-        .unwrap_or(false)
-    {
-        return Ok(None);
+fn read_offers(p: &Project) -> Value {
+    std::fs::read_to_string(p.offers_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// `bf token take <unit> --role R`: the one-use token for a directive that the latest `bf next` gave.
+/// It is handed out once. A second request fails loudly, so that whoever got the token first, if it
+/// was not the conductor, is noticed.
+pub fn take_token(p: &Project, unit: &str, role: &str) -> R<String> {
+    let mut offers = read_offers(p);
+    let key = format!("{unit}:{role}");
+    let Some(o) = offers.get(&key).cloned() else {
+        return Err(refuse(
+            format!("take the {role} token of {unit}"),
+            "the latest `bf next` did not give that directive, and a token is handed out only for a directive just given",
+            &["Run `bf next --json` and take the token of a directive it lists (its `token_command`)."],
+            "`bf token take` prints a token.",
+        ));
+    };
+    if o["taken"] == true {
+        return Err(refuse(
+            format!("take the {role} token of {unit}"),
+            format!("that token was already taken (at {}); if it was not you, another caller took it and may hold the {role}'s authority", o["at"].as_str().unwrap_or("an earlier time")),
+            &[
+                "Tell the human that the token was taken by someone else.",
+                "They reset the tokens with `bf tokens reset --quote \"<their words>\"`, and the conductor takes a new one.",
+            ],
+            "`bf token take` prints a token.",
+        ));
     }
     let token = util::random_hex(12)?;
-    if let Some(o) = v.as_object_mut() {
-        o.insert(
+    let mut v = read_tokens(p);
+    if let Some(m) = v.as_object_mut() {
+        m.insert(
             util::sha256_hex(token.as_bytes()),
             json!({"unit": unit, "role": role}),
         );
     }
     util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
-    Ok(Some(token))
+    offers[&key]["taken"] = json!(true);
+    offers[&key]["at"] = json!(util::now());
+    util::atomic_write(&p.offers_path(), serde_json::to_string(&offers)?.as_bytes())?;
+    Ok(token)
 }
 
 /// `bf tokens reset`: the human clears every unspent role token, so the next `bf next` hands out new ones.
 pub fn reset_tokens(p: &Project) -> R<()> {
     util::atomic_write(&p.tokens_path(), b"{}")?;
+    util::atomic_write(&p.offers_path(), b"{}")?;
     Ok(())
 }
 
@@ -328,8 +355,12 @@ fn spend_token(p: &Project, hash: &str) -> R<()> {
 /// The next directives, plus a plain statement of whether anything can start and, if not, why.
 pub fn next(p: &Project) -> R<Value> {
     let mut v = next_raw(p)?;
-    // One token per worker directive, so that a report can only come from the role it was handed to.
+    // A worker directive can be given a token, once, to whoever asks for it with `bf token take`. The
+    // offers are exactly the directives this call returned.
     if p.policy.roles.tokens {
+        let mut offers = read_offers(p);
+        let tokens = read_tokens(p);
+        let mut fresh = json!({});
         if let Some(ds) = v["directives"].as_array_mut() {
             for d in ds.iter_mut() {
                 let (role, unit) = (
@@ -337,16 +368,27 @@ pub fn next(p: &Project) -> R<Value> {
                     d["unit"].as_str().unwrap_or("").to_string(),
                 );
                 if matches!(role.as_str(), "builder" | "reviewer") && !unit.is_empty() {
-                    match issue_token(p, &unit, &role)? {
-                        Some(t) => d["token"] = json!(t),
-                        None => {
-                            d["token"] = Value::Null;
-                            d["token_note"] = json!("already handed out; a token is shown once. If it was lost, the human runs `bf tokens reset --quote ...`");
-                        }
-                    }
+                    let key = format!("{unit}:{role}");
+                    // A directive whose token was taken and is still unspent stays "taken"; otherwise it is new.
+                    let unspent = tokens
+                        .as_object()
+                        .map(|o| {
+                            o.values()
+                                .any(|e| e["unit"] == unit.as_str() && e["role"] == role.as_str())
+                        })
+                        .unwrap_or(false);
+                    let taken = offers
+                        .get(&key)
+                        .map(|o| o["taken"] == true)
+                        .unwrap_or(false)
+                        && unspent;
+                    fresh[&key] = json!({"unit": unit, "role": role, "taken": taken, "at": offers.get(&key).and_then(|o| o.get("at")).cloned().unwrap_or(Value::Null)});
+                    d["token_command"] = json!(format!("bf token take {unit} --role {role}"));
                 }
             }
         }
+        offers = fresh;
+        util::atomic_write(&p.offers_path(), serde_json::to_string(&offers)?.as_bytes())?;
     }
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
@@ -1089,9 +1131,11 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
 pub struct MainPos {
     /// The branch is at a commit the engine did not put there and the human has not accepted.
     pub moved: bool,
-    /// Why, in words: the commits and the files, or the work it holds that should not be there.
+    /// Why, in words: the work it holds that should not be there.
     pub detail: String,
     pub tip: String,
+    /// A quiet line when the human's own commits moved the branch; it blocks nothing.
+    pub note: String,
 }
 
 /// Compare the main branch with the commit the engine last put there (or the baseline set at `bf init`
@@ -1104,6 +1148,7 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
         moved: false,
         detail: String::new(),
         tip: tip.to_string(),
+        note: String::new(),
     };
     if !gitx::branch_exists(&p.root, main) {
         return Ok(ok(""));
@@ -1146,42 +1191,25 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
                     short(&tip)
                 ),
                 tip,
+                note: String::new(),
             });
         }
     }
+    // Anything else is the human's own commits (the project's scaffolding, their records, their code):
+    // noted in one quiet line, never a reason to stop.
     let Some(rec) = recorded else {
         return Ok(ok(&tip));
     };
-    if gitx::is_ancestor(&p.root, &rec, &tip) {
-        let files = gitx::must(&p.root, &["diff", "--name-only", &format!("{rec}..{tip}")])
-            .unwrap_or_default();
-        if files
-            .lines()
-            .all(|f| f.starts_with("factory/") || f == ".gitignore")
-        {
-            return Ok(ok(&tip));
-        }
-        return Ok(MainPos {
-            moved: true,
-            detail: format!(
-                "the main branch moved from {} to {} and the engine did not move it; the new commits change: {}",
-                short(&rec),
-                short(&tip),
-                files
-                    .lines()
-                    .filter(|f| !(f.starts_with("factory/") || *f == ".gitignore"))
-                    .take(8)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            tip,
-        });
-    }
-    Ok(MainPos {
-        moved: true,
-        detail: format!("the main branch is at {}, which does not descend from {}, the commit the engine last knew", short(&tip), short(&rec)),
-        tip,
-    })
+    let count =
+        gitx::must(&p.root, &["rev-list", "--count", &format!("{rec}..{tip}")]).unwrap_or_default();
+    let mut m = ok(&tip);
+    m.note = format!(
+        "the main branch has moved on from {} to {} by commits the engine did not make ({} new); they hold no unlanded or test-run work",
+        short(&rec),
+        short(&tip),
+        if count.trim().is_empty() { "some".to_string() } else { count.trim().to_string() }
+    );
+    Ok(m)
 }
 
 fn short(c: &str) -> &str {
@@ -1198,8 +1226,8 @@ pub fn refuse_if_main_moved(p: &Project, st: &State) -> R<()> {
         "continue while the main branch is where the engine did not put it",
         m.detail,
         &[
-            "Do not push anything. Tell the human what happened; they may simply have committed to main.",
-            "If the new position is theirs and fine, they say so in chat and `bf head accept --quote \"<their words>\"` takes it. If not, they move the branch back with git.",
+            "Do not push anything. Tell the human what happened: the main branch holds work of a unit that never landed, or of a test run.",
+            "They move the branch back with git to the last good commit, or have the work reviewed and landed through the engine.",
         ],
         "`bf status` shows `main: ok`.",
     ))

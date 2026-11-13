@@ -22,6 +22,11 @@ jobs:
           git config --global user.name "ci"
           git config --global user.email "ci@example.invalid"
           git config --global init.defaultBranch main
+      - name: Harness instructions stay under 500 lines
+        run: |
+          lines=$(find harness/claude/skills harness/claude/agents -type f -exec cat {} + | wc -l)
+          echo "harness instruction lines: $lines"
+          test "$lines" -le 500
       - name: Format
         run: cargo fmt --check
       - name: Lint

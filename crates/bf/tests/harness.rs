@@ -4,8 +4,8 @@
 //! messages and is part of the fixture. Every command is also put through `bf guard` first, as the
 //! hooks would, from the working directory the role works in.
 //!
-//! Where an instruction does not match the engine, a comment in the test says "Mismatch" and what the
-//! engine really does.
+//! Each test states in its comments what it checks: the order of the commands, which role runs which
+//! command and from which folder, and what the engine answers.
 
 mod common;
 use common::*;
@@ -382,19 +382,23 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
                     a.extend(cmd.iter().map(|x| x.as_str()));
                     w.ok(&wc, &a);
                     let result = if action == "fix" { "fixed" } else { "built" };
-                    // Mismatch: neither the skill nor builder.md mentions the directive's `token`; with
-                    // `[roles] tokens = true` (the default) the report needs it.
-                    let tok = d["token"]
-                        .as_str()
-                        .expect("a builder directive carries a token");
+                    // With role tokens on (the default) a report carries the token that was taken for the
+                    // directive; the builder's prompt must pass it on.
+                    let tok = &w
+                        .conductor(&["token", "take", u, "--role", "builder"])
+                        .stdout
+                        .trim()
+                        .to_string();
                     w.ok(&wc, &["report", u, "--result", result, "--token", tok]);
                 }
                 ("reviewer", "review") => {
                     let u = d["unit"].as_str().unwrap();
                     let wc = PathBuf::from(d["working_copy"].as_str().unwrap());
-                    let tok = d["token"]
-                        .as_str()
-                        .expect("a reviewer directive carries a token");
+                    let tok = &w
+                        .conductor(&["token", "take", u, "--role", "reviewer"])
+                        .stdout
+                        .trim()
+                        .to_string();
                     let brief = PathBuf::from(
                         w.conductor(&["brief", u, "--role", "reviewer"])
                             .stdout
@@ -468,9 +472,10 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
                         let cmd = w.check_command(c);
                         let mut a = vec!["evidence", "run", c, "--"];
                         a.extend(cmd.iter().map(|x| x.as_str()));
-                        // Mismatch: verifier.md gives `bf evidence run <check> -- <command...>` without saying where to
-                        // run it. From the project folder the command runs on the main checkout's files and the
-                        // receipt is for that content; the checkpoint does not count it. Only the brief names the working copy.
+                        // A receipt is for the content of the folder the command ran in. Run once from the
+                        // project folder, the command sees the main checkout's files and its receipt does not
+                        // count for the checkpoint; the checkpoint's working copy (named in the brief) is the
+                        // folder that counts.
                         if !seen.iter().any(|s| s == "verifier:wrong-folder-tried") {
                             seen.push("verifier:wrong-folder-tried".into());
                             let wrong = w.bf(&fx.root, &a);
@@ -616,8 +621,8 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
         "--quote",
         "No, make the greeting say the visitor's name.",
     ]);
-    // Mismatch: SKILL.md step E says to revise a record by putting it again. The engine now refuses to
-    // overwrite a record that has a different content unless the command says `--replace`.
+    // Revising a record that already exists means putting it again with `--replace`; without it the engine
+    // refuses to overwrite a record whose content differs.
     let f = fx.root.join(".bf/drafts/R-1.toml");
     fs::write(
         &f,
@@ -801,9 +806,6 @@ fn a_checkpoint_with_a_human_step_follows_the_skill() {
     let fx = Fx::new();
     let w = Walk::new(&fx);
     fx.tiny();
-    // The human committed the harness files too; they accept where main is.
-    fx.human("Yes, that is my own commit.");
-    fx.must(&["head", "accept", "--quote", "Yes, that is my own commit."]);
     // The planner added a human step to the checkpoint.
     let f = fx.root.join(".bf/drafts/K-1.toml");
     fs::write(&f, "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\",\"H-1\"]\nchecks=[\"X-3\"]\nhuman_step=\"Read both messages aloud\"\non_human_step=\"stop\"\n").unwrap();
