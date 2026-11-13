@@ -306,12 +306,15 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
 .proposal p { margin: 0; flex: 1 1 280px; min-width: 0; font-size: var(--fs-md); line-height: 1.55; }
 .proposal .tag { margin-right: 8px; }
 .qcard.done .qid { background: var(--ok-bg); color: var(--ok-fg); }
+.otherbox { display: flex; flex-direction: column; gap: 4px; padding: 0 0 0 40px; }
+.otherbox label { font-size: var(--fs-sm); color: var(--muted); }
+.qmiss { margin: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--warn-fg); }
 .donebar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; background: var(--ok-bg); color: var(--ok-fg); font-weight: 500; }
 
 /* answer */
 .ansl { list-style: none; margin: 0; padding: 12px 16px 16px; display: grid; gap: 6px; }
 .ansl li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: var(--r-box); font-size: var(--fs-md); }
-.ansl li b { font: 500 var(--fs-sm) var(--mono); } .ansl .what { font-weight: 600; }
+.ansl li b { font: 500 var(--fs-sm) var(--mono); } .ansl .what { font-weight: 600; } .ansl .handled { max-width: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
 .ansl .nn { flex: 1 1 100%; color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .band { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 18px; border-radius: var(--r-card); background: var(--band-bg); color: var(--band-fg); border: 1px solid var(--tip-line); }
 .band span { color: var(--band-muted); } .band b { font-weight: 500; } .band .end { margin-left: auto; font-family: var(--mono); font-size: var(--fs-sm); }
@@ -531,7 +534,8 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
   function answerWriter(q) {
     return writer('a:' + q.id, function () { return STORE.db ? STORE.db.doc('answers/' + seg(q.id)) : null; }, function () {
       var a = S.answers[q.id] || {};
-      return { id: q.id, question: q.title || '', choice: (a.choices || []).join(', '), choices: a.choices || [], note: a.note || '', at: new Date().toISOString() };
+      var ch = (a.choices || []).slice();
+      return { id: q.id, question: q.title || '', choice: ch.join(', '), choices: ch, other: ch.indexOf('other') > -1 ? (a.other || '') : '', note: a.note || '', at: new Date().toISOString() };
     }, 1200);
   }
   function pickWriter(key, row) {
@@ -884,8 +888,12 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
   }
 
   /* questions */
-  function qState(q) { return S.answers[q.id] || (S.answers[q.id] = { choices: [], note: '' }); }
-  function qAnswered(q) { var a = S.answers[q.id]; if (!a) return false; return q.kind === 'text' ? !!(a.note && a.note.trim()) : (a.choices || []).length > 0; }
+  function qState(q) { var a = S.answers[q.id] || (S.answers[q.id] = { choices: [], note: '', other: '' }); if (typeof a.other !== 'string') a.other = ''; return a; }
+  /* every single and multi question offers "Other" after its own options, unless it says "other": false */
+  function hasOther(q) { return (q.kind === 'single' || q.kind === 'multi') && q.other !== false; }
+  function otherChosen(q) { var a = S.answers[q.id]; return !!(a && hasOther(q) && (a.choices || []).indexOf('other') > -1); }
+  function otherMissing(q) { var a = S.answers[q.id]; return otherChosen(q) && !((a.other || '').trim()); }
+  function qAnswered(q) { var a = S.answers[q.id]; if (!a) return false; if (q.kind === 'text') return !!(a.note && a.note.trim()); return (a.choices || []).length > 0 && !otherMissing(q); }
   function qRequired(q) { return q.required === true || (q.kind !== 'text' && q.optional !== true); }
   function allAnswered() { return (D.questions || []).every(function (q) { return !qRequired(q) || qAnswered(q); }); }
   var QS = {};
@@ -900,7 +908,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     function toggle() { so.open = !so.open; body.hidden = !so.open; tw.setAttribute('aria-expanded', String(so.open)); }
     tw.addEventListener('click', toggle); title.addEventListener('click', toggle);
     list.forEach(function (q) {
-      if (q.answer && !S.answers[q.id]) { var a0 = q.answer; S.answers[q.id] = { choices: a0.choices || (a0.choice ? [a0.choice] : []), note: a0.note || '' }; }
+      if (q.answer && !S.answers[q.id]) { var a0 = q.answer, ch0 = (a0.choices || (a0.choice ? [a0.choice] : [])).slice(); if (hasOther(q) && typeof a0.other === 'string' && a0.other && ch0.indexOf('other') < 0) ch0.push('other'); S.answers[q.id] = { choices: ch0, note: a0.note || '', other: typeof a0.other === 'string' ? a0.other : '' }; }
       body.appendChild(buildQuestion(q));
     });
     var db = el('div', 'donebar', null, { id: 'donebar' }); db.hidden = true; body.appendChild(db);
@@ -925,6 +933,20 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
         opts.appendChild(el('label', 'opt', [inp, el('span', null, [el('span', 'optkey', o.key), el('span', 'opttext', inline(o.text)), o.proposed ? el('span', 'tag ptag', 'proposed') : null])], { for: inp.id }));
         ui.inputs.push(inp);
       });
+      if (hasOther(q)) {
+        var oinp = el('input', null, null, { type: multi ? 'checkbox' : 'radio', name: name, value: 'other', id: name + '-other' });
+        oinp.addEventListener('change', function () { choose(q, 'other', oinp.checked); if (oinp.checked && ui.otherTa) ui.otherTa.focus(); });
+        opts.appendChild(el('label', 'opt', [oinp, el('span', null, [el('span', 'optkey', ' '), el('span', 'opttext', 'Other')])], { for: oinp.id }));
+        ui.inputs.push(oinp);
+        var ota = el('textarea', 'in', null, { id: name + '-othertext', rows: '2', placeholder: 'Write your own answer', 'aria-describedby': name + '-miss' });
+        ota.value = st.other || '';
+        ota.addEventListener('input', function () { qState(q).other = ota.value; persistAnswer(q); paint(); });
+        var miss = el('p', 'qmiss', '', { id: name + '-miss', role: 'status', 'aria-live': 'polite' });
+        ui.otherTa = ota; ui.miss = miss;
+        ui.otherBox = el('div', 'otherbox', [el('label', null, 'Your own answer', { for: ota.id }), ota, miss]);
+        ui.otherBox.hidden = true;
+        opts.appendChild(ui.otherBox);
+      }
       body.appendChild(opts);
       var withWhy = proposed.filter(function (o) { return o.why; })[0];
       if (withWhy) {
@@ -947,6 +969,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     var st = qState(q);
     if (q.kind === 'multi') { var i = st.choices.indexOf(key); if (on && i < 0) st.choices.push(key); if (!on && i > -1) st.choices.splice(i, 1); }
     else st.choices = on ? [key] : [];
+    if (key === 'other' && on) { var u = QS[q.id]; if (u && u.otherBox) { u.otherBox.hidden = false; } }
     persistAnswer(q); paint();
   }
   function persistAnswer(q) { lsSet(LSK + 'answers', S.answers); answerWriter(q).touch(); }
@@ -972,7 +995,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     });
     (D.questions || []).forEach(function (q) {
       var a = S.answers[q.id]; if (!a || !qAnswered(q) && !(a.note && a.note.trim())) return;
-      var texts = (a.choices || []).map(function (k) { var o = (q.options || []).filter(function (x) { return x.key === k; })[0]; return k + (o ? ' · ' + o.text : ''); });
+      var texts = (a.choices || []).filter(function (k) { return k !== 'other' || (a.other || '').trim(); }).map(function (k) { if (k === 'other') return 'Other · ' + a.other.trim(); var o = (q.options || []).filter(function (x) { return x.key === k; })[0]; return k + (o ? ' · ' + o.text : ''); });
       items.push(el('li', null, [el('b', null, q.id), el('span', 'what', plain(q.title)), texts.length ? el('span', 'tag handled accepted', texts.join('; ')) : null, a.note ? el('span', 'nn', a.note) : null]));
     });
     body.innerHTML = '';
@@ -1059,6 +1082,11 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
       ui.root.classList.toggle('done', ans);
       ui.tags.innerHTML = ''; ui.tags.appendChild(el('span', 'tag ' + (ans ? 'handled ok' : qRequired(q) ? 'need' : 'handled accepted'), ans ? '✓ Answered' : qRequired(q) ? 'Open' : 'Optional'));
       ui.inputs.forEach(function (inp) { inp.checked = (a.choices || []).indexOf(inp.value) > -1; });
+      if (ui.otherBox) {
+        ui.otherBox.hidden = !otherChosen(q);
+        if (document.activeElement !== ui.otherTa && ui.otherTa.value !== (a.other || '')) ui.otherTa.value = a.other || '';
+        ui.miss.textContent = otherMissing(q) ? 'Write your own answer for Other to count.' : '';
+      }
       if (document.activeElement !== ui.ta && ui.ta.value !== (a.note || '')) ui.ta.value = a.note || '';
     });
     var vis = S.filter === 'all' || S.filter === 'needs';
@@ -1129,7 +1157,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
             if (d.id === 'done.' + PID) { if (!(writers.done && writers.done.dirty)) { S.done = !!v.done; lsSet(LSK + 'done', S.done); } return; }
             var q = (D.questions || []).filter(function (x) { return seg(x.id) === d.id; })[0]; if (!q) return;
             var w = writers['a:' + q.id]; if (w && w.dirty) return;
-            S.answers[q.id] = { choices: Array.isArray(v.choices) ? v.choices.slice() : (v.choice ? String(v.choice).split(', ').filter(Boolean) : []), note: typeof v.note === 'string' ? v.note : '' };
+            var chs = Array.isArray(v.choices) ? v.choices.slice() : (v.choice ? String(v.choice).split(', ').filter(Boolean) : []), cur0 = S.answers[q.id], oth = typeof v.other === 'string' ? v.other : '';
+            if (!oth && chs.indexOf('other') < 0 && cur0 && cur0.other) oth = cur0.other;   // an unticked Other keeps what was typed, on this page
+            S.answers[q.id] = { choices: chs, note: typeof v.note === 'string' ? v.note : '', other: oth };
           });
           lsSet(LSK + 'answers', S.answers); paint();
         }, bad);

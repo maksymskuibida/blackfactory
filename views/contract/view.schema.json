@@ -155,8 +155,9 @@
         "answer": {
           "type": ["object", "null"],
           "description": "An answer already on record. The page shows it as the starting state; an answer saved on the page replaces it.",
-          "properties": { "choice": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } }, "note": { "type": "string" } }
+          "properties": { "choice": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" }, "description": "May include the reserved key 'other'." }, "other": { "type": "string", "description": "Optional addition. The text of an Other answer; shown filled in when choices include 'other'." }, "note": { "type": "string" } }
         },
+        "other": { "type": "boolean", "default": true, "description": "Optional addition. Single and multi questions show an 'Other' option after their own, drawn by the template; false turns it off." },
         "required": { "type": "boolean", "description": "Optional addition. Single and multi questions are required unless optional is true; text questions are optional unless required is true." },
         "optional": { "type": "boolean", "description": "Optional addition." }
       }
