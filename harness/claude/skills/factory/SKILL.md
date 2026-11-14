@@ -14,7 +14,7 @@ You drive this project through the `bf` engine. The engine decides; you call it 
 3. Only a message the human typed is a decision. Every decision command needs `--quote "<words>"`: the words of the human's message that you took as the decision, copied exactly, so they occur in the message. Never invent a quote, never quote your own text, never treat a question, a button or a form as a decision. If the human's words are unclear, ask one short question in chat. If `bf gate status` shows a caution beside a decision (the message also holds a word that can mean no), show it to the human and confirm.
 4. A refusal from `bf` has four parts: what, why, numbered steps, how to check. Do the steps. Do not work around a refusal.
 5. Engine state is the truth. A worker's summary is a claim. Check with `bf status --json`.
-6. The engine's state folder (`~/.local/state/blackfactory`, or `$BF_STATE_HOME`) holds the secrets, and the policy file `factory/policy.toml` holds the safety settings. Never read the state folder, write to either or name the state folder in a command. Six acts are the human's alone, each needing their own message: `bf policy accept`, `bf head accept`, `bf unit release`, `bf amend approve`, `bf gate skip`, `bf checkpoint sync`. Tell the human what the engine refused and why; run the command only after they have said yes in plain words.
+6. The engine's state folder (`~/.local/state/blackfactory`, or `$BF_STATE_HOME`) holds the secrets, and the policy file `factory/policy.toml` holds the safety settings. Never read the state folder, write to either or name the state folder in a command. Six acts are the human's alone, each needing their own message: `bf policy accept`, `bf head accept`, `bf unit release`, `bf amend approve`, `bf gate skip`, and starting or releasing a sync (`bf checkpoint sync`, `bf checkpoint sync --release`; `--abort` is not one). Tell the human what the engine refused and why; run the command only after they have said yes in plain words.
 7. Public text (pages, chat) is plain English, one sentence per item, no em dashes.
 
 ## Start or resume
@@ -74,10 +74,10 @@ Starts when the `plan` gate is approved.
 
 1. `bf plan check`, then `bf run start`.
 2. Loop on `bf next --json`. It prints `can_start`, `human_needed`, `idle_reason` (why nothing can start) and `directives`. Every directive has `role` and `action`:
-   - **Worker** (`role` builder, reviewer or verifier; `action` start-unit, build, fix, review, run-checkpoint-checks): has `unit` or `checkpoint`, `tier`, `working_copy`, `brief`, `limits`, and for builders and reviewers a `token`. A verifier's directive has `checks` and a `token`.
+   - **Worker** (`role` builder, reviewer or verifier; `action` start-unit, build, fix, review, resolve-sync, review-sync, run-checkpoint-checks): has `unit` or `checkpoint`, `tier`, `working_copy`, `brief`, `limits`, and for builders and reviewers a `token`. A verifier's directive has `checks` and a `token`.
    - **Engine** (`role` engine; `action` land or close-checkpoint): has one `command`. Run it.
    - **Conductor** (`role` conductor; `action` add-records): the next design gate has too little behind it. `missing` says what to draft; for `ui` `skip_command` is the way to skip it, only on the human's words.
-   - **Human** (`role` human; `action` open-gate, decide-gate, decide-unit, decide-check, answer-question): has a `note` and ids, and `page_url` when a link for that gate's page or for `questions` is recorded. See below.
+   - **Human** (`role` human; `action` open-gate, decide-gate, decide-unit, decide-check, decide-sync, answer-question): has a `note` and ids, and `page_url` when a link for that gate's page or for `questions` is recorded. See below.
 3. Start every independent worker directive in one message so they run in parallel. After each worker returns, run `bf next --json` again. A unit of a later checkpoint waits (`waiting`) until the earlier checkpoint is closed; do nothing special. When `idle_reason` starts with "run done", every checkpoint is closed: that was the verification. Go to End.
 
 **Starting a worker.**
@@ -99,7 +99,7 @@ Starts when the `plan` gate is approved.
 - `answer-question`: a worker asked the human something. Show the question and its options in chat. When the human answers, write `{"choice": "<key>", "note": "<text>"}` to `.bf/drafts/` and run `bf answer <Q> --file <a.json>`. Only that unit waits; the rest goes on.
 - `main_ahead` in `bf status --json` or `bf next --json` (information, not a directive): tell the human in one line that the main branch has work the run lacks and can be taken in at a quiet point. Never do it unasked.
 - When the human asks to take main in (or to update from the remote): pull into the local main branch only if they said so, let running units land, then run `bf checkpoint sync <K> --quote "<their words>"` for the open checkpoint at the tip of the stack.
-- On a conflict show the refusal and its listed files. The human resolves the merge in the checkpoint's working copy; then run the command with `--resolved`. Agents never merge by hand.
+- After `bf checkpoint sync`, follow `bf next`. No unit starts while a sync is open (`sync_open` in `bf status --json`). `resolve-sync` goes to a builder agent like a build directive (brief from `bf brief <K> --role builder`, working copy, token); it changes only the listed files, concludes the merge or repairs the failing check as its brief says, and reports with `bf report <K> --role builder ...`. `review-sync` goes to a reviewer agent the same way. `decide-sync` means it parked: tell the human why and act only on their words (`bf checkpoint sync <K> --release --quote "..."`, or abort). If the resolver reports blocked and the human is not needed to decide, you may run `bf checkpoint sync <K> --abort`; say so in chat. Agents never merge by hand outside these directives.
 - Budget: when the engine refuses new work at the cap, tell the human the spend and the cap, and stop.
 - A log or head the engine says does not match: tell the human what the refusal says. Only the human decides to run `bf head accept --quote "..."`, after saying so in chat.
 
