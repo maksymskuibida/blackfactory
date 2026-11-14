@@ -26,6 +26,8 @@ struct Cmd {
     via: Option<String>,
     /// The body of a heredoc fed to this command, and whether the shell expands it.
     heredoc: Option<(String, bool)>,
+    /// The targets of the output redirects (`>`, `>>`, `>|`, `&>`) of this command.
+    redirs: Vec<String>,
 }
 
 struct Pending {
@@ -106,6 +108,99 @@ pub fn interpreter_arg_with_phrase(cmd: &str, phrase: &str) -> bool {
     })
 }
 
+/// One simple command, as the guard's path rules read it.
+#[derive(Debug, Clone)]
+pub struct Parsed {
+    /// The words, quotes removed. Redirect operators and their targets are not among them.
+    pub words: Vec<String>,
+    /// The targets of the output redirects (`>`, `>>`, `>|`, `&>`).
+    pub redirects: Vec<String>,
+    /// The body of a heredoc fed to the command.
+    pub heredoc: Option<String>,
+    /// The shell the command runs in: 0 for the command line itself, a new number for each `sh -c`
+    /// string and each script fed to a shell. A `cd` holds only inside its own shell.
+    pub scope: usize,
+    /// The shell that started this one (its working directory is the starting point).
+    pub parent: usize,
+}
+
+/// The index of the program word of a simple command (after assignments, keywords and wrappers).
+pub fn program_index(words: &[String]) -> Option<usize> {
+    resolve(words).map(|(i, _)| i)
+}
+
+/// Every simple command a shell would run for `cmd`, in order, with the commands inside `$( )`,
+/// backticks, `sh -c '...'`, `eval` and a script fed to a shell read the same way.
+pub fn commands(cmd: &str) -> Vec<Parsed> {
+    let mut counter = 0usize;
+    let mut cmds = Vec::new();
+    parse(cmd, None, 0, &mut counter, &mut cmds);
+    let mut out = Vec::new();
+    let mut next_scope = 1usize;
+    flatten(cmds, 0, 0, &mut next_scope, 0, &mut out);
+    out
+}
+
+fn flatten(
+    cmds: Vec<Cmd>,
+    scope: usize,
+    parent: usize,
+    next_scope: &mut usize,
+    depth: usize,
+    out: &mut Vec<Parsed>,
+) {
+    if depth > 8 {
+        return;
+    }
+    for cmd in cmds {
+        let idx = resolve(&cmd.words).map(|(i, _)| i);
+        out.push(Parsed {
+            words: cmd.words.clone(),
+            redirects: cmd.redirs.clone(),
+            heredoc: cmd.heredoc.as_ref().map(|(b, _)| b.clone()),
+            scope,
+            parent,
+        });
+        let Some(i) = idx else { continue };
+        let prog = basename(&cmd.words[i]);
+        if SHELLS.contains(&prog) {
+            let mut j = i + 1;
+            let mut found = false;
+            while j < cmd.words.len() && cmd.words[j].starts_with('-') {
+                if cmd.words[j].len() > 1 && cmd.words[j][1..].contains('c') {
+                    if let Some(s) = cmd.words.get(j + 1) {
+                        let mut c2 = 0usize;
+                        let mut inner = Vec::new();
+                        parse(s, None, depth + 1, &mut c2, &mut inner);
+                        let id = *next_scope;
+                        *next_scope += 1;
+                        flatten(inner, id, scope, next_scope, depth + 1, out);
+                        found = true;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            if !found {
+                if let Some((body, _)) = &cmd.heredoc {
+                    let mut c2 = 0usize;
+                    let mut inner = Vec::new();
+                    parse(body, None, depth + 1, &mut c2, &mut inner);
+                    let id = *next_scope;
+                    *next_scope += 1;
+                    flatten(inner, id, scope, next_scope, depth + 1, out);
+                }
+            }
+        } else if prog == "eval" {
+            let s = cmd.words[i + 1..].join(" ");
+            let mut c2 = 0usize;
+            let mut inner = Vec::new();
+            parse(&s, None, depth + 1, &mut c2, &mut inner);
+            flatten(inner, scope, parent, next_scope, depth + 1, out);
+        }
+    }
+}
+
 fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call>) {
     if depth > 8 {
         return;
@@ -135,6 +230,7 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                             words: rest,
                             via: None,
                             heredoc: None,
+                            redirs: vec![],
                         }];
                         collect(inner, None, depth + 1, calls);
                     }
@@ -245,7 +341,9 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     let mut words: Vec<String> = Vec::new();
     let mut cur = String::new();
     let mut in_word = false;
-    let mut skip_next = false;
+    // Set after a redirect operator: `Some(true)` for an output redirect, `Some(false)` for an input one.
+    let mut redir: Option<bool> = None;
+    let mut redirs: Vec<String> = Vec::new();
     let mut pending: Vec<Pending> = Vec::new();
     let mut cmd_id = *counter;
     *counter += 1;
@@ -254,10 +352,11 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     macro_rules! end_word {
         () => {
             if in_word {
-                if skip_next {
-                    skip_next = false;
-                } else {
-                    words.push(std::mem::take(&mut cur));
+                let w = std::mem::take(&mut cur);
+                match redir.take() {
+                    Some(true) => redirs.push(w),
+                    Some(false) => {}
+                    None => words.push(w),
                 }
                 cur.clear();
                 in_word = false;
@@ -267,12 +366,14 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     macro_rules! end_cmd {
         () => {
             end_word!();
-            if !words.is_empty() {
+            redir = None;
+            if !words.is_empty() || !redirs.is_empty() {
                 out.push(Cmd {
                     id: cmd_id,
                     words: std::mem::take(&mut words),
                     via: via.map(|v| v.to_string()),
                     heredoc: None,
+                    redirs: std::mem::take(&mut redirs),
                 });
             }
             cmd_id = *counter;
@@ -420,7 +521,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     while i + 1 < n && b[i + 1] == '>' {
                         i += 1;
                     }
-                    skip_next = true;
+                    redir = Some(true);
                     in_word = false;
                 } else {
                     end_cmd!();
@@ -476,7 +577,10 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         i += 1;
                     }
                 } else {
-                    skip_next = true;
+                    if op == '>' && i + 1 < n && b[i + 1] == '|' {
+                        i += 1;
+                    }
+                    redir = Some(op == '>');
                 }
             }
             _ => {

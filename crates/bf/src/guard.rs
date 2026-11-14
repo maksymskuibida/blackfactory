@@ -11,6 +11,7 @@
 use crate::refusal::Refusal;
 use crate::util;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -377,76 +378,14 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
 }
 
 // ---------------------------------------------------------------- shell commands
-
-/// Strip quotes and backslashes: `g"it"` and `b\f` name the programs they look like.
-fn clean(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '"' | '\'' | '\\'))
-        .collect()
-}
-
-fn words(seg: &str) -> Vec<String> {
-    seg.split_whitespace().map(|w| w.to_string()).collect()
-}
+//
+// The shell rules work on the parsed command (see `shellparse`): the programs, their arguments, the
+// redirects and the working directory after each `cd`. They ask where a command would write, delete or
+// run, each resolved to a path, and never whether a word occurs in the text. Heredoc bodies and quoted
+// strings are data.
 
 fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
-}
-
-fn split_segments(cmd: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let b: Vec<char> = cmd.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        let two = if i + 1 < b.len() {
-            Some(b[i + 1])
-        } else {
-            None
-        };
-        match (c, two) {
-            ('&', Some('&')) | ('|', Some('|')) => {
-                out.push(std::mem::take(&mut cur));
-                i += 2;
-                continue;
-            }
-            (';', _) | ('\n', _) | ('|', _) | ('`', _) => {
-                out.push(std::mem::take(&mut cur));
-            }
-            ('$', Some('(')) => {
-                out.push(std::mem::take(&mut cur));
-                i += 2;
-                continue;
-            }
-            (')', _) => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
-        }
-        i += 1;
-    }
-    out.push(cur);
-    out.into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Strip leading environment assignments and common wrappers.
-fn command_words(seg: &str) -> Vec<String> {
-    let mut w = words(seg);
-    loop {
-        match w.first().map(|s| s.as_str()) {
-            Some(x) if x.contains('=') && !x.starts_with('-') && !x.contains('/') => {
-                w.remove(0);
-            }
-            Some("sudo") | Some("env") | Some("command") | Some("nohup") | Some("time")
-            | Some("exec") | Some("nice") | Some("xargs") | Some("builtin") => {
-                w.remove(0);
-            }
-            _ => break,
-        }
-    }
-    w
 }
 
 fn git_sub(w: &[String]) -> Option<(usize, &str)> {
@@ -459,14 +398,6 @@ fn git_sub(w: &[String]) -> Option<(usize, &str)> {
         }
     }
     None
-}
-
-/// Words of a command with their quotes kept apart: split on spaces, quotes and shell punctuation.
-fn tokens(s: &str) -> Vec<String> {
-    s.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]".contains(c))
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string())
-        .collect()
 }
 
 /// Does a path that is protected (in the project root or in any working copy) get named?
@@ -494,125 +425,471 @@ fn is_protected_abs(table: &Value, abs: &str) -> bool {
     false
 }
 
-/// Does the shell text name a path under the harness's transcript root?
-fn names_transcripts(table: &Value, text: &str, cwd: &str) -> bool {
-    if transcript_root(table).is_empty() {
-        return false;
-    }
-    tokens(text)
-        .into_iter()
-        .filter(|t| t.contains('/') || t == "~")
-        .any(|t| in_transcripts(table, &resolve(&t, cwd)))
+/// The state folder or the folder above it.
+fn in_state_or_base(table: &Value, abs: &str) -> bool {
+    in_state(table, abs)
+        || state_base(table)
+            .map(|b| under(abs, b).is_some())
+            .unwrap_or(false)
 }
 
-/// Does the shell text name a protected path or the state folder, however it is spelled (`./factory`,
-/// `x/../factory`, an absolute path, a symlink, `~`)?
-fn names_protected(table: &Value, text: &str, cwd: &str) -> bool {
-    for t in tokens(text) {
-        if t.starts_with('-') && !t.contains('/') {
-            continue;
-        }
-        let path_like =
-            t.contains('/') || t == "~" || matches!(t.as_str(), "factory" | ".bf" | ".claude");
-        if !path_like {
-            continue;
-        }
-        let abs = resolve(&t, cwd);
-        if in_state(table, &abs) || is_protected_abs(table, &abs) {
-            return true;
-        }
-    }
-    false
+/// Programs that run code given as text: a script on standard input, after `-c` or `-e`, or a file.
+fn is_interpreter(b: &str) -> bool {
+    b.starts_with("python")
+        || matches!(
+            b,
+            "node"
+                | "nodejs"
+                | "deno"
+                | "bun"
+                | "ruby"
+                | "perl"
+                | "php"
+                | "lua"
+                | "awk"
+                | "gawk"
+                | "mawk"
+                | "Rscript"
+        )
 }
 
-const READ_ONLY: &[&str] = &[
-    "cat",
-    "ls",
-    "head",
-    "tail",
-    "wc",
-    "less",
-    "more",
-    "grep",
-    "rg",
-    "file",
-    "stat",
-    "diff",
-    "echo",
-    "printf",
-    "true",
-    "pwd",
-    "test",
-    "[",
-    "jq",
-    "sort",
-    "uniq",
-    "cut",
-    "tr",
-    "nl",
-    "tac",
-    "column",
-    "od",
-    "xxd",
-    "sha256sum",
-    "shasum",
-    "md5",
-    "basename",
-    "dirname",
-    "realpath",
-    "readlink",
-    "which",
-];
-const GIT_READ_ONLY: &[&str] = &[
-    "status",
-    "diff",
-    "log",
-    "show",
-    "ls-files",
-    "add",
-    "blame",
-    "check-ignore",
-    "rev-parse",
-    "branch",
-];
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+
+/// Programs that write or delete every path they are given.
 const WRITERS: &[&str] = &[
-    "rm", "mv", "cp", "tee", "chmod", "chown", "truncate", "dd", "ln", "install", "touch", "mkdir",
-    "rmdir", "unlink", "shred", "rsync", "patch",
+    "rm", "mv", "tee", "chmod", "chown", "truncate", "touch", "mkdir", "rmdir", "unlink", "shred",
+    "patch",
 ];
+/// Programs whose last argument (or `-t dir`) is where they write.
+const COPIERS: &[&str] = &["cp", "ln", "install", "rsync"];
 
-/// Paths a segment writes to: redirect targets and the arguments of writer programs.
-fn write_targets(seg: &str, w: &[String]) -> Vec<String> {
+/// The words of a text that look like a real path: absolute, from home, or climbing out of the folder.
+/// Plain words, relative names and source text are not paths.
+fn text_paths(text: &str) -> Vec<String> {
+    text.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]:".contains(c))
+        .filter(|t| {
+            t.starts_with('/')
+                || *t == "~"
+                || t.starts_with("~/")
+                || t.starts_with("$HOME/")
+                || (t.starts_with("../") && !t.trim_end_matches('/').ends_with(".."))
+        })
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// The paths an interpreter's command holds as text: its arguments and the script fed to it.
+fn interpreter_paths(p: &crate::shellparse::Parsed, args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
-    let mut rest = seg;
-    while let Some(i) = rest.find('>') {
-        let after = rest[i + 1..]
-            .trim_start_matches(['>', '&', '|'])
-            .trim_start();
-        let t: String = after
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !";&|)".contains(*c))
-            .collect();
-        if !t.is_empty() && !t.starts_with('&') && t != "/dev/null" {
-            out.push(t);
-        }
-        rest = &rest[i + 1..];
+    for a in args {
+        out.extend(text_paths(a));
     }
-    if let Some(first) = w.first() {
-        let b = basename(first);
-        if WRITERS.contains(&b) {
-            out.extend(w[1..].iter().filter(|a| !a.starts_with('-')).cloned());
-        } else if (b == "sed" || b == "perl") && w.iter().any(|x| x.starts_with("-i") || x == "-pi")
-        {
+    if let Some(h) = &p.heredoc {
+        out.extend(text_paths(h));
+    }
+    out
+}
+
+/// Does this word name the state folder or the variables that locate it?
+fn names_state(table: &Value, w: &str) -> bool {
+    if w.contains("$BF_STATE_HOME")
+        || w.contains("${BF_STATE_HOME")
+        || w.contains("$XDG_STATE_HOME")
+        || w.contains("${XDG_STATE_HOME")
+        || w.starts_with("BF_STATE_HOME=")
+        || w.starts_with("XDG_STATE_HOME=")
+    {
+        return true;
+    }
+    let sd = state_dir(table);
+    let pid = table["project_id"].as_str().unwrap_or("");
+    !sd.is_empty()
+        && (w.contains(sd)
+            || (pid.len() >= 8 && w.contains(pid))
+            || state_base(table)
+                .map(|b| b.len() > 8 && w.contains(b))
+                .unwrap_or(false))
+}
+
+fn is_home_form(t: &str) -> bool {
+    t == "~" || t.starts_with("~/") || t == "$HOME" || t.starts_with("$HOME/")
+}
+
+/// A path as a command gives it, resolved from the folder it runs in. `None` when it cannot be known:
+/// the path or the folder is built at run time.
+fn target_abs(t: &str, dir: &Option<String>) -> Option<String> {
+    let dynamic = (t.contains('$') && !is_home_form(t)) || t.contains('`');
+    if dynamic {
+        return None;
+    }
+    let relative = !(t.starts_with('/') || is_home_form(t));
+    match dir {
+        Some(d) => Some(resolve(t, d)),
+        None if !relative => Some(resolve(t, "/")),
+        None => None,
+    }
+}
+
+/// Does the text of a path that cannot be resolved still name a protected folder as a segment?
+fn names_protected_segment(t: &str) -> bool {
+    t.split('/')
+        .any(|s| matches!(s, "factory" | ".bf" | ".claude"))
+}
+
+fn is_flag(a: &str) -> bool {
+    a.starts_with('-') && a.len() > 1
+}
+
+/// The paths a program writes or deletes, from its arguments. Programs that only read give none.
+fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if WRITERS.contains(&prog) {
+        out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
+    } else if prog == "dd" {
+        out.extend(
+            args.iter()
+                .filter_map(|a| a.strip_prefix("of=").map(|s| s.to_string())),
+        );
+    } else if COPIERS.contains(&prog) {
+        let mut it = args.iter();
+        let mut dest: Option<String> = None;
+        let mut last: Option<String> = None;
+        while let Some(a) = it.next() {
+            if a == "-t" || a == "--target-directory" {
+                dest = it.next().cloned();
+            } else if let Some(d) = a.strip_prefix("--target-directory=") {
+                dest = Some(d.to_string());
+            } else if !is_flag(a) {
+                last = Some(a.clone());
+            }
+        }
+        out.extend(dest.or(last));
+    } else if prog == "sed" || prog == "perl" {
+        let in_place = args.iter().any(|a| {
+            a == "--in-place"
+                || a.starts_with("--in-place=")
+                || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('i'))
+        });
+        if in_place {
+            let mut script_given = false;
+            let mut skip = false;
+            for a in args {
+                if skip {
+                    skip = false;
+                    script_given = true;
+                    continue;
+                }
+                if a.starts_with("--") {
+                    if a == "--expression" || a == "--file" {
+                        skip = true;
+                    }
+                    continue;
+                }
+                if is_flag(a) {
+                    if a.ends_with('e')
+                        || (prog == "sed" && a.ends_with('f'))
+                        || (prog == "perl" && a.ends_with('E'))
+                    {
+                        skip = true;
+                    }
+                    continue;
+                }
+                if !script_given {
+                    // The first word that is not an option is the script.
+                    script_given = true;
+                    continue;
+                }
+                out.push(a.clone());
+            }
+        }
+    } else if prog == "find" {
+        let dangerous = args.iter().any(|x| {
+            matches!(
+                x.as_str(),
+                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"
+            )
+        });
+        if dangerous {
             out.extend(
-                w[1..]
-                    .iter()
-                    .filter(|a| !a.starts_with('-'))
-                    .skip(1)
+                args.iter()
+                    .take_while(|a| !(a.starts_with('-') || *a == "(" || *a == "!"))
                     .cloned(),
             );
         }
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if matches!(a.as_str(), "-fprint" | "-fprintf" | "-fprint0" | "-fls") {
+                out.extend(it.next().cloned());
+            }
+        }
+    } else if prog == "git" {
+        let mut full = vec!["git".to_string()];
+        full.extend(args.iter().cloned());
+        if let Some((i, sub)) = git_sub(&full) {
+            if matches!(sub, "checkout" | "restore" | "rm" | "mv" | "clean") {
+                out.extend(full[i + 1..].iter().filter(|a| !is_flag(a)).cloned());
+            }
+        }
+    } else if prog == "curl" || prog == "wget" {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if matches!(a.as_str(), "-o" | "--output" | "-P" | "--directory-prefix")
+                || (prog == "wget" && a == "-O")
+            {
+                out.extend(it.next().cloned());
+            }
+        }
+    } else if prog == "tar" {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "-C" || a == "--directory" {
+                out.extend(it.next().cloned());
+            } else if let Some(d) = a.strip_prefix("--directory=") {
+                out.push(d.to_string());
+            }
+        }
+    } else if prog == "unzip" {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "-d" {
+                out.extend(it.next().cloned());
+            }
+        }
     }
     out
+}
+
+/// How a command reached a path.
+#[derive(Clone, Copy)]
+enum Reach {
+    Write,
+    Delete,
+    Run,
+    Text,
+}
+
+fn path_denial(abs: &str, part: &str, reach: Reach) -> Decision {
+    let (verb, steps): (&str, Vec<&str>) = match reach {
+        Reach::Write => (
+            "write",
+            vec![
+                "Change a record, a finding or a report with an engine command: `bf record put`, `bf report`, `bf evidence run`.",
+                "To write a file of your own, give a path inside your working copy.",
+                "If the policy, a gate or the hook settings must change, ask the human.",
+            ],
+        ),
+        Reach::Delete => (
+            "delete",
+            vec![
+                "Remove only files inside your working copy, by a path that lies there.",
+                "Records are removed by engine commands only; ask the human if one must go.",
+            ],
+        ),
+        Reach::Run => (
+            "run",
+            vec![
+                "Run a program or script that lives in your working copy.",
+                "Reading a protected file with `cat` or `ls` is fine.",
+            ],
+        ),
+        Reach::Text => (
+            "open",
+            vec![
+                "Open files from a path inside your working copy, or read the protected file with `cat`.",
+                "A record changes through an engine command: `bf record put`, `bf report`.",
+            ],
+        ),
+    };
+    deny(
+        &format!("{verb} {abs}"),
+        &format!(
+            "{part} would {verb} {abs}, a protected place: factory records, the policy, gates, the guard table and the hook settings are changed by the engine and the human only"
+        ),
+        &steps,
+        "The path the command writes, deletes, runs or opens lies outside those places.",
+    )
+}
+
+fn unresolved_denial(t: &str, part: &str, why: &str) -> Decision {
+    deny(
+        &format!("write `{t}`"),
+        &format!("{part} writes a path that cannot be resolved ({why}), so the guard cannot tell where it lands"),
+        &[
+            "Write the path out in full, for example `src/a.rs`.",
+            "Change into a folder with a plain `cd <folder>` first, not a folder built from a variable.",
+        ],
+        "The command names every path it writes and every folder it changes into.",
+    )
+}
+
+/// Judge a path a command writes or deletes: where it lands decides, never the words. Gives the
+/// resolved path when it is allowed and known.
+fn judge_target(
+    table: &Value,
+    t: &str,
+    dir: &Option<String>,
+    part: &str,
+    reach: Reach,
+) -> Result<Option<String>, Decision> {
+    match target_abs(t, dir) {
+        Some(abs) => {
+            if in_state_or_base(table, &abs) {
+                return Err(state_denial());
+            }
+            if in_transcripts(table, &abs) {
+                return Err(transcript_denial());
+            }
+            if is_protected_abs(table, &abs) {
+                return Err(path_denial(&abs, part, reach));
+            }
+            Ok(Some(abs))
+        }
+        None => {
+            if names_protected_segment(t) {
+                return Err(unresolved_denial(
+                    t,
+                    part,
+                    "part of it is built at run time",
+                ));
+            }
+            if !(t.contains('$') || t.contains('`')) {
+                return Err(unresolved_denial(
+                    t,
+                    part,
+                    "the folder it is relative to was built at run time",
+                ));
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Judge what a path in an interpreter's text or a script name would open or run.
+fn judge_text_path(
+    table: &Value,
+    t: &str,
+    dir: &Option<String>,
+    part: &str,
+    reach: Reach,
+) -> Option<Decision> {
+    let abs = target_abs(t, dir)?;
+    if in_state_or_base(table, &abs) {
+        return Some(state_denial());
+    }
+    if is_protected_abs(table, &abs) {
+        return Some(path_denial(&abs, part, reach));
+    }
+    None
+}
+
+/// The refusal of a git command, or `allow()`.
+fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
+    let main_branch = table["main_branch"].as_str().unwrap_or("main");
+    let prefix = table["branch_prefix"].as_str().unwrap_or("bf/");
+    let Some((i, sub)) = git_sub(w) else {
+        return allow();
+    };
+    let target = {
+        let mut d = dir.to_string();
+        let mut j = 1;
+        while j + 1 < w.len() && j < i {
+            if w[j] == "-C" {
+                d = resolve(&w[j + 1], dir);
+            }
+            j += 1;
+        }
+        zone_of(table, &d).kind.to_string()
+    };
+    let in_unit = target == "unit";
+    let rest: Vec<&str> = w[i + 1..].iter().map(|s| s.as_str()).collect();
+    let why = |s: &str| {
+        deny(
+            &format!("run `git {sub}`"),
+            s,
+            &[
+                "Use `bf unit land` / `bf checkpoint close` for merges.",
+                "Ask the human to do it with git.",
+            ],
+            "The branch you need is updated by the engine.",
+        )
+    };
+    if w.iter()
+        .any(|x| matches!(x.as_str(), "--git-dir" | "--work-tree"))
+        || w.iter()
+            .any(|x| x.starts_with("--git-dir=") || x.starts_with("--work-tree="))
+    {
+        return why("pointing git at another repository would hide what is being changed");
+    }
+    if w.windows(2).any(|p| {
+        p[0] == "-c"
+            && (p[1].starts_with("core.")
+                || p[1].starts_with("alias.")
+                || p[1].starts_with("filter."))
+    }) {
+        return why(
+            "git config given on the command line can run programs or change what git sees",
+        );
+    }
+    // An unknown subcommand is usually the user's own alias; setting one up is refused below
+    // (`git config alias.*`, `git -c alias.*`), and moving a ref is refused by name.
+    if sub == "config"
+        && rest.iter().any(|a| {
+            let a = a.to_lowercase();
+            a.starts_with("alias.")
+                || a.starts_with("filter.")
+                || a.starts_with("core.")
+                || a.starts_with("include")
+                || a.starts_with("url.")
+        })
+    {
+        return why("setting an alias, a filter or a core option in git config can make git run programs or move branches");
+    }
+    match sub {
+        "stash" if !in_unit && matches!(rest.first(), Some(&"list") | Some(&"show")) => {}
+        "push" => {
+            return why("nothing is pushed until the human decides; no engine command touches the network")
+        }
+        "update-ref" | "pull" | "worktree" | "reflog" | "gc" | "replace" | "filter-branch"
+        | "symbolic-ref" => {
+            return why("branch pointers and working copies are managed by the engine only")
+        }
+        "fetch" if rest.iter().any(|a| a.contains(':') || a.starts_with('+')) => {
+            return why("a fetch with a refspec can move the main branch or a checkpoint branch")
+        }
+        "merge" | "rebase" | "cherry-pick" | "revert" | "am" | "stash" | "clean" | "apply"
+            if !in_unit =>
+        {
+            return why("merging, rebasing, stashing or cleaning in the main checkout or a checkpoint working copy can move the main branch or lose records; `bf unit land` and `bf checkpoint close` do the merging, and the human does the rest with git");
+        }
+        "reset" if !in_unit && rest.iter().any(|a| matches!(*a, "--hard" | "--merge" | "--keep")) => {
+            return why("a hard reset in the main checkout or a checkpoint working copy can move the main branch or lose records")
+        }
+        "checkout" | "switch" | "restore" | "commit"
+            if !in_unit
+                && !rest.contains(&"--")
+                && rest
+                    .iter()
+                    .any(|a| a.starts_with(prefix) || a.contains(&format!(":{main_branch}"))) =>
+        {
+            return why("switching to or committing onto the engine's branches would change them behind its back")
+        }
+        "branch" => {
+            let force = rest.iter().any(|x| {
+                matches!(
+                    *x,
+                    "-d" | "-D" | "-f" | "--force" | "-m" | "-M" | "--delete" | "-c" | "-C" | "--move" | "--copy"
+                )
+            });
+            let names = rest
+                .iter()
+                .any(|x| *x == main_branch || x.starts_with(prefix));
+            if force && names {
+                return why("the main branch and the engine's branches move only through the engine");
+            }
+        }
+        _ => {}
+    }
+    allow()
 }
 
 /// Every subcommand of `bf`. A call whose subcommand is not one of these, written literally, is denied.
@@ -684,26 +961,6 @@ const CP_BF: &[(&str, &[&str])] = &[
     ("record", &["get", "list"]),
 ];
 
-/// Does the text redirect somewhere other than `/dev/null` or another descriptor?
-fn real_redirect(seg: &str) -> bool {
-    let mut t = seg.to_string();
-    for n in [
-        "&>/dev/null",
-        "2>/dev/null",
-        "1>/dev/null",
-        ">/dev/null",
-        "2>&1",
-        "1>&2",
-        ">&2",
-        ">&1",
-        "&>",
-        "2>>/dev/null",
-    ] {
-        t = t.replace(n, " ");
-    }
-    t.contains('>')
-}
-
 fn human_turn_denial() -> Decision {
     deny(
         "run `bf human-turn`",
@@ -747,8 +1004,23 @@ fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
     None
 }
 
+/// Words of a command with their quotes kept apart: split on spaces, quotes and shell punctuation.
+fn tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]".contains(c))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Is this an option that gives a program its code as text (`-c`, `-e`, `-m`)?
+fn is_inline_flag(a: &str) -> bool {
+    matches!(a, "-m" | "--eval" | "--command" | "--print")
+        || (a.starts_with('-')
+            && !a.starts_with("--")
+            && (a.ends_with('c') || a.ends_with('e') || a.ends_with('E')))
+}
+
 fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
-    let cleaned = clean(cmd);
     // Where would a shell really run `bf`? Only a word in command position counts; the word `bf` as an
     // argument, in a pattern or in a heredoc for another program is data.
     let calls = crate::shellparse::bf_calls(cmd);
@@ -762,31 +1034,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
             return d;
         }
     }
-    if cleaned.contains("BF_STATE_HOME") || cleaned.contains("XDG_STATE_HOME") {
-        return state_denial();
-    }
-    // The state folder, however it is spelled: nothing may name it, whatever the program.
-    let sd = state_dir(table);
-    let pid = table["project_id"].as_str().unwrap_or("");
-    if !sd.is_empty()
-        && (cleaned.contains(sd)
-            || (pid.len() >= 8 && cleaned.contains(pid))
-            || state_base(table)
-                .map(|b| b.len() > 8 && cleaned.contains(b))
-                .unwrap_or(false))
-    {
-        return state_denial();
-    }
-    for t in tokens(cmd) {
-        if (t.contains('/') || t == "~") && in_state(table, &resolve(&t, cwd)) {
-            return state_denial();
+    let parsed = crate::shellparse::commands(cmd);
+    // The state folder, however it is spelled: no command word or redirect target may name it. The body
+    // of a heredoc is not a word.
+    for p in &parsed {
+        for w in p.words.iter().chain(p.redirects.iter()) {
+            if names_state(table, w) {
+                return state_denial();
+            }
         }
     }
     let here = zone_of(table, cwd);
     let in_worker = here.kind == "unit";
     let in_cp = here.kind == "checkpoint";
-    let main_branch = table["main_branch"].as_str().unwrap_or("main");
-    let prefix = table["branch_prefix"].as_str().unwrap_or("bf/");
 
     // -- bf subcommands, for each real call
     for call in &calls {
@@ -839,202 +1099,159 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         }
     }
 
-    for seg in split_segments(cmd) {
-        let segc = clean(&seg);
-        let w = command_words(&segc);
-        let Some(first) = w.first() else { continue };
-        let b = basename(first);
+    // -- every command: where it runs, what it would execute, where it would write or delete
+    let root = table["root"].as_str().unwrap_or("");
+    let mut dirs: HashMap<usize, Option<String>> = HashMap::new();
+    dirs.insert(0, Some(cwd.to_string()));
+    for p in &parsed {
+        let start: Option<String> = match dirs.get(&p.scope) {
+            Some(d) => d.clone(),
+            None => dirs
+                .get(&p.parent)
+                .cloned()
+                .unwrap_or_else(|| Some(cwd.to_string())),
+        };
+        let dir_str = start.clone().unwrap_or_else(|| cwd.to_string());
+        let mut after = start.clone();
 
-        // -- bf calls are judged above, from where a shell would run them
-        if b == "bf" {
-            continue;
-        }
-        // -- leaving the working copy
-        if (in_worker || in_cp) && matches!(b, "cd" | "pushd") {
-            let target = w.get(1).map(|s| s.as_str()).unwrap_or("~");
-            let abs = resolve(target, cwd);
-            if under(&abs, &here.base).is_none() {
-                return deny(
-                    "leave your working copy",
-                    "from a working copy, commands run in that working copy; changing folder would let later commands run as if from the project",
-                    &[&format!("Stay inside {}.", here.base)],
-                    "Every command runs in your working copy.",
-                );
+        // A path in the state folder, whatever the program and however it is spelled.
+        for w in p.words.iter().chain(p.redirects.iter()) {
+            for t in tokens(w) {
+                if (t.contains('/') || t == "~") && in_state_or_base(table, &resolve(&t, &dir_str))
+                {
+                    return state_denial();
+                }
             }
         }
 
-        // -- git
-        if b == "git" {
-            if let Some((i, sub)) = git_sub(&w) {
-                let target = {
-                    let mut dir = cwd.to_string();
-                    let mut j = 1;
-                    while j + 1 < w.len() && j < i {
-                        if w[j] == "-C" {
-                            dir = resolve(&w[j + 1], cwd);
-                        }
-                        j += 1;
-                    }
-                    zone_of(table, &dir).kind.to_string()
-                };
-                let in_unit = target == "unit";
-                let rest: Vec<&str> = w[i + 1..].iter().map(|s| s.as_str()).collect();
-                let why = |s: &str| {
-                    deny(
-                        &format!("run `git {sub}`"),
-                        s,
-                        &[
-                            "Use `bf unit land` / `bf checkpoint close` for merges.",
-                            "Ask the human to do it with git.",
-                        ],
-                        "The branch you need is updated by the engine.",
-                    )
-                };
-                if w.iter()
-                    .any(|x| matches!(x.as_str(), "--git-dir" | "--work-tree"))
-                    || w.iter()
-                        .any(|x| x.starts_with("--git-dir=") || x.starts_with("--work-tree="))
-                {
-                    return why(
-                        "pointing git at another repository would hide what is being changed",
-                    );
-                }
-                if w.windows(2).any(|p| {
-                    p[0] == "-c"
-                        && (p[1].starts_with("core.")
-                            || p[1].starts_with("alias.")
-                            || p[1].starts_with("filter."))
-                }) {
-                    return why("git config given on the command line can run programs or change what git sees");
-                }
-                // An unknown subcommand is usually the user's own alias; setting one up is refused below
-                // (`git config alias.*`, `git -c alias.*`), and moving a ref is refused by name.
-                if sub == "config"
-                    && rest.iter().any(|a| {
-                        let a = a.to_lowercase();
-                        a.starts_with("alias.")
-                            || a.starts_with("filter.")
-                            || a.starts_with("core.")
-                            || a.starts_with("include")
-                            || a.starts_with("url.")
-                    })
-                {
-                    return why("setting an alias, a filter or a core option in git config can make git run programs or move branches");
-                }
-                match sub {
-                    "stash" if !in_unit && matches!(rest.first(), Some(&"list") | Some(&"show")) => {}
-                    "push" => return why("nothing is pushed until the human decides; no engine command touches the network"),
-                    "update-ref" | "pull" | "worktree" | "reflog" | "gc" | "replace" | "filter-branch" | "symbolic-ref" => {
-                        return why("branch pointers and working copies are managed by the engine only")
-                    }
-                    "fetch" if rest.iter().any(|a| a.contains(':') || a.starts_with('+')) => {
-                        return why("a fetch with a refspec can move the main branch or a checkpoint branch")
-                    }
-                    "merge" | "rebase" | "cherry-pick" | "revert" | "am" | "stash" | "clean" | "apply"
-                        if !in_unit =>
-                    {
-                        return why("merging, rebasing, stashing or cleaning in the main checkout or a checkpoint working copy can move the main branch or lose records; `bf unit land` and `bf checkpoint close` do the merging, and the human does the rest with git");
-                    }
-                    "reset" if !in_unit && rest.iter().any(|a| matches!(*a, "--hard" | "--merge" | "--keep")) => {
-                        return why("a hard reset in the main checkout or a checkpoint working copy can move the main branch or lose records")
-                    }
-                    "checkout" | "switch" | "restore" | "commit"
-                        if !in_unit
-                            && !rest.contains(&"--") && rest.iter().any(|a| a.starts_with(prefix) || a.contains(&format!(":{main_branch}"))) =>
-                    {
-                        return why("switching to or committing onto the engine's branches would change them behind its back")
-                    }
-                    "branch" => {
-                        let force = rest.iter().any(|x| matches!(*x, "-d" | "-D" | "-f" | "--force" | "-m" | "-M" | "--delete" | "-c" | "-C" | "--move" | "--copy"));
-                        let names = rest.iter().any(|x| *x == main_branch || x.starts_with(prefix));
-                        if force && names {
-                            return why("the main branch and the engine's branches move only through the engine");
+        let mut writes: Vec<(String, String, Reach)> = Vec::new();
+        for t in &p.redirects {
+            if t.starts_with("/dev/") {
+                continue;
+            }
+            writes.push((t.clone(), format!("the redirect `> {t}`"), Reach::Write));
+        }
+        if let Some(i) = crate::shellparse::program_index(&p.words) {
+            let prog = basename(&p.words[i]).to_string();
+            let args = &p.words[i + 1..];
+            if prog != "bf" {
+                // -- leaving the working copy, and the folder later commands run in
+                if matches!(prog.as_str(), "cd" | "pushd" | "popd") {
+                    let target = args
+                        .iter()
+                        .find(|a| !is_flag(a))
+                        .map(|s| s.as_str())
+                        .unwrap_or("~");
+                    if in_worker || in_cp {
+                        let abs = resolve(target, &dir_str);
+                        if under(&abs, &here.base).is_none() {
+                            return deny(
+                                "leave your working copy",
+                                "from a working copy, commands run in that working copy; changing folder would let later commands run as if from the project",
+                                &[&format!("Stay inside {}.", here.base)],
+                                "Every command runs in your working copy.",
+                            );
                         }
                     }
-                    _ => {}
+                    after = if target == "-" || prog == "popd" {
+                        None
+                    } else {
+                        target_abs(target, &start)
+                    };
+                }
+
+                // -- git
+                if prog == "git" {
+                    let d = judge_git(table, &dir_str, &p.words[i..]);
+                    if !d.allow {
+                        return d;
+                    }
+                }
+
+                // -- what it would execute
+                let mut runs: Vec<(String, String)> = Vec::new();
+                if p.words[i].contains('/') {
+                    runs.push((p.words[i].clone(), format!("the program `{}`", p.words[i])));
+                }
+                if matches!(prog.as_str(), "source" | ".") {
+                    if let Some(a) = args.iter().find(|a| !is_flag(a)) {
+                        runs.push((a.clone(), format!("`{prog} {a}`")));
+                    }
+                }
+                let shell = SHELLS.contains(&prog.as_str());
+                let interp = is_interpreter(&prog);
+                if (shell || (interp && prog != "awk" && prog != "gawk" && prog != "mawk"))
+                    && !args.iter().any(|a| is_inline_flag(a))
+                {
+                    if let Some(a) = args.iter().find(|a| !is_flag(a) && a.as_str() != "-") {
+                        runs.push((a.clone(), format!("the script `{a}` given to `{prog}`")));
+                    }
+                }
+                for (t, part) in runs {
+                    if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Run) {
+                        return d;
+                    }
+                }
+
+                // -- text fed to an interpreter: only paths in it count, never words
+                if interp {
+                    for t in interpreter_paths(p, args) {
+                        let part = format!("the code given to `{prog}` (it holds the path `{t}`)");
+                        if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text) {
+                            return d;
+                        }
+                    }
+                }
+
+                // -- what it would write or delete
+                let deleting = matches!(prog.as_str(), "rm" | "rmdir" | "unlink" | "shred")
+                    || (prog == "find" && args.iter().any(|a| a == "-delete"));
+                for t in writer_args(&prog, args) {
+                    let part = format!("`{prog}` with the argument `{t}`");
+                    writes.push((
+                        t,
+                        part,
+                        if deleting {
+                            Reach::Delete
+                        } else {
+                            Reach::Write
+                        },
+                    ));
                 }
             }
         }
 
-        // -- protected paths and the state folder, named by anything but the engine
-        // Interpreters and `find` are left to the harness's own permission checks: the engine cannot
-        // tell a script that reads a record from one that writes it, and refusing the reading is the
-        // worse error.
-        let prog_ro = READ_ONLY.contains(&b)
-            || matches!(
-                b,
-                "python" | "python3" | "node" | "ruby" | "perl" | "tree" | "du"
-            )
-            || (b == "find"
-                && !w.iter().any(|x| {
-                    matches!(
-                        x.as_str(),
-                        "-delete"
-                            | "-exec"
-                            | "-execdir"
-                            | "-ok"
-                            | "-okdir"
-                            | "-fprint"
-                            | "-fprintf"
-                    )
-                }))
-            || (b == "sed" && !w.iter().any(|x| x.starts_with("-i") || x == "-pi"))
-            || (b == "awk" && !segc.contains("system"))
-            || (b == "git"
-                && git_sub(&w)
-                    .map(|(i, s)| {
-                        GIT_READ_ONLY.contains(&s)
-                            || (s == "stash"
-                                && matches!(
-                                    w.get(i + 1).map(|x| x.as_str()),
-                                    Some("list") | Some("show")
-                                ))
-                    })
-                    .unwrap_or(false));
-        // The transcripts are read by the engine to tell the human's words from an agent's: reading
-        // them is fine, writing them is not.
-        if names_transcripts(table, &segc, cwd) && (!prog_ro || real_redirect(&segc)) {
-            return transcript_denial();
-        }
-        // A command that is one interpreter call (`python3 -c "a; b"`) is judged as a whole: the text
-        // inside its quotes is not a list of shell commands.
-        let whole_interpreter = words(&cleaned)
-            .first()
-            .map(|f| matches!(basename(f), "python" | "python3" | "node" | "ruby" | "perl"))
-            .unwrap_or(false)
-            && !real_redirect(&cleaned);
-        if !whole_interpreter
-            && names_protected(table, &segc, cwd)
-            && (!prog_ro || real_redirect(&segc))
-        {
-            {
-                return deny(
-                    "change or script a protected path from the shell",
-                    "factory records, the policy, gates, the guard table and the hook settings are changed by the engine and the human only; a script, an interpreter or a redirect that names them is refused",
-                    &["Use an engine command instead: `bf record put`, `bf report`, `bf evidence run`.", "Reading a record with `cat` or `ls` is fine."],
-                    "The shell command no longer names `factory/`, `.bf/` or the hook settings.",
-                );
-            }
-        }
-
-        // -- writes from a working copy stay in it
-        if in_worker || in_cp {
-            let root = table["root"].as_str().unwrap_or("");
-            for t in write_targets(&segc, &w) {
-                let abs = resolve(&t, cwd);
-                let inside_root =
-                    under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
-                let own = under(&abs, &here.base).is_some();
-                if (in_cp && inside_root) || (in_worker && inside_root && !own) {
-                    return deny(
-                        "write outside your working copy",
-                        &format!("you work in {}; `{t}` is somewhere else in the project", here.base),
-                        &["Write only inside your working copy, in the files your unit may touch."],
-                        "Every path you write is inside your working copy.",
-                    );
+        for (t, part, reach) in writes {
+            match judge_target(table, &t, &start, &part, reach) {
+                Err(d) => return d,
+                Ok(Some(abs)) => {
+                    // -- writes from a working copy stay in it
+                    let inside_root =
+                        under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
+                    let own = under(&abs, &here.base).is_some();
+                    if (in_cp && inside_root) || (in_worker && inside_root && !own) {
+                        return deny(
+                            "write outside your working copy",
+                            &format!(
+                                "{part} would write {abs}, which is somewhere else in the project; you work in {}",
+                                here.base
+                            ),
+                            &["Write only inside your working copy, in the files your unit may touch."],
+                            "Every path you write is inside your working copy.",
+                        );
+                    }
+                    // -- inside the unit's own copy, the unit's file scope governs, as for any write tool
+                    if in_worker && own {
+                        let d = check_write(table, cwd, &abs);
+                        if !d.allow {
+                            return d;
+                        }
+                    }
                 }
+                Ok(None) => {}
             }
         }
+        dirs.insert(p.scope, after);
     }
     allow()
 }
@@ -1206,9 +1423,21 @@ pub fn render(d: &Decision, explicit_allow: bool) -> String {
     .to_string()
 }
 
+/// The absolute paths a command names as words, redirect targets or the paths in code given to an
+/// interpreter: the places whose project may hold the table that judges the call.
 fn absolute_words(cmd: &str) -> Vec<String> {
-    tokens(cmd)
-        .into_iter()
+    let mut out: Vec<String> = Vec::new();
+    for p in crate::shellparse::commands(cmd) {
+        for w in p.words.iter().chain(p.redirects.iter()) {
+            out.extend(tokens(w));
+        }
+        if let Some(i) = crate::shellparse::program_index(&p.words) {
+            if is_interpreter(basename(&p.words[i])) {
+                out.extend(interpreter_paths(&p, &p.words[i + 1..]));
+            }
+        }
+    }
+    out.into_iter()
         .filter(|t| t.starts_with('/') || t.starts_with("~/"))
         .take(8)
         .collect()
@@ -1255,7 +1484,7 @@ pub fn run_hook(stdin: &str, process_cwd: &Path, root: Option<&str>) -> String {
             }
         }
         if let Some(c) = ti["command"].as_str() {
-            for a in absolute_words(&clean(c)) {
+            for a in absolute_words(c) {
                 let abs = resolve(&a, &cwd.to_string_lossy());
                 starts.push(
                     Path::new(&abs)

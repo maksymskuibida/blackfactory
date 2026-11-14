@@ -210,6 +210,37 @@ fn t12_the_guard_hook_is_fast() {
 }
 
 #[test]
+fn t4_the_guard_stays_fast_on_a_long_heredoc_and_a_long_command() {
+    let fx = Fx::new();
+    fx.tiny();
+    // A script body of about 200 KB on the standard input of an interpreter, and a long chain.
+    let body = "x = 'factory/records .bf/guard.json'\n".repeat(6000);
+    let chain = (0..400)
+        .map(|i| format!("echo {i} > out{i}.txt"))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    for cmd in [
+        format!("python3 - <<'EOF'\n{body}EOF"),
+        format!("cat > a.txt <<'EOF'\n{body}EOF"),
+        chain,
+    ] {
+        let payload = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": fx.root.to_string_lossy()}).to_string();
+        let mut v = Vec::new();
+        for _ in 0..20 {
+            let t = Instant::now();
+            let o = fx.bf_stdin(&fx.root, &["guard"], &payload);
+            v.push(t.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(o.code, 0);
+            assert!(!o.stdout.contains("deny"), "{}", o.stdout);
+        }
+        let (m, p99) = stats(&mut v);
+        println!("  T-4 long command  median {m:>6.1} ms   p99 {p99:>6.1} ms");
+        assert!(m < 100.0, "guard median {m:.1} ms on a long command");
+        assert!(p99 < 400.0, "guard p99 {p99:.1} ms on a long command");
+    }
+}
+
+#[test]
 fn t12_the_guard_needs_only_stdin_and_one_file() {
     // A directory with nothing but .bf/guard.json: no git repository, no factory folder.
     let tmp = tempfile::tempdir().unwrap();
