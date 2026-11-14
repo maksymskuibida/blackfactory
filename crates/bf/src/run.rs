@@ -1581,7 +1581,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     if gitx::has_uncommitted(&wt) {
-        gitx::must(&wt, &["add", "-A"])?;
+        gitx::add_all_without_junk(&wt)?;
         gitx::must(
             &wt,
             &["commit", "-q", "-m", &format!("{unit}: {}", s(u, "title"))],
