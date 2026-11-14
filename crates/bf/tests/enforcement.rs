@@ -517,28 +517,16 @@ fn an_approved_amendment_cannot_be_withdrawn() {
 }
 
 #[test]
-fn a_later_amendment_over_the_same_records_replaces_the_earlier_one() {
+fn a_second_amendment_is_refused_while_one_is_open() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["amend", "open", "R-2"]);
-    fx.must(&["amend", "open", "R-1"]);
-    // Another record: no overlap, the earlier ones stay.
-    let o = fx.must(&["amend", "open", "R-2", "--json"]).json();
-    assert_eq!(o["withdrew"], serde_json::json!(["A-1"]), "{o}");
-    assert!(o["note"].as_str().unwrap().contains("A-1 withdrawn"), "{o}");
-    assert_eq!(amendment_status(&fx, "A-1"), "withdrawn");
-    assert_eq!(amendment_status(&fx, "A-2"), "open");
-    assert_eq!(amendment_status(&fx, "A-3"), "open");
-    let st = fx.must(&["status"]).stdout;
+    let o = fx.refused(&["amend", "open", "R-1"]);
+    assert!(o.stderr.contains("A-1"), "{}", o.stderr);
     assert!(
-        st.contains("amendment A-1 withdrawn") && st.contains("amendment A-3 open"),
-        "{st}"
+        o.stderr.contains("revise") && o.stderr.contains("withdraw"),
+        "{}",
+        o.stderr
     );
-    // The run page lists them as well.
-    fx.start_test_run();
-    let page = fx.must(&["view", "run"]).json().to_string();
-    assert!(
-        page.contains("withdrawn") && page.contains("replaced by A-3"),
-        "{page}"
-    );
+    assert_eq!(amendment_status(&fx, "A-1"), "open");
 }
