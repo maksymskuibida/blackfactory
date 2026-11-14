@@ -642,6 +642,12 @@ const BF_KNOWN: &[&str] = &[
     "help",
     "human-turn",
     "roles",
+    "checks",
+    "progress",
+    "scan",
+    "legal",
+    "preset",
+    "uiux",
 ];
 
 /// What a working copy may run: (subcommand, the second words allowed; empty = any). A unit's
@@ -810,7 +816,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     return deny(
                         &format!("run `bf {sub} {second}` from a working copy").replace("  ", " "),
                         if in_worker {
-                            "a worker may report, file a finding, run evidence and read the status; nothing else"
+                            "a worker may report, file a finding, run evidence and read the status, and put a threat or a legal record with the token of a role that writes it; nothing else"
                         } else {
                             "a checkpoint's working copy is for running its checks and reading state"
                         },
