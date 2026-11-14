@@ -98,6 +98,16 @@ fn proven_as_catalogued(c: &NamedCheck, rec: &Value) -> bool {
     s(rec, "how") == c.proof.name()
 }
 
+pub fn latest_run_id(st: &State) -> String {
+    st.runs.last().map(|r| r.id.clone()).unwrap_or_default()
+}
+
+/// Whether a closed checkpoint is judged by the settings it closed under: once a later run is the
+/// latest. In the run it closed in, a change of the settings still counts.
+pub fn judged_by_close(st: &State, cl: &crate::events::Closed) -> bool {
+    cl.recorded && cl.run != latest_run_id(st)
+}
+
 /// Whether a check record names a named check that the human switched off (for the last run, which
 /// judges the close). Such a record is not demanded.
 pub fn is_off(st: &State, rec: &Value) -> bool {
@@ -154,12 +164,26 @@ pub fn off_unproven(pl: &Plan, st: &State, k: &Value) -> Vec<(String, Vec<String
 
 /// `off_unproven` for every checkpoint of the plan, as a summary value.
 pub fn off_unproven_summary(pl: &Plan, st: &State) -> Vec<Value> {
+    // A checkpoint closed in an earlier run is judged by the waiver its close recorded (as the ledger
+    // does), and the entry names that run.
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
+    let latest = latest_run_id(st);
     for k in &pl.checkpoints {
-        for (id, names) in off_unproven(pl, st, k) {
+        let entries: Vec<(String, Vec<String>, String)> = match st.closed.get(s(k, "id")) {
+            Some(cl) if judged_by_close(st, cl) => cl
+                .waived
+                .iter()
+                .map(|(i, n)| (i.clone(), n.clone(), cl.run.clone()))
+                .collect(),
+            _ => off_unproven(pl, st, k)
+                .into_iter()
+                .map(|(i, n)| (i, n, latest.clone()))
+                .collect(),
+        };
+        for (id, names, run) in entries {
             if seen.insert(id.clone()) {
-                out.push(json!({"id": id, "checks": names}));
+                out.push(json!({"id": id, "checks": names, "run": run}));
             }
         }
     }
@@ -174,10 +198,12 @@ pub fn unproven_text(list: &[Value]) -> String {
                 .as_array()
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
                 .unwrap_or_default();
+            let run = o["run"].as_str().filter(|r| !r.is_empty());
             format!(
-                "{} (not proven: {} off)",
+                "{} (not proven: {} off{})",
                 o["id"].as_str().unwrap_or(""),
-                names.join(", ")
+                names.join(", "),
+                run.map(|r| format!(" in {r}")).unwrap_or_default()
             )
         })
         .collect::<Vec<_>>()
@@ -409,6 +435,10 @@ fn built_proof(pl: &Plan, receipts: &[Receipt], st: &State, name: &str) -> bool 
     let Some(cl) = st.closed.get(kid) else {
         return false;
     };
+    // A check that was switched off when the checkpoint closed is judged by that close.
+    if judged_by_close(st, cl) && cl.off.iter().any(|n| n == name) {
+        return true;
+    }
     records_naming(pl, name)
         .iter()
         .filter(|c| listed_by_last(pl, c))

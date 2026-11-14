@@ -1991,17 +1991,23 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             }
         }
     }
+    let unproven_off: Vec<Value> = crate::enforce::off_unproven(&pl, &st, kr)
+        .into_iter()
+        .map(|(id, c)| json!({"id": id, "checks": c}))
+        .collect();
     if !was_closed || merged {
+        // The waiver is fixed here: the ledger reads it from the log, not from a later run's settings.
+        let off_names: Vec<String> = crate::checks::off_closing(&st).keys().cloned().collect();
         events::append(
             p,
             "checkpoint.close",
-            json!({"checkpoint": k, "merged": merged, "hash": content}),
+            json!({"checkpoint": k, "merged": merged, "hash": content, "unproven_off": unproven_off, "off_names": off_names, "run": crate::enforce::latest_run_id(&st)}),
         )?;
         p.write_guard()?;
     }
     Ok(
         json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st),
-            "unproven_off": crate::enforce::off_unproven(&pl, &st, kr).into_iter().map(|(id, c)| json!({"id": id, "checks": c})).collect::<Vec<_>>()}),
+            "unproven_off": unproven_off}),
     )
 }
 

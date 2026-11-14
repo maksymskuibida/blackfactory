@@ -466,6 +466,15 @@ pub struct Closed {
     pub seq: u64,
     pub hash: String,
     pub merged: bool,
+    /// Whether the close event recorded which checks were off and which IDs they left unproven.
+    /// A close from before that was recorded is judged by the settings of the latest run.
+    pub recorded: bool,
+    /// The run the checkpoint closed in.
+    pub run: String,
+    /// The names of the checks that were switched off when the checkpoint closed.
+    pub off: Vec<String>,
+    /// The IDs left unproven at the close because every check that proves them was off, with those names.
+    pub waived: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Default)]
@@ -1105,6 +1114,23 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if e.seq == 0 {
                     e.seq = seq;
                     e.hash = sv("hash");
+                    if let Some(un) = ev.get("unproven_off").and_then(|v| v.as_array()) {
+                        e.recorded = true;
+                        e.run = sv("run");
+                        e.off = crate::store::str_list(ev, "off_names");
+                        for o in un {
+                            let id = o["id"].as_str().unwrap_or("").to_string();
+                            let names = o["checks"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            e.waived.insert(id, names);
+                        }
+                    }
                 }
                 e.merged = e.merged || merged;
             }

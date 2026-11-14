@@ -1835,7 +1835,7 @@ fn cmd_ledger(args: &Args) -> R<()> {
             let unproven: Vec<Value> = rows
                 .iter()
                 .filter(|r| !r.off.is_empty())
-                .map(|r| json!({"id": r.id, "checks": r.off}))
+                .map(|r| json!({"id": r.id, "checks": r.off, "run": r.off_runs.join(", ")}))
                 .collect();
             out(
                 args,
