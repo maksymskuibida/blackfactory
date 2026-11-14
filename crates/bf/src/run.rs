@@ -59,6 +59,7 @@ pub fn run_start(p: &Project) -> R<Value> {
         "run.start",
         json!({"run": id, "grant": grant, "checks_off": st.checks_default}),
     )?;
+    drop_role_tokens(p)?;
     p.write_guard()?;
     Ok(json!({"run": id, "test_mode": grant.is_some(), "checks_off": st.checks_default}))
 }
@@ -69,6 +70,7 @@ pub fn run_stop(p: &Project) -> R<Value> {
     let pl = plan::load(p)?;
     let off = crate::enforce::refuse_if_unproven_for(p, &pl, "stop the run", "bf run stop")?;
     events::append(p, "run.stop", json!({"run": id, "checks_off": off}))?;
+    drop_role_tokens(p)?;
     p.write_guard()?;
     Ok(json!({"run": id, "stopped": true}))
 }
@@ -621,6 +623,63 @@ pub fn next(p: &Project) -> R<Value> {
     Ok(v)
 }
 
+/// One of the five new roles reports with its own token; the unit's state does not move. The design
+/// stage (`design`) needs no run and no plan; a unit or a checkpoint needs a run. A role reports only
+/// on a subject at its stage.
+fn role_report(
+    p: &Project,
+    subject: &str,
+    result: &str,
+    r: &str,
+    note: &str,
+    cost: f64,
+    token: Option<&str>,
+) -> R<Value> {
+    let st = events::require_chain(p)?;
+    if subject != crate::roles::DESIGN {
+        need_run(&st)?;
+    }
+    if !["built", "blocked"].contains(&result) {
+        return Err(refuse(
+            format!("report {result} as {r}"),
+            "a new role reports `built` (done) or `blocked`",
+            &["Use --result built or --result blocked; findings and threats are filed with `bf record put`."],
+            "The command prints the unit's state.",
+        ));
+    }
+    crate::roles::check_subject(p, subject, r)?;
+    if p.policy.roles.tokens {
+        let key = check_token(p, subject, r, token)?;
+        spend_token(p, &key)?;
+    }
+    events::append(
+        p,
+        "unit.role-report",
+        json!({"unit": subject, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
+    )?;
+    let state = if subject == crate::roles::DESIGN {
+        String::new()
+    } else {
+        st.unit_state(subject).to_string()
+    };
+    Ok(json!({"unit": subject, "result": result, "state": state, "role": r}))
+}
+
+/// A role's token ends with the run it was issued in: starting or stopping a run drops every token
+/// of the new roles (a design-stage token is dropped when the first run starts).
+fn drop_role_tokens(p: &Project) -> R<()> {
+    let mut v = read_tokens(p);
+    if let Some(o) = v.as_object_mut() {
+        o.retain(|k, _| {
+            !k.split_once(':')
+                .map(|(_, r)| crate::roles::is_new_role(r))
+                .unwrap_or(false)
+        });
+    }
+    util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     p: &Project,
@@ -632,6 +691,9 @@ pub fn report(
     cost: f64,
     token: Option<&str>,
 ) -> R<Value> {
+    if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
+        return role_report(p, unit, result, r, note, cost, token);
+    }
     if unit.starts_with("K-") {
         return sync_report(p, unit, result, role, note, findings, token);
     }
@@ -655,27 +717,6 @@ pub fn report(
         ));
     }
     let cur = st.unit_state(unit).to_string();
-    // One of the five new roles reports with its own token; the unit's state does not move.
-    if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
-        if !["built", "blocked"].contains(&result) {
-            return Err(refuse(
-                format!("report {result} as {r}"),
-                "a new role reports `built` (done) or `blocked`",
-                &["Use --result built or --result blocked; findings and threats are filed with `bf record put`."],
-                "The command prints the unit's state.",
-            ));
-        }
-        if p.policy.roles.tokens {
-            let key = check_token(p, unit, r, token)?;
-            spend_token(p, &key)?;
-        }
-        events::append(
-            p,
-            "unit.role-report",
-            json!({"unit": unit, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
-        )?;
-        return Ok(json!({"unit": unit, "result": result, "state": cur, "role": r}));
-    }
     let expected_role = if cur == "review" {
         "reviewer"
     } else {

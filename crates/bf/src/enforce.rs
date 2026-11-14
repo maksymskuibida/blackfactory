@@ -147,12 +147,24 @@ pub fn plan_problems_for(pl: &Plan, st: &State, req: &[&'static NamedCheck]) -> 
     out
 }
 
-fn design_receipt(pl: &Plan, receipts: &[Receipt], name: &str) -> bool {
-    records_naming(pl, name).iter().any(|c| {
-        receipts
-            .iter()
-            .any(|r| r.check() == s(c, "id") && r.passes())
-    })
+/// A passing receipt for a design-stage check. The UI/UX verification counts only for the screens it
+/// judged: the receipt carries a hash of the screen records, and it must match them now.
+fn design_receipt(p: &Project, pl: &Plan, receipts: &[Receipt], name: &str) -> R<bool> {
+    let screens = if name == "design-uiux-verification" {
+        Some(evidence::screens_hash(p)?)
+    } else {
+        None
+    };
+    Ok(records_naming(pl, name).iter().any(|c| {
+        receipts.iter().any(|r| {
+            r.check() == s(c, "id")
+                && r.passes()
+                && screens
+                    .as_ref()
+                    .map(|h| !h.is_empty() && s(&r.v, "screens_hash") == *h)
+                    .unwrap_or(true)
+        })
+    }))
 }
 
 fn count(p: &Project, kind: &str) -> R<usize> {
@@ -168,7 +180,7 @@ pub fn design_blocker(p: &Project, st: &State, kind: &str) -> R<()> {
         "ui" if on("design-uiux-verification") => {
             let pl = plan::load(p)?;
             let receipts = evidence::load_receipts(p)?;
-            if !design_receipt(&pl, &receipts, "design-uiux-verification") {
+            if !design_receipt(p, &pl, &receipts, "design-uiux-verification")? {
                 gaps.push("the design-stage UI/UX verification has no receipt: put a check record with `named = \"design-uiux-verification\"` and `how = \"agent\"`, have the screens judged, and attach the result with `bf evidence attach <X> <file> --outcome met --says \"<what was looked at>\"`".into());
             }
         }
@@ -256,7 +268,7 @@ pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) ->
     for c in required_closing(&st) {
         let ok = match c.stage {
             Stage::Design => match c.name {
-                "design-uiux-verification" => design_receipt(pl, &receipts, c.name),
+                "design-uiux-verification" => design_receipt(p, pl, &receipts, c.name)?,
                 "threat-model" => count(p, "threat")? > 0,
                 "markets-statement" => count(p, "markets")? > 0,
                 _ => true,
