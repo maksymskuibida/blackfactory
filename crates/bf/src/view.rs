@@ -883,10 +883,25 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             fact("Spent", format!("{:.2}", st.cost), &p.policy.budget.unit),
         ],
     );
-    v["sections"] = json!([
-        {"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows},
-        {"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}
-    ]);
+    let check_rows = |off: &std::collections::BTreeMap<String, String>| -> Vec<Value> {
+        crate::checks::all().iter().map(|c| {
+            let why = off.get(c.name);
+            let on = c.required && why.is_none();
+            json!({"id": c.name, "title": c.name,
+                "handled": {"tone": if on { "ok" } else { "wait" }, "text": if on { "required" } else { "off" }},
+                "body": [text(&format!("Family: {}. Stage: {}. Proof: {}.{}", c.family.name(), c.stage.name(), c.proof.name(),
+                    why.map(|r| format!(" Switched off: {r}")).unwrap_or_default()))]})
+        }).collect()
+    };
+    let mut secs = vec![
+        json!({"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows}),
+        json!({"id": "checks-default", "title": "Checks: project default", "hint": "Each switched-off check shows its reason", "open": false, "blocks": [], "rows": check_rows(&st.checks_default)}),
+    ];
+    if let Some(r) = run {
+        secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
+    }
+    secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
+    v["sections"] = json!(secs);
     Ok(v)
 }
 
