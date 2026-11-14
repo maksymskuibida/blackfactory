@@ -116,6 +116,49 @@ pub fn doctor(p: &Project) -> R<Value> {
             .clone()
             .unwrap_or_else(|| "the log matches the state head".into()),
     );
+    let mirror_path = p.factory().join("checks.json");
+    let mirror = std::fs::read_to_string(&mirror_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let (mirror_ok, mirror_note) = match mirror {
+        None if !mirror_path.exists() => {
+            let decided = st
+                .checks_proposals
+                .iter()
+                .any(|x| x.used && (x.scope == "default" || x.scope == "both"));
+            if decided || !st.checks_default.is_empty() {
+                (false, "the log has a project default for the checks but the mirror file is missing: write it again from the log with `bf checks mirror`".to_string())
+            } else {
+                (
+                    true,
+                    "no check settings are recorded and no mirror file exists".to_string(),
+                )
+            }
+        }
+        None => (
+            false,
+            "the mirror file of the check default cannot be read as JSON".to_string(),
+        ),
+        Some(v) => {
+            let file: std::collections::BTreeMap<String, String> = v["off"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, r)| (k.clone(), r.as_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if file == st.checks_default {
+                (
+                    true,
+                    "the mirror file matches the project default in the log".to_string(),
+                )
+            } else {
+                (false, "the mirror file of the check default differs from the project default in the log: the log is the truth; write the file again from the log with `bf checks mirror`".to_string())
+            }
+        }
+    };
+    add("check settings", mirror_ok, mirror_note);
     let drift = crate::gates::drift(p, &st)?;
     add(
         "frozen records",
@@ -174,6 +217,50 @@ pub fn doctor(p: &Project) -> R<Value> {
         "plan",
         pl.problems.is_empty(),
         format!("{} problem(s)", pl.problems.len()),
+    );
+    // A checkpoint's working copy with changes nobody committed: a landing that stopped half way.
+    let mut dirty: Vec<String> = Vec::new();
+    for c in &pl.checkpoints {
+        let k = c["id"].as_str().unwrap_or("");
+        if k.is_empty() || st.closed.contains_key(k) {
+            continue;
+        }
+        if st
+            .sync_open
+            .as_ref()
+            .map(|s| s.checkpoint == k)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let top = p.work_dir().join(k);
+        let mut wcs = vec![top.clone()];
+        if let Ok(rd) = std::fs::read_dir(&top) {
+            wcs.extend(rd.flatten().map(|e| e.path()));
+        }
+        for wc in wcs.into_iter().filter(|w| w.join(".git").exists()) {
+            let o = crate::gitx::run(&wc, &["status", "--porcelain", "--untracked-files=no"], &[]);
+            if let Ok(o) = o {
+                if o.ok && !o.stdout.is_empty() {
+                    dirty.push(format!(
+                        "{k}: {} change(s) not committed",
+                        o.stdout.lines().count()
+                    ));
+                }
+            }
+        }
+    }
+    add(
+        "checkpoint working copies",
+        dirty.is_empty(),
+        if dirty.is_empty() {
+            "every open checkpoint's working copy is clean".to_string()
+        } else {
+            format!(
+                "{}; a landing or sync stopped half way: put the working copy back with `git reset --hard` and `git merge --abort` in it (the human's step), then run the command again",
+                dirty.join("; ")
+            )
+        },
     );
     Ok(json!({"ok": ok, "checks": checks}))
 }

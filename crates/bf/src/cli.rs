@@ -2,7 +2,9 @@
 
 use crate::refusal::{err, refuse, Fail, R};
 use crate::store::{default_policy_text, s, Project};
-use crate::{doctor, events, evidence, gates, gitx, guard, ledger, plan, run, schema, util, view};
+use crate::{
+    doctor, enforce, events, evidence, gates, gitx, guard, ledger, plan, run, schema, util, view,
+};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -32,6 +34,7 @@ const VALUE_FLAGS: &[&str] = &[
     "context",
     "options",
     "reason",
+    "scope",
     "quote",
     "token",
     "root",
@@ -352,6 +355,7 @@ fn dispatch(args: &Args) -> R<()> {
             Ok(())
         }
         "record" => cmd_record(args),
+        "checks" | "scan" | "legal" | "preset" | "uiux" | "roles" => cmd_group(args, cmd),
         "ledger" => cmd_ledger(args),
         "plan" => {
             let p = project(args)?;
@@ -396,7 +400,7 @@ fn dispatch(args: &Args) -> R<()> {
                 }
             };
             out(args, &v, || {
-                format!(
+                let mut t = format!(
                     "run {} {}",
                     v["run"].as_str().unwrap_or(""),
                     if v["test_mode"] == true {
@@ -404,7 +408,15 @@ fn dispatch(args: &Args) -> R<()> {
                     } else {
                         ""
                     }
-                )
+                );
+                let un: Vec<Value> = v["unproven_off"].as_array().cloned().unwrap_or_default();
+                if !un.is_empty() {
+                    t.push_str(&format!(
+                        "\nnot proven, their checks are off: {}",
+                        enforce::unproven_text(&un)
+                    ));
+                }
+                t
             });
             Ok(())
         }
@@ -412,6 +424,12 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = run::status(&p)?;
             out(args, &v, || status_text(&v));
+            Ok(())
+        }
+        "progress" => {
+            let p = project(args)?;
+            let l = crate::statusline::line(&p)?;
+            out(args, &json!({"line": l}), || l.clone());
             Ok(())
         }
         "log" => cmd_log(args),
@@ -582,14 +600,22 @@ fn dispatch(args: &Args) -> R<()> {
             let k = args.pos_at(2, "a checkpoint ID")?;
             let v = run::checkpoint_close(&p, k, args.has("merge"))?;
             out(args, &v, || {
-                format!(
+                let mut t = format!(
                     "{k} closed{}",
                     if v["merged"] == true {
                         " and merged onto the main branch"
                     } else {
                         ""
                     }
-                )
+                );
+                let un: Vec<Value> = v["unproven_off"].as_array().cloned().unwrap_or_default();
+                if !un.is_empty() {
+                    t.push_str(&format!(
+                        "\nnot proven, their checks are off: {}",
+                        enforce::unproven_text(&un)
+                    ));
+                }
+                t
             });
             Ok(())
         }
@@ -752,8 +778,23 @@ fn dispatch(args: &Args) -> R<()> {
                 recs.push(rec);
             }
             // Validate everything first, then write, so a bad list writes nothing.
-            for rec in &recs {
-                p.write_record(rec)?;
+            // An ID the engine numbered is taken with `create_new` and a retry on the next number, so
+            // questions asked at the same moment each keep their own file.
+            for (i, rec) in recs.iter_mut().enumerate() {
+                if items[i].get("id").is_some() {
+                    p.write_record(rec)?;
+                } else {
+                    let mut tries = 0;
+                    while !p.write_record_new(rec)? {
+                        tries += 1;
+                        if tries > 1000 {
+                            return Err(crate::refusal::err("cannot find a free question number"));
+                        }
+                        let n = schema::parse_id(s(rec, "id")).map(|x| x.1).unwrap_or(0);
+                        let next = next_q(&p, &[]).max(n + 1);
+                        rec["id"] = json!(format!("{}-{}", kind.prefix, next));
+                    }
+                }
                 events::append(&p, "question.asked", json!({"question": rec["id"]}))?;
                 made.push(rec.clone());
             }
@@ -881,9 +922,15 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = match args.pos.get(1).map(|x| x.as_str()) {
                 Some("open") => gates::amend_open(&p, &args.pos[2..])?,
+                Some("revise") => gates::amend_revise(&p, &args.pos[2..])?,
                 Some("narrow") => gates::amend_narrow(
                     &p,
                     &read_data_in(&p, args.need("file", "a narrowing file")?)?,
+                )?,
+                Some("withdraw") => gates::amend_withdraw(
+                    &p,
+                    args.pos.get(2).map(|x| x.as_str()),
+                    args.flag("reason").unwrap_or(""),
                 )?,
                 Some("approve") => gates::amend_approve(
                     &p,
@@ -894,7 +941,7 @@ fn dispatch(args: &Args) -> R<()> {
                     return Err(refuse(
                         "run `bf amend`",
                         "unknown subcommand",
-                        &["Use `bf amend open <ID>...`, `narrow --file <f>` or `approve`."],
+                        &["Use `bf amend open <ID>...`, `revise <ID>...`, `narrow --file <f>`, `approve` or `withdraw <A-n>`."],
                         "The command prints the amendment.",
                     ))
                 }
@@ -1164,6 +1211,13 @@ fn status_text(v: &Value) -> String {
             "  gate {} {}\n",
             g["id"].as_str().unwrap_or(""),
             g["status"].as_str().unwrap_or("")
+        ));
+    }
+    for a in v["amendments"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "  amendment {} {}\n",
+            a["id"].as_str().unwrap_or(""),
+            a["status"].as_str().unwrap_or("")
         ));
     }
     t
@@ -1588,20 +1642,39 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let _lock = lock_records(p)?;
     // A worker's only record is a new, open finding for a unit that is in review. Marking a finding
     // fixed or accepted is not a worker's to do.
-    if real_zone(p).is_some() {
-        let st = events::replay(p)?;
-        let unit = s(&rec, "unit").to_string();
-        let outcome = s(&rec, "outcome").to_string();
-        if kind.name != "finding"
-            || st.unit_state(&unit) != "review"
-            || !(outcome.is_empty() || outcome == "open")
-        {
-            return Err(refuse(
+    if let Some((_, zone_id)) = real_zone(p) {
+        if matches!(kind.name, "threat" | "legal") {
+            // A threat or a legal record is put only with the token of a role that writes that kind.
+            let held = crate::roles::writers_of(kind.name)
+                .iter()
+                .any(|r| run::holds_token(p, &format!("{zone_id}:{r}"), args.flag("token")));
+            if !held {
+                return Err(refuse(
+                    format!("put a {} from a working copy", kind.name),
+                    format!(
+                        "a {} is put only with the token of a role that writes it ({}); none, or another role's, was given",
+                        kind.name,
+                        crate::roles::writers_of(kind.name).join(" or ")
+                    ),
+                    &["Put it with `--token <token>`; the conductor issues the token with `bf roles token <unit> <role>`."],
+                    format!("`bf record get` shows the {}.", kind.name),
+                ));
+            }
+        } else {
+            let st = events::replay(p)?;
+            let unit = s(&rec, "unit").to_string();
+            let outcome = s(&rec, "outcome").to_string();
+            if kind.name != "finding"
+                || st.unit_state(&unit) != "review"
+                || !(outcome.is_empty() || outcome == "open")
+            {
+                return Err(refuse(
                 format!("put a {} from a working copy", kind.name),
                 "a worker may file a new, open finding for a unit that is in review; every other record belongs to the planner and the human, and fixed and accepted are set by the engine and the human",
                 &["Report with `bf report <unit> --result findings --role reviewer` while the unit is in review.", "To accept a finding, ask the human; they put it from the main checkout."],
                 "`bf record get` shows the finding as open.",
             ));
+            }
         }
     }
     if rec.get("kind").is_none() {
@@ -1616,6 +1689,70 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
+    let mut accepted_by: Option<(u64, String)> = None;
+    // A legal record is accepted by the human alone: not by a role that writes it, and from the main
+    // checkout only with the words of a human message.
+    if kind.name == "legal"
+        && s(&rec, "outcome") == "accepted"
+        && old.as_ref().map(|o| s(o, "outcome")) != Some("accepted")
+    {
+        if real_zone(p).is_some() {
+            return Err(refuse(
+                format!("accept the legal record {id} from a working copy"),
+                "accepting a legal finding is the human's alone; no role may set the outcome accepted",
+                &["Leave the outcome open or fixed and report it; the human accepts it."],
+                format!("`bf record get {id}` shows the outcome."),
+            ));
+        }
+        // The human accepts a record that exists: a new record is never born accepted, and the step
+        // that accepts changes nothing but the outcome.
+        let Some(stored) = old.as_ref() else {
+            return Err(refuse(
+                format!("create the legal record {id} as accepted"),
+                "a record that did not exist cannot have been seen and accepted by the human",
+                &["Put the record with the outcome open, show it to the human, and let them accept it."],
+                format!("`bf record get {id}` shows the outcome open."),
+            ));
+        };
+        let mut same = rec.clone();
+        same["outcome"] = stored.get("outcome").cloned().unwrap_or(Value::Null);
+        if &same != stored {
+            return Err(refuse(
+                format!("accept the legal record {id} and change it in the same step"),
+                "the human accepts the record as it is stored; this file also changes its content",
+                &[
+                    "Put the changed record first, with the outcome as it is now.",
+                    "Show it to the human; after their message, put the same content with the outcome accepted.",
+                ],
+                format!("`bf record get {id}` shows the content the human accepted."),
+            ));
+        }
+        // Only a message written after the record's latest change counts: the human accepts what they
+        // saw, not what it was before it was changed.
+        let changed_at = old
+            .as_ref()
+            .and_then(|_| p.record_path(&id).ok())
+            .and_then(|f| fs::metadata(f).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // A turn is stamped to the whole second; one at the same instant as the change, or in the
+        // same second before it, counts as before the change.
+        let after = st
+            .turns
+            .iter()
+            .filter(|t| util::parse_rfc3339(&t.at) * 1000 <= changed_at)
+            .map(|t| t.seq)
+            .max()
+            .unwrap_or(0);
+        accepted_by = Some(events::pick_turn(
+            &st,
+            after,
+            events::Decide::Approve,
+            args.flag("quote").unwrap_or(""),
+        )?);
+    }
     // Once a stage's gate is approved, its records change, and new ones appear, only by amendment.
     if let Some(stage) = gates::stage_of_kind(kind.name) {
         let changes = old.as_ref().map(|o| o != &rec).unwrap_or(true);
@@ -1645,15 +1782,45 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             ));
         }
     }
+    // An accepted legal record that changes is no longer what the human accepted: it goes back to open.
+    let mut reset_open = false;
+    if kind.name == "legal" && accepted_by.is_none() && s(&rec, "outcome") == "accepted" {
+        if let Some(old) = &old {
+            if s(old, "outcome") == "accepted" && old != &rec {
+                rec["outcome"] = json!("open");
+                reset_open = true;
+            }
+        }
+    }
     p.write_record(&rec)?;
     p.write_guard()?;
-    out(args, &json!({"put": id, "assigned": assigned}), || {
-        if assigned {
-            format!("put {id} (the file had no id, so the engine assigned {id}; use this id when you refer to the record)")
-        } else {
-            format!("put {id}")
-        }
-    });
+    if let Some((turn, message)) = accepted_by {
+        // The acceptance leaves a trace: the record, the human's message and the words taken from it.
+        // The message is used up.
+        events::append(
+            p,
+            "legal.accept",
+            json!({"record": id, "turn": turn, "message": message,
+                "quote": args.flag("quote").unwrap_or("").trim()}),
+        )?;
+    }
+    out(
+        args,
+        &json!({"put": id, "assigned": assigned, "reset_to_open": reset_open}),
+        || {
+            let mut t = if assigned {
+                format!("put {id} (the file had no id, so the engine assigned {id}; use this id when you refer to the record)")
+            } else {
+                format!("put {id}")
+            };
+            if reset_open {
+                t.push_str(&format!(
+                    "\n{id} was accepted and its content changed, so its outcome is back to open; the human must accept it again"
+                ));
+            }
+            t
+        },
+    );
     Ok(())
 }
 
@@ -1675,9 +1842,34 @@ fn cmd_ledger(args: &Args) -> R<()> {
                 std::process::exit(2);
             }
             ledger::refuse_if_gaps(&rows, plan_only)?;
-            out(args, &json!({"ok": true, "parts": rows.len()}), || {
-                format!("ledger closed: {} designed parts linked", rows.len())
-            });
+            let off = if plan_only {
+                json!([])
+            } else {
+                enforce::refuse_if_unproven(&p, &pl)?
+            };
+            let unproven: Vec<Value> = rows
+                .iter()
+                .filter(|r| !r.off.is_empty())
+                .map(|r| json!({"id": r.id, "checks": r.off, "run": r.off_runs.join(", ")}))
+                .collect();
+            out(
+                args,
+                &json!({"ok": true, "parts": rows.len(), "checks_off": off, "unproven_off": unproven}),
+                || {
+                    let o: Vec<Value> = off.as_array().cloned().unwrap_or_default();
+                    let mut t = format!("ledger closed: {} designed parts linked", rows.len());
+                    if !o.is_empty() {
+                        t.push_str(&format!("\nchecks switched off: {}", enforce::off_text(&o)));
+                    }
+                    if !unproven.is_empty() {
+                        t.push_str(&format!(
+                            "\nnot demanded, their checks are off: {}",
+                            enforce::unproven_text(&unproven)
+                        ));
+                    }
+                    t
+                },
+            );
         }
         "impact" => {
             if args.pos.len() < 3 {
@@ -1744,6 +1936,35 @@ fn cmd_log(args: &Args) -> R<()> {
             println!("{}", serde_json::to_string(&m)?);
         }
     }
+    Ok(())
+}
+
+/// The new command groups, each served by a module of its own.
+fn cmd_group(args: &Args, group: &str) -> R<()> {
+    let sub = args.pos.get(1).map(|x| x.as_str()).unwrap_or("");
+    let rest: Vec<String> = args.pos.iter().skip(2).cloned().collect();
+    // The list of the named checks needs no project.
+    if group == "checks" && matches!(sub, "" | "list") {
+        let v = crate::checks::run(sub, &rest)?;
+        out(args, &v, || crate::checks::text(&v));
+        return Ok(());
+    }
+    let p = project(args)?;
+    let v = match group {
+        "checks" => crate::checks::run_in(&p, sub, &rest, args.flag("scope"), args.flag("quote"))?,
+        "scan" => crate::scan::run(sub, &rest)?,
+        "legal" => crate::legal::run(sub, &rest)?,
+        "preset" => crate::preset::run(sub, &rest)?,
+        "uiux" => crate::uiux::run(sub, &rest)?,
+        _ => crate::roles::run_in(&p, sub, &rest)?,
+    };
+    out(args, &v, || {
+        if group == "checks" {
+            crate::checks::text(&v)
+        } else {
+            pretty(&v)
+        }
+    });
     Ok(())
 }
 
@@ -1921,11 +2142,13 @@ fn cmd_gate(args: &Args) -> R<()> {
 const HELP: &str = "bf: the Black Factory engine
 
 State:    init | record put|get|list | id new | ledger check|impact | plan check
-Run:      run start|stop | status | log | next | brief | report | unit start|land
+Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
+Checks:   checks list|state|propose|set
+Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>
-More:     ask | answer | questions | amend | cost | stuck | doctor [--perf] | guard
+More:     ask | answer | questions | amend open|revise|narrow|approve|withdraw | cost | stuck | doctor [--perf] | guard
 
 Every command that prints data takes --json. Exit codes: 0 done, 2 refused, 1 error.
 See docs/engine.md.";

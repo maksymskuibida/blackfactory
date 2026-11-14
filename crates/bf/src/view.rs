@@ -34,6 +34,7 @@ fn plural(kind: &str) -> String {
     match kind {
         "decision" => "Decisions".into(),
         "threat" => "Threats".into(),
+        "markets" => "Markets".into(),
         k => {
             let mut c = k.chars();
             let first = c
@@ -143,7 +144,9 @@ fn design_row(rec: &Value, round: Option<(&str, String, Option<String>)>) -> Val
     for (k, label) in [
         ("chosen", "Chosen"),
         ("rejected", "Rejected"),
-        ("mitigation", "Mitigation"),
+        ("protects", "Protects"),
+        ("attack", "Attacked by"),
+        ("mitigation", "Answered by"),
         ("measure", "Measure"),
     ] {
         if !s(rec, k).is_empty() {
@@ -218,7 +221,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         "idea" => vec!["idea"],
         "requirements" => vec!["requirement"],
         "ui" => vec!["screen", "journey"],
-        "architecture" => vec!["component", "decision", "target", "threat"],
+        "architecture" => vec!["component", "decision", "target", "threat", "markets"],
         "plan" => vec!["unit", "handoff", "checkpoint", "check"],
         _ => vec![],
     };
@@ -512,6 +515,12 @@ fn plan_row(p: &Project, r: &Value, pl: &Plan) -> Value {
             if !s(r, "human_step").is_empty() {
                 body.push(text(&format!("Human step: {}", s(r, "human_step"))));
             }
+            // Every checkpoint either stops for the human or has no stop; the page says which is
+            // proposed, and why when a reason is given.
+            let stop = crate::enforce::stops(r);
+            body.push(json!({"type": "text", "text": format!("{}{}",
+                if stop { "Proposed: stops and waits for you." } else { "Proposed: no stop." },
+                if s(r, "stop_why").is_empty() { String::new() } else { format!(" {}", s(r, "stop_why")) })}));
         }
         _ => {
             body.push(proved_table(pl, &str_list(r, "proves")));
@@ -883,10 +892,32 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             fact("Spent", format!("{:.2}", st.cost), &p.policy.budget.unit),
         ],
     );
-    v["sections"] = json!([
-        {"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows},
-        {"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}
-    ]);
+    let check_rows = |off: &std::collections::BTreeMap<String, String>| -> Vec<Value> {
+        crate::checks::all().iter().map(|c| {
+            let why = off.get(c.name);
+            let on = c.required && why.is_none();
+            json!({"id": c.name, "title": c.name,
+                "handled": {"tone": if on { "ok" } else { "open" }, "text": if on { "required" } else { "off" }},
+                "body": [text(&format!("Family: {}. Stage: {}. Proof: {}.{}", c.family.name(), c.stage.name(), c.proof.name(),
+                    why.map(|r| format!(" Switched off: {r}")).unwrap_or_default()))]})
+        }).collect()
+    };
+    let mut secs = vec![
+        json!({"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows}),
+        json!({"id": "checks-default", "title": "Checks: project default", "hint": "Each switched-off check shows its reason", "open": false, "blocks": [], "rows": check_rows(&st.checks_default)}),
+    ];
+    if let Some(r) = run {
+        secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
+    }
+    let amends = crate::gates::amendments_json(st);
+    if !amends.is_empty() {
+        secs.push(json!({"id": "amendments", "title": "Amendments", "hint": "Open, approved or withdrawn", "open": true, "blocks": [],
+            "rows": amends.iter().map(|a| json!({"id": a["id"], "title": a["ids"].as_array().map(|x| x.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+                "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" }, "text": a["status"]},
+                "body": if a["withdrawn_why"].as_str().unwrap_or("").is_empty() { vec![] } else { vec![text(a["withdrawn_why"].as_str().unwrap_or(""))] }})).collect::<Vec<_>>()}));
+    }
+    secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
+    v["sections"] = json!(secs);
     Ok(v)
 }
 

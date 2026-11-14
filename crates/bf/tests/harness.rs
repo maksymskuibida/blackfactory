@@ -195,7 +195,7 @@ fn draft_everything(w: &Walk) -> Ids {
         &t1,
         "kind = \"target\"\ntitle = \"Both texts load in under 50 ms.\"\nmeasure = \"50 ms\"\n",
     );
-    w.put("threat", &th1, "kind = \"threat\"\ntitle = \"A text could be changed by a visitor.\"\nmitigation = \"Texts are read-only files.\"\n");
+    w.put("threat", &th1, "kind = \"threat\"\ntitle = \"A text could be changed by a visitor.\"\nprotects = \"The texts\"\nattack = \"A visitor edits a file\"\nmitigation = \"Texts are read-only files.\"\n");
     // plan
     let (u1, u2, h1) = (w.new_id("unit"), w.new_id("unit"), w.new_id("handoff"));
     let (x1, x2, x3, k1) = (
@@ -210,7 +210,7 @@ fn draft_everything(w: &Walk) -> Ids {
     w.put("check", &x1, &format!("kind = \"check\"\ntitle = \"The greeting file exists\"\nhow = \"command\"\ncommand = \"test -f src/hello.txt\"\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\", \"{h1}\"]\nscope = \"unit\"\nunit = \"{u1}\"\n"));
     w.put("check", &x2, &format!("kind = \"check\"\ntitle = \"The goodbye file exists\"\nhow = \"command\"\ncommand = \"test -f src/bye.txt\"\nproves = [\"{r2}\", \"{j1}\", \"{t1}\", \"{th1}\"]\nscope = \"unit\"\nunit = \"{u2}\"\n"));
     w.put("check", &x3, &format!("kind = \"check\"\ntitle = \"Both files exist\"\nhow = \"command\"\ncommand = \"ls src/hello.txt src/bye.txt\"\nproves = [\"{r1}\", \"{r2}\", \"{s1}\", \"{j1}\", \"{c1}\", \"{t1}\", \"{th1}\", \"{d1}\", \"{h1}\"]\nscope = \"checkpoint\"\n"));
-    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\ntitle = \"Both messages work\"\nafter = [\"{u1}\", \"{u2}\"]\nproves = [\"{r1}\", \"{r2}\", \"{s1}\", \"{j1}\", \"{c1}\", \"{t1}\", \"{th1}\", \"{d1}\", \"{h1}\"]\nchecks = [\"{x3}\"]\n"));
+    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\nstop_why = \"Test fixture.\"\ntitle = \"Both messages work\"\nafter = [\"{u1}\", \"{u2}\"]\nproves = [\"{r1}\", \"{r2}\", \"{s1}\", \"{j1}\", \"{c1}\", \"{t1}\", \"{th1}\", \"{d1}\", \"{h1}\"]\nchecks = [\"{x3}\"]\n"));
     Ids {
         r1,
         r2,
@@ -732,7 +732,7 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
         o.stderr
     );
     w.put("check", &x1, &format!("kind = \"check\"\ntitle = \"It exists\"\nhow = \"command\"\ncommand = \"test -f src/a.txt\"\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nscope = \"unit\"\nunit = \"{u1}\"\n"));
-    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\ntitle = \"Done\"\nafter = [\"{u1}\"]\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nchecks = [\"{x1}\"]\n"));
+    w.put("checkpoint", &k1, &format!("kind = \"checkpoint\"\nstop_why = \"Test fixture.\"\ntitle = \"Done\"\nafter = [\"{u1}\"]\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nchecks = [\"{x1}\"]\n"));
     w.conductor(&["plan", "check"]);
     let gp = w
         .conductor(&["gate", "open", "plan"])
@@ -842,7 +842,7 @@ fn a_checkpoint_with_a_human_step_follows_the_skill() {
     fx.tiny();
     // The planner added a human step to the checkpoint.
     let f = fx.root.join(".bf/drafts/K-1.toml");
-    fs::write(&f, "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\",\"H-1\"]\nchecks=[\"X-3\"]\nhuman_step=\"Read both messages aloud\"\non_human_step=\"stop\"\n").unwrap();
+    fs::write(&f, "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\",\"H-1\"]\nchecks=[\"X-3\"]\nhuman_step=\"Read both messages aloud\"\non_human_step=\"stop\"\n").unwrap();
     w.conductor(&[
         "record",
         "put",

@@ -33,7 +33,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Build
         run: cargo build --locked
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
       - name: Test
-        run: cargo test --locked
+        run: cargo nextest run --locked --profile ci
+      - name: Documentation tests
+        run: cargo test --locked --doc
       - name: Timing numbers
-        run: cargo test --locked --test timing -- --nocapture --test-threads=1
+        run: "cargo test --locked --test all timing:: -- --nocapture --test-threads=1"

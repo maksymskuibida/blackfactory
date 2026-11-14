@@ -43,6 +43,20 @@ const fn fe(name: &'static str, ty: Ty, required: bool, allowed: &'static [&'sta
 
 pub const LABELS: &[&str] = &["critical", "high", "medium", "low", "core", "main", "minor"];
 
+/// The interface kinds a screen can have.
+pub const INTERFACES: &[&str] = &["web", "mobile", "desktop", "terminal", "voice", "api"];
+/// Who made a decision: the human, or the agent by itself (D-20).
+pub const MAKERS: &[&str] = &["human", "agent"];
+/// The stage a decision was made in.
+pub const DECISION_STAGES: &[&str] = &[
+    "idea",
+    "requirements",
+    "ui",
+    "architecture",
+    "plan",
+    "build",
+];
+
 pub struct Kind {
     pub name: &'static str,
     pub prefix: &'static str,
@@ -81,13 +95,13 @@ pub static KINDS: &[Kind] = &[
         name: "screen",
         prefix: "S",
         designed: true,
-        fields: design_fields!(),
+        fields: design_fields!(fe("interface", Ty::Str, false, INTERFACES)),
     },
     Kind {
         name: "journey",
         prefix: "J",
         designed: true,
-        fields: design_fields!(),
+        fields: design_fields!(f("steps", Ty::StrList, false)),
     },
     Kind {
         name: "target",
@@ -99,13 +113,22 @@ pub static KINDS: &[Kind] = &[
         name: "threat",
         prefix: "TH",
         designed: true,
-        fields: design_fields!(f("mitigation", Ty::Str, false)),
+        fields: design_fields!(
+            f("protects", Ty::Str, true),
+            f("attack", Ty::Str, true),
+            f("mitigation", Ty::Str, true)
+        ),
     },
     Kind {
         name: "decision",
         prefix: "D",
         designed: true,
-        fields: design_fields!(f("chosen", Ty::Str, false), f("rejected", Ty::Str, false)),
+        fields: design_fields!(
+            f("chosen", Ty::Str, false),
+            f("rejected", Ty::Str, false),
+            fe("maker", Ty::Str, false, MAKERS),
+            fe("stage", Ty::Str, false, DECISION_STAGES)
+        ),
     },
     Kind {
         name: "idea",
@@ -163,7 +186,9 @@ pub static KINDS: &[Kind] = &[
             f("proves", Ty::Ids("+H"), true),
             f("checks", Ty::Ids("X"), false),
             f("human_step", Ty::Str, false),
-            fe("on_human_step", Ty::Str, false, &["stop", "carry-on"]),
+            fe("on_human_step", Ty::Str, false, &["stop"]),
+            f("stop", Ty::Bool, false),
+            f("stop_why", Ty::Str, false),
             f("pull_request", Ty::Bool, false),
         ],
     },
@@ -181,6 +206,7 @@ pub static KINDS: &[Kind] = &[
             f("proves", Ty::Ids("+H"), true),
             fe("scope", Ty::Str, true, &["unit", "checkpoint"]),
             f("unit", Ty::Id("U"), false),
+            f("named", Ty::Str, false),
         ],
     },
     Kind {
@@ -202,6 +228,41 @@ pub static KINDS: &[Kind] = &[
             f("where", Ty::Str, false),
             f("action", Ty::Str, false),
             fe("outcome", Ty::Str, false, &["open", "fixed", "accepted"]),
+        ],
+    },
+    Kind {
+        name: "markets",
+        prefix: "M",
+        designed: false,
+        fields: &[
+            f("id", Ty::Str, true),
+            f("kind", Ty::Str, true),
+            f("title", Ty::Str, true),
+            f("text", Ty::Str, false),
+            f("markets", Ty::StrList, true),
+            f("links", Ty::Ids(""), false),
+        ],
+    },
+    Kind {
+        name: "legal",
+        prefix: "L",
+        designed: false,
+        fields: &[
+            f("id", Ty::Str, true),
+            f("kind", Ty::Str, true),
+            f("title", Ty::Str, true),
+            f("text", Ty::Str, false),
+            fe(
+                "severity",
+                Ty::Str,
+                false,
+                &["critical", "high", "medium", "low"],
+            ),
+            f("market", Ty::Str, false),
+            f("where", Ty::Str, false),
+            f("action", Ty::Str, false),
+            fe("outcome", Ty::Str, false, &["open", "fixed", "accepted"]),
+            f("links", Ty::Ids(""), false),
         ],
     },
     Kind {
@@ -316,6 +377,27 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
         if obj.get("scope").and_then(|v| v.as_str()) == Some("unit") && !obj.contains_key("unit") {
             bad.push("a check with scope = \"unit\" needs a `unit`".into());
         }
+    }
+    if kind.name == "check" {
+        if let Some(n) = obj.get("named").and_then(|v| v.as_str()) {
+            if crate::checks::by_name(n).is_none() {
+                bad.push(format!(
+                    "`named` is `{n}`, which is not a named check (`bf checks list`)"
+                ));
+            }
+        }
+    }
+    if kind.name == "checkpoint"
+        && obj
+            .get("stop_why")
+            .and_then(|v| v.as_str())
+            .map(|x| x.trim().is_empty())
+            .unwrap_or(true)
+    {
+        bad.push(
+            "a checkpoint needs `stop_why`, one sentence on why it stops or why it has no stop"
+                .into(),
+        );
     }
     if kind.name == "unit" {
         if let Some(a) = obj.get("delivers").and_then(|v| v.as_array()) {

@@ -20,6 +20,8 @@ An ID is a prefix, a dash and a number: `R-1`, `TH-12`. The prefix says the kind
 | `K` | checkpoint | no |
 | `X` | check | no |
 | `F` | finding | no |
+| `M` | markets statement | no |
+| `L` | legal finding | no |
 | `Q` | question | no |
 | `I` | idea | no |
 
@@ -44,9 +46,15 @@ Extra fields by kind:
 |---|---|---|---|
 | requirement | `acceptance` | list of strings | What must be true when it is done |
 | target | `measure` | string | The number or limit it is held to |
-| threat | `mitigation` | string | How the design answers it |
+| threat | `protects` | string | **Required.** What is protected |
+| threat | `attack` | string | **Required.** How it is attacked |
+| threat | `mitigation` | string | **Required.** How the design answers it. The ledger refuses to close while a threat has no check that proves its answer |
 | decision | `chosen` | string | What was chosen |
 | decision | `rejected` | string | What was rejected and why |
+| decision | `maker` | `human` or `agent` | Who made the call. A call the agent makes by itself is a decision with `maker = "agent"`, not a new kind |
+| decision | `stage` | `idea`, `requirements`, `ui`, `architecture`, `plan` or `build` | The stage it was made in |
+| screen | `interface` | `web`, `mobile`, `desktop`, `terminal`, `voice` or `api` | The kind of interface the screen is |
+| journey | `steps` | list of strings | The steps of the journey, in order |
 
 ```toml
 id = "R-1"
@@ -107,8 +115,10 @@ A point where a set of units has landed and the result is proven.
 | `after` | list of `U-` IDs | yes | The units on it. Each of them names this checkpoint |
 | `proves` | list of designed or handoff IDs | yes | What closing it proves. Each ID needs a check among `checks` that proves it |
 | `checks` | list of `X-` IDs | no | The checks that run on the checkpoint's working copy |
-| `human_step` | string | no | A step only the human can do; it needs an approved `checkpoint-step` gate |
-| `on_human_step` | `stop` or `carry-on` | no | Whether the factory waits for the human step or continues with independent work |
+| `stop` | boolean | no | `true`: the checkpoint stops and waits for the human. `false`: it has no stop. A missing `stop` reads as `false` (no stop), unless the checkpoint has a human step, which always stops. These are the only two forms. The agent proposes it on the plan approval page and approving the plan gate approves it; the human changes it by rejecting the gate with their words |
+| `stop_why` | string | yes | One sentence on why the checkpoint stops or has no stop. The plan page shows it next to the proposal |
+| `human_step` | string | no | A step only the human can do; it needs an approved `checkpoint-step` gate. A checkpoint with a human step stops |
+| `on_human_step` | `stop` | no | Kept for records of an earlier build. There is no carry-on choice any more: a record from an earlier build that says `carry-on` is read as a stop |
 | `pull_request` | boolean | no | Whether the checkpoint's branch becomes a pull request |
 
 ## Check (`X`)
@@ -122,6 +132,7 @@ How one or more parts are proven.
 | `how` | `command`, `agent` or `human` | yes | `command` checks are run by `bf evidence run`. an `agent` check is settled by `bf evidence attach` with a stated outcome (the verifier's token), a `human` check by the checkpoint's gate |
 | `command` | string or list of strings | for `how = "command"` | The exact command. `bf evidence run` accepts only this command |
 | `proves` | list of designed or handoff IDs | yes | What a passing receipt of this check proves |
+| `named` | a name from `bf checks list` | no | Marks the record as the proof of that named check (for example `named = "design-uiux-verification"`). The engine refuses a name it does not know. A required built-stage named check needs such a record, listed by the last checkpoint |
 | `scope` | `unit` or `checkpoint` | yes | Where it runs: in a unit's working copy before landing, or in a checkpoint's working copy before closing |
 | `unit` | `U-` ID | for `scope = "unit"` | The unit that must pass it before it lands |
 
@@ -140,6 +151,32 @@ A problem a reviewer found. Findings are created by `bf report ... --result find
 | `action` | string | no | What must be done |
 | `outcome` | `open`, `fixed` or `accepted` | no | Starts as `open`. `bf report --result fixed` sets `fixed` |
 
+## Markets statement (`M`)
+
+The markets the product is offered in. The legal checks read it, not prose.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `title` | string | yes | |
+| `text` | string | no | |
+| `markets` | list of strings | yes | The markets, for example country or region names |
+| `links` | list of designed IDs | no | |
+
+## Legal finding (`L`)
+
+A legal problem found by the legal audit. It is a kind of its own because a finding (`F`) belongs to a unit and a legal finding does not.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `title` | string | yes | |
+| `text` | string | no | |
+| `severity` | `critical`, `high`, `medium` or `low` | no | |
+| `market` | string | no | The market it concerns |
+| `where` | string | no | File and line |
+| `action` | string | no | What must be done |
+| `outcome` | `open`, `fixed` or `accepted` | no | |
+| `links` | list of designed IDs | no | |
+
 ## Question (`Q`)
 
 Asked before a stage's gate.
@@ -156,6 +193,17 @@ Asked before a stage's gate.
 | `answer` | any | set by `bf answer` | The answer as given. For a choice question: `{"choice": "A"}` or `{"choices": ["A", "B"]}`, optionally with `note`; **Other** is `{"choice": "other", "other": "<the human's own answer>"}` (multi: `{"choices": ["A", "other"], "other": "<text>"}`), the text kept in `other`. `other` is a reserved key. Records from earlier builds have no `other` and read as before |
 | `answered_at` | string | set by `bf answer` | |
 | `answered_turn` | integer | set by `bf answer` | The human turn after the question that the answer rests on |
+
+A question without an `id` in the file given to `bf ask` is numbered by the engine: the file is created only if no file of that number exists, and on a clash the next number is tried. Questions asked at the same moment therefore each keep their own number and file.
+
+## Notes for the engine document
+
+These behaviours are built and tested; `docs/engine.md` is to carry them.
+
+- **`bf checkpoint sync`** runs only the command checks that are switched on, as the close does. A check the human switched off is left out, in the sync, in `--resolved` and in the resolver's report. The answer lists the left-out checks in `skipped_checks`.
+- **Engine lock.** `bf unit start`, `bf unit land`, `bf checkpoint close`, `bf checkpoint sync` and the resolver's report on an open sync (`bf report <K>`) take a project-wide lock (`.bf/engine.lock`, in the engine's state folder) for the whole command. A second one started meanwhile is refused at once with "another engine command is running" and changes nothing. A landing whose merge fails puts the checkpoint's working copy back to the tip it had before (`merge --abort`, then `reset --hard`), and only a real conflict is reported as a conflict.
+- **`bf doctor`** has a check `checkpoint working copies`: it reports an open checkpoint's working copy that holds changes nobody committed (a sync that is open on purpose is not reported).
+- **Role tokens.** The token of a builder, reviewer or verifier stays the same while its unit is held by an open question, until a report spends it.
 
 ## Files the engine writes
 
@@ -182,6 +230,10 @@ main_branch = "main"
 ```
 
 The log head, kept outside the project, records for each repository the branch watched and the commit the engine last put there or the human accepted; an edit of this file cannot move the watch (`bf doctor` shows the difference, `bf head accept` takes it).
+
+### `factory/checks.json`
+
+A mirror of the project default of the named checks: `{"off": {"<check>": "<reason>"}}`. The run log is the truth; `bf checks set` rewrites the file, and `bf doctor` compares it with the log and reports a missing or differing file.
 
 ### `factory/policy.toml`
 
@@ -226,6 +278,10 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `evidence.outcome`, `unit.role-report`, `tokens.reset`, `checkpoint.sync`, `checkpoint.sync.open`, `checkpoint.sync.built`, `checkpoint.sync.reviewed`, `checkpoint.sync.park`, `checkpoint.sync.release`, `checkpoint.sync.abort`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.revise`, `amend.withdraw`, `amend.approve`, `checks.propose`, `checks.set`, `legal.accept`.
+
+The `checkpoint.close` event records the run, the checks that were off and the IDs they left unproven. The ledger and a later run stop judge that checkpoint by this record and name the run, while a close from before these fields existed is judged by the settings of the latest run.
+
+An amendment approval counts only with a human turn recorded after the amendment's latest narrowing or revision; an earlier approval is ignored on replay.
 
 Gates, approvals, test-mode grants and amendments live here, not in record files, so nothing can change them after the fact: a decision is valid only when the replayed log accepts it. A `gate.approve` counts only if it cites a human turn recorded after the gate opened and not used before, with a quote that is in that turn's text (the turn is not only a question), or is simulated inside a run that holds a test-mode grant (or, for a design gate, a grant waiting for its run).

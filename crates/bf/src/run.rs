@@ -54,17 +54,30 @@ pub fn run_start(p: &Project) -> R<Value> {
     plan::check_or_refuse(&pl)?;
     let id = format!("run-{}", st.runs.len() + 1);
     let grant = st.pending_grants.last().copied();
-    events::append(p, "run.start", json!({"run": id, "grant": grant}))?;
+    events::append(
+        p,
+        "run.start",
+        json!({"run": id, "grant": grant, "checks_off": st.checks_default}),
+    )?;
+    drop_role_tokens(p)?;
     p.write_guard()?;
-    Ok(json!({"run": id, "test_mode": grant.is_some()}))
+    Ok(json!({"run": id, "test_mode": grant.is_some(), "checks_off": st.checks_default}))
 }
 
 pub fn run_stop(p: &Project) -> R<Value> {
     let st = events::require_chain(p)?;
     let id = need_run(&st)?;
-    events::append(p, "run.stop", json!({"run": id}))?;
+    let pl = plan::load(p)?;
+    let off = crate::enforce::refuse_if_unproven_for(p, &pl, "stop the run", "bf run stop")?;
+    let unproven = crate::enforce::off_unproven_summary(&pl, &st);
+    events::append(
+        p,
+        "run.stop",
+        json!({"run": id, "checks_off": off, "unproven_off": unproven}),
+    )?;
+    drop_role_tokens(p)?;
     p.write_guard()?;
-    Ok(json!({"run": id, "stopped": true}))
+    Ok(json!({"run": id, "stopped": true, "unproven_off": unproven}))
 }
 
 /// Computed state of every unit: planned, ready, or the logged state.
@@ -128,8 +141,9 @@ pub fn page_set(p: &Project, name: &str, url: &str) -> R<Value> {
 
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
-    let main = main_position(p, &st)?;
+    // The positions are worked out once (each costs git calls); the combined one is built from them.
     let repo_positions = main_positions(p, &st)?;
+    let main = combine_positions(&repo_positions);
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
     let states = unit_states(p, &pl, &st, &receipts);
@@ -153,6 +167,7 @@ pub fn status(p: &Project) -> R<Value> {
         "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why})).collect::<Vec<_>>(),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
+        "amendments": gates::amendments_json(&st),
         "checkpoints_closed": st.closed.keys().collect::<Vec<_>>(),
         "spent": st.cost,
         "budget_cap": p.policy.budget.cap,
@@ -354,12 +369,18 @@ fn next_raw(p: &Project) -> R<Value> {
         if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
             let wc = p.work_dir().join(kid).to_string_lossy().to_string();
             let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+            // A check the human switched off is not asked for.
             let missing: Vec<String> = str_list(k, "checks")
                 .into_iter()
+                .filter(|c| {
+                    !pl.checks
+                        .iter()
+                        .any(|r| s(r, "id") == c && crate::enforce::is_off(&st, r))
+                })
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
                 .collect();
             let human_needed =
-                !s(k, "human_step").is_empty() && !st.gate_passed("checkpoint-step", Some(kid));
+                crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
             let marked: Vec<Value> = str_list(k, "checks")
                 .iter()
                 .filter_map(|c| {
@@ -388,10 +409,38 @@ fn next_raw(p: &Project) -> R<Value> {
                     .filter(|g| g.status == "open")
                     .map(|g| g.id.clone());
                 directives.push(json!({"role": "human", "action": if open { "decide-gate" } else { "open-gate" }, "gate_kind": "checkpoint-step", "checkpoint": kid, "gate": step_gate,
-                    "on_human_step": s(k, "on_human_step"),
+                    "on_human_step": "stop",
+                    "stop_why": s(k, "stop_why"),
                     "note": s(k, "human_step")}));
             } else {
-                directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
+                // Offer the close only when the engine would accept it.
+                let waived = gates::waived_ids(&st);
+                let mut gaps: Vec<String> = str_list(k, "proves")
+                    .into_iter()
+                    .filter(|id| !waived.contains_key(id))
+                    .filter(|id| {
+                        let cs: Vec<&Value> = pl
+                            .checks
+                            .iter()
+                            .filter(|c| {
+                                str_list(k, "checks").iter().any(|x| x == s(c, "id"))
+                                    && str_list(c, "proves").contains(id)
+                            })
+                            .collect();
+                        !crate::enforce::id_proven(&st, &receipts, &cs, kid, &content)
+                    })
+                    .map(|id| format!("{id}: no passing receipt at this content from a check the checkpoint lists"))
+                    .collect();
+                let (check_gaps, unproven) =
+                    crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, k, &content)?;
+                gaps.extend(check_gaps);
+                if gaps.is_empty() {
+                    directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
+                } else {
+                    directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "gaps": gaps,
+                        "steps": crate::enforce::way_out_steps(&st, &unproven),
+                        "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
+                }
             }
         } else {
             waiting.push(format!("{kid}: waiting for its units to land"));
@@ -406,6 +455,19 @@ pub fn holds_token(p: &Project, key: &str, token: Option<&str>) -> bool {
         (Some(h), Some(t)) => h == t.trim(),
         _ => false,
     }
+}
+
+/// The one-use token for `key` (`<unit>:<role>`): the one already handed out, or a new one kept in
+/// the state folder like the tokens of the existing roles.
+pub fn issue_token(p: &Project, key: &str) -> R<String> {
+    let mut v = read_tokens(p);
+    if let Some(t) = v.get(key).and_then(|t| t.as_str()) {
+        return Ok(t.to_string());
+    }
+    let tok = util::random_hex(12)?;
+    v[key] = json!(tok);
+    util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
+    Ok(tok)
 }
 
 fn read_tokens(p: &Project) -> Value {
@@ -447,7 +509,10 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
             } else {
                 (role, "token")
             };
-            if matches!(role.as_str(), "builder" | "reviewer" | "verifier") && !unit.is_empty() {
+            if (matches!(role.as_str(), "builder" | "reviewer" | "verifier")
+                || crate::roles::is_new_role(&role))
+                && !unit.is_empty()
+            {
                 let key = format!("{unit}:{role}");
                 let tok = match tokens.get(&key).and_then(|t| t.as_str()) {
                     Some(t) => t.to_string(),
@@ -455,6 +520,41 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
                 };
                 d[field] = json!(tok);
                 fresh[&key] = json!(tok);
+            }
+        }
+    }
+    // A unit held by an open question has no directive, but its worker's token stays: the same token
+    // is given every time, until a report spends it.
+    let held: Vec<String> = p
+        .list_records(schema::kind_by_name("question"))?
+        .into_iter()
+        .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
+        .map(|q| s(&q, "unit").to_string())
+        .collect();
+    if let Some(o) = tokens.as_object() {
+        for (k, t) in o {
+            let keep = k
+                .split_once(':')
+                .map(|(u, r)| {
+                    held.iter().any(|h| h == u)
+                        && (matches!(r, "builder" | "reviewer" | "verifier")
+                            || crate::roles::is_new_role(r))
+                })
+                .unwrap_or(false);
+            if keep && fresh.get(k).is_none() {
+                fresh[k] = t.clone();
+            }
+        }
+    }
+    // Tokens handed out by `bf roles token` stay until spent.
+    if let Some(o) = tokens.as_object() {
+        for (k, t) in o {
+            let is_new = k
+                .split_once(':')
+                .map(|(_, r)| crate::roles::is_new_role(r))
+                .unwrap_or(false);
+            if is_new && fresh.get(k).is_none() {
+                fresh[k] = t.clone();
             }
         }
     }
@@ -585,6 +685,63 @@ pub fn next(p: &Project) -> R<Value> {
     Ok(v)
 }
 
+/// One of the five new roles reports with its own token; the unit's state does not move. The design
+/// stage (`design`) needs no run and no plan; a unit or a checkpoint needs a run. A role reports only
+/// on a subject at its stage.
+fn role_report(
+    p: &Project,
+    subject: &str,
+    result: &str,
+    r: &str,
+    note: &str,
+    cost: f64,
+    token: Option<&str>,
+) -> R<Value> {
+    let st = events::require_chain(p)?;
+    if subject != crate::roles::DESIGN {
+        need_run(&st)?;
+    }
+    if !["built", "blocked"].contains(&result) {
+        return Err(refuse(
+            format!("report {result} as {r}"),
+            "a new role reports `built` (done) or `blocked`",
+            &["Use --result built or --result blocked; findings and threats are filed with `bf record put`."],
+            "The command prints the unit's state.",
+        ));
+    }
+    crate::roles::check_subject(p, subject, r)?;
+    if p.policy.roles.tokens {
+        let key = check_token(p, subject, r, token)?;
+        spend_token(p, &key)?;
+    }
+    events::append(
+        p,
+        "unit.role-report",
+        json!({"unit": subject, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
+    )?;
+    let state = if subject == crate::roles::DESIGN {
+        String::new()
+    } else {
+        st.unit_state(subject).to_string()
+    };
+    Ok(json!({"unit": subject, "result": result, "state": state, "role": r}))
+}
+
+/// A role's token ends with the run it was issued in: starting or stopping a run drops every token
+/// of the new roles (a design-stage token is dropped when the first run starts).
+fn drop_role_tokens(p: &Project) -> R<()> {
+    let mut v = read_tokens(p);
+    if let Some(o) = v.as_object_mut() {
+        o.retain(|k, _| {
+            !k.split_once(':')
+                .map(|(_, r)| crate::roles::is_new_role(r))
+                .unwrap_or(false)
+        });
+    }
+    util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     p: &Project,
@@ -596,6 +753,9 @@ pub fn report(
     cost: f64,
     token: Option<&str>,
 ) -> R<Value> {
+    if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
+        return role_report(p, unit, result, r, note, cost, token);
+    }
     if unit.starts_with("K-") {
         return sync_report(p, unit, result, role, note, findings, token);
     }
@@ -859,11 +1019,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if unit.starts_with("K-") {
         return brief_checkpoint(p, unit, role);
     }
+    if crate::roles::is_new_role(role) {
+        return crate::roles::brief(p, unit, role);
+    }
     if !["builder", "reviewer", "verifier"].contains(&role) {
         return Err(refuse(
             format!("write a brief for role `{role}`"),
             "that is not a role the engine briefs",
-            &["Use --role builder, reviewer or verifier."],
+            &["Use --role builder, reviewer, verifier, uiux-verifier, security-expert, security-auditor, lawyer or legal-auditor."],
             "The command prints the path of the brief.",
         ));
     }
@@ -1160,6 +1323,7 @@ fn ensure_checkpoint_worktree(p: &Project, k: &str, repo: &Repo) -> R<PathBuf> {
 }
 
 pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("start {unit}"))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
     budget_check(p, &st)?;
@@ -1248,6 +1412,7 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
 }
 
 pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("land {unit}"))?;
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("land {unit}"))?;
     refuse_if_main_moved(p, &st)?;
@@ -1373,6 +1538,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     }
     let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
     if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
+        let before = gitx::must(&cpwt, &["rev-parse", "HEAD"])?;
         let out = gitx::run(
             &cpwt,
             &[
@@ -1386,10 +1552,24 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             &[],
         )?;
         if !out.ok {
+            // Put the working copy back exactly as it was before the merge started.
             let _ = gitx::run(&cpwt, &["merge", "--abort"], &[]);
+            let _ = gitx::run(&cpwt, &["reset", "--hard", &before], &[]);
+            let first = out.stderr.lines().next().unwrap_or("").to_string();
+            let conflict = out.stdout.contains("CONFLICT")
+                || out.stdout.contains("Automatic merge failed")
+                || out.stderr.contains("CONFLICT");
+            if !conflict {
+                return Err(refuse(
+                    format!("land {unit}"),
+                    format!("git could not merge into {cpb}: {first}"),
+                    &["The checkpoint's working copy was put back as it was. Run `bf unit land` again."],
+                    "`bf unit land` prints the merge.",
+                ));
+            }
             return Err(refuse(
                 format!("land {unit}"),
-                format!("the merge into {cpb} conflicts: {}", out.stderr.lines().next().unwrap_or("")),
+                format!("the merge into {cpb} conflicts: {first}"),
                 &["Rebase or merge the checkpoint branch into the unit's working copy and resolve the conflict there.", "Run the checks again, then `bf unit land` again."],
                 "`bf unit land` prints the merge.",
             ));
@@ -1525,7 +1705,10 @@ pub fn main_positions(p: &Project, st: &State) -> R<Vec<MainPos>> {
 /// All repositories together: moved if any is; the details and notes of each, named by repository when
 /// there are several.
 pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
-    let all = main_positions(p, st)?;
+    Ok(combine_positions(&main_positions(p, st)?))
+}
+
+fn combine_positions(all: &[MainPos]) -> MainPos {
     let several = all.len() > 1;
     let label = |m: &MainPos, t: &str| {
         if t.is_empty() {
@@ -1536,7 +1719,7 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
             t.to_string()
         }
     };
-    Ok(MainPos {
+    MainPos {
         repo: all.first().map(|m| m.repo.clone()).unwrap_or_default(),
         moved: all.iter().any(|m| m.moved),
         detail: all
@@ -1552,7 +1735,7 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>()
             .join("; "),
-    })
+    }
 }
 
 fn short(c: &str) -> &str {
@@ -1577,6 +1760,7 @@ pub fn refuse_if_main_moved(p: &Project, st: &State) -> R<()> {
 }
 
 pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("close {k}"))?;
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("close {k}"))?;
     refuse_if_main_moved(p, &st)?;
@@ -1666,13 +1850,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             .collect();
         // A command or agent check is settled by its receipt at this content; a human check only by the
         // human's own gate. An attached file proves nothing about a human check.
-        let ok = checks.iter().any(|c| {
-            if s(c, "how") == "human" {
-                st.gate_passed("checkpoint-step", Some(k))
-            } else {
-                evidence::satisfied_at(&receipts, s(c, "id"), &content).is_some()
-            }
-        });
+        let ok = crate::enforce::id_proven(&st, &receipts, &checks, k, &content);
         let marked: Vec<String> = checks
             .iter()
             .filter_map(|c| {
@@ -1701,11 +1879,18 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ));
         }
     }
-    if !s(kr, "human_step").is_empty() && !st.gate_passed("checkpoint-step", Some(k)) {
-        gaps.push(format!("the human step `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", s(kr, "human_step")));
+    if crate::enforce::stops(kr) && !st.gate_passed("checkpoint-step", Some(k)) {
+        gaps.push(format!("the stop `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", if s(kr, "human_step").is_empty() { s(kr, "stop_why") } else { s(kr, "human_step") }));
     }
+    let (check_gaps, unproven_names) =
+        crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
+    let has_check_gaps = !check_gaps.is_empty();
+    gaps.extend(check_gaps);
     if !gaps.is_empty() {
         let mut steps = gaps.clone();
+        if has_check_gaps {
+            steps.extend(crate::enforce::way_out_steps(&st, &unproven_names));
+        }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
         return Err(refuse_owned(
             format!("close {k}"),
@@ -1728,6 +1913,18 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 "`bf status` lists the checkpoint as closed.",
             ));
         };
+        // The last checkpoint holds everything: it merges only when every required check has proof.
+        if crate::enforce::last_checkpoint(&pl)
+            .map(|l| s(l, "id") == k)
+            .unwrap_or(false)
+        {
+            crate::enforce::refuse_if_unproven_for(
+                p,
+                &pl,
+                &format!("merge {k} onto the main branch"),
+                &format!("bf checkpoint close {k} --merge"),
+            )?;
+        }
         // A run with simulated approvals can never reach the main branch.
         let mut owned: Vec<String> = after.clone();
         for c in &pl.checkpoints {
@@ -1835,16 +2032,23 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             }
         }
     }
+    let unproven_off: Vec<Value> = crate::enforce::off_unproven(&pl, &st, kr)
+        .into_iter()
+        .map(|(id, c)| json!({"id": id, "checks": c}))
+        .collect();
     if !was_closed || merged {
+        // The waiver is fixed here: the ledger reads it from the log, not from a later run's settings.
+        let off_names: Vec<String> = crate::checks::off_closing(&st).keys().cloned().collect();
         events::append(
             p,
             "checkpoint.close",
-            json!({"checkpoint": k, "merged": merged, "hash": content}),
+            json!({"checkpoint": k, "merged": merged, "hash": content, "unproven_off": unproven_off, "off_names": off_names, "run": crate::enforce::latest_run_id(&st)}),
         )?;
         p.write_guard()?;
     }
     Ok(
-        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend}),
+        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st),
+            "unproven_off": unproven_off}),
     )
 }
 
@@ -1945,7 +2149,8 @@ pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
 
 /// `bf checkpoint sync <K> --quote "..." [--resolved]`: the human has the checkpoint branch take in the
 /// repository's local main branch (no network: pulling into main is an ordinary git command done before).
-/// Only at a quiet point; a conflict leaves everything as it was.
+/// Only at a quiet point; a conflict leaves the merge in progress in the checkpoint's working copy
+/// (`--abort` puts everything back). Checks the human switched off are not run, and the answer names them.
 /// What `bf checkpoint sync` was asked to do.
 #[derive(Clone, Copy, Default)]
 pub struct SyncMode {
@@ -1958,6 +2163,7 @@ pub struct SyncMode {
 }
 
 pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("sync {k}"))?;
     let resolved = mode.resolved;
     let st = events::require_chain(p)?;
     need_run(&st)?;
@@ -2187,6 +2393,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     }
     // The joined content is proven before the sync counts: the checkpoint's own command checks run on it.
     let failed = run_k_checks(p, &pl, k)?;
+    let skipped = skipped_k_checks(p, &pl, k)?;
     if !failed.is_empty() {
         events::append(
             p,
@@ -2196,7 +2403,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         p.write_guard()?;
         return Ok(
             json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": [],
-            "failed_checks": failed,
+            "failed_checks": failed, "skipped_checks": skipped,
             "message": "the main branch merged without a conflict, but the checkpoint's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
@@ -2218,8 +2425,10 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     }
     events::write_head(p, &h)?;
     p.write_guard()?;
-    Ok(json!({"checkpoint": k, "synced": true,
-        "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}))
+    Ok(
+        json!({"checkpoint": k, "synced": true, "skipped_checks": skipped,
+        "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}),
+    )
 }
 
 fn sync_wt(p: &Project, k: &str, repo: &str) -> R<PathBuf> {
@@ -2269,20 +2478,37 @@ fn allowed_set(wt: &Path, before: &str, main: &str) -> Vec<String> {
     files
 }
 
-/// Run the checkpoint's own command checks on the content now in its working copy, through the engine
-/// (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
+/// The command checks of a checkpoint that the human switched off: a sync leaves them out, as the close does.
+fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+    let Some(kr) = pl.checkpoint(k) else {
+        return Ok(vec![]);
+    };
+    let st = events::require_chain(p)?;
+    Ok(str_list(kr, "checks")
+        .into_iter()
+        .filter(|cid| {
+            pl.checks.iter().any(|c| {
+                s(c, "id") == *cid && s(c, "how") == "command" && crate::enforce::is_off(&st, c)
+            })
+        })
+        .collect())
+}
+
+/// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
+/// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
 fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };
+    let off = skipped_k_checks(p, pl, k)?;
     let top = p.work_dir().join(k);
     let mut failed = Vec::new();
     for cid in str_list(kr, "checks") {
         let Some(c) = pl.checks.iter().find(|c| s(c, "id") == cid) else {
             continue;
         };
-        if s(c, "how") != "command" {
+        if s(c, "how") != "command" || off.contains(&cid) {
             continue;
         }
         let argv = evidence::command_words(c);
@@ -2366,7 +2592,10 @@ fn finish_sync(
     }
     events::write_head(p, &h)?;
     p.write_guard()?;
-    Ok(json!({"checkpoint": so.checkpoint, "synced": true, "repos": repos}))
+    let skipped = skipped_k_checks(p, pl, &so.checkpoint)?;
+    Ok(
+        json!({"checkpoint": so.checkpoint, "synced": true, "skipped_checks": skipped, "repos": repos}),
+    )
 }
 
 /// What is still wrong with a resolution: unmerged paths, conflict markers, a merge not concluded or
@@ -2556,6 +2785,7 @@ pub fn sync_report(
     findings: Option<&Value>,
     token: Option<&str>,
 ) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("report on the sync of {k}"))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
     let Some(so) = st.sync_open.clone().filter(|o| o.checkpoint == k) else {
@@ -2648,7 +2878,8 @@ pub fn sync_report(
             }
             events::append(p, "checkpoint.sync.built", json!({"checkpoint": k}))?;
             p.write_guard()?;
-            Ok(json!({"checkpoint": k, "phase": "review"}))
+            let skipped = skipped_k_checks(p, &pl, k)?;
+            Ok(json!({"checkpoint": k, "phase": "review", "skipped_checks": skipped}))
         }
         ("review", "findings") => {
             let listed: Vec<Value> = findings

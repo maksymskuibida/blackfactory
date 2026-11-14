@@ -84,6 +84,14 @@ pub fn load(p: &Project) -> R<Plan> {
         bad,
     };
     analyse(p, &mut plan, &ids);
+    // A required named check appears in the plan as a check record that names it.
+    if let Ok(st) = crate::events::replay(p) {
+        // Decided means the log says so: a recorded setting for the project default or for a run. A
+        // run begun before the engine knew the checks does not decide them.
+        let decided = crate::checks::decided(&st);
+        let more = crate::enforce::plan_problems(&plan, &st, decided);
+        plan.problems.extend(more);
+    }
     Ok(plan)
 }
 

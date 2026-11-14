@@ -450,7 +450,7 @@ fn snapshot_kinds(kind: &str) -> &'static [&'static str] {
         "idea" => &["idea"],
         "requirements" => &["requirement"],
         "ui" => &["screen", "journey"],
-        "architecture" => &["component", "decision", "target", "threat"],
+        "architecture" => &["component", "decision", "target", "threat", "markets"],
         "plan" => &["unit", "handoff", "checkpoint", "check"],
         _ => &[],
     }
@@ -511,7 +511,7 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
         "idea" => Some("idea"),
         "requirement" => Some("requirements"),
         "screen" | "journey" => Some("ui"),
-        "component" | "decision" | "target" | "threat" => Some("architecture"),
+        "component" | "decision" | "target" | "threat" | "markets" => Some("architecture"),
         "unit" | "handoff" | "checkpoint" | "check" => Some("plan"),
         _ => None,
     }
@@ -639,6 +639,8 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     if p.policy.gates.in_order && DESIGN_ORDER.contains(&kind) {
         check_order_and_content(p, &st, kind)?;
     }
+    // A required check's design-stage product comes before its gate.
+    crate::enforce::design_blocker(p, &st, kind)?;
     // Decision D-19: a stage's questions come before its gate.
     let open_q: Vec<String> = p
         .list_records(schema::kind_by_name("question"))?
@@ -680,7 +682,8 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
 /// or `None` when it would open. `bf next` uses it so that no directive carries a command the engine
 /// would refuse.
 pub fn open_blocker(p: &Project, st: &State, kind: &str) -> Option<String> {
-    match check_order_and_content(p, st, kind) {
+    let product = crate::enforce::design_blocker(p, st, kind);
+    match check_order_and_content(p, st, kind).and(product) {
         Ok(()) => None,
         Err(crate::refusal::Fail::Refused(r)) => {
             let mut why = r.because.clone();
@@ -978,16 +981,15 @@ pub fn grant(p: &Project, quote: &str) -> R<Value> {
 
 // ---- amendments ----
 
-pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
-    let st = events::require_chain(p)?;
-    if ids.is_empty() {
-        return Err(refuse(
-            "open an amendment",
-            "no IDs were given",
-            &["Run `bf amend open R-1 C-2` with the IDs that change."],
-            "The command prints the impact set.",
-        ));
-    }
+/// The amendment that is open now (not approved, not withdrawn), if any.
+fn open_amendment(st: &State) -> Option<&events::Amend> {
+    st.amends
+        .iter()
+        .find(|a| matches!(a.status.as_str(), "open" | "narrowed"))
+}
+
+/// Check the IDs of an amendment and work out its impact set.
+fn amend_impact(p: &Project, ids: &[String]) -> R<(Value, Vec<String>)> {
     for id in ids {
         // A new record can be amended in too (the plan is frozen after its gate); it just has no links yet.
         if schema::kind_of_id(id).is_none() {
@@ -1002,6 +1004,32 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
     }
     all.sort();
     all.dedup();
+    Ok((imp, all))
+}
+
+pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
+    let st = events::require_chain(p)?;
+    if ids.is_empty() {
+        return Err(refuse(
+            "open an amendment",
+            "no IDs were given",
+            &["Run `bf amend open R-1 C-2` with the IDs that change."],
+            "The command prints the impact set.",
+        ));
+    }
+    if let Some(open) = open_amendment(&st) {
+        let o = open.id.clone();
+        return Err(refuse_owned(
+            "open an amendment",
+            format!("{o} is still open; only one amendment is open at a time"),
+            vec![
+                format!("Run `bf amend revise <ID>...` to change the records {o} covers."),
+                format!("Or run `bf amend withdraw {o} --reason \"<why>\"` and open a new one."),
+            ],
+            "The status lists one open amendment.",
+        ));
+    }
+    let (imp, all) = amend_impact(p, ids)?;
     let id = format!("A-{}", st.amends.len() + 1);
     events::append(
         p,
@@ -1012,19 +1040,113 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
     Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}))
 }
 
+/// Change the records the open amendment covers. It keeps its ID, goes back to open (the narrowing
+/// is void) and needs a narrowing and a human message after this revision before it can be approved.
+pub fn amend_revise(p: &Project, ids: &[String]) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(open) = open_amendment(&st) else {
+        return Err(refuse(
+            "revise an amendment",
+            "no amendment is open",
+            &["Run `bf amend open <ID>...` to open one."],
+            "`bf amend open` prints an amendment ID.",
+        ));
+    };
+    let aid = open.id.clone();
+    if ids.is_empty() {
+        return Err(refuse(
+            "revise an amendment",
+            "no IDs were given",
+            &["Run `bf amend revise R-1 C-2` with the IDs the amendment should cover."],
+            "The command prints the impact set.",
+        ));
+    }
+    let (imp, all) = amend_impact(p, ids)?;
+    events::append(
+        p,
+        "amend.revise",
+        json!({"amend": aid, "ids": ids, "impact": imp, "impact_ids": all}),
+    )?;
+    p.write_guard()?;
+    Ok(
+        json!({"amend": aid, "revised": true, "ids": ids, "impact": imp, "impact_ids": all,
+        "note": "Narrow it again with `bf amend narrow --file <f>`; the human approves after that."}),
+    )
+}
+
+/// Withdraw an amendment the human has not approved. The log keeps that it existed and that it was
+/// withdrawn; it can no longer be narrowed or approved.
+pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(aid) = arg else {
+        return Err(refuse(
+            "withdraw an amendment",
+            "no amendment ID was given",
+            &["Run the withdraw command with the ID that the status lists as open."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    };
+    let Some(a) = st.amends.iter().find(|a| a.id == aid) else {
+        return Err(refuse(
+            "withdraw an amendment",
+            format!("{aid} does not exist"),
+            &["Use an ID that the status lists under amendments."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    };
+    if a.status == "approved" || a.status == "withdrawn" {
+        return Err(refuse(
+            format!("withdraw {aid}"),
+            format!("it is already {}", a.status),
+            &["Only an amendment that is not approved can be withdrawn; open a new one to change an approved one."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    }
+    if reason.trim().is_empty() {
+        return Err(refuse(
+            format!("withdraw {aid}"),
+            "no reason was given",
+            &[&format!(
+                "Run `bf amend withdraw {aid} --reason \"<why>\"`."
+            )],
+            "The status lists the amendment as withdrawn, with its reason.",
+        ));
+    }
+    events::append(
+        p,
+        "amend.withdraw",
+        json!({"amend": aid, "reason": reason.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"amend": aid, "withdrawn": true, "reason": reason.trim()}))
+}
+
+/// The status of an amendment as the human sees it: open, approved or withdrawn.
+pub fn amend_status(a: &events::Amend) -> &'static str {
+    match a.status.as_str() {
+        "approved" => "approved",
+        "withdrawn" => "withdrawn",
+        _ => "open",
+    }
+}
+
+pub fn amendments_json(st: &State) -> Vec<Value> {
+    st.amends
+        .iter()
+        .map(|a| {
+            json!({"id": a.id, "ids": a.ids, "status": amend_status(a),
+                "withdrawn_why": a.withdrawn_why})
+        })
+        .collect()
+}
+
 pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
     let st = events::require_chain(p)?;
     let aid = file
         .get("amend")
         .and_then(|v| v.as_str())
         .map(|x| x.to_string())
-        .or_else(|| {
-            st.amends
-                .iter()
-                .rev()
-                .find(|a| a.status != "approved")
-                .map(|a| a.id.clone())
-        });
+        .or_else(|| open_amendment(&st).map(|a| a.id.clone()));
     let Some(aid) = aid else {
         return Err(refuse(
             "narrow an amendment",
@@ -1041,6 +1163,14 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             "The command prints the narrowed set.",
         ));
     };
+    if a.status == "withdrawn" {
+        return Err(refuse(
+            "narrow an amendment",
+            format!("{aid} was withdrawn"),
+            &["Open a new amendment over the same records."],
+            "A new amendment ID is printed.",
+        ));
+    }
     if a.status == "approved" {
         return Err(refuse(
             "narrow an amendment",
@@ -1124,6 +1254,14 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         ));
     };
     let a = st.amends.iter().find(|a| a.id == aid);
+    if a.map(|a| a.status == "withdrawn").unwrap_or(false) {
+        return Err(refuse(
+            "approve an amendment",
+            format!("{aid} was withdrawn"),
+            &["A withdrawn amendment cannot be approved: open a new one over the same records."],
+            "The approved set is printed.",
+        ));
+    }
     if a.map(|a| a.status != "narrowed").unwrap_or(true) {
         return Err(refuse(
             "approve an amendment",
@@ -1136,7 +1274,10 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         .events
         .iter()
         .rev()
-        .find(|e| e["kind"] == "amend.narrow" && e["amend"] == aid.as_str())
+        .find(|e| {
+            matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
+                && e["amend"] == aid.as_str()
+        })
         .and_then(|e| e["seq"].as_u64())
         .unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;

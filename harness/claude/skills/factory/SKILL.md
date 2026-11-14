@@ -36,11 +36,11 @@ Five gates, in this order: `idea`, `requirements`, `ui`, `architecture`, `plan`.
 |---|---|---|
 | idea | One idea record `I` and the file `factory/idea.md` (problem, user, success measures, left out of v1, risks, first market and legal pass if the product faces a market). Every claim carries a source tag: `[desc]` from the human's words, `[Q3]` from an answer, `[assumption]` if you invented it. One decision `D` per scope call | Go or stop inputs, markets, what v1 leaves out |
 | requirements | Requirements `R` with acceptance statements. For a UI product, journeys `J` with what the user does and must see at each step | Priorities, anything the idea left open |
-| ui | Screens `S` with their states, journeys `J` | Look, tone, flows the human must choose |
-| architecture | Components `C`, decisions `D` (with options rejected), targets `T` (measurable), threats `TH` | Choices that change the result |
-| plan | Units `U` (`files`, `checkpoint`, `depends_on`, and in a workspace with several repositories `repo = "<name>"`, with `files` relative to that repository), handoffs `H`, checks `X` (the exact command and the IDs it proves; a handoff must be proved by a check that belongs to a unit or a checkpoint), checkpoints `K` (the IDs it proves, its checks, optionally `human_step` with `on_human_step` stop or carry-on). Checkpoints are stacked in plan order: each builds on the one before | Budget cap, human steps, stop or carry-on |
+| ui | Screens `S` with their states, journeys `J`. While `design-uiux-verification` is on, also a check record `X` with `named = "design-uiux-verification"` and `how = "agent"`; the UI/UX verifier judges the screens and settles it with `bf evidence attach <X> <file> --outcome met --says "<what was looked at>" --token <token>` (token from `bf roles token design uiux-verifier`). The ui gate is refused without that receipt | Look, tone, flows the human must choose |
+| architecture | Components `C`, decisions `D` (with options rejected), targets `T` (measurable), threats `TH` (each with `protects`, `attack` and `mitigation`, drafted by the security expert), and a markets record `M` with `markets` (an empty list for a product with no market) while a legal check is on. The architecture gate is refused without them | Choices that change the result |
+| plan | Units `U` (`files`, `checkpoint`, `depends_on`, and in a workspace with several repositories `repo = "<name>"`, with `files` relative to that repository), handoffs `H`, checks `X` (the exact command and the IDs it proves; a required built-stage named check needs its own record with `named = "<name>"`, listed in `checks` by the last checkpoint; a handoff must be proved by a check that belongs to a unit or a checkpoint), checkpoints `K` (the IDs it proves, its checks, `stop` true or false and `stop_why`, one sentence on why it stops or has no stop; optionally `human_step`). A checkpoint has two forms only: it stops and waits for the human, or it has no stop. You propose which; the plan page shows it for every checkpoint and approving the plan gate approves it. The human changes a stop by rejecting the gate with their words; change the records and the next round shows it. Checkpoints are stacked in plan order: each builds on the one before | Budget cap, human steps. Never ask where to stop: the proposal on the page is the question |
 
-**A. Draft.** For each record: `bf id new <kind>` (it reserves the ID), write a TOML file in `.bf/drafts/<ID>.toml` that **starts with `id = "<ID>"`**, then `bf record put <kind> --file <that file>`. To revise a record put it again with **`--replace`**. A refusal names the field to fix. Check with `bf record list`; read one with `bf record get <ID>`. Never write into `factory/` directly, except `factory/idea.md`. The records are files in git: commit them (`git add -A && git commit -m "<what changed>"` in the project folder or the workspace, never in a code repository of a workspace) when a gate opens and when a session ends. Once a stage's gate is approved its records are frozen: they change only through an amendment (`bf amend open <ID>...`, `bf amend narrow --file`, then the human approves with `bf amend approve --quote`). After an approved amendment follow `bf next`: it offers exactly the re-opened work.
+**A. Draft.** For each record: `bf id new <kind>` (it reserves the ID), write a TOML file in `.bf/drafts/<ID>.toml` that **starts with `id = "<ID>"`**, then `bf record put <kind> --file <that file>`. To revise a record put it again with **`--replace`**. A refusal names the field to fix. Check with `bf record list`; read one with `bf record get <ID>`. Never write into `factory/` directly, except `factory/idea.md`. The records are files in git: commit them (`git add -A && git commit -m "<what changed>"` in the project folder or the workspace, never in a code repository of a workspace) when a gate opens and when a session ends. Once a stage's gate is approved its records are frozen: they change only through an amendment (`bf amend open <ID>...`, `bf amend narrow --file`, then the human approves with `bf amend approve --quote`). Only one amendment is open at a time: `bf amend open` is refused while one is open. Change the open one with `bf amend revise <ID>...` (it keeps its ID, needs narrowing again and a new human message before approval) or drop it with `bf amend withdraw <A-n> --reason "<why>"`. After an approved amendment follow `bf next`: it offers exactly the re-opened work.
 
 **B. Ask first.** Ask only what you cannot decide and what changes the result. Give a proposal for each question with a reason; never preselect it. Write the questions to a JSON file (a list in the `questions` shape of the page data: `title`, `context`, `kind` single, multi or text, `options` with `key`, `text`, `proposed`, `why`), then `bf ask --file <q.json> --stage <gate kind>`. With no questions, go to C. Otherwise:
 1. `bf render questions --template .claude/skills/factory/page.html --out .bf/pages/questions.html`
@@ -58,6 +58,16 @@ Five gates, in this order: `idea`, `requirements`, `ui`, `architecture`, `plan`.
 - Changes wanted: `bf gate reject <gate-id> --quote "<their words>"`, revise the changed records with `--replace`, ask new questions through B, `bf gate open <kind>` again (round n+1), render, republish to the same page, and say in one line what changed.
 - Unclear words, or only a question: ask one short question in chat. Do not guess.
 - After the `plan` gate is approved the plan is frozen. When the architecture page says no threat was recorded, tell the human.
+
+## Check settings
+
+Which named checks are on or off (`bf checks list`) is the human's choice, never yours. To change one: `bf checks propose <check>=off:<reason> ... [--scope default|run|both]` (one reason for each check switched off; it changes nothing), then show the human the output with every reason, in chat, and ask. Only after their reply, `bf checks set --quote "<their words>"`; the engine refuses it without a quote from a message after the proposal. `bf checks state` shows what is on and off, with the reasons. Decide the project default (`--scope default`) before `bf plan check`: the plan check refuses while no setting is decided.
+
+## Roles
+
+Besides builder, reviewer and verifier there are five more: `uiux-verifier`, `security-expert`, `security-auditor`, `lawyer` and `legal-auditor`. `bf roles list` names them and their limits. For each, `bf roles token <unit|design> <role>` issues its token and `bf brief <unit|design> --role <role>` writes its brief; a design-stage role works on the subject `design`, before any plan exists, and has no working copy: it works in the main checkout. Start it like any other worker, with the brief path, its working copy (for a design-stage role, the main checkout), the limits and its token.
+
+**Tokens.** You never use a worker's token yourself: you only pass each token to the agent of that role. Never settle a check, attach an outcome, file a review or file a report with a token, in any role's name. The one exception is the report you file for a worker under a budget cap: relay its own result and findings unchanged. The engine cannot enforce this, since a token tells roles apart and does not keep you out, so this is the one rule in these instructions that the engine does not enforce, an exception to the rule that the instructions state nothing the engine does not enforce, and it rests on you alone.
 
 ## Publishing a page
 
@@ -80,6 +90,21 @@ Starts when the `plan` gate is approved.
    - **Human** (`role` human; `action` open-gate, decide-gate, decide-unit, decide-check, decide-sync, answer-question): has a `note` and ids, and `page_url` when a link for that gate's page or for `questions` is recorded. See below.
 3. Start every independent worker directive in one message so they run in parallel. After each worker returns, run `bf next --json` again. A unit of a later checkpoint waits (`waiting`) until the earlier checkpoint is closed; do nothing special. When `idle_reason` starts with "run done", every checkpoint is closed: that was the verification. Go to End.
 
+**Progress report.** While the build runs, show the output of `bf progress` and nothing else: one line, never composed by you. Each state has its own sign, units in the same state share a segment, and a unit in review or fixing carries its review round, for example `▶ U-2 building · ◐ U-3, U-4 in review, round 2 · ✔ U-1 landed`.
+
+| Sign | State |
+|---|---|
+| ▶ | building |
+| ◐ | in review (with the round) |
+| ↻ | fixing (with the round) |
+| ● | reviewed, ready to land |
+| ✔ | landed |
+| ⚠ | blocked or parked |
+| ◎ | checkpoint being verified |
+| ■ | checkpoint closed |
+
+Do not retell a worker's report in the line. Write a longer message only when the human must decide or act, when a unit is blocked or parked, or when the run ends.
+
 **Starting a worker.**
 1. For a builder: `bf unit start <U>` first (it resumes an existing working copy).
 2. `bf brief <unit-or-checkpoint> --role <role>` prints the brief path. A checkpoint is briefed to its verifier only.
@@ -92,7 +117,7 @@ Starts when the `plan` gate is approved.
 - Close: `bf checkpoint close <K>`. It refuses while an ID has no proof at this content, or a check carries a failed or unreachable mark. Never pass `--merge` on your own.
 
 **Human directives.**
-- `open-gate` with `gate_kind` checkpoint-step: `bf gate open checkpoint-step --ref <K>`, render and publish, and tell the human in one chat message what to do. If `on_human_step` is `stop`, end your turn; if `carry-on`, keep going with the work `bf next` still offers.
+- `open-gate` with `gate_kind` checkpoint-step: `bf gate open checkpoint-step --ref <K>`, render and publish, and tell the human in one chat message what to do. A checkpoint that stops (`stop` is true or it has a human step; an old record that says carry-on is a stop): end your turn. A checkpoint with no stop never reaches this directive.
 - `decide-gate`: the gate waits for the human. Remind them with the link, and end your turn. When they reply, `bf gate approve|reject <gate> --quote "..."`.
 - `decide-check`: a check failed or could not run. Tell the human which check and the reason it gives, and stop for their decision (fix the cause, amend the plan). The directive carries `verifier_token` so a verifier can look again.
 - `decide-unit`: a unit is parked or blocked (too many review rounds, failing attempts, or a `blocked` report). Tell the human which unit and why, and carry on with the other units. Only the human releases it, in their own words: `bf unit release <U> --quote "<their words>"`. They may instead re-plan through an amendment, raise `max_rounds` or `max_attempts` in the policy, or accept a finding.

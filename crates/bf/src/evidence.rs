@@ -102,6 +102,23 @@ fn seal_input(v: &Value) -> String {
     })
     .collect::<Vec<_>>()
     .join("\x1f")
+        // The screens a design-stage judgment looked at; sealed only when present, so older
+        // receipts keep their seals.
+        + &match f("screens_hash") {
+            h if h.is_empty() => String::new(),
+            h => format!("\x1fscreens_hash={h}"),
+        }
+}
+
+/// A hash of the screen records as they are now: what a design-stage UI/UX judgment looked at.
+pub fn screens_hash(p: &Project) -> R<String> {
+    let mut recs = p.list_records(crate::schema::kind_by_name("screen"))?;
+    recs.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
+    let text: Vec<String> = recs
+        .iter()
+        .map(|r| format!("{}:{}", s(r, "id"), record_hash(r)))
+        .collect();
+    Ok(util::sha256_hex(text.join("\n").as_bytes()))
 }
 
 pub fn read_key(p: &Project) -> Option<String> {
@@ -592,25 +609,60 @@ pub fn attach(
                 "The command prints a receipt.",
             ));
         }
+        let named = crate::checks::by_name(s(&chk, "named"));
+        let design_stage = named
+            .map(|c| c.stage == crate::checks::Stage::Design)
+            .unwrap_or(false);
         if p.policy.roles.tokens {
-            // The verifier's token for a checkpoint check; the reviewer's for a unit's own check. A
-            // builder holds neither, so it cannot settle a check for its own unit.
+            // A design-stage named check is settled with the token of a design-stage role of its
+            // family (`design:<role>`), issued by `bf roles token design <role>`. Any other check:
+            // the verifier's token for a checkpoint check; the reviewer's for a unit's own check; the
+            // token of a built-stage role of the check's family on that checkpoint or unit. A builder
+            // holds none of them, so it cannot settle a check for its own unit.
             let pl = crate::plan::load(p)?;
-            let mut keys: Vec<String> = pl
-                .checkpoints
-                .iter()
-                .filter(|k| str_list(k, "checks").iter().any(|c| c == check_id))
-                .map(|k| format!("{}:verifier", s(k, "id")))
-                .collect();
-            if !s(&chk, "unit").is_empty() {
-                keys.push(format!("{}:reviewer", s(&chk, "unit")));
+            let family_roles = |design: bool| -> Vec<&'static str> {
+                crate::roles::ROLES
+                    .iter()
+                    .filter(|r| {
+                        named.map(|c| c.family.name() == r.family).unwrap_or(false)
+                            && if design {
+                                r.at_design()
+                            } else {
+                                r.stage == "built"
+                            }
+                    })
+                    .map(|r| r.name)
+                    .collect()
+            };
+            let mut keys: Vec<String> = Vec::new();
+            if design_stage {
+                for r in family_roles(true) {
+                    keys.push(format!("{}:{r}", crate::roles::DESIGN));
+                }
+            } else {
+                for k in pl
+                    .checkpoints
+                    .iter()
+                    .filter(|k| str_list(k, "checks").iter().any(|c| c == check_id))
+                {
+                    keys.push(format!("{}:verifier", s(k, "id")));
+                    for r in family_roles(false) {
+                        keys.push(format!("{}:{r}", s(k, "id")));
+                    }
+                }
+                if !s(&chk, "unit").is_empty() {
+                    keys.push(format!("{}:reviewer", s(&chk, "unit")));
+                    for r in family_roles(false) {
+                        keys.push(format!("{}:{r}", s(&chk, "unit")));
+                    }
+                }
             }
             if !keys.iter().any(|k| crate::run::holds_token(p, k, j.token)) {
                 return Err(refuse(
                     format!("give {check_id} an outcome"),
-                    "an outcome on a check judged by an agent is accepted only with the verifier's token (the reviewer's, for a check of one unit); none, or the wrong one, was given",
+                    "an outcome on a check judged by an agent is accepted only with the verifier's token (the reviewer's, for a check of one unit; the token of the role of the check's family; for a design-stage check, the design-stage role's token); none, or the wrong one, was given",
                     &[
-                        "The conductor runs `bf next --json`; the verifier's directive for the checkpoint carries its `token`.",
+                        "The conductor runs `bf next --json`; the verifier's directive for the checkpoint carries its `token`. A design-stage check takes the token from `bf roles token design <role>`.",
                         "The verifier passes it: `bf evidence attach <check> <file> --outcome met --says \"...\" --token <token>`. A builder cannot settle a check for its own unit.",
                     ],
                     "`bf evidence verify` lists the outcome.",
@@ -625,10 +677,16 @@ pub fn attach(
         fs::copy(file, &dest)?;
     }
     let content = p.content_hash(&p.top)?;
+    let screens = if j.outcome.is_some() && s(&chk, "named") == "design-uiux-verification" {
+        screens_hash(p)?
+    } else {
+        String::new()
+    };
     let v = json!({
         "type": kind,
         "check": check_id,
         "unit": unit,
+        "screens_hash": screens,
         "reason": says,
         "file_hash": h,
         "file_name": file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),

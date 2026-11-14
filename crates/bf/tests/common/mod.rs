@@ -67,14 +67,34 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 
 impl Fx {
     /// A fresh git repository with one commit and `bf init` done.
+    /// Every named check is switched off for the project: these fixtures exercise the engine's other
+    /// rules. `with_checks` keeps the defaults.
     pub fn new() -> Fx {
+        let fx = Fx::build(true);
+        fx.checks_all_off();
+        fx
+    }
+
+    /// The same as `new`, with the catalogue's defaults: every named check required, and nothing
+    /// decided by the human yet (`checks_decided_as_default` decides it).
+    pub fn with_checks() -> Fx {
         Fx::build(true)
+    }
+
+    /// Decide the project default as the catalogue has it (nothing switched off), the way the human
+    /// does: a proposal, their words, the recorded choice.
+    pub fn checks_decided_as_default(&self) {
+        self.must(&["checks", "propose", "--scope", "default"]);
+        self.human("Yes, keep every check on.");
+        self.must(&["checks", "set", "--quote", "keep every check on"]);
     }
 
     /// The same, with the shipped policy as it is: role tokens on. Only the PATH, the git program
     /// and the transcript folder (which must live inside the temporary folder) differ.
     pub fn shipped() -> Fx {
-        Fx::build(false)
+        let fx = Fx::build(false);
+        fx.checks_all_off();
+        fx
     }
 
     fn build(tokens_off: bool) -> Fx {
@@ -84,7 +104,9 @@ impl Fx {
     /// A workspace (its own git repository, with `bf init --workspace` done) that points at the named
     /// code repositories, each a sibling folder with one commit and a README.
     pub fn workspace(repos: &[&str]) -> Fx {
-        Fx::build_with(true, repos)
+        let fx = Fx::build_with(true, repos);
+        fx.checks_all_off();
+        fx
     }
 
     /// The main checkout of a code repository made by `workspace`.
@@ -170,6 +192,95 @@ impl Fx {
         git(&fx.root, &["add", "-A"]);
         git(&fx.root, &["commit", "-q", "-m", "bf init"]);
         fx
+    }
+
+    /// A check record for every named check in the catalogue, each proving `proves` and run by no one:
+    /// enough for the plan check, and for tests that start from a project with the defaults.
+    pub fn name_every_check(&self, proves: &str) {
+        for (i, c) in bf::checks::all().iter().enumerate() {
+            let how = c.proof.name();
+            let cmd = if how == "command" {
+                "command=\"true\"\n"
+            } else {
+                ""
+            };
+            let t = format!(
+                "id=\"X-{}\"\nkind=\"check\"\ntitle=\"{}\"\nhow=\"{how}\"\n{cmd}proves=[\"{proves}\"]\nscope=\"checkpoint\"\nnamed=\"{}\"\n",
+                90 + i,
+                c.name,
+                c.name
+            );
+            let o = self.put("check", &t);
+            assert_eq!(o.code, 0, "{}", o.all());
+        }
+        // The plan check wants the choice decided first, through the engine, unless it already is.
+        if !self.root.join("factory/checks.json").exists() {
+            self.checks_decided_as_default();
+        }
+        // Each is listed by the last checkpoint, where a built-stage check counts.
+        let list = self
+            .bf(&["record", "list", "--kind", "checkpoint", "--json"])
+            .json();
+        let last = list.as_array().unwrap().last().unwrap().clone();
+        let mut k = self
+            .bf(&["record", "get", last["id"].as_str().unwrap(), "--json"])
+            .json();
+        let mut ids: Vec<serde_json::Value> = k["checks"].as_array().cloned().unwrap_or_default();
+        for i in 0..bf::checks::all().len() {
+            ids.push(serde_json::json!(format!("X-{}", 90 + i)));
+        }
+        k["checks"] = serde_json::Value::Array(ids);
+        let f = self.root.join("k-revised.toml");
+        fs::write(&f, toml::to_string(&k).unwrap()).unwrap();
+        let o = self.bf(&[
+            "record",
+            "put",
+            "checkpoint",
+            "--file",
+            f.to_str().unwrap(),
+            "--replace",
+        ]);
+        assert_eq!(o.code, 0, "{}", o.all());
+        let _ = fs::remove_file(&f);
+        self.commit_all("named checks");
+    }
+
+    /// Switch every named check off for the project, the way the human does: a proposal, their words,
+    /// the recorded choice. Tests of the engine's other rules need no named check.
+    pub fn checks_all_off(&self) {
+        let changes: Vec<String> = bf::checks::all()
+            .iter()
+            .map(|c| format!("{}=off:the test does not exercise it", c.name))
+            .collect();
+        let mut args: Vec<&str> = vec!["checks", "propose"];
+        args.extend(changes.iter().map(|x| x.as_str()));
+        self.must(&args);
+        self.human("Yes, switch those checks off for this test.");
+        self.must(&[
+            "checks",
+            "set",
+            "--quote",
+            "Yes, switch those checks off for this test.",
+        ]);
+    }
+
+    /// Switch every named check off for the active run only, the way the human does, so the run may
+    /// be stopped: stopping a run asks for proof of every required check.
+    pub fn run_checks_all_off(&self) {
+        let changes: Vec<String> = bf::checks::all()
+            .iter()
+            .map(|c| format!("{}=off:the test stops the run early", c.name))
+            .collect();
+        let mut args: Vec<&str> = vec!["checks", "propose", "--scope", "run"];
+        args.extend(changes.iter().map(|x| x.as_str()));
+        self.must(&args);
+        self.human("Yes, switch those checks off for this run.");
+        self.must(&[
+            "checks",
+            "set",
+            "--quote",
+            "switch those checks off for this run",
+        ]);
     }
 
     pub fn bf_in(&self, dir: &Path, args: &[&str]) -> Out {
@@ -344,7 +455,7 @@ impl Fx {
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"Greeting file\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\",\"C-1\",\"H-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
             ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"Farewell file\"\nhow=\"command\"\ncommand=\"test -f src/bye.txt\"\nproves=[\"R-2\"]\nscope=\"unit\"\nunit=\"U-2\"\n"),
             ("check", "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"ls src/hello.txt src/bye.txt\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nchecks=[\"X-3\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nchecks=[\"X-3\"]\n"),
         ];
         for (k, t) in recs {
             let o = self.put(k, t);

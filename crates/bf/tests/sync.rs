@@ -23,9 +23,10 @@ fn plan_with(fx: &Fx, repo: &str, k_check: &str) {
         ("unit", format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\n{r}checkpoint=\"K-1\"\n")),
         ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n".to_string()),
         ("check", format!("id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"{k_check}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n")),
-        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n".to_string()),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n".to_string()),
     ] {
-        assert_eq!(fx.put(k, &t).code, 0);
+        let r = fx.put(k, &t);
+        assert_eq!(r.code, 0, "{k}: {}{}", r.stdout, r.stderr);
     }
     fx.commit_all("records");
 }
@@ -368,6 +369,29 @@ fn walk_resolve(fx: &Fx, code: &Path) {
             "{cmd}"
         );
     }
+    // A shell write in the checkpoint's own copy is held to the files the sync allows, as the write
+    // tools are, and the refusal does not call the copy somewhere else in the project.
+    for cmd in [
+        "echo x > src/a.txt",
+        "sed -i '' 's/x/y/' src/a.txt",
+        "tee src/a.txt < /dev/null",
+    ] {
+        assert_ne!(
+            guard_says(fx, &k, "Bash", json!({"command": cmd})),
+            "deny",
+            "{cmd}"
+        );
+    }
+    for cmd in ["echo x > src/other.txt", "rm src/other.txt"] {
+        let payload = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": k.to_string_lossy()});
+        let o = fx.bf_stdin(&k, &["guard"], &payload.to_string());
+        let v: Value = serde_json::from_str(o.stdout.trim()).unwrap();
+        let h = &v["hookSpecificOutput"];
+        assert_eq!(h["permissionDecision"], "deny", "{cmd}");
+        let why = h["permissionDecisionReason"].as_str().unwrap();
+        assert!(!why.contains("somewhere else in the project"), "{why}");
+        assert!(why.contains("checkpoint"), "{why}");
+    }
     assert_ne!(
         guard_says(
             fx,
@@ -622,6 +646,21 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
     directive(&fx, "resolve-sync");
     // A hand resolution while a sync is open is recorded with `--resolved` (the human's way).
     resolve_file(&k);
+    // A report on the open sync is refused cleanly while another engine command holds the lock.
+    {
+        let held = bf::lock::engine(&fx.project(), "hold").unwrap();
+        let o = fx.bf_in(
+            &k,
+            &["report", "K-1", "--role", "builder", "--result", "built"],
+        );
+        assert_ne!(o.code, 0, "{}", o.all());
+        assert!(
+            o.all().contains("another engine command is running"),
+            "{}",
+            o.all()
+        );
+        drop(held);
+    }
     fx.human("I resolved it myself, thanks.");
     let o = fx
         .must(&[
@@ -635,6 +674,7 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
         ])
         .json();
     assert_eq!(o["synced"], true, "{o}");
+    assert!(o["skipped_checks"].is_array(), "{o}");
     assert!(fx.must(&["status", "--json"]).json()["sync_open"].is_null());
 }
 
@@ -838,4 +878,52 @@ fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_
         ])
         .json();
     assert_eq!(o["synced"], true, "{o}");
+}
+
+/// A sync runs only the checks that are switched on, and says which it left out.
+#[test]
+fn a_sync_leaves_out_a_switched_off_check_and_says_so() {
+    let fx = Fx::new();
+    fx.tiny();
+    // A checkpoint check that is named, so it is switched off, whose command fails.
+    let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
+    let f = fx.root.join("x3.toml");
+    fs::write(&f, x3).unwrap();
+    let o = fx.bf(&[
+        "record",
+        "put",
+        "check",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let _ = fs::remove_file(&f);
+    fx.commit_all("x3");
+    fx.start_test_run();
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    fs::create_dir_all(fx.root.join("docs")).unwrap();
+    fs::write(fx.root.join("docs/extra.txt"), "main\n").unwrap();
+    git(&fx.root, &["add", "docs/extra.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+    fx.human("Yes, take main into the checkpoint.");
+    let o = fx
+        .must(&[
+            "checkpoint",
+            "sync",
+            "K-1",
+            "--quote",
+            "take main into the checkpoint",
+            "--json",
+        ])
+        .json();
+    assert_eq!(o["synced"], true, "{o}");
+    assert_eq!(o["skipped_checks"], json!(["X-3"]), "{o}");
+    assert!(o["sync_open"].is_null(), "{o}");
 }

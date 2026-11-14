@@ -19,8 +19,8 @@ fn two_checkpoints(fx: &Fx) {
         ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"b\"\nhow=\"command\"\ncommand=\"test -f src/b.txt\"\nproves=[\"R-2\"]\nscope=\"unit\"\nunit=\"U-2\"\n"),
         ("check", "id=\"X-3\"\nkind=\"check\"\ntitle=\"a again\"\nhow=\"command\"\ncommand=\"ls src/a.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
         ("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\"]\nscope=\"checkpoint\"\n"),
-        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"First\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-3\"]\n"),
-        ("checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\"]\nchecks=[\"X-4\"]\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"First\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-3\"]\n"),
+        ("checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\"]\nchecks=[\"X-4\"]\n"),
     ];
     for (k, t) in recs {
         let o = fx.put(k, t);
@@ -39,7 +39,7 @@ fn two_units_in_one_checkpoint(fx: &Fx) {
         ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
         ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"b\"\nhow=\"command\"\ncommand=\"test -f src/b.txt\"\nproves=[\"R-2\"]\nscope=\"unit\"\nunit=\"U-2\"\n"),
         ("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\"]\nscope=\"checkpoint\"\n"),
-        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"All\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\"]\nchecks=[\"X-4\"]\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"All\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\"]\nchecks=[\"X-4\"]\n"),
     ];
     for (k, t) in recs {
         let o = fx.put(k, t);
@@ -349,7 +349,7 @@ fn a_handoff_proved_only_by_a_check_nothing_runs_is_a_plan_problem_and_a_ledger_
         o.stderr
     );
     // A checkpoint lists it: the plan is fine, and the handoff is a ledger row that needs evidence.
-    replace_record(&fx, "checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nchecks=[\"X-3\",\"X-9\"]\n");
+    replace_record(&fx, "checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nchecks=[\"X-3\",\"X-9\"]\n");
     fx.must(&["plan", "check"]);
     // R-1, R-2, C-1 and the handoff: four parts.
     let rows = fx.must(&["ledger", "check", "--plan", "--json"]).json();
@@ -522,7 +522,7 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
         ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
         ("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"Read the screen aloud\"\nhow=\"agent\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
-        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-5\"]\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-5\"]\n"),
     ] {
         assert_eq!(fx.put(k, t).code, 0);
     }
@@ -708,7 +708,7 @@ fn whole_plan(fx: &Fx, journey: bool) {
     recs.extend([
         ("unit", format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[{list}]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n")),
         ("check", format!("id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[{list}]\nscope=\"unit\"\nunit=\"U-1\"\n")),
-        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[{list}]\nchecks=[\"X-1\"]\n")),
+        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[{list}]\nchecks=[\"X-1\"]\n")),
     ]);
     for (k, t) in recs {
         let o = fx.put(k, &t);
@@ -981,7 +981,7 @@ fn a_unit_brief_quotes_the_text_of_an_other_answer() {
 
 #[test]
 fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     // A conductor at work (questions asked), and not one message of the human recorded.
     let q = ask_file(
         &fx,
@@ -1050,8 +1050,9 @@ fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
 
 #[test]
 fn bf_next_carries_the_note_in_its_json_and_on_stderr() {
-    let fx = Fx::new();
-    whole_plan(&fx, false);
+    let fx = Fx::with_checks();
+    // Deciding the checks takes a human message, which this test must not have yet: the run starts
+    // on a project with no plan, so there is nothing to check, and nothing the human wrote is recorded.
     fx.must(&["run", "start"]);
     let o = fx.must(&["next", "--json"]);
     assert!(
@@ -1243,6 +1244,11 @@ fn send_prompt(fx: &Fx, extra: serde_json::Value, prompt: &str) -> serde_json::V
 #[test]
 fn each_form_of_the_hosts_own_message_is_not_a_human_turn_and_names_the_form() {
     let fx = Fx::new();
+    let turns_before = fx
+        .must(&["log", "--json"])
+        .stdout
+        .matches("\"human.turn\"")
+        .count();
     let reminder = "<system-reminder>Some host context.</system-reminder>\n";
     for (text, names) in [
         (
@@ -1299,9 +1305,9 @@ fn each_form_of_the_hosts_own_message_is_not_a_human_turn_and_names_the_form() {
         let why = r["event"]["reason"].as_str().unwrap();
         assert!(why.contains(names), "{text}: {why}");
     }
-    // The log says so for each: rejected, never a turn.
+    // The log says so for each: rejected, never a turn. Only the fixture's own setup turn is there.
     let log = fx.must(&["log", "--json"]).stdout;
-    assert!(!log.contains("\"human.turn\""), "{log}");
+    assert_eq!(log.matches("\"human.turn\"").count(), turns_before, "{log}");
 }
 
 #[test]

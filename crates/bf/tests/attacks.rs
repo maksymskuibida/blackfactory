@@ -610,3 +610,70 @@ fn t13_the_guard_denies_agents_the_command_that_records_a_turn() {
             .unwrap(),
     );
 }
+
+// ---------------------------------------------------------------- TH-18, TH-19
+
+fn bash_decision(fx: &Fx, cmd: &str) -> String {
+    let payload = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": fx.root.to_string_lossy()});
+    let o = fx.bf_stdin(&fx.root, &["guard"], &payload.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
+    match o.stdout.trim() {
+        "" | "{}" => "abstain".into(),
+        s => serde_json::from_str::<serde_json::Value>(s).unwrap()["hookSpecificOutput"]
+            ["permissionDecision"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    }
+}
+
+#[test]
+fn th18_every_form_the_parse_understands_still_reaches_the_protected_paths() {
+    let fx = Fx::new();
+    fx.tiny();
+    let root = fx.root.display().to_string();
+    for cmd in [
+        "echo x > factory/policy.toml".to_string(),
+        "echo x >> factory/policy.toml".to_string(),
+        "true && echo x > ./factory/policy.toml".to_string(),
+        "echo $(echo x > factory/policy.toml)".to_string(),
+        "sh -c 'echo x > factory/policy.toml'".to_string(),
+        "eval 'echo x > factory/policy.toml'".to_string(),
+        "env FOO=1 rm factory/policy.toml".to_string(),
+        "sudo rm -rf factory".to_string(),
+        "ls | xargs rm factory/policy.toml".to_string(),
+        "cd factory && echo x > policy.toml".to_string(),
+        "cp /tmp/p.toml factory/policy.toml".to_string(),
+        "install -m 644 /tmp/p.toml factory/policy.toml".to_string(),
+        "cp -t factory /tmp/p.toml".to_string(),
+        "dd if=/tmp/p of=factory/policy.toml".to_string(),
+        "curl -o factory/policy.toml http://example.invalid/p".to_string(),
+        "tar -xf a.tar -C factory".to_string(),
+        format!("python3 -c \"open('{root}/factory/policy.toml','w')\""),
+        format!("cat <<EOF | tee {root}/factory/policy.toml\nx\nEOF"),
+    ] {
+        assert_eq!(bash_decision(&fx, &cmd), "deny", "{cmd}");
+    }
+}
+
+#[test]
+fn th19_a_path_built_at_run_time_is_the_known_gap_and_is_stated() {
+    // A script that builds the path from pieces carries no path string: the guard does not see it, and
+    // the documentation says so (what the engine does not stop). A path that is named, even with a
+    // variable in front of it, is refused.
+    let fx = Fx::new();
+    fx.tiny();
+    assert_ne!(
+        bash_decision(&fx, "python3 -c \"open('fac'+'tory/policy.toml','w')\""),
+        "deny"
+    );
+    assert_eq!(
+        bash_decision(&fx, "echo x > \"$ROOT/factory/policy.toml\""),
+        "deny"
+    );
+    let doc = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/engine.md"),
+    )
+    .unwrap();
+    assert!(doc.contains("built at run time"), "the gap is documented");
+}

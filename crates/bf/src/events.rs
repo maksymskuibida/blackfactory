@@ -114,7 +114,26 @@ pub fn write_head(p: &Project, h: &Head) -> R<()> {
     Ok(())
 }
 
+/// Read the log and compare it with the head. A shared hold on the log lock keeps an append from
+/// finishing between the two reads, so a reader never sees a head one event ahead of the log it read.
 pub fn load_log(p: &Project) -> R<Log> {
+    let guard = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(p.dot_bf().join("log.lock"))
+        .ok();
+    if let Some(g) = &guard {
+        let _ = g.lock_shared();
+    }
+    let r = load_log_unlocked(p);
+    if let Some(g) = &guard {
+        let _ = g.unlock();
+    }
+    r
+}
+
+fn load_log_unlocked(p: &Project) -> R<Log> {
     let text = match fs::read(p.log_path()) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -243,7 +262,7 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
             "`bf doctor` reports `key: ok`.",
         )
     })?;
-    let log = load_log(p)?;
+    let log = load_log_unlocked(p)?;
     // Heal a torn last line left by a killed process.
     if log.file_len != log.valid_len {
         let f = fs::OpenOptions::new().write(true).open(p.log_path())?;
@@ -329,6 +348,66 @@ pub struct Run {
     pub test_mode: bool,
     pub ended: bool,
     pub simulated_used: bool,
+    /// The checks switched off for this run, with the reason for each: the project default when the
+    /// run started, then what the human confirmed for this run.
+    pub checks_off: BTreeMap<String, String>,
+}
+
+/// One change of the check settings: a check name and, when it is switched off, the reason.
+/// `None` switches the check on.
+pub type CheckChange = (String, Option<String>);
+
+/// A proposal of check settings that was shown to the human before they were asked.
+#[derive(Clone, Debug)]
+pub struct CheckProposal {
+    pub seq: u64,
+    /// `run`, `default` or `both`.
+    pub scope: String,
+    pub changes: Vec<CheckChange>,
+    /// The run that was active when the proposal was made; empty when none.
+    pub run: String,
+    /// True once a setting recorded it: a proposal is confirmed only once.
+    pub used: bool,
+}
+
+pub fn changes_to_json(c: &[CheckChange]) -> Value {
+    Value::Array(
+        c.iter()
+            .map(|(n, r)| json!({"check": n, "off": r}))
+            .collect(),
+    )
+}
+
+pub fn changes_from_json(v: &Value) -> Vec<CheckChange> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .map(|x| {
+                    (
+                        x["check"].as_str().unwrap_or("").to_string(),
+                        x["off"].as_str().map(|s| s.to_string()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn apply_changes(off: &mut BTreeMap<String, String>, changes: &[CheckChange]) {
+    for (n, r) in changes {
+        if crate::checks::by_name(n).is_none() {
+            continue;
+        }
+        match r {
+            Some(r) if !r.trim().is_empty() => {
+                off.insert(n.clone(), r.clone());
+            }
+            Some(_) => {}
+            None => {
+                off.remove(n);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -392,7 +471,12 @@ pub struct Amend {
     pub keep: Vec<String>,
     pub waive: Vec<String>,
     pub reasons: Value,
+    /// `open`, `narrowed`, `approved` or `withdrawn`.
     pub status: String,
+    /// For a withdrawn amendment: why.
+    pub withdrawn_why: String,
+    /// The log position of its latest narrowing or revision: an approval needs a human message after it.
+    pub changed_seq: u64,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -401,6 +485,15 @@ pub struct Closed {
     pub seq: u64,
     pub hash: String,
     pub merged: bool,
+    /// Whether the close event recorded which checks were off and which IDs they left unproven.
+    /// A close from before that was recorded is judged by the settings of the latest run.
+    pub recorded: bool,
+    /// The run the checkpoint closed in.
+    pub run: String,
+    /// The names of the checks that were switched off when the checkpoint closed.
+    pub off: Vec<String>,
+    /// The IDs left unproven at the close because every check that proves them was off, with those names.
+    pub waived: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Default)]
@@ -430,6 +523,8 @@ pub struct State {
     pub work_events: usize,
     /// Design gates the human skipped: (kind, the words, seq). Only `ui` can be skipped.
     pub skipped: Vec<(String, String, u64)>,
+    /// Legal records the human accepted: (record, the words, seq). Each used up one human message.
+    pub legal_accepts: Vec<(String, String, u64)>,
     /// Where each checkpoint branch took the main branch in: (checkpoint, repository, main's commit).
     pub synced: Vec<(String, String, String)>,
     /// A sync that stopped at a conflict and is being resolved.
@@ -437,6 +532,10 @@ pub struct State {
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
+    /// The project default: checks switched off, with the reason for each.
+    pub checks_default: BTreeMap<String, String>,
+    /// Proposals of check settings shown to the human, in log order.
+    pub checks_proposals: Vec<CheckProposal>,
 }
 
 impl State {
@@ -725,7 +824,77 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     test_mode,
                     ended: false,
                     simulated_used: false,
+                    checks_off: st.checks_default.clone(),
                 });
+            }
+            "checks.propose" => {
+                st.checks_proposals.push(CheckProposal {
+                    seq,
+                    scope: sv("scope"),
+                    changes: changes_from_json(&ev["changes"]),
+                    run: st
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|r| !r.ended)
+                        .map(|r| r.id.clone())
+                        .unwrap_or_default(),
+                    used: false,
+                });
+            }
+            "checks.set" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let pseq = ev["proposal"].as_u64().unwrap_or(0);
+                let changes = changes_from_json(&ev["changes"]);
+                let prop = st.checks_proposals.iter().find(|x| x.seq == pseq).cloned();
+                let ok = prop
+                    .as_ref()
+                    .map(|x| {
+                        let active = st
+                            .runs
+                            .iter()
+                            .rev()
+                            .find(|r| !r.ended)
+                            .map(|r| r.id.clone())
+                            .unwrap_or_default();
+                        x.scope == sv("scope")
+                            && x.changes == changes
+                            && !x.used
+                            && !st
+                                .checks_proposals
+                                .iter()
+                                .any(|y| y.seq > x.seq && y.seq < tseq)
+                            && (x.scope == "default" || (!active.is_empty() && x.run == active))
+                    })
+                    .unwrap_or(false)
+                    && decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        pseq,
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    );
+                if !ok {
+                    st.ignored.push(format!(
+                        "event {seq}: a check setting cites no matching proposal or no valid human turn and quote after it"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(x) = st.checks_proposals.iter_mut().find(|x| x.seq == pseq) {
+                    x.used = true;
+                }
+                let scope = sv("scope");
+                if scope == "default" || scope == "both" {
+                    apply_changes(&mut st.checks_default, &changes);
+                }
+                if scope == "run" || scope == "both" {
+                    if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                        apply_changes(&mut r.checks_off, &changes);
+                    }
+                }
             }
             "run.stop" => {
                 let rid = sv("run");
@@ -766,6 +935,14 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 u.last_seq = seq;
                 u.last_at = at;
+            }
+            "unit.role-report" => {
+                // The cost a role reports counts in the total, and for a unit also in the unit's.
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                st.cost += c;
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    u.cost += c;
+                }
             }
             "unit.land" => {
                 let u = st.units.entry(sv("unit")).or_default();
@@ -906,6 +1083,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.turns[turn_ix[&tseq]].used = true;
                 st.skipped.push((sv("gate_kind"), sv("quote"), seq));
             }
+            "legal.accept" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
+                    || sv("record").is_empty()
+                {
+                    st.ignored.push(format!(
+                        "event {seq}: a legal acceptance cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                st.legal_accepts.push((sv("record"), sv("quote"), seq));
+            }
             "unit.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
@@ -943,6 +1133,23 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if e.seq == 0 {
                     e.seq = seq;
                     e.hash = sv("hash");
+                    if let Some(un) = ev.get("unproven_off").and_then(|v| v.as_array()) {
+                        e.recorded = true;
+                        e.run = sv("run");
+                        e.off = crate::store::str_list(ev, "off_names");
+                        for o in un {
+                            let id = o["id"].as_str().unwrap_or("").to_string();
+                            let names = o["checks"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            e.waived.insert(id, names);
+                        }
+                    }
                 }
                 e.merged = e.merged || merged;
             }
@@ -954,7 +1161,36 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 waive: vec![],
                 reasons: Value::Null,
                 status: "open".into(),
+                withdrawn_why: String::new(),
+                changed_seq: seq,
             }),
+            "amend.withdraw" => {
+                let id = sv("amend");
+                if let Some(a) = st
+                    .amends
+                    .iter_mut()
+                    .find(|a| a.id == id && matches!(a.status.as_str(), "open" | "narrowed"))
+                {
+                    a.status = "withdrawn".into();
+                    a.withdrawn_why = sv("reason");
+                }
+            }
+            "amend.revise" => {
+                let id = sv("amend");
+                if let Some(a) = st
+                    .amends
+                    .iter_mut()
+                    .find(|a| a.id == id && matches!(a.status.as_str(), "open" | "narrowed"))
+                {
+                    a.ids = crate::store::str_list(ev, "ids");
+                    a.impact = ev.get("impact").cloned().unwrap_or(Value::Null);
+                    a.keep = crate::store::str_list(ev, "impact_ids");
+                    a.waive = vec![];
+                    a.reasons = Value::Null;
+                    a.status = "open".into();
+                    a.changed_seq = seq;
+                }
+            }
             "amend.narrow" => {
                 let id = sv("amend");
                 if let Some(a) = st
@@ -966,14 +1202,29 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.waive = crate::store::str_list(ev, "waive");
                     a.reasons = ev.get("reasons").cloned().unwrap_or(Value::Null);
                     a.status = "narrowed".into();
+                    a.changed_seq = seq;
                 }
             }
             "amend.approve" => {
                 let id = sv("amend");
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                let changed = st
+                    .amends
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| a.changed_seq)
+                    .unwrap_or(0);
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    changed,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
-                        "event {seq}: amendment approval cites no valid human turn"
+                        "event {seq}: amendment approval cites no valid human turn after its latest change"
                     ));
                     continue;
                 }

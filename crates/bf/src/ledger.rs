@@ -18,6 +18,43 @@ pub struct Row {
     pub checks: Vec<String>,
     pub evidence: Vec<String>,
     pub missing: Vec<&'static str>,
+    /// The switched-off checks that left this part unproven: it is not demanded, and says so.
+    pub off: Vec<String>,
+    /// The runs whose settings judged those checks as off.
+    pub off_runs: Vec<String>,
+}
+
+/// The names of the switched-off checks that are the only checks of a closed checkpoint proving this
+/// part. The close follows the same rule (`enforce::off_unproven`).
+/// Also returns the runs whose settings were used.
+fn off_waiver(pl: &Plan, st: &State, id: &str) -> (Vec<String>, Vec<String>) {
+    let mut out: Vec<String> = Vec::new();
+    let mut runs: Vec<String> = Vec::new();
+    for k in &pl.checkpoints {
+        if !st.closed.contains_key(s(k, "id")) {
+            continue;
+        }
+        let closed = &st.closed[s(k, "id")];
+        if crate::enforce::judged_by_close(st, closed) {
+            // Judged by the settings in force when the checkpoint closed.
+            if let Some(names) = closed.waived.get(id) {
+                out.extend(names.iter().cloned());
+                runs.push(closed.run.clone());
+            }
+            continue;
+        }
+        for (i, names) in crate::enforce::off_unproven(pl, st, k) {
+            if i == id {
+                out.extend(names);
+                runs.push(crate::enforce::latest_run_id(st));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    runs.sort();
+    runs.dedup();
+    (out, runs)
 }
 
 /// Evidence for a part: a sealed passing receipt, at the content a checkpoint closed on, from one of that
@@ -120,10 +157,17 @@ pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) ->
         if checks.is_empty() {
             missing.push("check");
         }
-        if with_evidence && evidence.is_empty() {
+        let (off, off_runs) = if with_evidence && evidence.is_empty() {
+            off_waiver(pl, st, &id)
+        } else {
+            (vec![], vec![])
+        };
+        if with_evidence && evidence.is_empty() && off.is_empty() {
             missing.push("evidence");
         }
         out.push(Row {
+            off,
+            off_runs,
             id,
             title: s(d, "title").to_string(),
             kind: s(d, "kind").to_string(),
@@ -151,6 +195,8 @@ pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) ->
             missing.push("evidence");
         }
         out.push(Row {
+            off: vec![],
+            off_runs: vec![],
             id,
             title: format!("{} from {} to {}", s(h, "thing"), s(h, "from"), s(h, "to")),
             kind: "handoff".into(),
