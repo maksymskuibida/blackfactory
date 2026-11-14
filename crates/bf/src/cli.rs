@@ -39,6 +39,9 @@ const VALUE_FLAGS: &[&str] = &[
     "token",
     "attempt",
     "judge",
+    "accept",
+    "decline",
+    "fix-findings",
     "root",
     "C",
 ];
@@ -609,10 +612,47 @@ fn dispatch(args: &Args) -> R<()> {
                 });
                 return Ok(());
             }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("finding") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let quote = args.flag("quote").unwrap_or("");
+                let reason = args.flag("reason").unwrap_or("");
+                let v = if let Some(ids) = args.flag("fix-findings") {
+                    crate::ckreview::fix_chosen(&p, k, ids)?
+                } else if let Some(ids) = args.flag("accept") {
+                    crate::ckreview::settle(&p, k, ids, "accepted", reason, quote)?
+                } else if let Some(ids) = args.flag("decline") {
+                    crate::ckreview::settle(&p, k, ids, "declined", reason, quote)?
+                } else {
+                    return Err(refuse(
+                        "run `bf checkpoint finding`",
+                        "it needs --accept, --decline or --fix-findings, with the findings named",
+                        &["Run `bf checkpoint finding <K> --accept low --quote \"...\"`, `--decline r1.2 --reason \"...\" --quote \"...\"` or `--fix-findings r1.2,r1.3`."],
+                        "The command prints the result.",
+                    ));
+                };
+                out(args, &v, || format!("{k}: findings settled"));
+                return Ok(());
+            }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("review") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                if !args.has("release") {
+                    return Err(refuse(
+                        "run `bf checkpoint review`",
+                        "it needs --release",
+                        &["Run `bf checkpoint review <K> --release --quote \"<the human's words>\"`."],
+                        "The command prints the result.",
+                    ));
+                }
+                let v = crate::ckreview::release(&p, k, args.flag("quote").unwrap_or(""))?;
+                out(args, &v, || {
+                    format!("{k} is released; its findings go to a fix")
+                });
+                return Ok(());
+            }
             if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
                 return Err(refuse(
                     "run `bf checkpoint`",
-                    "only `bf checkpoint close`, `bf checkpoint sync` and `bf checkpoint fix` exist",
+                    "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint finding` and `bf checkpoint review` exist",
                     &["Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`."],
                     "The command prints the result.",
                 ));

@@ -468,6 +468,11 @@ fn next_raw(p: &Project) -> R<Value> {
                         "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
                 }
             }
+            if !review_needed {
+                if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
+                    directives.push(d);
+                }
+            }
         } else {
             waiting.push(format!("{kid}: waiting for its units to land"));
         }

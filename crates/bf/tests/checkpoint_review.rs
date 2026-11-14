@@ -78,7 +78,16 @@ fn brief_text(fx: &Fx) -> String {
     fs::read_to_string(o.json()["path"].as_str().unwrap()).unwrap()
 }
 
+/// The areas every report names, and how each was probed (R-70).
+fn areas() -> Value {
+    json!([
+        {"area": "the close rule", "how": "read"},
+        {"area": "the file check", "how": "built and run"}
+    ])
+}
+
 fn findings(fx: &Fx, list: Value) -> Out {
+    let body = json!({"areas": areas(), "findings": list});
     fx.bf_stdin(
         &fx.root,
         &[
@@ -91,14 +100,13 @@ fn findings(fx: &Fx, list: Value) -> Out {
             "--findings",
             "-",
         ],
-        &list.to_string(),
+        &body.to_string(),
     )
 }
 
+/// A clean report: the areas probed and no findings.
 fn clean(fx: &Fx) -> Out {
-    fx.bf(&[
-        "report", "K-1", "--role", "reviewer", "--result", "findings",
-    ])
+    findings(fx, json!([]))
 }
 
 #[test]
@@ -184,9 +192,7 @@ fn a_clean_review_needs_the_command_checks_run_by_the_reviewer_and_then_the_chec
         &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
     );
     assert_ne!(o.code, 0, "{}", o.all());
-    fx.must(&[
-        "report", "K-1", "--role", "reviewer", "--result", "findings",
-    ]);
+    assert_eq!(clean(&fx).code, 0);
     assert!(!copy.exists(), "the copy is thrown away");
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true, "{c}");
@@ -242,13 +248,17 @@ fn a_finding_needs_a_severity_and_a_file_and_opens_the_checkpoint_fix() {
 fn the_review_runs_again_on_new_content_within_the_limit_of_rounds() {
     let fx = Fx::new();
     project(&fx, "test -f src/a.txt");
-    let f = json!([{"title": "x", "severity": "low", "where": "src/a.txt:1", "action": "a"}]);
+    let f = json!([{"title": "x", "severity": "high", "where": "src/a.txt:1", "action": "a"}]);
     for round in 1..=3 {
         brief_text(&fx);
         assert_eq!(findings(&fx, f.clone()).code, 0, "round {round}");
-        fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+        if round < 3 {
+            fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+        }
     }
-    // Three rounds without a clean result: the human decides, and no fourth brief is written.
+    // Three reviews with a high finding still open: the checkpoint parks, no fix opens (R-72), the human
+    // decides, and no fourth brief is written.
+    assert!(directive(&fx, "fix-checkpoint").is_none());
     let d = directive(&fx, "decide-checkpoint-review").expect("the human decides");
     assert_eq!(d["role"], "human", "{d}");
     assert!(directive(&fx, "review-checkpoint").is_none());
@@ -477,9 +487,8 @@ fn a_pass_after_a_failure_counts_only_with_the_reviewers_judgement() {
         let flaky_flag = rs.iter().any(|r| r.v["flag"] == "flaky");
         assert_eq!(flaky_flag, flagged, "{judgement}");
         if counts {
-            fx.must(&[
-                "report", "K-1", "--role", "reviewer", "--result", "findings",
-            ]);
+            let o = clean(&fx);
+            assert_eq!(o.code, 0, "{}", o.all());
             fx.must(&["checkpoint", "close", "K-1"]);
         } else {
             // The failure stands: the check goes to the checkpoint fix.
