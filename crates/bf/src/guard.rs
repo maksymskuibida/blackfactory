@@ -458,7 +458,7 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
 /// Programs that write or delete every path they are given.
 const WRITERS: &[&str] = &[
-    "rm", "mv", "tee", "chmod", "chown", "truncate", "touch", "mkdir", "rmdir", "unlink", "shred",
+    "rm", "tee", "chmod", "chown", "truncate", "touch", "mkdir", "rmdir", "unlink", "shred",
     "patch", "mkfifo", "mknod", "mktemp", "sponge",
 ];
 /// The compressors write a file next to the one they are given (or replace it), unless they print to
@@ -498,6 +498,132 @@ fn text_paths(text: &str) -> Vec<String> {
         })
         .map(|t| t.to_string())
         .collect()
+}
+
+/// Can this code write, delete or change a file? A call that does, a mode that opens for writing, or a
+/// redirect string. Code that only reads a path it names is not a write of it.
+fn code_may_write(code: &str) -> bool {
+    // Names are matched as whole words: `json.dumps` reads, `json.dump` writes to a file.
+    const PREFIXES: &[&str] = &[
+        "write", "append", "exec", "spawn", "popen", "unlink", "rmtree", "rmdir", "rmsync",
+        "mkdir", "makedirs", "truncate", "chmod", "chown", "rename", "remove", "copy", "symlink",
+        "hardlink", "extract", "unpack", "sysopen", "touch", "o_wronly", "o_rdwr", "o_trunc",
+        "o_creat", "o_append",
+    ];
+    const EXACT: &[&str] = &[
+        "move",
+        "link",
+        "linksync",
+        "dump",
+        "system",
+        "subprocess",
+        "shell",
+        "connect",
+        "replacesync",
+    ];
+    // Output streams are not files: a call on them, or a dump handed one, writes nothing to disk.
+    const STREAMS: &[&str] = &[
+        "sys.stdout",
+        "sys.stderr",
+        "process.stdout",
+        "process.stderr",
+    ];
+    let to_stream = STREAMS.iter().any(|s| code.contains(s));
+    let mut prev = "";
+    let mut copy_module = false;
+    for tok in code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
+        let before = prev;
+        prev = tok;
+        // `os.replace` renames a file; `text.replace` does not.
+        if tok == "os.replace" || tok.ends_with(".os.replace") {
+            return true;
+        }
+        if STREAMS.iter().any(|s| tok.starts_with(s)) {
+            continue;
+        }
+        // The `copy` module copies objects in memory; `shutil.copy` copies files.
+        if (tok == "copy" && before == "import") || (copy_module && tok.starts_with("copy.")) {
+            copy_module |= tok == "copy";
+            continue;
+        }
+        for w in tok.split('.') {
+            let l = w.to_lowercase();
+            if l.starts_with("removeprefix") || l.starts_with("removesuffix") {
+                continue;
+            }
+            // `import copy` names a module; a database cursor's `execute` runs a query.
+            if l.starts_with("execute") {
+                continue;
+            }
+            if l == "dump" && to_stream {
+                continue;
+            }
+            if EXACT.contains(&l.as_str()) || PREFIXES.iter().any(|p| l.starts_with(p)) {
+                return true;
+            }
+        }
+    }
+    // The quoted pieces of the code, one scan, no copies of the text around them.
+    let c: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '"' || c[i] == '\'' {
+            let q = c[i];
+            if let Some(e) = c[i + 1..].iter().position(|x| *x == q) {
+                let lit: String = c[i + 1..i + 1 + e].iter().take(8).collect();
+                let t = lit.trim();
+                // A mode follows the path, after a comma (`open(p, 'a')`), not the open parenthesis
+                // (`s.replace('a', 'b')`).
+                let after_comma = c[..i].iter().rev().find(|x| !x.is_whitespace()) == Some(&',');
+                if t.starts_with('>')
+                    || (after_comma
+                        && !t.is_empty()
+                        && e <= 3
+                        && t.chars().all(|c| "rwabxt+U".contains(c))
+                        && t.chars().any(|c| matches!(c, 'w' | 'a' | 'x' | '+')))
+                {
+                    return true;
+                }
+                i += e + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Can the code that a shell or an interpreter is handed in these arguments write? Code with a call or
+/// flag that writes, a shell string with a redirect or a program that writes, an awk program with a
+/// redirect. A formatter, a compile check or a reader is not.
+fn handed_code_may_write(prog: &str, rest: &[String]) -> bool {
+    let joined = rest.join(" ");
+    if code_may_write(&joined) {
+        return true;
+    }
+    let shell = SHELLS.contains(&prog) || prog == "eval";
+    if (shell || matches!(prog, "awk" | "gawk" | "mawk")) && joined.contains('>') {
+        return true;
+    }
+    if shell {
+        let toks: Vec<&str> = joined
+            .split(|c: char| c.is_whitespace() || "\"'`;|&(){}$".contains(c))
+            .filter(|t| !t.is_empty())
+            .collect();
+        return toks.iter().any(|t| {
+            let b = basename(t);
+            WRITERS.contains(&b)
+                || COPIERS.contains(&b)
+                || matches!(b, "mv" | "dd" | "tar" | "unzip" | "tee")
+                || COMPRESSORS.contains(&b)
+                || EDITORS.contains(&b)
+                || (b == "sed"
+                    && toks
+                        .iter()
+                        .any(|x| x.starts_with("-i") || *x == "--in-place"))
+        });
+    }
+    false
 }
 
 /// The paths an interpreter's command holds as text: its arguments and the script fed to it.
@@ -1071,35 +1197,285 @@ fn is_flag(a: &str) -> bool {
     a.starts_with('-') && a.len() > 1
 }
 
-/// The paths a program writes or deletes, from its arguments. Programs that only read give none.
-fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
+/// Options of the copiers and movers that take the next word as their value.
+fn takes_value(prog: &str, a: &str) -> bool {
+    match prog {
+        "cp" | "mv" | "ln" => matches!(a, "-S" | "--suffix"),
+        "install" => matches!(
+            a,
+            "-m" | "-o" | "-g" | "-S" | "--mode" | "--owner" | "--group" | "--suffix"
+        ),
+        "rsync" => matches!(
+            a,
+            "-e" | "--rsh"
+                | "--exclude"
+                | "--include"
+                | "--filter"
+                | "-f"
+                | "--exclude-from"
+                | "--include-from"
+                | "--files-from"
+                | "--rsync-path"
+                | "--chmod"
+                | "--log-file"
+                | "--partial-dir"
+                | "--backup-dir"
+                | "--suffix"
+                | "--compare-dest"
+                | "--copy-dest"
+                | "--link-dest"
+                | "-T"
+                | "--temp-dir"
+                | "--port"
+                | "--bwlimit"
+                | "--timeout"
+                | "--max-size"
+                | "--min-size"
+                | "--password-file"
+                | "--usermap"
+                | "--groupmap"
+                | "--chown"
+        ),
+        _ => false,
+    }
+}
+
+/// The parts of a copy, move, link, install or sync: what it reads, and where it puts it.
+struct Transfer {
+    sources: Vec<String>,
+    /// The last word, or the folder given with `-t` / `--target-directory`.
+    dest: Option<String>,
+    /// The destination is a folder because `-t` said so.
+    by_option: bool,
+    /// `-T` / `--no-target-directory`: the destination is the thing itself, never a folder to go into.
+    plain: bool,
+}
+
+fn transfer_parts(prog: &str, args: &[String]) -> Transfer {
+    let mut pos: Vec<String> = Vec::new();
+    let mut tdir: Option<String> = None;
+    let mut plain = false;
+    let mut rest_are_words = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if rest_are_words {
+            pos.push(a.clone());
+        } else if a == "--" {
+            rest_are_words = true;
+        } else if a == "-t" || a == "--target-directory" {
+            tdir = it.next().cloned();
+        } else if let Some(d) = a.strip_prefix("--target-directory=") {
+            tdir = Some(d.to_string());
+        } else if a == "--no-target-directory" || (prog != "rsync" && a == "-T") {
+            plain = true;
+        } else if takes_value(prog, a) {
+            it.next();
+        } else if is_flag(a) {
+            // A bundle of short options ends with `t` when the folder follows (`cp -at dir file`), and
+            // holds `T` for the no-target-folder form (`cp -rT a b`). Not for rsync, where `-t` keeps times.
+            let short = a.starts_with('-') && !a.starts_with("--");
+            if prog != "rsync" && short && a.len() > 2 {
+                if a.ends_with('t') {
+                    tdir = it.next().cloned();
+                } else if a[1..].contains('T') {
+                    plain = true;
+                }
+            }
+            // `ln -n` treats a link to a folder as a file: the link itself is replaced.
+            if prog == "ln" && (a == "--no-dereference" || (short && a[1..].contains('n'))) {
+                plain = true;
+            }
+        } else {
+            pos.push(a.clone());
+        }
+    }
+    match tdir {
+        Some(d) => Transfer {
+            sources: pos,
+            dest: Some(d),
+            by_option: true,
+            plain,
+        },
+        None => {
+            // `ln` with one word makes the link `./<name>` in the working directory.
+            let dest = if pos.len() > 1 || prog != "ln" {
+                pos.pop()
+            } else if pos.len() == 1 {
+                Some(".".to_string())
+            } else {
+                None
+            };
+            Transfer {
+                sources: pos,
+                dest,
+                by_option: false,
+                plain,
+            }
+        }
+    }
+}
+
+/// Is the destination of a transfer a folder the sources go into? By option, by a trailing slash or a
+/// dot, because several sources need one, or because it is one on disk.
+fn goes_into_folder(tp: &Transfer, dest: &str, dir: &Option<String>) -> bool {
+    if tp.by_option {
+        return true;
+    }
+    if tp.plain {
+        return false;
+    }
+    let dot = dest == "." || dest == ".." || dest.ends_with("/.") || dest.ends_with("/..");
+    dest.ends_with('/')
+        || dot
+        || tp.sources.len() > 1
+        || target_abs(dest, dir).is_some_and(|a| Path::new(&a).is_dir())
+}
+
+/// Where a source ends up when it goes into a folder: the folder with the source's own name. A source
+/// that stands for its contents (a trailing slash, `.`, a variable) or for several names lands as a
+/// wildcard.
+fn landing(dest: &str, src: &str) -> String {
+    let trimmed = src.trim_end_matches('/');
+    let base = trimmed.rsplit('/').next().unwrap_or("");
+    let contents = src.ends_with('/')
+        || base.is_empty()
+        || base == "."
+        || base == ".."
+        || base.contains('$')
+        || base.contains('`')
+        // Input that `xargs` hands over and the guard cannot read.
+        || base.contains('\u{1}');
+    format!(
+        "{}/{}",
+        dest.trim_end_matches('/'),
+        if contents { "*" } else { base }
+    )
+}
+
+/// The paths a transfer writes: where each source lands, or the destination itself when it is a file.
+/// A mover also deletes its sources, and a linker names the path it points at, so those count too.
+fn transfer_targets(prog: &str, args: &[String], dir: &Option<String>) -> Vec<String> {
+    let tp = transfer_parts(prog, args);
     let mut out = Vec::new();
-    if WRITERS.contains(&prog) {
-        out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
+    if matches!(prog, "mv" | "ln") {
+        out.extend(tp.sources.iter().cloned());
+    }
+    if let Some(d) = &tp.dest {
+        if goes_into_folder(&tp, d, dir) {
+            out.extend(tp.sources.iter().map(|s| landing(d, s)));
+        } else {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
+/// The paths of the arguments of `chmod`, `chown` and the like, without the words that are not paths: the
+/// mode or owner, and the values of options.
+fn writer_paths(prog: &str, args: &[String]) -> Vec<String> {
+    if prog == "mktemp" {
+        // With `-p DIR` the file is made in that folder and the template is only a name; with `-t` it is
+        // made in the temporary folder. Otherwise the template is a path in the working directory.
+        let mut it = args.iter();
+        let mut templates = Vec::new();
+        while let Some(a) = it.next() {
+            if a == "-p" || a == "--tmpdir" {
+                return it.next().cloned().into_iter().collect();
+            } else if let Some(d) = a.strip_prefix("--tmpdir=") {
+                return vec![d.to_string()];
+            } else if a == "-t" {
+                return Vec::new();
+            } else if a == "--suffix" {
+                it.next();
+            } else if !is_flag(a) {
+                templates.push(a.clone());
+            }
+        }
+        return templates;
+    }
+    let by_reference = args
+        .iter()
+        .any(|a| a == "--reference" || a.starts_with("--reference="));
+    let valued: &[&str] = match prog {
+        "truncate" => &["-s", "--size", "-r", "--reference"],
+        "mkdir" => &["-m", "--mode"],
+        "touch" => &["-t", "-d", "--date", "-r", "--reference"],
+        _ => &[],
+    };
+    let mut out = Vec::new();
+    // The first word of `chmod` and `chown` is the mode or the owner, not a path.
+    let mut mode_given = !matches!(prog, "chmod" | "chown") || by_reference;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if valued.contains(&a.as_str()) {
+            it.next();
+        } else if is_flag(a) {
+            // A mode that removes permission (`-w`, `-x`) looks like an option; no option of `chmod`
+            // is spelled with only these letters.
+            if prog == "chmod" && !mode_given && a[1..].chars().all(|c| "rwxXstugoa".contains(c)) {
+                mode_given = true;
+            }
+        } else if !mode_given {
+            mode_given = true;
+        } else {
+            out.push(a.clone());
+        }
+    }
+    out
+}
+
+/// Is the mode word of `chmod` one that only takes permissions away (`go-w`, `a-x,o-r`)?
+fn chmod_only_removes(args: &[String]) -> bool {
+    let Some(mode) = args.iter().find(|a| !is_flag(a)) else {
+        return false;
+    };
+    !mode.is_empty()
+        && mode.split(',').all(|clause| {
+            clause.split_once('-').is_some_and(|(who, what)| {
+                who.chars().all(|c| "ugoa".contains(c))
+                    && !what.is_empty()
+                    && what.chars().all(|c| "rwxXst".contains(c))
+            })
+        })
+}
+
+/// Does `git` with these arguments only change the index? `restore --staged` without `--worktree`, and
+/// `rm --cached`, leave the files in the working tree alone.
+fn git_index_only(sub: &str, rest: &[String]) -> bool {
+    let has = |long: &str, short: &str| {
+        rest.iter().any(|a| {
+            a == long
+                || (!short.is_empty()
+                    && a.starts_with('-')
+                    && !a.starts_with("--")
+                    && a[1..].contains(short))
+        })
+    };
+    match sub {
+        "restore" => has("--staged", "S") && !has("--worktree", "W"),
+        "rm" => has("--cached", ""),
+        _ => false,
+    }
+}
+
+/// The paths a program writes or deletes, from its arguments. Programs that only read give none. `dir` is
+/// the folder the command runs in: a copy into a folder lands on the file inside it, so whether the
+/// destination is a folder is read from disk.
+fn writer_args(prog: &str, args: &[String], dir: &Option<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    if prog == "mv" || COPIERS.contains(&prog) {
+        if prog == "install" && args.iter().any(|a| a == "-d" || a == "--directory") {
+            out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
+        } else {
+            out.extend(transfer_targets(prog, args, dir));
+        }
+    } else if WRITERS.contains(&prog) {
+        out.extend(writer_paths(prog, args));
     } else if prog == "dd" {
         out.extend(
             args.iter()
                 .filter_map(|a| a.strip_prefix("of=").map(|s| s.to_string())),
         );
-    } else if COPIERS.contains(&prog) {
-        let mut it = args.iter();
-        let mut dest: Option<String> = None;
-        let mut last: Option<String> = None;
-        while let Some(a) = it.next() {
-            if a == "-t" || a == "--target-directory" {
-                dest = it.next().cloned();
-            } else if let Some(d) = a.strip_prefix("--target-directory=") {
-                dest = Some(d.to_string());
-            } else if !is_flag(a) {
-                last = Some(a.clone());
-            }
-        }
-        // A link to a path is a second name for it: a write through the link lands there. So every path
-        // `ln` is given is judged as a write target, the one the link points at included.
-        if prog == "ln" {
-            out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
-        }
-        out.extend(dest.or(last));
     } else if prog == "sed" || prog == "perl" || prog == "ruby" {
         let in_place = args.iter().any(|a| {
             a == "--in-place"
@@ -1155,6 +1531,8 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
         // `-exec python3 -c '...argv[1]...' {} \;`) reaches it only as `$1`, `$@` or `argv`, which the
         // inner code is not read for, so the starting points stay write targets there.
         let mut hands_start_to_code = false;
+        // The handed code can write what it is given (an `os.remove`, a redirect, an `rm`).
+        let mut code_writes = false;
         let mut k = 0;
         while k < args.len() {
             if matches!(args[k].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
@@ -1172,15 +1550,39 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
                         && owned.iter().skip(pi + 1).any(|w| w.contains("{}"))
                     {
                         hands_start_to_code = true;
+                        if handed_code_may_write(b, &owned[pi + 1..]) {
+                            code_writes = true;
+                        }
                     }
                 }
                 k = j;
             }
             k += 1;
         }
-        let dangerous = hands_start_to_code || args.iter().any(|x| x == "-delete");
-        if dangerous {
-            out.extend(crate::shellparse::find_starts(args));
+        // A name filter binds what is deleted or handed to the code: the matches are named files below the
+        // starting point, not the starting point. The code of the command is judged with `{}` read as those
+        // matches (see `shellparse`), and a delete against the protected places by `find_filter_hit`.
+        let filters = crate::shellparse::find_filters(args);
+        let names: Vec<&String> = filters
+            .iter()
+            .filter(|f| !f.path)
+            .map(|f| &f.pattern)
+            .collect();
+        let delete = args.iter().any(|x| x == "-delete");
+        let mut starts = crate::shellparse::find_starts(args);
+        if starts.is_empty() {
+            starts.push(".".to_string());
+        }
+        if (delete || code_writes) && !names.is_empty() {
+            // Known gap (named in docs/engine.md): a match deeper than the starting point's own folder
+            // is judged as if it were in it; the landing step holds the whole branch to the unit's list.
+            for s in &starts {
+                for n in &names {
+                    out.push(format!("{}/{}", s.trim_end_matches('/'), n));
+                }
+            }
+        } else if (hands_start_to_code && (filters.is_empty() || code_writes)) || delete {
+            out.extend(starts);
         }
         let mut it = args.iter();
         while let Some(a) = it.next() {
@@ -1192,7 +1594,9 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
         let mut full = vec!["git".to_string()];
         full.extend(args.iter().cloned());
         if let Some((i, sub)) = git_sub(&full) {
-            if matches!(sub, "checkout" | "restore" | "rm" | "mv" | "clean") {
+            if matches!(sub, "checkout" | "restore" | "rm" | "mv" | "clean")
+                && !git_index_only(sub, &full[i + 1..])
+            {
                 out.extend(full[i + 1..].iter().filter(|a| !is_flag(a)).cloned());
             }
         }
@@ -1459,6 +1863,189 @@ fn unpacks_unnamed(prog: &str, args: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+/// The folder an unpack names for itself (`-C`, `-d`); `None` when it unpacks where it stands.
+fn unpack_dir(prog: &str, args: &[String]) -> Option<String> {
+    match prog {
+        "unzip" => args.windows(2).find(|w| w[0] == "-d").map(|w| w[1].clone()),
+        _ => tar_parse(args).1,
+    }
+}
+
+/// Does the pattern match the whole text? `*` is any run of characters (a slash too), `?` is one
+/// character, `[...]` is a class, a backslash quotes the next character.
+fn glob_match(p: &[char], s: &[char]) -> bool {
+    match p.split_first() {
+        None => s.is_empty(),
+        Some(('*', rest)) => (0..=s.len()).any(|k| glob_match(rest, &s[k..])),
+        Some(('?', rest)) => !s.is_empty() && glob_match(rest, &s[1..]),
+        Some(('\\', rest)) if !rest.is_empty() => {
+            s.first() == Some(&rest[0]) && glob_match(&rest[1..], &s[1..])
+        }
+        Some(('[', rest)) => match rest.iter().skip(1).position(|c| *c == ']') {
+            Some(e) => {
+                let class = &rest[..e + 1];
+                let Some(c) = s.first() else { return false };
+                let (neg, class) = match class.first() {
+                    Some('!') | Some('^') => (true, &class[1..]),
+                    _ => (false, class),
+                };
+                let mut hit = false;
+                let mut k = 0;
+                while k < class.len() {
+                    if k + 2 < class.len() && class[k + 1] == '-' {
+                        hit |= class[k] <= *c && *c <= class[k + 2];
+                        k += 3;
+                    } else {
+                        hit |= class[k] == *c;
+                        k += 1;
+                    }
+                }
+                hit != neg && glob_match(&rest[e + 2..], &s[1..])
+            }
+            None => s.first() == Some(&'[') && glob_match(rest, &s[1..]),
+        },
+        Some((c, rest)) => s.first() == Some(c) && glob_match(rest, &s[1..]),
+    }
+}
+
+fn filter_holds(f: &crate::shellparse::FindFilter, text: &str) -> bool {
+    let (p, s) = if f.fold {
+        (f.pattern.to_lowercase(), text.to_lowercase())
+    } else {
+        (f.pattern.clone(), text.to_string())
+    };
+    glob_match(
+        &p.chars().collect::<Vec<_>>(),
+        &s.chars().collect::<Vec<_>>(),
+    )
+}
+
+/// The first entry at or below `path` that every filter lets through. `shown` is how `find` would print
+/// it. Open folders and the working copies are not walked. A walk that grows too large counts as a hit.
+fn walk_for_match(
+    table: &Value,
+    path: &Path,
+    shown: &str,
+    filters: &[crate::shellparse::FindFilter],
+    budget: &mut usize,
+) -> Option<String> {
+    let text = path.to_string_lossy().to_string();
+    let root = table["root"].as_str().unwrap_or("");
+    if let Some(rel) = under(&text, root) {
+        if rel == ".bf/work" || rel.starts_with(".bf/work/") || is_open_rel(rel) {
+            return None;
+        }
+    }
+    if *budget == 0 {
+        return Some(text);
+    }
+    *budget -= 1;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if filters
+        .iter()
+        .all(|f| filter_holds(f, if f.path { shown } else { &name }))
+    {
+        return Some(text);
+    }
+    let md = fs::symlink_metadata(path).ok()?;
+    if md.is_dir() {
+        for e in fs::read_dir(path).ok()?.flatten() {
+            let child = format!(
+                "{}/{}",
+                shown.trim_end_matches('/'),
+                e.file_name().to_string_lossy()
+            );
+            if let Some(h) = walk_for_match(table, &e.path(), &child, filters, budget) {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
+/// A `find` whose name filter lets a protected file through, and that deletes it or hands it to a
+/// program that writes. A starting point that is only a folder above the protected places is not a
+/// target: what the filters can match is.
+fn find_filter_denial(table: &Value, args: &[String], dir: &Option<String>) -> Option<Decision> {
+    const MATCH: &str = "\u{1}match";
+    let filters = crate::shellparse::find_filters(args);
+    if filters.is_empty() {
+        return None;
+    }
+    let deletes = args.iter().any(|a| a == "-delete");
+    let exec_writes = crate::shellparse::exec_commands(args).iter().any(|words| {
+        let owned: Vec<String> = words.iter().map(|w| w.replace("{}", MATCH)).collect();
+        let Some(pi) = crate::shellparse::program_index(&owned) else {
+            return false;
+        };
+        let prog = basename(&owned[pi]);
+        let rest = &owned[pi + 1..];
+        // A shell or an interpreter given the match may write it, and the guard cannot read how. That
+        // counts only for a starting point that is itself in a protected place.
+        let mut handed_writes = false;
+        if (SHELLS.contains(&prog) || prog == "eval" || is_interpreter(prog))
+            && rest.iter().any(|w| w.contains(MATCH))
+        {
+            // Code that can write what it is handed is a delete of the matches.
+            handed_writes = handed_code_may_write(prog, rest);
+        }
+        handed_writes
+            || writer_args(prog, rest, dir)
+                .iter()
+                .any(|t| t.contains(MATCH))
+            || (deletes_or_edits(prog, rest) && rest.iter().any(|w| w.contains(MATCH)))
+    });
+    // Matches handed to code that only reads them are not a write, at the folder or below it.
+    if !deletes && !exec_writes {
+        return None;
+    }
+    let mut starts = crate::shellparse::find_starts(args);
+    if starts.is_empty() {
+        starts.push(".".to_string());
+    }
+    let root = table["root"].as_str().unwrap_or("").trim_end_matches('/');
+    let places: Vec<String> = table["protected"]
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str())
+        .map(|e| format!("{root}/{}", e.trim_end_matches('/')))
+        .collect();
+    for s in &starts {
+        let Some(abs) = target_abs(s, dir) else {
+            continue;
+        };
+        for place in &places {
+            let (walk, shown) = if let Some(rel) = under(place, &abs) {
+                let shown = if rel.is_empty() {
+                    s.clone()
+                } else {
+                    format!("{}/{rel}", s.trim_end_matches('/'))
+                };
+                (place.clone(), shown)
+            } else if under(&abs, place).is_some() {
+                (abs.clone(), s.clone())
+            } else {
+                continue;
+            };
+            let mut budget = 50_000usize;
+            if let Some(hit) =
+                walk_for_match(table, Path::new(&walk), &shown, &filters, &mut budget)
+            {
+                let f = &filters[0];
+                return Some(path_denial(
+                    &hit,
+                    &format!("`find` with the filter `{}`", f.pattern),
+                    Reach::Delete,
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn tar_parse(args: &[String]) -> (Option<char>, Option<String>, Option<String>, Vec<String>) {
@@ -3032,10 +3619,22 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             reach,
                         ));
                     }
+                    // A real path in the code is only a read where the code has nothing that writes: a
+                    // record opened by its absolute path is judged as it is by a relative one. The state
+                    // folder is closed to reads too.
+                    let may_write = code_may_write(&code);
                     for t in interpreter_paths(p, args) {
                         let part = format!("the code given to `{prog}` (it holds the path `{t}`)");
-                        if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text) {
-                            return d;
+                        if let Some(abs) = target_abs(&t, &start) {
+                            if in_state_or_base(table, &abs) {
+                                return state_denial();
+                            }
+                        }
+                        if may_write {
+                            if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text)
+                            {
+                                return d;
+                            }
                         }
                     }
                 }
@@ -3094,10 +3693,12 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             let mut probe = args.to_vec();
                             probe.push(SENTINEL.to_string());
                             let becomes_target = match &repl {
-                                Some(r) => writer_args(&prog, args)
+                                Some(r) => writer_args(&prog, args, &start)
                                     .iter()
                                     .any(|t| t.contains(r.as_str())),
-                                None => writer_args(&prog, &probe).iter().any(|t| t == SENTINEL),
+                                None => writer_args(&prog, &probe, &start)
+                                    .iter()
+                                    .any(|t| t == SENTINEL),
                             };
                             if becomes_target && !deletes_or_edits(&prog, args) {
                                 return deny(
@@ -3109,6 +3710,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                     ],
                                     "The command names every path it writes.",
                                 );
+                            }
+                            // Unknown names handed to a copy into a folder land in that folder as a
+                            // wildcard: judged like `dir/*`.
+                            if prog == "mv" || COPIERS.contains(&prog.as_str()) {
+                                writer_in = probe.clone();
                             }
                             if deletes_or_edits(&prog, args) {
                                 return deny(
@@ -3132,7 +3738,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             .filter(|a| !is_flag(a))
                             .find_map(|a| mentions_var(a, &unread))
                     } else {
-                        writer_args(&prog, args)
+                        writer_args(&prog, args, &start)
                             .iter()
                             .find_map(|a| mentions_var(a, &unread))
                     };
@@ -3162,7 +3768,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 // Unpacking an archive into the working copy with no member named: the members that land
                 // are the archive's own, so the unit's file scope cannot be applied to them.
                 if (in_worker || in_cp) && unpacks_unnamed(&prog, &writer_in) {
-                    if let Some(base) = writer_args(&prog, &writer_in).last() {
+                    if let Some(base) = writer_args(&prog, &writer_in, &start).last() {
                         if let Some(abs) = target_abs(base, &start) {
                             if under(&abs, &here.base).is_some() {
                                 return deny(
@@ -3182,16 +3788,26 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 // `.git`) is deleted, moved, re-permissioned, linked or checked out as a whole: refused
                 // like a target inside the place.
                 {
-                    let all = writer_args(&prog, &writer_in);
+                    let all = writer_args(&prog, &writer_in, &start);
+                    let tp = transfer_parts(&prog, &writer_in);
                     let covering: Vec<&String> = match prog.as_str() {
+                        // Taking permissions away (`chmod -R go-w .`) gives no access to anything.
+                        "chmod" if chmod_only_removes(&writer_in) => Vec::new(),
                         "rm" | "rmdir" | "unlink" | "shred" | "chmod" | "chown" | "git" => {
                             all.iter().collect()
                         }
                         // Only `-delete` removes what the starting point holds; `-exec` runs a
                         // command that is judged by itself.
                         "find" if args.iter().any(|a| a == "-delete") => all.iter().collect(),
-                        "mv" => all.iter().take(all.len().saturating_sub(1)).collect(),
-                        "ln" => all.last().into_iter().collect(),
+                        // Every source of a move goes, with or without `-t`.
+                        "mv" => tp.sources.iter().collect(),
+                        // A link that replaces a folder (`ln -sfn x .claude`) takes it with it; a link
+                        // made inside a folder does not.
+                        "ln" => tp
+                            .dest
+                            .iter()
+                            .filter(|d| !goes_into_folder(&tp, d, &start))
+                            .collect(),
                         _ => Vec::new(),
                     };
                     for t in covering {
@@ -3213,19 +3829,17 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                         && !a.starts_with("--")
                                         && a[1..].contains(['r', 'R', 'a']))
                             });
-                        let positional: Vec<&String> =
-                            args.iter().filter(|a| !is_flag(a)).collect();
-                        let dest = all.last().cloned();
-                        if let (true, Some(dest)) = (recursive, dest) {
+                        let dest = tp.dest.clone();
+                        // `cp -rT a b` puts what `a` holds into `b`, whatever `a` is called.
+                        if let (true, Some(dest)) = (recursive || tp.plain, dest) {
                             let lands = target_abs(&dest, &start)
                                 .and_then(|abs| covers_protected(table, &abs).map(|h| (abs, h)));
                             if let Some((abs, hit)) = lands {
-                                let sources =
-                                    positional.iter().take(positional.len().saturating_sub(1));
-                                for s in sources {
+                                for s in &tp.sources {
                                     let trimmed = s.trim_end_matches('/');
                                     let last = trimmed.rsplit('/').next().unwrap_or("");
-                                    let whole = s.ends_with('/')
+                                    let whole = tp.plain
+                                        || s.ends_with('/')
                                         || s.as_str() == "."
                                         || s.as_str() == ".."
                                         || last == "."
@@ -3243,7 +3857,33 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         }
                     }
                 }
-                for t in writer_args(&prog, &writer_in) {
+                // Unpacking, with no member named, into a folder that holds a protected place
+                // (`tar xf a.tar -C .claude`): whatever the archive holds lands there.
+                if matches!(prog.as_str(), "tar" | "bsdtar" | "gtar" | "unzip")
+                    && unpacks_unnamed(&prog, &writer_in)
+                {
+                    if let Some(d) = unpack_dir(&prog, &writer_in) {
+                        if let Some(abs) = target_abs(&d, &start) {
+                            if abs.trim_end_matches('/') != root.trim_end_matches('/') {
+                                if let Some(hit) = covers_protected(table, &abs) {
+                                    return cover_denial(&abs, &hit, &prog, &d);
+                                }
+                            }
+                        }
+                    }
+                }
+                // A `find` with a name filter that deletes, or hands its matches to a program that
+                // writes: what counts is whether a protected file can be one of the matches.
+                if prog == "find" && !in_worker && !in_cp {
+                    if let Some(d) = find_filter_denial(table, args, &start) {
+                        return d;
+                    }
+                }
+                let git_removes = prog == "git"
+                    && git_sub(&p.words[i..]).is_some_and(|(k, s)| {
+                        s == "rm" && !git_index_only("rm", &p.words[i + k + 1..])
+                    });
+                for t in writer_args(&prog, &writer_in, &start) {
                     let part = if via_xargs {
                         format!("`{prog}` started by `xargs`, with the path `{t}`")
                     } else {
@@ -3252,7 +3892,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     writes.push((
                         t,
                         part,
-                        if deleting {
+                        if deleting
+                            || git_removes
+                            || (prog == "find"
+                                && !args.iter().any(|a| a.starts_with("-fprint") || a == "-fls"))
+                        {
                             Reach::Delete
                         } else if prog == "mkdir"
                             || (prog == "install"
@@ -3314,6 +3958,22 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         // gap of the scope rule; docs/engine.md says so.)
                         // In a checkpoint's copy the files of an open sync are the only ones to write.
                         if (in_worker || in_cp) && own {
+                            // The root of the working copy is a folder like any other: deleting it
+                            // deletes files outside the scope too.
+                            if abs == here.base
+                                && pattern.is_none()
+                                && matches!(reach, Reach::Delete)
+                            {
+                                return deny(
+                                    "delete the whole working copy",
+                                    &format!("{part} would delete {abs}, the whole working copy, and with it files outside the file scope of {}", here.id),
+                                    &[
+                                        "Name the files you mean, inside the scope, for example `rm src/old.rs`.",
+                                        "To discard your own changes use `git restore <file>` on a file in scope.",
+                                    ],
+                                    "The command names only paths inside your unit's files.",
+                                );
+                            }
                             let checked = match &pattern {
                                 None if abs != here.base => Some(abs.clone()),
                                 Some(pat) => Some(pat.clone()),

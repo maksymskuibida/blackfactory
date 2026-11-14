@@ -849,8 +849,61 @@ pub fn find_starts(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Like `exec_commands`, with `{}` read as each starting point of the `find`, so that what the command
-/// would touch is a path the guard can judge.
+/// A filter of a `find` that every match must satisfy: `-name`, `-iname`, `-path` and their kin.
+pub struct FindFilter {
+    /// Matches the whole path (`-path`), not only the last name (`-name`).
+    pub path: bool,
+    pub pattern: String,
+    /// Ignores case (`-iname`, `-ipath`).
+    pub fold: bool,
+}
+
+/// The filters that bind every match of a `find`. None when the expression has an alternative or a
+/// group (`-o`, `(`), where a filter may not bind the action; a negated filter does not count.
+pub fn find_filters(args: &[String]) -> Vec<FindFilter> {
+    if args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-o" | "-or" | "(" | "\\("))
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut negated = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "!" | "-not" => {
+                negated = true;
+                i += 1;
+                continue;
+            }
+            "-name" | "-iname" | "-path" | "-ipath" | "-wholename" | "-iwholename" => {
+                if let (false, Some(v)) = (negated, args.get(i + 1)) {
+                    out.push(FindFilter {
+                        path: a.contains("path") || a.contains("wholename"),
+                        pattern: v.clone(),
+                        fold: a.starts_with("-i"),
+                    });
+                }
+                i += 2;
+            }
+            "-exec" | "-execdir" | "-ok" | "-okdir" => {
+                while i < args.len() && args[i] != ";" && args[i] != "+" {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+        negated = false;
+    }
+    out
+}
+
+/// Like `exec_commands`, with `{}` read as what a `find` matches, so that what the command would touch
+/// is a path the guard can judge: with a name filter the starting point with the name (`./*.orig`),
+/// otherwise the starting point itself.
 fn exec_commands_at(args: &[String]) -> Vec<Vec<String>> {
     let starts: Vec<String> = {
         let s = find_starts(args);
@@ -860,10 +913,25 @@ fn exec_commands_at(args: &[String]) -> Vec<Vec<String>> {
             s
         }
     };
+    let names: Vec<String> = find_filters(args)
+        .into_iter()
+        .filter(|f| !f.path)
+        .map(|f| f.pattern)
+        .collect();
+    let mut stands: Vec<String> = Vec::new();
+    for s in &starts {
+        if names.is_empty() {
+            stands.push(s.clone());
+        } else {
+            for n in &names {
+                stands.push(format!("{}/{}", s.trim_end_matches('/'), n));
+            }
+        }
+    }
     let mut out = Vec::new();
     for words in exec_commands(args) {
         if words.iter().any(|w| w.contains("{}")) {
-            for s in &starts {
+            for s in &stands {
                 out.push(words.iter().map(|w| w.replace("{}", s)).collect());
             }
         } else {
@@ -874,7 +942,7 @@ fn exec_commands_at(args: &[String]) -> Vec<Vec<String>> {
 }
 
 /// The commands a `find` runs: the words between an execute flag and its closing `;` or `+`.
-fn exec_commands(args: &[String]) -> Vec<Vec<String>> {
+pub fn exec_commands(args: &[String]) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
