@@ -325,11 +325,21 @@ A question is **tagged**: a stage question (`--stage`, or `stage` in the file) h
 
 **Every choice question takes an Other answer.** `other` (lowercase) is a reserved choice key: `bf ask` refuses a question whose own option uses it, and a question may carry `"other": false` to switch Other off (stored on the record; text questions have none). `bf answer <Q> --file a.json` accepts `{"choice": "other", "other": "<the human's own answer>", "note": "..."}` for a `single` question and `{"choices": ["A", "other"], "other": "<text>"}` for a `multi` one; choosing `other` with empty or missing text is refused, choosing it on a question with Other switched off is refused, and `other` text without the key chosen is kept as given and does not count as the choice. The text is stored in the answer's `other` field and is what every listing shows: `bf questions`, the briefs that quote answers and the questions view (whose `answer` object carries `other`, and whose question carries `other: true|false` for choice questions) show the human's text, never the bare word "other". Earlier records, with no `other`, read as they did.
 
-### `bf amend open <ID>... ` / `narrow --file f` / `approve [A-n]`
+### `bf amend open <ID>...` / `revise <ID>...` / `narrow --file f` / `approve [A-n]` / `withdraw <A-n> --reason "..."`
+
+Only one amendment is open at a time. `open` is refused while one is open (not approved, not withdrawn); the refusal names it and says to revise or withdraw it. `revise <ID>...` changes the records the open amendment covers; it keeps its ID, its narrowing is void, and `narrow` (which takes the open amendment when the file names none) and a human message after the revision are needed before it can be approved. `withdraw` drops an amendment that is not approved and needs a reason; the log keeps that it existed and that it was withdrawn, and it can no longer be narrowed or approved. The status and the pages list each amendment as open, approved or withdrawn. On replay an approval counts only with a human message after the amendment's latest narrowing or revision.
 
 `open` computes the impact set from the ledger. `narrow` takes `{"keep": [...], "waive": [...], "reasons": {"<ID>": "why"}}`: it may only remove IDs from the set, every removed ID needs a reason, and every waived ID needs a reason. `approve` needs a human turn after the narrowing. An approved amendment lets its IDs be replaced with `bf record put` after their gate was approved, and its `waive` list stands in for a receipt at `checkpoint close`.
 
 **An approved amendment re-opens what it touches.** Every unit in the kept impact set whose work is not all waived goes back to work (`running`; what it landed stays in the log; its rounds and attempts start again; its brief and directive name the amendment), every checkpoint that proves a changed ID or comes after a re-opened unit opens again, and the receipts of the changed checks that exist at the approval stop counting (newer ones count). The ledger therefore reads open until the new evidence exists. Units and checkpoints outside the set keep their state and approvals, and `bf next` offers exactly the re-opened work.
+
+### `bf checks list` / `state` / `propose <check>=off:<reason>... [--scope default|run|both]` / `set --quote "..."`
+
+The named checks (security, legal, uiux families) are on or off for the project default, for one run, or both. `propose` records a proposal and changes nothing; it prints every check it would change, and each check switched off carries its reason. `set` records the latest proposal and is refused without a quote from a human message that came after the proposal (the quote is not a question, and must be in the message). Changes that differ from the proposal are refused. `state` and the pages show each check that is off with its reason.
+
+### `bf progress [--json]`
+
+Prints the progress line of the run, one line: one segment per state, with a sign (`▶` building, `◐` in review, `↻` fixing, `●` reviewed, `✔` landed, `⚠` blocked or parked, `◎` checkpoint being verified, `■` checkpoint closed), the unit IDs and, for a unit in review or fixing, the round: `◐ U-3, U-4 in review, round 2`. When units in one state are in different rounds, each ID carries its own: `◐ U-3 (round 2), U-4 (round 1) in review`. The conductor shows this line and does not compose it. `--json` has it as `line`.
 
 ### `bf cost status` and the policy
 

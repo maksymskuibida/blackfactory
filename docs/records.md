@@ -113,8 +113,10 @@ A point where a set of units has landed and the result is proven.
 | `after` | list of `U-` IDs | yes | The units on it. Each of them names this checkpoint |
 | `proves` | list of designed or handoff IDs | yes | What closing it proves. Each ID needs a check among `checks` that proves it |
 | `checks` | list of `X-` IDs | no | The checks that run on the checkpoint's working copy |
-| `human_step` | string | no | A step only the human can do; it needs an approved `checkpoint-step` gate |
-| `on_human_step` | `stop` or `carry-on` | no | Whether the factory waits for the human step or continues with independent work |
+| `stop` | boolean | no | `true`: the checkpoint stops and waits for the human. `false`: it has no stop. A missing `stop` reads as `false` (no stop), unless the checkpoint has a human step, which always stops. These are the only two forms. The agent proposes it on the plan approval page and approving the plan gate approves it; the human changes it by rejecting the gate with their words |
+| `stop_why` | string | yes | One sentence on why the checkpoint stops or has no stop. The plan page shows it next to the proposal |
+| `human_step` | string | no | A step only the human can do; it needs an approved `checkpoint-step` gate. A checkpoint with a human step stops |
+| `on_human_step` | `stop` | no | Kept for records of an earlier build. There is no carry-on choice any more: a record from an earlier build that says `carry-on` is read as a stop |
 | `pull_request` | boolean | no | Whether the checkpoint's branch becomes a pull request |
 
 ## Check (`X`)
@@ -258,6 +260,8 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.approve`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.revise`, `amend.withdraw`, `amend.approve`, `checks.propose`, `checks.set`.
+
+An amendment approval counts only with a human turn recorded after the amendment's latest narrowing or revision; an earlier approval is ignored on replay.
 
 Gates, approvals, test-mode grants and amendments live here, not in record files, so nothing can change them after the fact: a decision is valid only when the replayed log accepts it. A `gate.approve` counts only if it cites a human turn recorded after the gate opened and not used before, with a quote that is in that turn's text (the turn is not only a question), or is simulated inside a run that holds a test-mode grant (or, for a design gate, a grant waiting for its run).
