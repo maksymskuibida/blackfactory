@@ -500,12 +500,10 @@ fn text_paths(text: &str) -> Vec<String> {
 }
 
 /// The paths an interpreter's command holds as text: its arguments and the script fed to it.
-/// From the main checkout a relative path that starts in a protected folder is a real path too.
-fn interpreter_paths(
-    p: &crate::shellparse::Parsed,
-    args: &[String],
-    from_main: bool,
-) -> Vec<String> {
+/// Only real paths count (absolute, from home, or climbing out of the folder). A relative word such as
+/// a record's name is a file a tool only reads or a string of data; code that writes one is caught by
+/// `written_literals`, which resolves the path against the working directory.
+fn interpreter_paths(p: &crate::shellparse::Parsed, args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut texts: Vec<&String> = args.iter().collect();
     if let Some(h) = &p.input {
@@ -513,38 +511,8 @@ fn interpreter_paths(
     }
     for a in texts {
         out.extend(text_paths(a));
-        if from_main {
-            out.extend(relative_protected_paths(a));
-        }
     }
     out
-}
-
-/// The words of a text that are relative paths into a protected folder (`factory/policy.toml`,
-/// `./.bf/guard.json`), for code that runs from the main checkout.
-fn relative_protected_paths(text: &str) -> Vec<String> {
-    // A comment line is not code, and a folder name with nothing after it is not a file.
-    let code: String = text
-        .lines()
-        .filter(|l| {
-            let l = l.trim_start();
-            !(l.starts_with('#') || l.starts_with("//"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    code.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]:".contains(c))
-        .filter(|t| {
-            let t = t.trim_start_matches("./");
-            !t.starts_with('/')
-                && names_protected_segment_first(t)
-                && t.split_once('/').map(|(_, r)| !r.is_empty()) == Some(true)
-        })
-        .map(|t| t.to_string())
-        .collect()
-}
-
-fn names_protected_segment_first(t: &str) -> bool {
-    matches!(t.split('/').next(), Some("factory" | ".bf" | ".claude"))
 }
 
 /// Does code given to an interpreter call the command that records a human message? A call is a
@@ -635,6 +603,96 @@ fn receiver_literal(before: &[char]) -> Option<String> {
     string_literals(&s).into_iter().map(|l| l.0).next()
 }
 
+/// What an extra call does with the paths it is given.
+#[derive(Clone, Copy)]
+enum Extra {
+    /// Writes the destination, deletes the source: both are judged.
+    Move,
+    /// Makes a link: the path it names and the one it points at are both judged.
+    Link,
+    /// Writes only its destination.
+    Copy,
+    /// Writes its first path.
+    Write,
+    /// A path object opened with a write mode: the receiver is the path.
+    OpenMode,
+}
+
+fn is_fs_module(r: &str) -> bool {
+    matches!(
+        r,
+        "fs" | "node:fs" | "fs/promises" | "node:fs/promises" | "fs-extra" | "os" | "shutil"
+    )
+}
+
+/// The word before the dot that precedes the name at `i`: `os` in `os.replace`.
+fn qualifier(b: &[char], i: usize) -> Option<String> {
+    if i < 2 || b[i - 1] != '.' {
+        return None;
+    }
+    let mut s = i - 1;
+    while s > 0 && (b[s - 1].is_alphanumeric() || b[s - 1] == '_') {
+        s -= 1;
+    }
+    let q: String = b[s..i - 1].iter().collect();
+    (!q.is_empty()).then_some(q)
+}
+
+/// Is the receiver (ending with its closing parenthesis) a path object: `Path('a')`, `Pathname.new(...)`?
+fn receiver_is_path(before: &[char]) -> bool {
+    let mut depth = 0i32;
+    let mut open = None;
+    for k in (0..before.len()).rev() {
+        match before[k] {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open = Some(k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(o) = open else { return false };
+    let mut s = o;
+    while s > 0 && (before[s - 1].is_alphanumeric() || before[s - 1] == '_') {
+        s -= 1;
+    }
+    let ctor: String = before[s..o].iter().collect();
+    matches!(
+        ctor.as_str(),
+        "Path" | "PurePath" | "PosixPath" | "WindowsPath" | "new" | "Pathname"
+    )
+}
+
+/// Calls beside the plain ones: a move, copy or link of a module, a path object's method, and a path
+/// object opened with a mode. The ambiguous names (`replace`, `move`, `copy`, `link`) count only on a
+/// module or a path object, so `'abc'.replace('a','b')` is not a write.
+fn extra_kind(name: &str, qual: &str, recv_mod: bool, recv_path: bool) -> Option<Extra> {
+    let fs = recv_mod || matches!(qual, "os" | "shutil" | "fs" | "fse" | "fsp" | "promises");
+    let ruby_file = matches!(qual, "File" | "IO");
+    let utils = qual == "FileUtils";
+    match name {
+        "open" if recv_path => Some(Extra::OpenMode),
+        "replace" | "move" if fs || recv_path => Some(Extra::Move),
+        "copy" if fs => Some(Extra::Copy),
+        "copy" if recv_path => Some(Extra::Copy),
+        "cpSync" | "cp" if fs => Some(Extra::Copy),
+        "symlink" | "link" | "symlinkSync" | "linkSync" if fs => Some(Extra::Link),
+        "symlink_to" | "hardlink_to" | "link_to" if recv_path => Some(Extra::Link),
+        "write" | "binwrite" | "delete" | "unlink" if ruby_file => Some(Extra::Write),
+        "cp" | "cp_r" | "copy" if utils => Some(Extra::Copy),
+        "mv" | "move" if utils => Some(Extra::Move),
+        "ln" | "ln_s" | "ln_sf" if utils => Some(Extra::Link),
+        "rm" | "rm_f" | "rm_r" | "rm_rf" | "remove" | "touch" | "mkdir" | "mkdir_p" if utils => {
+            Some(Extra::Write)
+        }
+        _ => None,
+    }
+}
+
 /// The paths that code written for an interpreter opens for writing or deletes, where the path is a
 /// string literal in the call (`open('a', 'w')`, `Path('a').write_text`, `writeFileSync('a', ...)`,
 /// `os.remove('a')`, perl's `open(F, '>a')` and `open(F, '>', 'a')`). Only these calls count: a path that
@@ -663,6 +721,7 @@ fn written_literals(code: &str) -> Vec<String> {
         "truncate",
         "mkdir",
         "makedirs",
+        "mkdir_p",
         "touch",
         "rmdir",
     ];
@@ -684,11 +743,52 @@ fn written_literals(code: &str) -> Vec<String> {
         while j < b.len() && b[j] == ' ' {
             j += 1;
         }
-        if j < b.len() && b[j] == '(' && (name == "open" || CALLS.contains(&name.as_str())) {
+        let has_recv = i >= 2 && b[i - 1] == '.' && b[i - 2] == ')';
+        let qual = qualifier(&b, i);
+        let recv_lit = if has_recv {
+            receiver_literal(&b[..i - 1])
+        } else {
+            None
+        };
+        let recv_mod = recv_lit.as_deref().is_some_and(is_fs_module);
+        let recv_path = has_recv && !recv_mod && receiver_is_path(&b[..i - 1]);
+        let extra = extra_kind(&name, qual.as_deref().unwrap_or(""), recv_mod, recv_path);
+        if j < b.len()
+            && b[j] == '('
+            && (name == "open" || extra.is_some() || CALLS.contains(&name.as_str()))
+        {
             let rest: String = b[j + 1..].iter().collect();
             let args = rest.split(')').next().unwrap_or("");
             let lits: Vec<String> = string_literals(args).into_iter().map(|l| l.0).collect();
-            if name == "open" {
+            if let Some(kind) = extra {
+                let recv = if recv_path { recv_lit.clone() } else { None };
+                match kind {
+                    Extra::Move | Extra::Link => {
+                        let n = if recv.is_some() { 1 } else { 2 };
+                        out.extend(recv);
+                        out.extend(lits.iter().take(n).cloned());
+                    }
+                    Extra::Copy => {
+                        // Only the destination is written; a source is read.
+                        if recv.is_some() {
+                            out.extend(lits.first().cloned());
+                        } else {
+                            out.extend(lits.get(1).cloned());
+                        }
+                    }
+                    Extra::Write => match recv {
+                        Some(r) => out.push(r),
+                        None => out.extend(lits.first().cloned()),
+                    },
+                    Extra::OpenMode => {
+                        let writes =
+                            |m: &str| m.chars().any(|c| matches!(c, 'w' | 'a' | 'x' | '+'));
+                        if lits.first().is_some_and(|m| writes(m)) {
+                            out.extend(recv);
+                        }
+                    }
+                }
+            } else if name == "open" {
                 let writes = |m: &str| m.chars().any(|c| matches!(c, 'w' | 'a' | 'x' | '+'));
                 match lits.as_slice() {
                     [m, p, ..] if m.trim_start().starts_with('>') || m.starts_with("+<") => {
@@ -711,8 +811,19 @@ fn written_literals(code: &str) -> Vec<String> {
             } else {
                 // A method on a path object (`Path('a').write_text('x')`) names its path in the
                 // receiver, not in the arguments.
+                // A module (`require('fs').writeFileSync('a', x)`) is not a path: the arguments are.
                 let receiver = if i >= 2 && b[i - 1] == '.' && b[i - 2] == ')' {
-                    receiver_literal(&b[..i - 1])
+                    receiver_literal(&b[..i - 1]).filter(|r| {
+                        !matches!(
+                            r.as_str(),
+                            "fs" | "node:fs"
+                                | "fs/promises"
+                                | "node:fs/promises"
+                                | "fs-extra"
+                                | "os"
+                                | "shutil"
+                        )
+                    })
                 } else {
                     None
                 };
@@ -754,6 +865,70 @@ fn written_literals(code: &str) -> Vec<String> {
         i = e;
     }
     out.retain(|p| !p.is_empty() && !p.starts_with("/dev/"));
+    out
+}
+
+/// The files an awk program prints to: `print > "a"`, `print >> "a"` and `printf(...) > "a"`, where the
+/// path is a string literal. A `>` that is a comparison (no `print` before it in its statement) is not a
+/// redirect.
+fn awk_written(code: &str) -> Vec<String> {
+    let c: Vec<char> = code.chars().collect();
+    let mut out = Vec::new();
+    for (i, ch) in c.iter().enumerate() {
+        if *ch != '>' {
+            continue;
+        }
+        let stmt_start = c[..i]
+            .iter()
+            .rposition(|x| matches!(x, '{' | ';' | '\n'))
+            .map(|k| k + 1)
+            .unwrap_or(0);
+        let stmt: String = c[stmt_start..i].iter().collect();
+        if !stmt.contains("print") {
+            continue;
+        }
+        let mut j = i + 1;
+        if c.get(j) == Some(&'>') {
+            j += 1;
+        }
+        while c.get(j).is_some_and(|x| x.is_whitespace()) {
+            j += 1;
+        }
+        if c.get(j) == Some(&'"') {
+            let lit: String = c[j + 1..].iter().take_while(|x| **x != '"').collect();
+            if !lit.is_empty() {
+                out.push(lit);
+            }
+        }
+    }
+    out
+}
+
+/// The folders that code makes with a call such as `os.makedirs('a')` or `fs.mkdirSync('a')`.
+fn made_literals(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in ["makedirs", "mkdirSync", "mkdir", "mkdir_p"] {
+        let mut from = 0;
+        while let Some(k) = code[from..].find(&format!("{name}(")).map(|k| k + from) {
+            let after = &code[k + name.len() + 1..];
+            let args = after.split(')').next().unwrap_or("");
+            // A path object names its folder in the receiver: `Path('a').mkdir(parents=True)`.
+            let before: Vec<char> = code[..k].chars().collect();
+            let recv =
+                if before.ends_with(&['.']) && before.len() >= 2 && before[before.len() - 2] == ')'
+                {
+                    receiver_literal(&before[..before.len() - 1])
+                } else {
+                    None
+                };
+            if let Some(r) = recv {
+                out.push(r);
+            } else if let Some(l) = string_literals(args).into_iter().map(|l| l.0).next() {
+                out.push(l);
+            }
+            from = k + name.len() + 1;
+        }
+    }
     out
 }
 
@@ -859,7 +1034,7 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
             out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
         }
         out.extend(dest.or(last));
-    } else if prog == "sed" || prog == "perl" {
+    } else if prog == "sed" || prog == "perl" || prog == "ruby" {
         let in_place = args.iter().any(|a| {
             a == "--in-place"
                 || a.starts_with("--in-place=")
@@ -1071,7 +1246,7 @@ fn deletes_or_edits(prog: &str, args: &[String]) -> bool {
     if prog == "find" {
         return args.iter().any(|a| a == "-delete");
     }
-    if prog == "sed" || prog == "perl" {
+    if prog == "sed" || prog == "perl" || prog == "ruby" {
         return args.iter().any(|a| {
             a == "--in-place"
                 || a.starts_with("--in-place=")
@@ -1299,9 +1474,41 @@ fn unzip_targets(prog: &str, args: &[String]) -> Vec<String> {
     out
 }
 
+/// Does a folder lead to a path the unit may write? True when the folder is the directory part of a
+/// file entry, a prefix of the literal part of a pattern, or an entry that is a folder. A folder that
+/// is the entry's own file name does not count.
+fn leads_to_scope(files: &[String], rel: &str) -> bool {
+    let r: Vec<&str> = rel
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    if r.is_empty() {
+        return false;
+    }
+    files.iter().any(|g| {
+        let g = g.trim_start_matches("./");
+        let is_dir = g.ends_with('/');
+        let s: Vec<&str> = g.split('/').filter(|x| !x.is_empty()).collect();
+        for (k, seg) in r.iter().enumerate() {
+            let Some(want) = s.get(k) else {
+                return false;
+            };
+            if want.contains('*') {
+                return true;
+            }
+            if want != seg {
+                return false;
+            }
+        }
+        r.len() < s.len() || is_dir
+    })
+}
+
 /// How a command reached a path.
 #[derive(Clone, Copy)]
 enum Reach {
+    /// Making a folder: refused like a write, except where it leads to a file the unit may write.
+    Make,
     Write,
     Delete,
     Run,
@@ -1310,7 +1517,7 @@ enum Reach {
 
 fn path_denial(abs: &str, part: &str, reach: Reach) -> Decision {
     let (verb, steps): (&str, Vec<&str>) = match reach {
-        Reach::Write => (
+        Reach::Write | Reach::Make => (
             "write",
             vec![
                 "Change a record, a finding or a report with an engine command: `bf record put`, `bf report`, `bf evidence run`.",
@@ -1347,6 +1554,41 @@ fn path_denial(abs: &str, part: &str, reach: Reach) -> Decision {
         ),
         &steps,
         "The path the command writes, deletes, runs or opens lies outside those places.",
+    )
+}
+
+/// The protected place of the project that lies below `abs`, when `abs` is a folder above it. A target
+/// that is such a folder takes the protected place with it.
+fn covers_protected(table: &Value, abs: &str) -> Option<String> {
+    let root = table["root"].as_str().unwrap_or("").trim_end_matches('/');
+    if root.is_empty() {
+        return None;
+    }
+    let base = abs.trim_end_matches('/');
+    let mut places = vec![root.to_string()];
+    for e in table["protected"]
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str())
+    {
+        places.push(format!("{root}/{}", e.trim_end_matches('/')));
+    }
+    // A place strictly below the target (the root itself counts as a place, for targets above it).
+    places
+        .into_iter()
+        .find(|p| p.len() > base.len() && p.starts_with(base) && p[base.len()..].starts_with('/'))
+}
+
+fn cover_denial(abs: &str, hit: &str, prog: &str, t: &str) -> Decision {
+    deny(
+        &format!("run `{prog}` on {abs}"),
+        &format!("`{prog}` with the argument `{t}` would remove, move, re-permission, link, check out or fill {abs}, a folder that holds the protected place {hit}: factory records, the policy, gates, the guard table, the git hooks and the hook settings are changed by the engine and the human only"),
+        &[
+            "Name the files you mean, inside your working copy, for example `rm src/old.rs`.",
+            "To discard your own changes use a path in your working copy; records change through engine commands.",
+            "If the project itself must be moved or cleaned, ask the human.",
+        ],
+        "The command names only paths that hold no protected place.",
     )
 }
 
@@ -2566,15 +2808,24 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                     // A path the code opens for writing is a write like any other: the protected places
                     // and, in a unit's working copy, the unit's file scope judge it.
-                    for t in written_literals(&code) {
+                    let made = made_literals(&code);
+                    let mut written = written_literals(&code);
+                    if matches!(prog.as_str(), "awk" | "gawk" | "mawk") {
+                        written.extend(awk_written(&code));
+                    }
+                    for t in written {
+                        let reach = if made.contains(&t) {
+                            Reach::Make
+                        } else {
+                            Reach::Write
+                        };
                         writes.push((
                             t.clone(),
                             format!("the code given to `{prog}` (it writes the path `{t}`)"),
-                            Reach::Write,
+                            reach,
                         ));
                     }
-                    let from_main = zone_of(table, &dir_str).kind == "main";
-                    for t in interpreter_paths(p, args, from_main) {
+                    for t in interpreter_paths(p, args) {
                         let part = format!("the code given to `{prog}` (it holds the path `{t}`)");
                         if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text) {
                             return d;
@@ -2720,6 +2971,71 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         }
                     }
                 }
+                // A target that is a folder holding a protected place (the project's root, `.claude`,
+                // `.git`) is deleted, moved, re-permissioned, linked or checked out as a whole: refused
+                // like a target inside the place.
+                {
+                    let all = writer_args(&prog, &writer_in);
+                    let covering: Vec<&String> = match prog.as_str() {
+                        "rm" | "rmdir" | "unlink" | "shred" | "chmod" | "chown" | "git" => {
+                            all.iter().collect()
+                        }
+                        // Only `-delete` removes what the starting point holds; `-exec` runs a
+                        // command that is judged by itself.
+                        "find" if args.iter().any(|a| a == "-delete") => all.iter().collect(),
+                        "mv" => all.iter().take(all.len().saturating_sub(1)).collect(),
+                        "ln" => all.last().into_iter().collect(),
+                        _ => Vec::new(),
+                    };
+                    for t in covering {
+                        if let Some(abs) = target_abs(t, &start) {
+                            if let Some(hit) = covers_protected(table, &abs) {
+                                return cover_denial(&abs, &hit, &prog, t);
+                            }
+                        }
+                    }
+                    // A folder copied or synchronised into a folder that holds a protected place, from a
+                    // source that is, or holds, a protected folder's name or its whole contents. (Unpacking
+                    // an archive there is not judged: see docs/engine.md.)
+                    if matches!(prog.as_str(), "cp" | "rsync") {
+                        let recursive = prog == "rsync"
+                            || args.iter().any(|a| {
+                                a == "--recursive"
+                                    || a == "--archive"
+                                    || (a.starts_with('-')
+                                        && !a.starts_with("--")
+                                        && a[1..].contains(['r', 'R', 'a']))
+                            });
+                        let positional: Vec<&String> =
+                            args.iter().filter(|a| !is_flag(a)).collect();
+                        let dest = all.last().cloned();
+                        if let (true, Some(dest)) = (recursive, dest) {
+                            let lands = target_abs(&dest, &start)
+                                .and_then(|abs| covers_protected(table, &abs).map(|h| (abs, h)));
+                            if let Some((abs, hit)) = lands {
+                                let sources =
+                                    positional.iter().take(positional.len().saturating_sub(1));
+                                for s in sources {
+                                    let trimmed = s.trim_end_matches('/');
+                                    let last = trimmed.rsplit('/').next().unwrap_or("");
+                                    let whole = s.ends_with('/')
+                                        || s.as_str() == "."
+                                        || s.as_str() == ".."
+                                        || last == "."
+                                        || last == ".."
+                                        // A pattern in the last segment stands for the entries
+                                        // of a folder, any of which may be a protected name.
+                                        || last.contains(['*', '?', '[']);
+                                    if whole
+                                        || matches!(last, "factory" | ".bf" | ".claude" | ".git")
+                                    {
+                                        return cover_denial(&abs, &hit, &prog, s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 for t in writer_args(&prog, &writer_in) {
                     let part = if via_xargs {
                         format!("`{prog}` started by `xargs`, with the path `{t}`")
@@ -2731,6 +3047,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         part,
                         if deleting {
                             Reach::Delete
+                        } else if prog == "mkdir"
+                            || (prog == "install"
+                                && args.iter().any(|a| a == "-d" || a == "--directory"))
+                        {
+                            Reach::Make
                         } else {
                             Reach::Write
                         },
@@ -2785,7 +3106,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                             .filter(|stem| !stem.is_empty() && !stem.ends_with('/'))
                                             .is_some_and(|stem| check_write(table, cwd, stem).allow)
                                     });
-                                if !d.allow && !backup_of_allowed {
+                                // Making a folder that leads to a path the unit may write is allowed.
+                                let leads = !d.allow
+                                    && matches!(reach, Reach::Make)
+                                    && pattern.is_none()
+                                    && under(&c, &here.base).is_some_and(|rel| {
+                                        let z = zone_of(table, &c);
+                                        z.kind == "unit"
+                                            && !is_protected_in_wc(table, rel)
+                                            && rel != ".git"
+                                            && !rel.starts_with(".git/")
+                                            && leads_to_scope(&z.files, rel)
+                                    });
+                                if !d.allow && !backup_of_allowed && !leads {
                                     return d;
                                 }
                             }
@@ -2976,7 +3309,7 @@ fn absolute_words(cmd: &str) -> Vec<String> {
         }
         if let Some(i) = crate::shellparse::program_index(&p.words) {
             if is_interpreter(basename(&p.words[i])) {
-                out.extend(interpreter_paths(&p, &p.words[i + 1..], false));
+                out.extend(interpreter_paths(&p, &p.words[i + 1..]));
             }
         }
     }
@@ -3094,6 +3427,38 @@ mod tests {
             ],
             "main_branch": "main", "branch_prefix": "bf/"
         })
+    }
+
+    #[test]
+    fn a_folder_that_leads_to_a_path_the_unit_may_write_may_be_made() {
+        let files: Vec<String> = ["src/hello.txt", "docs/", "lib/deep/x.rs", "gen/**"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for ok in ["src", "lib", "lib/deep", "gen", "gen/a/b", "docs"] {
+            assert!(leads_to_scope(&files, ok), "{ok}");
+        }
+        for no in [
+            "other",
+            "src/hello.txt",
+            "lib/deep/x.rs",
+            "lib/other",
+            "srcx",
+            "",
+        ] {
+            assert!(!leads_to_scope(&files, no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_folder_above_a_protected_place_covers_it() {
+        let t = table();
+        for above in ["/p", "/", "/p/.claude", "/p/.claude/"] {
+            assert!(covers_protected(&t, above).is_some(), "{above}");
+        }
+        for not in ["/p/src", "/p/.bf/work/U-1", "/q", "/p/factory"] {
+            assert!(covers_protected(&t, not).is_none(), "{not}");
+        }
     }
 
     fn call(tool: &str, input: Value, cwd: &str) -> Decision {
@@ -3374,10 +3739,14 @@ mod tests {
         );
         assert!(bash("ls factory/records", "/p"));
         assert!(bash("find . -name '*.toml' -path './factory/*'", "/p"));
-        // Code for an interpreter that names a protected file by a relative path from the main
-        // checkout is refused, as it is by an absolute path; from a working copy it is data.
-        assert!(!bash(
+        // Code that only reads a protected file by a relative path is a read, from the main checkout
+        // as from a working copy; code that writes one is judged by `written_literals`.
+        assert!(bash(
             "python3 -c \"import tomllib; print(tomllib.load(open('factory/records/R-1.toml','rb')))\"",
+            "/p"
+        ));
+        assert!(!bash(
+            "python3 -c \"open('factory/records/R-1.toml','w').write('x')\"",
             "/p"
         ));
         assert!(bash(

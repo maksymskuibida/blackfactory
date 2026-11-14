@@ -360,3 +360,163 @@ fn a_refusal_names_the_path_and_the_part_of_the_command_that_reached_it() {
         "{why}"
     );
 }
+
+// ------------------------------------------------ the fourth review: Y-1, Y-2, Y-7
+
+#[test]
+fn reading_a_record_with_a_text_tool_or_an_interpreter_passes_from_the_main_checkout() {
+    let (fx, _wc) = setup();
+    for cmd in [
+        "awk 'NR<3' factory/records/R-1.toml",
+        "awk '/title/' .bf/briefs/U-1-builder.md",
+        "perl -ne 'print if /title/' factory/records/R-1.toml",
+        "ruby -ne 'puts $_' factory/records/R-1.toml",
+        "python3 -c \"import sys; print(open(sys.argv[1]).read())\" factory/records/R-1.toml",
+        "python3 -c \"print('see factory/records/R-1.toml')\"",
+        "node -e \"console.log(process.argv[1])\" factory/records/R-1.toml",
+        "python3 - <<'EOF'\nimport glob\nfor f in glob.glob('factory/records/*.toml'):\n    print(f)\nEOF",
+        "python3 - <<'EOF'\nprint('factory/policy.toml and .bf/guard.json are protected')\nEOF",
+        "python3 script.py factory/records",
+        "node script.js factory/records/R-1.toml",
+        "python3 -m json.tool .bf/guard.json",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+}
+
+#[test]
+fn code_that_writes_a_protected_path_is_still_refused_whatever_the_spelling() {
+    let (fx, wc) = setup();
+    let policy = fx.root.join("factory/policy.toml");
+    refused(
+        &fx,
+        &fx.root,
+        "python3 -c \"open('factory/policy.toml','w').write('x')\"",
+    );
+    refused(
+        &fx,
+        &fx.root,
+        &format!("python3 -c \"open('{}','w')\"", policy.display()),
+    );
+    refused(&fx, &fx.root, "sed -i 's/a/b/' factory/policy.toml");
+    refused(&fx, &fx.root, "echo x > factory/records/R-1.toml");
+    refused(&fx, &fx.root, "rm .claude/settings.json");
+    // From a working copy, up into the main checkout.
+    let up = format!("sed -i 's/a/b/' {}", policy.display());
+    refused(&fx, &wc, &up);
+}
+
+#[test]
+fn making_the_folder_of_the_units_own_file_passes_and_other_folder_forms_stay_refused() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "mkdir -p src",
+        "mkdir src",
+        "mkdir -p src && echo hello > src/hello.txt",
+        "install -d src",
+        "python3 -c \"import os; os.makedirs('src', exist_ok=True); open('src/hello.txt','w').write('x')\"",
+    ] {
+        passes(&fx, &wc, cmd);
+    }
+    for cmd in [
+        "mkdir -p lib",
+        "rmdir src",
+        "rm -rf src",
+        "install -d lib",
+        "python3 -c \"import os; os.makedirs('lib')\"",
+        "mkdir -p factory",
+    ] {
+        refused(&fx, &wc, cmd);
+    }
+}
+
+#[test]
+fn moves_copies_and_links_in_interpreter_code_are_judged_by_their_destination() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "python3 -c \"import os; os.replace('/tmp/x','factory/policy.toml')\"",
+        "python3 -c \"import shutil; shutil.move('/tmp/x','factory/policy.toml')\"",
+        "python3 -c \"import shutil; shutil.copy('/tmp/x','factory/policy.toml')\"",
+        "python3 -c \"import os; os.symlink('/tmp/x','factory/policy.toml')\"",
+        "node -e \"require('fs').cpSync('/tmp/x','factory/policy.toml')\"",
+        "ruby -e \"File.write('factory/policy.toml','x')\"",
+        "python3 -c \"from pathlib import Path; Path('factory/policy.toml').open('w')\"",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    for cmd in [
+        "python3 -c \"s='abc'.replace('a','b'); print(s)\"",
+        "python3 -c \"import shutil; shutil.copy('factory/policy.toml','/tmp/x')\"",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+    // In a unit's copy, outside its list.
+    refused(
+        &fx,
+        &wc,
+        "python3 -c \"import os; os.replace('/tmp/x','other.txt')\"",
+    );
+}
+
+#[test]
+fn a_path_object_makes_the_folder_of_the_units_own_file() {
+    let (fx, wc) = setup();
+    passes(
+        &fx,
+        &wc,
+        "python3 -c \"from pathlib import Path; Path('src').mkdir(parents=True, exist_ok=True)\"",
+    );
+    refused(
+        &fx,
+        &wc,
+        "python3 -c \"from pathlib import Path; Path('lib').mkdir(parents=True)\"",
+    );
+}
+
+#[test]
+fn a_recursive_copy_of_a_pattern_into_the_root_is_refused() {
+    let (fx, _wc) = setup();
+    for cmd in ["cp -R /tmp/x/* .", "cp -a /tmp/x/* ./"] {
+        refused(&fx, &fx.root, cmd);
+    }
+    passes(&fx, &fx.root, "cp -R /tmp/x/* ./docs");
+}
+
+#[test]
+fn a_target_that_holds_a_protected_place_is_refused_like_a_target_inside_it() {
+    let (fx, _wc) = setup();
+    for cmd in [
+        "mv .claude .claude2",
+        "rm -rf .claude",
+        "rm -r .claude/",
+        "find .claude -delete",
+        "chmod 000 .claude",
+        "ln -sfn /tmp/x .claude",
+        "mv .git .git2",
+        "rm -rf .git",
+        "rm -rf .",
+        "git checkout .",
+        "git checkout -- .",
+        "git restore .",
+        "git -C factory checkout -- .",
+        "cp -R /tmp/x/factory .",
+        "cp -R /tmp/x/. .",
+        "cp -R /tmp/x/.claude .",
+        "rsync -a /tmp/x/ ./",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    let why = refused(&fx, &fx.root, "rm -rf .claude");
+    assert!(why.contains("rm"), "{why}");
+    for cmd in [
+        "git checkout main",
+        "git restore --staged src/a.txt",
+        "rm -rf target",
+        "rm -f src/a.o",
+        "cp -R /tmp/x/docs ./docs",
+        "mv build/out.txt build/out2.txt",
+        "ls -la .claude",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+}
