@@ -66,7 +66,9 @@ pub fn run_start(p: &Project) -> R<Value> {
 pub fn run_stop(p: &Project) -> R<Value> {
     let st = events::require_chain(p)?;
     let id = need_run(&st)?;
-    events::append(p, "run.stop", json!({"run": id}))?;
+    let pl = plan::load(p)?;
+    let off = crate::enforce::refuse_if_unproven_for(p, &pl, "stop the run", "bf run stop")?;
+    events::append(p, "run.stop", json!({"run": id, "checks_off": off}))?;
     p.write_guard()?;
     Ok(json!({"run": id, "stopped": true}))
 }
@@ -1789,6 +1791,18 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 "`bf status` lists the checkpoint as closed.",
             ));
         };
+        // The last checkpoint holds everything: it merges only when every required check has proof.
+        if crate::enforce::last_checkpoint(&pl)
+            .map(|l| s(l, "id") == k)
+            .unwrap_or(false)
+        {
+            crate::enforce::refuse_if_unproven_for(
+                p,
+                &pl,
+                &format!("merge {k} onto the main branch"),
+                &format!("bf checkpoint merge {k}"),
+            )?;
+        }
         // A run with simulated approvals can never reach the main branch.
         let mut owned: Vec<String> = after.clone();
         for c in &pl.checkpoints {

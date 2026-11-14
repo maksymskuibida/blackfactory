@@ -24,15 +24,35 @@ pub fn records_naming<'a>(pl: &'a Plan, name: &str) -> Vec<&'a Value> {
 /// The named checks demanded now. A product with no interface (its ui gate skipped) has no UI/UX
 /// verification of its design to demand.
 pub fn required(st: &State) -> Vec<&'static NamedCheck> {
-    checks::required_now(st)
-        .into_iter()
+    without_skipped_ui(st, checks::required_now(st))
+}
+
+/// The named checks demanded when the run is closed: the choice of the last run, also after it was
+/// stopped (the project default when no run was ever started).
+pub fn required_closing(st: &State) -> Vec<&'static NamedCheck> {
+    without_skipped_ui(st, checks::required_closing(st))
+}
+
+fn without_skipped_ui(st: &State, v: Vec<&'static NamedCheck>) -> Vec<&'static NamedCheck> {
+    v.into_iter()
         .filter(|c| !(c.name == "design-uiux-verification" && st.skipped_words("ui").is_some()))
         .collect()
 }
 
+/// The last checkpoint of the plan: its content holds everything, so a built-stage check counts only there.
+pub fn last_checkpoint(pl: &Plan) -> Option<&Value> {
+    pl.checkpoints.last()
+}
+
+fn listed_by_last(pl: &Plan, record: &Value) -> bool {
+    last_checkpoint(pl)
+        .map(|k| str_list(k, "checks").iter().any(|x| x == s(record, "id")))
+        .unwrap_or(false)
+}
+
 /// The checks the human switched off, with their reasons: what a summary says was off.
 pub fn off_summary(st: &State) -> Vec<Value> {
-    checks::off_now(st)
+    checks::off_closing(st)
         .iter()
         .map(|(n, r)| json!({"name": n, "reason": r}))
         .collect()
@@ -52,20 +72,79 @@ pub fn off_text(off: &[Value]) -> String {
 }
 
 /// Problems the plan has for want of a check record for a required named check.
-pub fn plan_problems(pl: &Plan, st: &State) -> Vec<String> {
+pub fn plan_problems(pl: &Plan, st: &State, decided: bool) -> Vec<String> {
     if pl.units.is_empty() {
         return vec![];
     }
-    required(st)
-        .iter()
-        .filter(|c| records_naming(pl, c.name).is_empty())
-        .map(|c| {
-            format!(
-                "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off)",
-                c.name, c.name
-            )
-        })
-        .collect()
+    if !decided {
+        return vec!["no check settings are decided yet: run `bf checks propose` (with `--scope default`, naming each check to switch off and why), show the human the result, and record their answer with `bf checks set --quote \"<their words>\"`, before the plan check".into()];
+    }
+    let mut out = plan_problems_for(pl, st, &required(st));
+    // A named check record belongs to a unit or is listed by a checkpoint, or nothing runs it.
+    for c in &pl.checks {
+        let named = s(c, "named");
+        let design = checks::by_name(named)
+            .map(|n| n.stage == Stage::Design)
+            .unwrap_or(true);
+        if named.is_empty() || design {
+            continue;
+        }
+        let in_unit = pl.units.iter().any(|u| s(u, "id") == s(c, "unit"));
+        let listed = pl
+            .checkpoints
+            .iter()
+            .any(|k| str_list(k, "checks").iter().any(|x| x == s(c, "id")));
+        if !in_unit && !listed {
+            out.push(format!(
+                "the check record {} names `{named}` but belongs to no unit and is listed by no checkpoint, so nothing runs it",
+                s(c, "id")
+            ));
+        }
+    }
+    out
+}
+
+/// The same for a given list of required checks. The threat model and the markets statement are
+/// proven by their records, so they need no check record; a built-stage check is listed by the last
+/// checkpoint, because it counts only at that content.
+pub fn plan_problems_for(pl: &Plan, st: &State, req: &[&'static NamedCheck]) -> Vec<String> {
+    let _ = st;
+    if pl.units.is_empty() {
+        return vec![];
+    }
+    let mut out = Vec::new();
+    for c in req {
+        let recs = records_naming(pl, c.name);
+        match c.stage {
+            Stage::Design if c.name != "design-uiux-verification" => {}
+            Stage::Design => {
+                if recs.is_empty() {
+                    out.push(format!(
+                        "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off)",
+                        c.name, c.name
+                    ));
+                }
+            }
+            Stage::Built => {
+                if recs.is_empty() {
+                    out.push(format!(
+                        "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off)",
+                        c.name, c.name
+                    ));
+                } else if let Some(k) = last_checkpoint(pl) {
+                    if !recs.iter().any(|r| listed_by_last(pl, r)) {
+                        out.push(format!(
+                            "the required check `{}` is not listed by the last checkpoint {}: a built-stage check counts only at the content of the last checkpoint (add one of {} to its `checks`)",
+                            c.name,
+                            s(k, "id"),
+                            recs.iter().map(|r| s(r, "id")).collect::<Vec<_>>().join(" or ")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn design_receipt(pl: &Plan, receipts: &[Receipt], name: &str) -> bool {
@@ -122,42 +201,37 @@ pub fn design_blocker(p: &Project, st: &State, kind: &str) -> R<()> {
     ))
 }
 
-/// Whether a built-stage named check has a passing proof: at the content a unit landed on, or a
-/// checkpoint closed on.
+/// Whether a built-stage named check has a passing proof: at the content the last checkpoint closed on.
 fn built_proof(pl: &Plan, receipts: &[Receipt], st: &State, name: &str) -> bool {
-    records_naming(pl, name).iter().any(|c| {
-        let cid = s(c, "id");
-        let unit = s(c, "unit");
-        let by_unit = !unit.is_empty()
-            && st
-                .units
-                .get(unit)
-                .filter(|u| u.state == "landed")
-                .map(|u| evidence::satisfied_at(receipts, cid, &u.landed_hash).is_some())
-                .unwrap_or(false);
-        by_unit
-            || pl.checkpoints.iter().any(|k| {
-                let kid = s(k, "id");
-                str_list(k, "checks").iter().any(|x| x == cid)
-                    && st
-                        .closed
-                        .get(kid)
-                        .map(|cl| {
-                            if s(c, "how") == "human" {
-                                st.gate_passed("checkpoint-step", Some(kid))
-                            } else {
-                                evidence::satisfied_at(receipts, cid, &cl.hash).is_some()
-                            }
-                        })
-                        .unwrap_or(false)
-            })
-    })
+    let Some(k) = last_checkpoint(pl) else {
+        return false;
+    };
+    let kid = s(k, "id");
+    let Some(cl) = st.closed.get(kid) else {
+        return false;
+    };
+    records_naming(pl, name)
+        .iter()
+        .filter(|c| listed_by_last(pl, c))
+        .any(|c| {
+            if s(c, "how") == "human" {
+                st.gate_passed("checkpoint-step", Some(kid))
+            } else {
+                evidence::satisfied_at(receipts, s(c, "id"), &cl.hash).is_some()
+            }
+        })
 }
 
 fn no_record_or_proof(pl: &Plan, name: &str) -> String {
     let recs = records_naming(pl, name);
+    let last = last_checkpoint(pl).map(|k| s(k, "id").to_string());
     if recs.is_empty() {
         format!("{name}: no check record names it")
+    } else if !recs.iter().any(|c| listed_by_last(pl, c)) {
+        format!(
+            "{name}: no check record that names it is listed by the last checkpoint {}",
+            last.unwrap_or_default()
+        )
     } else {
         format!(
             "{name}: no passing receipt at the content being closed from {}",
@@ -171,10 +245,15 @@ fn no_record_or_proof(pl: &Plan, name: &str) -> String {
 
 /// R-4 at the end of the run: every required check has a passing proof. Returns what was off.
 pub fn refuse_if_unproven(p: &Project, pl: &Plan) -> R<Value> {
+    refuse_if_unproven_for(p, pl, "close the run", "bf ledger check")
+}
+
+/// The same, naming the act that was refused and the command to run again.
+pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) -> R<Value> {
     let st = crate::events::require_chain(p)?;
     let receipts = evidence::load_receipts(p)?;
     let mut gaps: Vec<String> = Vec::new();
-    for c in required(&st) {
+    for c in required_closing(&st) {
         let ok = match c.stage {
             Stage::Design => match c.name {
                 "design-uiux-verification" => design_receipt(pl, &receipts, c.name),
@@ -197,12 +276,12 @@ pub fn refuse_if_unproven(p: &Project, pl: &Plan) -> R<Value> {
     }
     if !gaps.is_empty() {
         let mut steps: Vec<String> = gaps.iter().map(|g| format!("Fix: {g}.")).collect();
-        steps.push("Run `bf ledger check` again.".into());
+        steps.push(format!("Run `{retry}` again."));
         return Err(refuse_owned(
-            "close the run",
+            act.to_string(),
             format!("{} required check(s) have no proof", gaps.len()),
             steps,
-            "`bf ledger check` prints `ledger closed` and exits 0.",
+            format!("`{retry}` no longer refuses for a missing proof."),
         ));
     }
     Ok(json!(off_summary(&st)))
@@ -221,12 +300,24 @@ pub fn checkpoint_gaps(
     let kid = s(k, "id");
     let listed = str_list(k, "checks");
     let mut gaps = Vec::new();
-    for c in required(st).iter().filter(|c| c.stage == Stage::Built) {
+    let is_last = last_checkpoint(pl)
+        .map(|l| s(l, "id") == kid)
+        .unwrap_or(false);
+    for c in required_closing(st)
+        .iter()
+        .filter(|c| c.stage == Stage::Built)
+    {
         let recs: Vec<&Value> = records_naming(pl, c.name)
             .into_iter()
             .filter(|r| listed.iter().any(|x| x == s(r, "id")))
             .collect();
         if recs.is_empty() {
+            if is_last {
+                gaps.push(format!(
+                    "the required check `{}` is not listed by this last checkpoint: a built-stage check counts only at its content",
+                    c.name
+                ));
+            }
             continue;
         }
         let ok = recs.iter().any(|r| {
