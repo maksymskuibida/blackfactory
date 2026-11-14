@@ -369,6 +369,29 @@ fn walk_resolve(fx: &Fx, code: &Path) {
             "{cmd}"
         );
     }
+    // A shell write in the checkpoint's own copy is held to the files the sync allows, as the write
+    // tools are, and the refusal does not call the copy somewhere else in the project.
+    for cmd in [
+        "echo x > src/a.txt",
+        "sed -i '' 's/x/y/' src/a.txt",
+        "tee src/a.txt < /dev/null",
+    ] {
+        assert_ne!(
+            guard_says(fx, &k, "Bash", json!({"command": cmd})),
+            "deny",
+            "{cmd}"
+        );
+    }
+    for cmd in ["echo x > src/other.txt", "rm src/other.txt"] {
+        let payload = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": k.to_string_lossy()});
+        let o = fx.bf_stdin(&k, &["guard"], &payload.to_string());
+        let v: Value = serde_json::from_str(o.stdout.trim()).unwrap();
+        let h = &v["hookSpecificOutput"];
+        assert_eq!(h["permissionDecision"], "deny", "{cmd}");
+        let why = h["permissionDecisionReason"].as_str().unwrap();
+        assert!(!why.contains("somewhere else in the project"), "{why}");
+        assert!(why.contains("checkpoint"), "{why}");
+    }
     assert_ne!(
         guard_says(
             fx,
