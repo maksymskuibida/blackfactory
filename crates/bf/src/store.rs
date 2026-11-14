@@ -1109,6 +1109,26 @@ impl Project {
         Ok(())
     }
 
+    /// Write a record only if no file of that ID exists yet. Returns false when one does, and then
+    /// nothing is changed. The file appears whole or not at all.
+    pub fn write_record_new(&self, rec: &Value) -> R<bool> {
+        let id = rec
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| err("record without id"))?;
+        let path = self.record_path(id)?;
+        let text = toml::to_string_pretty(&strip_nulls(rec.clone()))?;
+        let tmp = path.with_extension(format!("new{}", std::process::id()));
+        util::atomic_write(&tmp, text.as_bytes())?;
+        let linked = fs::hard_link(&tmp, &path);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Load every record (optionally of one kind), sorted by kind then number.
     pub fn list_records(&self, kind: Option<&Kind>) -> R<Vec<Value>> {
         Ok(self.scan_records(kind)?.0)

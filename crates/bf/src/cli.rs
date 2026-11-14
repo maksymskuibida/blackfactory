@@ -778,8 +778,23 @@ fn dispatch(args: &Args) -> R<()> {
                 recs.push(rec);
             }
             // Validate everything first, then write, so a bad list writes nothing.
-            for rec in &recs {
-                p.write_record(rec)?;
+            // An ID the engine numbered is taken with `create_new` and a retry on the next number, so
+            // questions asked at the same moment each keep their own file.
+            for (i, rec) in recs.iter_mut().enumerate() {
+                if items[i].get("id").is_some() {
+                    p.write_record(rec)?;
+                } else {
+                    let mut tries = 0;
+                    while !p.write_record_new(rec)? {
+                        tries += 1;
+                        if tries > 1000 {
+                            return Err(crate::refusal::err("cannot find a free question number"));
+                        }
+                        let n = schema::parse_id(s(rec, "id")).map(|x| x.1).unwrap_or(0);
+                        let next = next_q(&p, &[]).max(n + 1);
+                        rec["id"] = json!(format!("{}-{}", kind.prefix, next));
+                    }
+                }
                 events::append(&p, "question.asked", json!({"question": rec["id"]}))?;
                 made.push(rec.clone());
             }

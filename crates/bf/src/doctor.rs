@@ -218,6 +218,50 @@ pub fn doctor(p: &Project) -> R<Value> {
         pl.problems.is_empty(),
         format!("{} problem(s)", pl.problems.len()),
     );
+    // A checkpoint's working copy with changes nobody committed: a landing that stopped half way.
+    let mut dirty: Vec<String> = Vec::new();
+    for c in &pl.checkpoints {
+        let k = c["id"].as_str().unwrap_or("");
+        if k.is_empty() || st.closed.contains_key(k) {
+            continue;
+        }
+        if st
+            .sync_open
+            .as_ref()
+            .map(|s| s.checkpoint == k)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let top = p.work_dir().join(k);
+        let mut wcs = vec![top.clone()];
+        if let Ok(rd) = std::fs::read_dir(&top) {
+            wcs.extend(rd.flatten().map(|e| e.path()));
+        }
+        for wc in wcs.into_iter().filter(|w| w.join(".git").exists()) {
+            let o = crate::gitx::run(&wc, &["status", "--porcelain", "--untracked-files=no"], &[]);
+            if let Ok(o) = o {
+                if o.ok && !o.stdout.is_empty() {
+                    dirty.push(format!(
+                        "{k}: {} change(s) not committed",
+                        o.stdout.lines().count()
+                    ));
+                }
+            }
+        }
+    }
+    add(
+        "checkpoint working copies",
+        dirty.is_empty(),
+        if dirty.is_empty() {
+            "every open checkpoint's working copy is clean".to_string()
+        } else {
+            format!(
+                "{}; a landing or sync stopped half way: put the working copy back with `git reset --hard` and `git merge --abort` in it (the human's step), then run the command again",
+                dirty.join("; ")
+            )
+        },
+    );
     Ok(json!({"ok": ok, "checks": checks}))
 }
 

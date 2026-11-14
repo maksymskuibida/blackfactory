@@ -255,3 +255,58 @@ fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
     // The lawyer works at the design stage: no token for it exists on a unit.
     assert!(fx.bf(&["roles", "token", "U-1", "lawyer"]).code != 0);
 }
+
+/// The token of a builder stays the same while its unit waits for the human's answer.
+#[test]
+fn a_builder_keeps_its_token_while_its_question_is_open() {
+    use std::path::PathBuf;
+    let fx = Fx::new();
+    fx.set_policy("tokens = false", "tokens = true");
+    fx.tiny();
+    fx.start_test_run();
+    let wc = PathBuf::from(
+        fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    let before = fx.take_token("U-1", "builder");
+    fx.must_in(
+        &wc,
+        &[
+            "ask",
+            "--title",
+            "Which greeting?",
+            "--context",
+            "The brief does not say.",
+        ],
+    );
+    // The conductor looks at the next step while the human has not answered yet.
+    fx.must(&["next", "--json"]);
+    fx.human("Say hello.");
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.json");
+    fs::write(&a, "{\"answer\": \"hello\"}").unwrap();
+    fx.must(&["answer", "Q-1", "--file", a.to_str().unwrap()]);
+    assert_eq!(fx.take_token("U-1", "builder"), before);
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
+    fx.must_in(
+        &wc,
+        &[
+            "evidence",
+            "run",
+            "X-1",
+            "--unit",
+            "U-1",
+            "--",
+            "test",
+            "-f",
+            "src/hello.txt",
+        ],
+    );
+    let o = fx.bf_in(
+        &wc,
+        &["report", "U-1", "--result", "built", "--token", &before],
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+}
