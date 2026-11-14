@@ -143,6 +143,43 @@ pub fn is_repo(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The files an operating system writes by itself into a folder it shows, by name, at any
+/// depth: the file manager's `.DS_Store`, the AppleDouble files (names beginning `._`) and
+/// `Thumbs.db`. The one list; they are never content, never an uncommitted change, never landed.
+pub const OS_JUNK_GLOBS: [&str; 3] = ["**/.DS_Store", "**/._*", "**/Thumbs.db"];
+
+/// Git pathspecs that leave the junk out. They need no file in the repository and no setting.
+pub fn junk_excludes() -> Vec<String> {
+    OS_JUNK_GLOBS
+        .iter()
+        .map(|g| format!(":(exclude,glob){g}"))
+        .collect()
+}
+
+/// `args`, then `--`, then the given leading pathspecs, then the junk exclusions.
+fn with_junk(args: &[&str], lead: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    v.push("--".to_string());
+    v.extend(lead.iter().map(|s| s.to_string()));
+    v.extend(junk_excludes());
+    v
+}
+
+fn run_owned(dir: &Path, args: &[String], envs: &[(&str, &str)]) -> R<Out> {
+    let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run(dir, &a, envs)
+}
+
+/// `git add -A` of the whole working copy, leaving the OS junk out (used before the landing commit).
+pub fn add_all_without_junk(dir: &Path) -> R<()> {
+    let o = run_owned(dir, &with_junk(&["add", "-A"], &["."]), &[])?;
+    if o.ok {
+        Ok(())
+    } else {
+        Err(err(format!("git add -A failed: {}", o.stderr)))
+    }
+}
+
 /// Content hash of a working copy.
 ///
 /// It is the git tree-object hash of every file under the working copy's top
@@ -193,14 +230,28 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let tmp_s = tmp.to_string_lossy().to_string();
     let envs = [("GIT_INDEX_FILE", tmp_s.as_str())];
     let result = (|| -> R<String> {
-        let add: &[&str] = if exclude_factory {
-            &["add", "-A", "--", ".", ":(exclude)factory"]
+        let lead: &[&str] = if exclude_factory {
+            &[".", ":(exclude)factory"]
         } else {
-            &["add", "-A"]
+            &["."]
         };
-        let o = run(top, add, &envs)?;
+        let o = run_owned(top, &with_junk(&["add", "-A"], lead), &envs)?;
         if !o.ok {
             return Err(err(format!("git add failed: {}", o.stderr)));
+        }
+        // Tracked junk stays in the copied index: take it out of the temporary index.
+        let mut rm = vec![
+            "rm".to_string(),
+            "-r".into(),
+            "--cached".into(),
+            "-q".into(),
+            "--ignore-unmatch".into(),
+            "--".into(),
+        ];
+        rm.extend(OS_JUNK_GLOBS.iter().map(|g| format!(":(glob){g}")));
+        let o = run_owned(top, &rm, &envs)?;
+        if !o.ok {
+            return Err(err(format!("git rm --cached failed: {}", o.stderr)));
         }
         if exclude_factory {
             let o = run(
@@ -232,7 +283,7 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
 }
 
 pub fn has_uncommitted(dir: &Path) -> bool {
-    run(dir, &["status", "--porcelain"], &[])
+    run_owned(dir, &with_junk(&["status", "--porcelain"], &["."]), &[])
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
 }
