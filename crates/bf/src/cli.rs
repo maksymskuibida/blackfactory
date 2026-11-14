@@ -416,6 +416,12 @@ fn dispatch(args: &Args) -> R<()> {
             out(args, &v, || status_text(&v));
             Ok(())
         }
+        "progress" => {
+            let p = project(args)?;
+            let l = crate::statusline::line(&p)?;
+            out(args, &json!({"line": l}), || l.clone());
+            Ok(())
+        }
         "log" => cmd_log(args),
         "next" => {
             let p = project(args)?;
@@ -1921,7 +1927,7 @@ fn cmd_gate(args: &Args) -> R<()> {
 const HELP: &str = "bf: the Black Factory engine
 
 State:    init | record put|get|list | id new | ledger check|impact | plan check
-Run:      run start|stop | status | log | next | brief | report | unit start|land
+Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
 Pages:    view <kind> | render <kind>

@@ -80,6 +80,21 @@ Starts when the `plan` gate is approved.
    - **Human** (`role` human; `action` open-gate, decide-gate, decide-unit, decide-check, answer-question): has a `note` and ids, and `page_url` when a link for that gate's page or for `questions` is recorded. See below.
 3. Start every independent worker directive in one message so they run in parallel. After each worker returns, run `bf next --json` again. A unit of a later checkpoint waits (`waiting`) until the earlier checkpoint is closed; do nothing special. When `idle_reason` starts with "run done", every checkpoint is closed: that was the verification. Go to End.
 
+**Progress report.** While the build runs, show the output of `bf progress` and nothing else: one line, never composed by you. Each state has its own sign, units in the same state share a segment, and a unit in review or fixing carries its review round, for example `▶ U-2 building · ◐ U-3, U-4 in review, round 2 · ✔ U-1 landed`.
+
+| Sign | State |
+|---|---|
+| ▶ | building |
+| ◐ | in review (with the round) |
+| ↻ | fixing (with the round) |
+| ● | reviewed, ready to land |
+| ✔ | landed |
+| ⚠ | blocked or parked |
+| ◎ | checkpoint being verified |
+| ■ | checkpoint closed |
+
+Do not retell a worker's report in the line. Write a longer message only when the human must decide or act, when a unit is blocked or parked, or when the run ends.
+
 **Starting a worker.**
 1. For a builder: `bf unit start <U>` first (it resumes an existing working copy).
 2. `bf brief <unit-or-checkpoint> --role <role>` prints the brief path. A checkpoint is briefed to its verifier only.
