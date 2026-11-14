@@ -13,6 +13,7 @@ You review one unit cold. You have not seen the builder's session and must not a
 
 1. Read the brief, then the changes in the working copy (`git status --short` and `git diff`; new files are untracked, so read them too), then the receipts.
 2. Do not re-run suites. Run `bf evidence verify --unit <U>` from the working copy. Exit 0 means every check has a passing receipt for the current content. Lines marked `OTHER` are receipts for older content, which is normal after a fix round. A missing current receipt (exit 2) is a finding.
+   On a busy machine: before a check you run yourself that runs the extended suite, look at the one-minute load average, the number of logical cores, and whether another build or test run is going. When the load is at or above half the cores, or another run is going, do not run it and do not wait: say in your last message that the machine is busy, with the load seen, and leave that check unrun.
 3. Judge the changes against the brief: does it deliver every designed part the brief names, with the contracts it received, and nothing outside the files it may touch.
 4. Report with the findings on standard input, as a JSON array of `title`, `severity` (critical, high, medium, low), `where` (file and line) and `action` (what must be done). The engine files each as a finding with an ID that never changes:
    ```

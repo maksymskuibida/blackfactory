@@ -39,5 +39,5 @@ jobs:
         run: cargo nextest run --locked --profile ci
       - name: Documentation tests
         run: cargo test --locked --doc
-      - name: Timing numbers
-        run: "cargo test --locked --test all timing:: -- --nocapture --test-threads=1"
+      - name: Timing tests
+        run: "cargo nextest run --locked --profile extended --no-fail-fast -E 'test(/^timing::/) | test(/(^|::)timing_/) | test(=controls::the_sandbox_costs_a_little_and_the_policy_can_switch_it_off)' --no-capture"
