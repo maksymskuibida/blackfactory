@@ -1735,7 +1735,7 @@ fn cmd_group(args: &Args, group: &str) -> R<()> {
         "legal" => crate::legal::run(sub, &rest)?,
         "preset" => crate::preset::run(sub, &rest)?,
         "uiux" => crate::uiux::run(sub, &rest)?,
-        _ => crate::roles::run(sub, &rest)?,
+        _ => crate::roles::run_in(&p, sub, &rest)?,
     };
     out(args, &v, || {
         if group == "checks" {

@@ -394,7 +394,10 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
             .map(|x| x.trim().is_empty())
             .unwrap_or(true)
     {
-        bad.push("a checkpoint needs `stop_why`, one sentence on why it stops or why it has no stop".into());
+        bad.push(
+            "a checkpoint needs `stop_why`, one sentence on why it stops or why it has no stop"
+                .into(),
+        );
     }
     if kind.name == "unit" {
         if let Some(a) = obj.get("delivers").and_then(|v| v.as_array()) {

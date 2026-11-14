@@ -87,5 +87,4 @@ fn each_new_command_group_has_its_own_entry_point() {
     assert!(bf::legal::run("x", &[]).is_err());
     assert!(bf::preset::run("x", &[]).is_err());
     assert!(bf::uiux::run("x", &[]).is_err());
-    assert!(bf::roles::run("x", &[]).is_err());
 }

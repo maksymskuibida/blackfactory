@@ -372,6 +372,19 @@ pub fn holds_token(p: &Project, key: &str, token: Option<&str>) -> bool {
     }
 }
 
+/// The one-use token for `key` (`<unit>:<role>`): the one already handed out, or a new one kept in
+/// the state folder like the tokens of the existing roles.
+pub fn issue_token(p: &Project, key: &str) -> R<String> {
+    let mut v = read_tokens(p);
+    if let Some(t) = v.get(key).and_then(|t| t.as_str()) {
+        return Ok(t.to_string());
+    }
+    let tok = util::random_hex(12)?;
+    v[key] = json!(tok);
+    util::atomic_write(&p.tokens_path(), serde_json::to_string(&v)?.as_bytes())?;
+    Ok(tok)
+}
+
 fn read_tokens(p: &Project) -> Value {
     std::fs::read_to_string(p.tokens_path())
         .ok()
@@ -411,7 +424,10 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
             } else {
                 (role, "token")
             };
-            if matches!(role.as_str(), "builder" | "reviewer" | "verifier") && !unit.is_empty() {
+            if (matches!(role.as_str(), "builder" | "reviewer" | "verifier")
+                || crate::roles::is_new_role(&role))
+                && !unit.is_empty()
+            {
                 let key = format!("{unit}:{role}");
                 let tok = match tokens.get(&key).and_then(|t| t.as_str()) {
                     Some(t) => t.to_string(),
@@ -419,6 +435,18 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
                 };
                 d[field] = json!(tok);
                 fresh[&key] = json!(tok);
+            }
+        }
+    }
+    // Tokens handed out by `bf roles token` stay until spent.
+    if let Some(o) = tokens.as_object() {
+        for (k, t) in o {
+            let is_new = k
+                .split_once(':')
+                .map(|(_, r)| crate::roles::is_new_role(r))
+                .unwrap_or(false);
+            if is_new && fresh.get(k).is_none() {
+                fresh[k] = t.clone();
             }
         }
     }
@@ -579,6 +607,27 @@ pub fn report(
         ));
     }
     let cur = st.unit_state(unit).to_string();
+    // One of the five new roles reports with its own token; the unit's state does not move.
+    if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
+        if !["built", "blocked"].contains(&result) {
+            return Err(refuse(
+                format!("report {result} as {r}"),
+                "a new role reports `built` (done) or `blocked`",
+                &["Use --result built or --result blocked; findings and threats are filed with `bf record put`."],
+                "The command prints the unit's state.",
+            ));
+        }
+        if p.policy.roles.tokens {
+            let key = check_token(p, unit, r, token)?;
+            spend_token(p, &key)?;
+        }
+        events::append(
+            p,
+            "unit.role-report",
+            json!({"unit": unit, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
+        )?;
+        return Ok(json!({"unit": unit, "result": result, "state": cur, "role": r}));
+    }
     let expected_role = if cur == "review" {
         "reviewer"
     } else {
@@ -814,11 +863,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if unit.starts_with("K-") {
         return brief_checkpoint(p, unit, role);
     }
+    if crate::roles::is_new_role(role) {
+        return crate::roles::brief(p, unit, role);
+    }
     if !["builder", "reviewer", "verifier"].contains(&role) {
         return Err(refuse(
             format!("write a brief for role `{role}`"),
             "that is not a role the engine briefs",
-            &["Use --role builder, reviewer or verifier."],
+            &["Use --role builder, reviewer, verifier, uiux-verifier, security-expert, security-auditor, lawyer or legal-auditor."],
             "The command prints the path of the brief.",
         ));
     }
