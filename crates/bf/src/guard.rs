@@ -113,6 +113,8 @@ struct Zone<'a> {
     id: &'a str,
     base: String,
     files: Vec<String>,
+    /// Paths that existed when a checkpoint fix opened: a fix may not overwrite them unless a unit lists them.
+    existing: Vec<String>,
     /// A sync of the main branch into this checkpoint is waiting for its resolver or reviewer.
     sync: bool,
 }
@@ -143,6 +145,14 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            existing: w["existing"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
             sync: w["sync"].as_bool().unwrap_or(false),
         },
         None => {
@@ -158,6 +168,7 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                                 id: name,
                                 base: format!("{}/{}", wp.trim_end_matches('/'), name),
                                 files: vec![],
+                                existing: vec![],
                                 sync: false,
                             };
                         }
@@ -169,6 +180,7 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                 id: "",
                 base: table["root"].as_str().unwrap_or("").to_string(),
                 files: vec![],
+                existing: vec![],
                 sync: false,
             }
         }
@@ -340,15 +352,18 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "The path is inside the unit's `files` list.",
         );
     }
-    if zone.kind == "checkpoint" && zone.files.iter().any(|g| util::path_matches(g, rel)) {
-        // An open sync: the resolver writes the conflicted files, and only those.
+    if zone.kind == "checkpoint"
+        && zone.files.iter().any(|g| util::path_matches(g, rel))
+        && !zone.existing.iter().any(|e| e == rel)
+    {
+        // An open sync or checkpoint fix: the builder writes the files the engine named, and only those.
         return allow();
     }
     if zone.kind == "checkpoint" {
         return deny(
             &format!("write {rel} in the checkpoint working copy {}", zone.id),
-            "a checkpoint's content changes only by landing units",
-            &["Make the change in a unit's working copy and land the unit."],
+            "a checkpoint's content changes only by landing units, by the resolver of an open sync, or by the fix of a failed checkpoint inside the files of its units",
+            &["Make the change in a unit's working copy and land the unit.", "A checkpoint fix may change only the files of the checkpoint's units and new test files beside them; anything more is a plan gap the human decides by amendment."],
             "`bf unit land` merges your change.",
         );
     }
@@ -4483,6 +4498,8 @@ fn load_table(loc: &Loc) -> Result<Value, String> {
     if table["gen"].as_u64().unwrap_or(0) < counter {
         return Err("the guard table is older than the newest one the engine wrote: an old copy was put back".into());
     }
+    // While a checkpoint fix is open, the engine hands the guard the files that fix may change.
+    crate::ckfix::overlay(&mut table);
     Ok(table)
 }
 

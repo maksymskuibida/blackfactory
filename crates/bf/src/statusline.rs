@@ -17,6 +17,8 @@ pub fn sign(state: &str) -> Option<(&'static str, &'static str)> {
         "blocked" => ("⚠", "blocked"),
         "parked" => ("⚠", "parked"),
         "verifying" => ("◎", "checkpoint being verified"),
+        "fix-review" => ("◐", "checkpoint fix in review"),
+        "fix-fixing" => ("↻", "checkpoint being fixed"),
         "closed" => ("■", "checkpoint closed"),
         _ => return None,
     })
@@ -34,6 +36,8 @@ pub fn render(items: &[Item]) -> String {
         "reviewed",
         "landed",
         "blocked",
+        "fix-review",
+        "fix-fixing",
         "verifying",
         "closed",
     ];
@@ -112,6 +116,16 @@ pub fn items(p: &Project) -> R<Vec<Item>> {
         let after = str_list(k, "after");
         if st.closed.contains_key(&kid) {
             out.push((kid, "closed".into(), 0));
+        } else if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == kid) {
+            // A checkpoint with a fix open: fixing (round of the findings it fixes), in review (the round
+            // under review), or waiting for the human like a parked unit.
+            let judged = f.rounds_log.len() as u32;
+            match f.phase.as_str() {
+                "review" => out.push((kid, "fix-review".into(), judged + 1)),
+                "fix" => out.push((kid, "fix-fixing".into(), judged)),
+                "gap" => out.push((kid, "blocked".into(), 0)),
+                _ => out.push((kid, "parked".into(), 0)),
+            }
         } else if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
             out.push((kid, "verifying".into(), 0));
         }

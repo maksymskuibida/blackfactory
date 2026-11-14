@@ -459,6 +459,8 @@ pub struct UnitSt {
     /// The commit of the checkpoint branch the unit's branch was cut from.
     pub base_commit: String,
     pub notes: Vec<String>,
+    /// Every review round: number, the content it judged, its commit and what it covered.
+    pub review_rounds: Vec<Value>,
 }
 
 /// One repository of an open sync: where the checkpoint branch stood before, the main branch's commit
@@ -490,6 +492,60 @@ pub struct SyncOpen {
     pub floor: u64,
     /// The checkpoint checks that failed on the joined content when the sync opened.
     pub failed: Vec<Value>,
+}
+
+/// A fix of a checkpoint that failed a check or drew findings: a builder works in the checkpoint's own
+/// working copy, a reviewer judges it, and the checkpoint's checks run again.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixOpen {
+    pub checkpoint: String,
+    /// `check` (a check failed) or `review` (the checkpoint review filed findings).
+    pub source: String,
+    /// `fix` (a builder works), `review` (a reviewer judges), `parked` or `gap` (the human decides).
+    pub phase: String,
+    /// Review rounds that ended in findings.
+    pub rounds: u32,
+    /// Failing check runs and blocked reports since the fix opened or was released.
+    pub attempts: u32,
+    pub reason: String,
+    /// What is missing, when the fix is a plan gap.
+    pub missing: Vec<String>,
+    /// The findings the builder has to fix now.
+    pub findings: Vec<Value>,
+    /// The failing checks the builder has to fix now: check, command, exit, tail.
+    pub failed: Vec<Value>,
+    /// Patterns of the files the fix may change, and the test folders where it may add new test files.
+    pub allowed: Vec<String>,
+    pub test_dirs: Vec<String>,
+    pub units: Vec<String>,
+    /// Where each repository's checkpoint branch stood when the fix opened: (repository, commit).
+    pub before: Vec<(String, String)>,
+    /// The content of the checkpoint when the fix opened.
+    pub content: String,
+    pub open_seq: u64,
+    /// What set the fix off, as the opening event recorded it: the failed checks, or the findings.
+    pub origin_failed: Vec<Value>,
+    pub origin_findings: Vec<Value>,
+    /// Every review round: number, the content it judged, the commits, what it covered, its outcome.
+    pub rounds_log: Vec<Value>,
+    /// The findings of every earlier round, with the round they were filed in.
+    pub history: Vec<Value>,
+}
+
+/// A checkpoint fix that was reviewed clean and whose checks passed again.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixDone {
+    pub id: String,
+    pub checkpoint: String,
+    pub source: String,
+    pub files: Vec<String>,
+    pub units: Vec<String>,
+    /// File -> the units whose file lists hold it.
+    pub by_file: Value,
+    pub rounds_log: Vec<Value>,
+    pub origin_failed: Vec<Value>,
+    pub origin_findings: Vec<Value>,
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -558,6 +614,12 @@ pub struct State {
     pub synced: Vec<(String, String, String)>,
     /// A sync that stopped at a conflict and is being resolved.
     pub sync_open: Option<SyncOpen>,
+    /// A checkpoint fix being worked on.
+    pub ck_fix: Option<CkFixOpen>,
+    /// Every checkpoint fix that was finished, in log order.
+    pub ck_fixes: Vec<CkFixDone>,
+    /// `<checkpoint>@<content>` of fixes the human turned down: no fix opens for that content again.
+    pub ck_declined: Vec<String>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -962,6 +1024,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if !note.is_empty() {
                     u.notes.push(note);
                 }
+                if ev.get("round").is_some() {
+                    u.review_rounds.push(json!({
+                        "round": ev["round"], "content": ev["content"], "head": ev["head"],
+                        "covered": ev["covered"], "result": ev["result"],
+                    }));
+                }
                 u.last_seq = seq;
                 u.last_at = at;
             }
@@ -1092,6 +1160,130 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 for c in crate::store::str_list(ev, "reopen_checks") {
                     let e = st.reopen_floor.entry(c).or_insert(0);
                     *e = (*e).max(floor);
+                }
+            }
+            "checkpoint.fix.open" => {
+                let heads: Vec<(String, String)> = ev["before"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|r| {
+                        (
+                            r["repo"].as_str().unwrap_or("").to_string(),
+                            r["head"].as_str().unwrap_or("").to_string(),
+                        )
+                    })
+                    .collect();
+                let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                st.ck_fix = Some(CkFixOpen {
+                    checkpoint: sv("checkpoint"),
+                    source: sv("source"),
+                    phase: "fix".into(),
+                    history: if findings.is_empty() {
+                        vec![]
+                    } else {
+                        vec![json!({"round": 0, "findings": findings})]
+                    },
+                    origin_findings: findings.clone(),
+                    origin_failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    findings,
+                    failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    allowed: crate::store::str_list(ev, "allowed"),
+                    test_dirs: crate::store::str_list(ev, "test_dirs"),
+                    units: crate::store::str_list(ev, "units"),
+                    before: heads,
+                    content: sv("content"),
+                    open_seq: seq,
+                    ..Default::default()
+                });
+            }
+            "checkpoint.fix.built" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "review".into();
+                    o.failed.clear();
+                }
+            }
+            "checkpoint.fix.attempt" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.attempts += 1;
+                    o.phase = sv("to");
+                    o.reason = sv("reason");
+                    o.failed = ev["failed"].as_array().cloned().unwrap_or_default();
+                    o.findings.clear();
+                }
+            }
+            "checkpoint.fix.reviewed" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.rounds_log.push(json!({
+                        "round": ev["round"], "content": ev["content"], "heads": ev["heads"],
+                        "covered": ev["covered"], "result": ev["result"],
+                    }));
+                    if sv("result") == "findings" {
+                        o.rounds += 1;
+                        o.phase = sv("to");
+                        o.reason = sv("reason");
+                        o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                        o.history
+                            .push(json!({"round": ev["round"], "findings": o.findings}));
+                    }
+                }
+            }
+            "checkpoint.fix.park" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "parked".into();
+                    o.reason = sv("reason");
+                }
+            }
+            "checkpoint.fix.gap" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "gap".into();
+                    o.reason = sv("reason");
+                    o.missing = crate::store::str_list(ev, "missing");
+                }
+            }
+            "checkpoint.fix.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix release cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "fix".into();
+                    o.rounds = 0;
+                    o.attempts = 0;
+                    o.reason.clear();
+                    o.missing.clear();
+                }
+            }
+            "checkpoint.fix.abort" => {
+                if let Some(o) = st.ck_fix.take() {
+                    st.ck_declined
+                        .push(format!("{}@{}", o.checkpoint, o.content));
+                }
+            }
+            "checkpoint.fix.done" => {
+                if let Some(o) = st.ck_fix.take() {
+                    let n = st
+                        .ck_fixes
+                        .iter()
+                        .filter(|f| f.checkpoint == o.checkpoint)
+                        .count()
+                        + 1;
+                    st.ck_fixes.push(CkFixDone {
+                        id: format!("{}-fix-{n}", o.checkpoint),
+                        checkpoint: o.checkpoint.clone(),
+                        source: o.source.clone(),
+                        files: crate::store::str_list(ev, "files"),
+                        units: crate::store::str_list(ev, "units"),
+                        by_file: ev["by_file"].clone(),
+                        rounds_log: o.rounds_log.clone(),
+                        origin_failed: o.origin_failed.clone(),
+                        origin_findings: o.origin_findings.clone(),
+                        seq,
+                    });
                 }
             }
             "page.published" => {
