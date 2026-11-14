@@ -399,6 +399,8 @@ pub struct State {
     pub work_events: usize,
     /// Design gates the human skipped: (kind, the words, seq). Only `ui` can be skipped.
     pub skipped: Vec<(String, String, u64)>,
+    /// Where each checkpoint branch took the main branch in: (checkpoint, repository, main's commit).
+    pub synced: Vec<(String, String, String)>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -747,6 +749,29 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     {
                         u.attempts += 1;
                     }
+                }
+            }
+            "checkpoint.sync" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint sync cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                for r in ev["repos"].as_array().into_iter().flatten() {
+                    st.synced.push((
+                        sv("checkpoint"),
+                        r["repo"].as_str().unwrap_or("").to_string(),
+                        r["main"].as_str().unwrap_or("").to_string(),
+                    ));
+                }
+                // The checkpoint's own content changed: its checks' earlier receipts no longer count.
+                let floor = ev["receipt_floor"].as_u64().unwrap_or(0);
+                for c in crate::store::str_list(ev, "reopen_checks") {
+                    let e = st.reopen_floor.entry(c).or_insert(0);
+                    *e = (*e).max(floor);
                 }
             }
             "page.published" => {

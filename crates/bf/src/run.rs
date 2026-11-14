@@ -164,6 +164,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
+        "main_ahead": main_ahead(p, &st, &pl),
         "pages": pages_json(&st),
         "human_turns_note": st.human_turns_note().unwrap_or_default(),
         "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
@@ -532,6 +533,7 @@ pub fn next(p: &Project) -> R<Value> {
             }
         }
     }
+    v["main_ahead"] = json!(main_ahead(p, &st, &pl));
     v["human_turns_note"] = json!(st.human_turns_note().unwrap_or_default());
     if let Some(n) = st.human_turns_note() {
         eprintln!("note: {n}");
@@ -1835,6 +1837,268 @@ pub fn park_if_looping(p: &Project, unit: &str) -> R<()> {
         p.write_guard()?;
     }
     Ok(())
+}
+
+/// Where the main branch holds commits the open stack of checkpoints lacks: for each repository, the
+/// newest open checkpoint that has a branch there and how many commits of the main branch it lacks.
+/// Information only; `bf checkpoint sync` takes them in.
+pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
+    let mut out = Vec::new();
+    for r in &p.repos {
+        if !gitx::branch_exists(&r.path, &r.branch) {
+            continue;
+        }
+        for k in pl.checkpoints.iter().rev() {
+            let kid = s(k, "id");
+            if st.closed.contains_key(kid) {
+                continue;
+            }
+            let cpb = p.checkpoint_branch(kid);
+            if !gitx::branch_exists(&r.path, &cpb) {
+                continue;
+            }
+            let n = gitx::must(
+                &r.path,
+                &["rev-list", "--count", &format!("{cpb}..{}", r.branch)],
+            )
+            .unwrap_or_default();
+            let n: u64 = n.trim().parse().unwrap_or(0);
+            if n > 0 {
+                out.push(json!({
+                    "repo": r.name, "checkpoint": kid, "commits": n,
+                    "command": format!("bf checkpoint sync {kid} --quote \"<the human's words>\""),
+                }));
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// `bf checkpoint sync <K> --quote "..." [--resolved]`: the human has the checkpoint branch take in the
+/// repository's local main branch (no network: pulling into main is an ordinary git command done before).
+/// Only at a quiet point; a conflict leaves everything as it was.
+pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, resolved: bool) -> R<Value> {
+    let st = events::require_chain(p)?;
+    need_run(&st)?;
+    refuse_if_main_moved(p, &st)?;
+    let pl = plan::load(p)?;
+    let Some(kr) = pl.checkpoint(k) else {
+        return Err(refuse(
+            format!("sync {k}"),
+            "no such checkpoint",
+            &["Use a checkpoint ID from `bf record list --kind checkpoint`."],
+            "The command prints the sync.",
+        ));
+    };
+    if st.closed.contains_key(k) {
+        return Err(refuse(
+            format!("sync {k}"),
+            "the checkpoint is closed; the main branch is taken in by the checkpoint at the tip of the stack",
+            &["Sync the newest open checkpoint instead (`bf status` says which)."],
+            "`bf status` shows the checkpoint open.",
+        ));
+    }
+    let repos: Vec<Repo> = checkpoint_repos(p, &pl, k)?.into_iter().cloned().collect();
+    // The tip of the stack: no later checkpoint has started.
+    let after: Vec<&Value> = pl
+        .checkpoints
+        .iter()
+        .skip_while(|c| s(c, "id") != k)
+        .skip(1)
+        .collect();
+    for c in after {
+        let cid = s(c, "id");
+        let started = p
+            .repos
+            .iter()
+            .any(|r| gitx::branch_exists(&r.path, &p.checkpoint_branch(cid)));
+        if started {
+            return Err(refuse(
+                format!("sync {k}"),
+                format!("{cid} already builds on it: only the checkpoint at the tip of the stack takes the main branch in"),
+                &[&format!("Sync {cid}, or the newest open checkpoint, instead.")],
+                "`bf checkpoint sync` prints the sync.",
+            ));
+        }
+    }
+    // A quiet point: no unit between its start and its landing.
+    let busy: Vec<String> = st
+        .units
+        .iter()
+        .filter(|(_, u)| {
+            matches!(
+                u.state.as_str(),
+                "running" | "review" | "fixing" | "reviewed" | "blocked" | "parked"
+            )
+        })
+        .map(|(id, u)| format!("{id} ({})", u.state))
+        .collect();
+    if !busy.is_empty() {
+        return Err(refuse(
+            format!("sync {k}"),
+            format!("units are between start and landing: {}", busy.join(", ")),
+            &[
+                "Finish and land them (`bf next` shows where each one is).",
+                "A parked or blocked unit is released by the human (`bf unit release <U> --quote \"...\"`) and then finished.",
+                "Run the command again at the quiet point.",
+            ],
+            "`bf status` shows no unit running, in review, fixing, blocked or parked.",
+        ));
+    }
+    // What each repository's checkpoint branch lacks.
+    struct Step {
+        repo: Repo,
+        wt: PathBuf,
+        main_tip: String,
+        old_tip: String,
+        lacks: bool,
+        hand_merged: bool,
+    }
+    let cpb = p.checkpoint_branch(k);
+    let mut steps: Vec<Step> = Vec::new();
+    for r in &repos {
+        let main_tip = gitx::must(&r.path, &["rev-parse", &r.branch]).map_err(|_| {
+            refuse(
+                format!("sync {k}"),
+                format!(
+                    "the main branch `{}` of `{}` does not exist",
+                    r.branch, r.name
+                ),
+                &["Check the branch the project files name."],
+                "`bf status` shows the repository.",
+            )
+        })?;
+        let wt = ensure_checkpoint_worktree(p, k, r)?;
+        if gitx::has_uncommitted(&wt) {
+            return Err(refuse(
+                format!("sync {k}"),
+                "the checkpoint's working copy has uncommitted changes",
+                &[&format!(
+                    "Commit or remove them (`git -C {} status`), then run the command again.",
+                    wt.display()
+                )],
+                "The working copy is clean.",
+            ));
+        }
+        let lacks = !gitx::is_ancestor(&r.path, &main_tip, &cpb);
+        let parents =
+            gitx::must(&wt, &["rev-list", "--parents", "-n", "1", "HEAD"]).unwrap_or_default();
+        let is_merge = parents.split_whitespace().count() >= 3;
+        let known = st
+            .synced
+            .iter()
+            .any(|(kk, rr, mm)| kk == k && rr == &r.name && mm == &main_tip);
+        let old_tip = gitx::must(&wt, &["rev-parse", "HEAD"]).unwrap_or_default();
+        steps.push(Step {
+            repo: r.clone(),
+            wt,
+            main_tip,
+            old_tip,
+            lacks,
+            hand_merged: resolved && !lacks && !known && is_merge,
+        });
+    }
+    if resolved {
+        if let Some(s0) = steps.iter().find(|x| x.lacks) {
+            return Err(refuse(
+                format!("sync {k}"),
+                format!("the checkpoint branch does not contain the main branch of `{}` yet", s0.repo.name),
+                &[
+                    &format!("In {}: `git merge {}`, resolve the conflicts, `git add`, `git commit`.", s0.wt.display(), s0.repo.branch),
+                    &format!("Then run `bf checkpoint sync {k} --resolved --quote \"<the human's words>\"` again."),
+                ],
+                "`bf checkpoint sync` records the merge.",
+            ));
+        }
+    }
+    let todo: Vec<&Step> = steps.iter().filter(|x| x.lacks || x.hand_merged).collect();
+    if todo.is_empty() {
+        return Ok(
+            json!({"checkpoint": k, "synced": false, "nothing_to_take_in": true,
+            "message": "the checkpoint already holds everything on the main branch; nothing changed"}),
+        );
+    }
+    // The human's words first: nothing is merged for a sync that could not be recorded.
+    let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    // Merge, one repository after another; a conflict rolls the earlier ones back.
+    let mut done: Vec<(String, String, String)> = Vec::new();
+    for (idx, step) in steps.iter().enumerate() {
+        if !step.lacks {
+            if step.hand_merged {
+                done.push((
+                    step.repo.name.clone(),
+                    step.main_tip.clone(),
+                    gitx::head_short(&step.wt),
+                ));
+            }
+            continue;
+        }
+        let out = gitx::run(
+            &step.wt,
+            &[
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                &format!("Take {} into {k}", step.repo.branch),
+                &step.main_tip,
+            ],
+            &[],
+        )?;
+        if !out.ok {
+            let conflicts = gitx::must(&step.wt, &["diff", "--name-only", "--diff-filter=U"])
+                .unwrap_or_default();
+            let _ = gitx::run(&step.wt, &["merge", "--abort"], &[]);
+            for earlier in steps.iter().take(idx).filter(|x| x.lacks) {
+                let _ = gitx::run(
+                    &earlier.wt,
+                    &["reset", "--hard", "-q", &earlier.old_tip],
+                    &[],
+                );
+            }
+            let files: Vec<String> = conflicts.lines().map(|l| l.to_string()).collect();
+            return Err(refuse(
+                format!("sync {k}"),
+                format!(
+                    "the main branch of `{}` conflicts with the checkpoint in: {}",
+                    step.repo.name,
+                    if files.is_empty() { out.stderr.lines().next().unwrap_or("").to_string() } else { files.join(", ") }
+                ),
+                &[
+                    "Nothing was changed: the merge was aborted.",
+                    &format!("The human resolves it in the checkpoint's working copy: `cd {}`, `git merge {}`, fix the files, `git add`, `git commit`.", step.wt.display(), step.repo.branch),
+                    &format!("Then run `bf checkpoint sync {k} --resolved --quote \"<the human's words>\"`, which checks that the branch now holds the main branch and records it."),
+                ],
+                "`bf checkpoint sync` records the sync.",
+            ));
+        }
+        done.push((
+            step.repo.name.clone(),
+            step.main_tip.clone(),
+            gitx::head_short(&step.wt),
+        ));
+    }
+    let reopen_checks = str_list(kr, "checks");
+    events::append(
+        p,
+        "checkpoint.sync",
+        json!({
+            "checkpoint": k,
+            "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>(),
+            "turn": turn, "quote": quote.trim(),
+            "reopen_checks": reopen_checks, "receipt_floor": evidence::highest_receipt_number(p),
+        }),
+    )?;
+    // The repository's main branch is where the engine now counts from: the stack holds it.
+    let mut h = events::read_head(p).unwrap_or_default();
+    for (name, main, _) in &done {
+        h.set_commit(name, Some(main.clone()));
+    }
+    events::write_head(p, &h)?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "synced": true,
+        "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}))
 }
 
 pub fn stuck(p: &Project, dry: bool) -> R<Value> {

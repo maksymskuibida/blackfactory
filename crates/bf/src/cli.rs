@@ -536,12 +536,29 @@ fn dispatch(args: &Args) -> R<()> {
         "evidence" => cmd_evidence(args),
         "checkpoint" => {
             let p = project(args)?;
+            if args.pos.get(1).map(|x| x.as_str()) == Some("sync") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let v = run::checkpoint_sync(
+                    &p,
+                    k,
+                    args.flag("quote").unwrap_or(""),
+                    args.has("resolved"),
+                )?;
+                out(args, &v, || {
+                    if v["synced"] == true {
+                        format!("{k} took in the main branch")
+                    } else {
+                        "nothing to take in".to_string()
+                    }
+                });
+                return Ok(());
+            }
             if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
                 return Err(refuse(
                     "run `bf checkpoint`",
-                    "only `bf checkpoint close` exists",
-                    &["Run `bf checkpoint close <K>`."],
-                    "The command prints the closure.",
+                    "only `bf checkpoint close` and `bf checkpoint sync` exist",
+                    &["Run `bf checkpoint close <K>` or `bf checkpoint sync <K> --quote \"...\"`."],
+                    "The command prints the result.",
                 ));
             }
             let k = args.pos_at(2, "a checkpoint ID")?;
@@ -1061,6 +1078,15 @@ fn status_text(v: &Value) -> String {
     }
     if let Some(n) = v["human_turns_note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
+    }
+    for m in v["main_ahead"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "note: the main branch of {} holds {} commit(s) that {} lacks; `bf checkpoint sync {} --quote \"<the human's words>\"` takes them in\n",
+            m["repo"].as_str().unwrap_or(""),
+            m["commits"],
+            m["checkpoint"].as_str().unwrap_or(""),
+            m["checkpoint"].as_str().unwrap_or(""),
+        ));
     }
     for pg in v["pages"].as_array().into_iter().flatten() {
         t.push_str(&format!(
