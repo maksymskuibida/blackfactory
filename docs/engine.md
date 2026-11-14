@@ -27,6 +27,7 @@ bf status
 | `factory/receipts/rc-NNNNN.toml` | receipts written by `bf evidence` | yes |
 | `factory/evidence/<sha256>` | files attached to a check, stored by hash | yes |
 | `factory/log/events.jsonl` | the append-only run log | yes |
+| `factory/checks.json` | a mirror of the project default of the named checks (the log is the truth; `bf doctor` compares them) | yes |
 | `.bf/guard.json` | the signed table `bf guard` reads | never |
 | `.bf/drafts/`, `.bf/briefs/`, `.bf/work/<ID>/` | drafts, briefs, working copies | never |
 | `<state>/<project id>/key` | the key that seals receipts, chains the log and signs the guard table | never, and outside the project tree |
@@ -123,13 +124,13 @@ bf ledger check
 bf ledger impact R-1 C-2 --json
 ```
 
-Refuses when: any designed part lacks a link.
+Refuses when: any designed part lacks a link (a threat is a designed part, so each needs a check that proves its answer); a required named check has no proof (a design-stage product missing, or a built-stage check with no passing receipt at the content of the last checkpoint); a marked legal finding is not acknowledged.
 
 ### `bf plan check`
 
 Checks the delivery plan: every handoff is proved by some check (a check's `proves` may name a handoff `H-n`; so may a checkpoint's), and at least one such check really runs, that is, belongs to a unit (`unit = "U-n"`) or is listed in a checkpoint's `checks`; no cycle in the unit graph; every handoff has a sender, a receiver (which depends on the sender) and a named thing; every checkpoint names the IDs it proves and a check for each; every designed ID belongs to a unit and to a checkpoint; every unit has a check; units in one wave share no files. Waves are the levels of the dependency graph.
 
-Refuses when: any of that fails (all problems are listed).
+Refuses when: any of that fails (all problems are listed). It also refuses while the check settings are undecided (the human has recorded neither the project default nor the settings of a run: decide the default with `bf checks propose --scope default` and `bf checks set --quote` first), while a required named check has no check record with `named = "<name>"` (a design-stage threat model and markets statement need none), while such a record's `how` is not the way the catalogue says it is proven, while a required built-stage check is not listed by the last checkpoint, and while a named check record belongs to no unit and is listed by no checkpoint.
 
 ### `bf run start` / `bf run stop` / `bf status` / `bf log`
 
@@ -137,7 +138,7 @@ Refuses when: any of that fails (all problems are listed).
 
 `status` also prints `main`: whether the main branch is where the engine left it (see `bf checkpoint close`), with one quiet line when a person committed on it, and `bad_records`: record files that cannot be read, each named with the reason. One unreadable record file never stops `status`; `bf plan check` and `bf doctor` report it as a problem, and a command that asks for that record by id names the file.
 
-Refuses when: a run is already active; the plan has problems; the log chain is broken.
+Refuses when: a run is already active; the plan has problems; the log chain is broken. **`run stop` is refused** while a required named check has no proof (the same test as `bf ledger check`, plus a marked legal finding that is not acknowledged), unless the human switched that check off for the run; the refusal names each gap and the way out (`bf checks propose --scope run <check>=off:<why>`, then `bf checks set --quote`).
 
 ### `bf next`
 
@@ -234,7 +235,7 @@ cd ../..
 bf checkpoint close K-1
 ```
 
-Refuses when: units have not landed; the working copy has uncommitted changes; an ID has no proof; a human step is not approved; with `--merge`, the run is tainted by simulated approvals or the main checkout is on another branch.
+Refuses when: units have not landed; the working copy has uncommitted changes; an ID has no proof; a required built-stage named check has no passing receipt at this content (on the last checkpoint, also when it is not listed by it, and when any required check of the run lacks its proof), or a marked legal finding is not acknowledged; a human step is not approved; with `--merge`, the run is tainted by simulated approvals or the main checkout is on another branch.
 
 ### `bf checkpoint sync <K> --quote "<the human's words>" [--resolved]`
 
@@ -289,7 +290,7 @@ bf gate open architecture
 bf gate approve architecture --quote "I approve the architecture"
 ```
 
-Refuses when: no quote is given, or it is not in the message; an approval is a question; the kind is unknown; a gate of that kind is still open; unanswered questions are tagged for this stage (see `bf questions`); for `plan`, the plan has problems; no human turn follows the open; the gate is already decided.
+Refuses when: opening the `ui` gate while the design-stage UI/UX verification (`named = "design-uiux-verification"`) has no receipt for the screens as they are now; opening the `architecture` gate while no threat is recorded and the threat model check is on, or while no markets statement exists and a legal check is on (`bf record put markets`; an empty list is a statement of no market); no quote is given, or it is not in the message; an approval is a question; the kind is unknown; a gate of that kind is still open; unanswered questions are tagged for this stage (see `bf questions`); for `plan`, the plan has problems; no human turn follows the open; the gate is already decided.
 
 ### `bf test-mode grant`
 
@@ -335,7 +336,13 @@ Only one amendment is open at a time. `open` is refused while one is open (not a
 
 ### `bf checks list` / `state` / `propose <check>=off:<reason>... [--scope default|run|both]` / `set --quote "..."`
 
-The named checks (security, legal, uiux families) are on or off for the project default, for one run, or both. `propose` records a proposal and changes nothing; it prints every check it would change, and each check switched off carries its reason. `set` records the latest proposal and is refused without a quote from a human message that came after the proposal (the quote is not a question, and must be in the message). Changes that differ from the proposal are refused. `state` and the pages show each check that is off with its reason.
+The named checks (security, legal, uiux families) are on or off for the project default, for one run, or both. `propose` records a proposal and changes nothing; it prints every check it would change, and each check switched off carries its reason. `set` records the latest proposal and is refused without a quote from a human message that came after the proposal (the quote is not a question, and must be in the message). Changes that differ from the proposal are refused. `state` and the pages show each check that is off with its reason. The project default is also mirrored to `factory/checks.json` (see the table above).
+
+### `bf roles list` / `show <role>` / `token <unit|design> <role>`
+
+Five roles are known by name besides builder, reviewer and verifier: `uiux-verifier`, `security-expert`, `security-auditor`, `lawyer` and `legal-auditor`. `list` and `show` print each one's stage (`design` or `built`), what it may read, write and run, and its tier. `token` issues the one-use token of a role for a subject, and `bf brief <subject> --role <role>` writes its brief. A role works only at its stage. The security expert drafts threats (`bf record put threat`) and the security auditor files findings on the built result; the lawyer and the legal auditor write legal records.
+
+**The design subject.** A design-stage role has no unit, so its subject is the word `design`: `bf roles token design <role>`, `bf brief design --role <role>`, `bf report design --result built|blocked --role <role> --token T`. The brief lists the design records, the report works outside a run and moves no unit, and a design-stage token ends when a run starts or stops. The UI/UX verifier works at both stages.
 
 ### `bf progress [--json]`
 
@@ -450,6 +457,7 @@ The guard and the checks stop mistakes, drift and casual cheating, and make deli
 - **Hide a path.** The guard reads the parsed command and the path strings in an interpreter's code. A path built at run time (`'fac' + 'tory'` inside a script, a variable, a glob such as `fact*/`) or a script file that does the work (`sh src/x.sh`) is not seen. The sandbox around checks and git helps only where the engine starts the process; a worker's own Bash call is not sandboxed unless the harness does it.
 - **Run its own code as a check.** A check runs the unit's code; that is the point of it. On macOS the engine runs it in a sandbox (no state folder, no network, no writes to `factory/` or other working copies); elsewhere it runs unsandboxed and the receipt says so. Either way the code can do what it likes inside its working copy and its temporary folder, and what a check proves rests on someone reading that code.
 - **Plant a program where checks look.** The folders on the check PATH are not watched for change. A program replaced in place is noted in the receipt of the next run (see `bf evidence run`), only for the first word of a check's command.
+- **Use a token as the conductor.** A token tells roles apart and does not keep the conductor out: the conductor reads every token from `bf next`, so it could settle a check, attach an outcome, file a review or report in a role's name. The engine cannot stop this (a known and accepted limit). The conductor's instructions forbid it, and that rule rests on the conductor alone; the only report it files for a worker is the relay under a budget cap.
 - **Take the reviewer's token.** The token only says which role is reporting. A worker that runs `bf next` from a script before the conductor does can read the reviewer's token; the engine refuses `bf next` from a working copy, and the rest is left to Claude Code's own permission checks (below).
 - **Move main, then be noticed.** The engine sees a move of the main branch the next time it reads, and refuses to land, close or call the ledger closed until the human accepts the position. It does not stop the move: only a host's branch protection does.
 

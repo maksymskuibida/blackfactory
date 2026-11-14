@@ -46,7 +46,9 @@ Extra fields by kind:
 |---|---|---|---|
 | requirement | `acceptance` | list of strings | What must be true when it is done |
 | target | `measure` | string | The number or limit it is held to |
-| threat | `mitigation` | string | How the design answers it |
+| threat | `protects` | string | **Required.** What is protected |
+| threat | `attack` | string | **Required.** How it is attacked |
+| threat | `mitigation` | string | **Required.** How the design answers it. The ledger refuses to close while a threat has no check that proves its answer |
 | decision | `chosen` | string | What was chosen |
 | decision | `rejected` | string | What was rejected and why |
 | decision | `maker` | `human` or `agent` | Who made the call. A call the agent makes by itself is a decision with `maker = "agent"`, not a new kind |
@@ -130,6 +132,7 @@ How one or more parts are proven.
 | `how` | `command`, `agent` or `human` | yes | `command` checks are run by `bf evidence run`. an `agent` check is settled by `bf evidence attach` with a stated outcome (the verifier's token), a `human` check by the checkpoint's gate |
 | `command` | string or list of strings | for `how = "command"` | The exact command. `bf evidence run` accepts only this command |
 | `proves` | list of designed or handoff IDs | yes | What a passing receipt of this check proves |
+| `named` | a name from `bf checks list` | no | Marks the record as the proof of that named check (for example `named = "design-uiux-verification"`). The engine refuses a name it does not know. A required built-stage named check needs such a record, listed by the last checkpoint |
 | `scope` | `unit` or `checkpoint` | yes | Where it runs: in a unit's working copy before landing, or in a checkpoint's working copy before closing |
 | `unit` | `U-` ID | for `scope = "unit"` | The unit that must pass it before it lands |
 
@@ -217,6 +220,10 @@ main_branch = "main"
 
 The log head, kept outside the project, records for each repository the branch watched and the commit the engine last put there or the human accepted; an edit of this file cannot move the watch (`bf doctor` shows the difference, `bf head accept` takes it).
 
+### `factory/checks.json`
+
+A mirror of the project default of the named checks: `{"off": {"<check>": "<reason>"}}`. The run log is the truth; `bf checks set` rewrites the file, and `bf doctor` compares it with the log and reports a missing or differing file.
+
 ### `factory/policy.toml`
 
 Only the human edits it. The guard keeps agents away from it.
@@ -260,7 +267,7 @@ A receipt counts only if its seal is valid, its exit code is 0 (for a run), and 
 
 ### `factory/log/events.jsonl`
 
-One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.revise`, `amend.withdraw`, `amend.approve`, `checks.propose`, `checks.set`.
+One event per line, each with `seq`, `at`, `kind`, `prev` and `h` (an HMAC under the key in the state folder). Event kinds: `project.init`, `head.accept`, `policy.accept`, `human.turn`, `human.turn.rejected`, `gate.open`, `gate.approve`, `gate.reject`, `testmode.grant`, `run.start`, `run.stop`, `unit.start`, `unit.report`, `unit.land`, `unit.park`, `unit.release`, `gate.skip`, `page.published`, `evidence.run`, `evidence.attach`, `evidence.outcome`, `unit.role-report`, `tokens.reset`, `checkpoint.sync`, `checkpoint.sync.open`, `checkpoint.sync.built`, `checkpoint.sync.reviewed`, `checkpoint.sync.park`, `checkpoint.sync.release`, `checkpoint.sync.abort`, `checkpoint.close`, `question.asked`, `question.answered`, `amend.open`, `amend.narrow`, `amend.revise`, `amend.withdraw`, `amend.approve`, `checks.propose`, `checks.set`.
 
 An amendment approval counts only with a human turn recorded after the amendment's latest narrowing or revision; an earlier approval is ignored on replay.
 
