@@ -641,6 +641,7 @@ const BF_KNOWN: &[&str] = &[
     "version",
     "help",
     "human-turn",
+    "roles",
 ];
 
 /// What a working copy may run: (subcommand, the second words allowed; empty = any). A unit's
@@ -655,6 +656,9 @@ const UNIT_BF: &[(&str, &[&str])] = &[
     ),
     ("record", &["get", "list", "put"]),
 ];
+/// The record kinds a working copy may put: a finding (builders' reviewers and the security and legal
+/// auditors), a threat (the security expert) and a legal record (the lawyer and the legal auditor).
+const PUT_KINDS: &[&str] = &["finding", "threat", "legal"];
 const CP_BF: &[(&str, &[&str])] = &[
     ("ask", &[]),
     ("status", &[]),
@@ -844,7 +848,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     || matches!(sub, "help" | "version")
                     || list.iter().any(|(c, subs)| *c == sub && (subs.is_empty() || subs.contains(&second)))
                     // Of `record put`, only a finding.
-                    && !(sub == "record" && second == "put" && w.get(i + 2).map(|x| x.as_str()) != Some("finding"));
+                    && !(sub == "record"
+                        && second == "put"
+                        && !PUT_KINDS.contains(&w.get(i + 2).map(|x| x.as_str()).unwrap_or("")));
                 if !ok {
                     return deny(
                         &format!("run `bf {sub} {second}` from a working copy").replace("  ", " "),
@@ -853,7 +859,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         } else {
                             "a checkpoint's working copy is for running its checks and reading state"
                         },
-                        &["Use `bf report`, `bf evidence run|verify|fail|unreachable`, `bf record put finding`, `bf record get|list` or `bf status`.", "Ask the conductor for anything else."],
+                        &["Use `bf report`, `bf evidence run|verify|fail|unreachable`, `bf record put finding|threat|legal`, `bf record get|list` or `bf status`.", "Ask the conductor for anything else."],
                         "The command you need is on that list.",
                     );
                 }
@@ -1494,6 +1500,20 @@ mod tests {
             "bf record put finding --file f.toml",
             "/p/.bf/work/U-1"
         ));
+        assert!(bash(
+            "bf record put threat --file f.toml",
+            "/p/.bf/work/U-1"
+        ));
+        assert!(bash("bf record put legal --file f.toml", "/p/.bf/work/U-1"));
+        assert!(!bash(
+            "bf record put threat --file f.toml",
+            "/p/.bf/work/K-1"
+        ));
+        assert!(
+            bash("bf roles token U-1 lawyer", "/p"),
+            "the conductor may hand out a role token"
+        );
+        assert!(!bash("bf roles token U-1 lawyer", "/p/.bf/work/U-1"));
         assert!(!bash(
             "bf record put requirement --file f.toml",
             "/p/.bf/work/U-1"
