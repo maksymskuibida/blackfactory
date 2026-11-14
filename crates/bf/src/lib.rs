@@ -2,6 +2,7 @@
 
 pub mod checks;
 pub mod ckfix;
+pub mod ckreview;
 pub mod cli;
 pub mod doctor;
 pub mod enforce;

@@ -16,6 +16,7 @@ fn every_named_check_of_three_families_is_required_by_default() {
         "dependency-licence-check",
         "markets-statement",
         "legal-audit",
+        "checkpoint-review",
     ];
     for n in names {
         let c = checks::by_name(n).unwrap_or_else(|| panic!("missing {n}"));

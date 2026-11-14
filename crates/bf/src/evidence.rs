@@ -108,6 +108,15 @@ fn seal_input(v: &Value) -> String {
             h if h.is_empty() => String::new(),
             h => format!("\x1fscreens_hash={h}"),
         }
+        // A deliberate repeat's attempt number and a judgement are sealed only when present.
+        + &match f("attempt") {
+            h if h.is_empty() => String::new(),
+            h => format!("\x1fattempt={h}"),
+        }
+        + &match f("judgement") {
+            h if h.is_empty() => String::new(),
+            h => format!("\x1fjudgement={h}"),
+        }
 }
 
 /// A hash of the screen records as they are now: what a design-stage UI/UX judgment looked at.
@@ -218,7 +227,7 @@ fn next_receipt_id(p: &Project) -> String {
     format!("rc-{:05}", max + 1)
 }
 
-fn write_receipt(p: &Project, mut v: Value) -> R<Value> {
+pub(crate) fn write_receipt(p: &Project, mut v: Value) -> R<Value> {
     let key = read_key(p).ok_or_else(|| {
         refuse(
             "write a receipt",
@@ -278,6 +287,97 @@ pub fn run_at(
     argv: &[String],
     top: &Path,
 ) -> R<Value> {
+    run_with(p, check_id, unit, argv, top, None)
+}
+
+/// A deliberate repeat: the number of the attempt and the reason for it.
+pub type Repeat<'a> = Option<(u64, &'a str)>;
+
+/// The sealed run receipts of a check for one command at one content: the runs already recorded.
+fn earlier_runs<'a>(
+    receipts: &'a [Receipt],
+    check_id: &str,
+    command: &str,
+    content: &str,
+) -> Vec<&'a Receipt> {
+    receipts
+        .iter()
+        .filter(|r| {
+            r.is_run()
+                && r.seal_ok
+                && r.check() == check_id
+                && r.content() == content
+                && s(&r.v, "command") == command
+        })
+        .collect()
+}
+
+/// The number the next run of this command has on the content now in `top`: the runs recorded plus one.
+pub fn next_attempt(p: &Project, check_id: &str, argv: &[String], top: &Path) -> R<u64> {
+    let content = p.content_hash(top)?;
+    let receipts = load_receipts(p)?;
+    Ok(earlier_runs(&receipts, check_id, &argv.join(" "), &content).len() as u64 + 1)
+}
+
+/// R-57: the same command on the same content as a recorded run is refused, unless it is stated as
+/// a deliberate repeat with the number of the attempt (one more than the runs recorded) and a reason.
+fn refuse_repeat(
+    p: &Project,
+    check_id: &str,
+    argv: &[String],
+    content: &str,
+    repeat: Repeat,
+    unit: Option<&str>,
+) -> R<()> {
+    let receipts = load_receipts(p)?;
+    let command = argv.join(" ");
+    let n = earlier_runs(&receipts, check_id, &command, content).len() as u64;
+    let unit_flag = unit.map(|u| format!(" --unit {u}")).unwrap_or_default();
+    let how = format!(
+        "bf evidence run {check_id}{unit_flag} --attempt {} --reason \"<why it is run again>\" -- {command}",
+        n + 1
+    );
+    match repeat {
+        None if n == 0 => Ok(()),
+        None => Err(refuse(
+            format!("run `{command}` for {check_id} again"),
+            format!("it already ran {n} time(s) on this same content, and a run again on the same content is a repeat that must be stated"),
+            &[
+                "A run on changed content is not a repeat; if nothing changed, the earlier receipt already says what happened.",
+                &format!("To repeat on purpose, give the number of the attempt and a reason: `{how}`."),
+            ],
+            "The command writes a receipt that records the attempt number and the reason.",
+        )),
+        Some((a, reason)) => {
+            if a != n + 1 {
+                return Err(refuse(
+                    format!("run `{command}` for {check_id} as attempt {a}"),
+                    format!("it ran {n} time(s) on this content, so the next attempt is {}", n + 1),
+                    &[&format!("Run it as `{how}`.")],
+                    "The command writes a receipt that records the attempt number and the reason.",
+                ));
+            }
+            if n > 0 && reason.trim().is_empty() {
+                return Err(refuse(
+                    format!("repeat `{command}` for {check_id}"),
+                    "a deliberate repeat needs a reason",
+                    &[&format!("Run it as `{how}`.")],
+                    "The command writes a receipt that records the attempt number and the reason.",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn run_with(
+    p: &Project,
+    check_id: &str,
+    unit: Option<&str>,
+    argv: &[String],
+    top: &Path,
+    repeat: Repeat,
+) -> R<Value> {
     if argv.is_empty() {
         return Err(refuse(
             "run evidence",
@@ -327,6 +427,7 @@ pub fn run_at(
     }
     let top = top.to_path_buf();
     let before = p.content_hash(&top)?;
+    refuse_repeat(p, check_id, argv, &before, repeat, unit)?;
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;
@@ -347,10 +448,16 @@ pub fn run_at(
             "The receipt is written and its content hash equals the one before the command.",
         ));
     }
+    let (attempt, repeat_reason) = match repeat {
+        Some((a, r)) => (json!(a), r.trim().to_string()),
+        None => (Value::Null, String::new()),
+    };
     let v = json!({
         "type": "run",
         "check": check_id,
         "unit": unit,
+        "attempt": attempt,
+        "reason": repeat_reason,
         "command": argv.join(" "),
         "program": CHECK_SHELL,
         "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
@@ -401,7 +508,7 @@ pub const CHECK_ENV: &[&str] = &[
 ];
 pub const CHECK_SHELL: &str = "/bin/sh";
 
-fn exec_capture(
+pub(crate) fn exec_capture(
     p: &Project,
     dir: &Path,
     argv: &[String],
@@ -423,20 +530,23 @@ fn exec_capture(
     // and writes only inside its working copy.
     let sandboxed = p.policy.exec.sandbox && crate::sandbox::available();
     let mut cmd = if sandboxed {
-        crate::sandbox::command(
-            &crate::sandbox::check_profile(
-                &p.state_dir_resolved(),
-                &p.root.to_string_lossy(),
-                &dir.to_string_lossy(),
-                p.policy.exec.network,
-                &p.transcript_root(),
-                &p.repos
-                    .iter()
-                    .map(|r| r.path.to_string_lossy().to_string())
-                    .collect::<Vec<_>>(),
-            ),
-            CHECK_SHELL,
-        )
+        let repo_paths = p
+            .repos
+            .iter()
+            .map(|r| r.path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let mut profile = crate::sandbox::check_profile(
+            &p.state_dir_resolved(),
+            &p.root.to_string_lossy(),
+            &dir.to_string_lossy(),
+            p.policy.exec.network,
+            &p.transcript_root(),
+            &repo_paths,
+        );
+        if crate::sandbox::is_review_copy(&p.work_dir(), dir) {
+            profile = crate::sandbox::review_profile(&profile, &repo_paths);
+        }
+        crate::sandbox::command(&profile, CHECK_SHELL)
     } else {
         Command::new(CHECK_SHELL)
     };
@@ -593,6 +703,7 @@ pub fn attach(
         }
     };
     if j.outcome.is_some() {
+        refuse_review_check(&chk, "give an outcome")?;
         if s(&chk, "how") != "agent" {
             return Err(refuse(
                 format!("give {check_id} an outcome"),
@@ -722,6 +833,7 @@ pub fn outcome(
             "`bf evidence verify` lists the outcome.",
         ));
     }
+    refuse_review_check(&chk, &format!("mark it as {kind}"))?;
     if reason.trim().is_empty() {
         return Err(refuse(
             format!("mark {check_id} as {kind}"),
@@ -770,7 +882,49 @@ pub fn standing_outcome<'a>(
 }
 
 /// A check is satisfied at `content` when a sealed, passing receipt for it carries that content hash.
+///
+/// R-58: a pass that follows a failing run at the same content counts only after the checkpoint
+/// reviewer recorded a judgement of acceptable flakiness or another cause; a judgement that the
+/// failure stands, or none at all, leaves the check unproven.
 pub fn satisfied_at<'a>(
+    receipts: &'a [Receipt],
+    check_id: &str,
+    content: &str,
+) -> Option<&'a Receipt> {
+    let here = || {
+        receipts
+            .iter()
+            .filter(|r| r.check() == check_id && r.content() == content)
+    };
+    let pass = here().rev().find(|r| r.passes())?;
+    let pass_n = receipt_number(pass.id()).unwrap_or(0);
+    // The judgement must come after the latest failing run that precedes the pass that counts.
+    let failed_first = here()
+        .filter(|r| r.is_run() && r.seal_ok && r.v["exit"].as_i64() != Some(0))
+        .map(|r| receipt_number(r.id()).unwrap_or(0))
+        .filter(|n| *n < pass_n)
+        .max();
+    let last_judgement = here().rfind(|r| r.seal_ok && !s(&r.v, "judgement").is_empty());
+    if let Some(j) = last_judgement {
+        if s(&j.v, "judgement") == "failure" {
+            return None;
+        }
+    }
+    if let Some(f) = failed_first {
+        let judged = last_judgement
+            .map(|j| receipt_number(j.id()).unwrap_or(0) > f)
+            .unwrap_or(false);
+        if !judged {
+            return None;
+        }
+    }
+    Some(pass)
+}
+
+/// A unit's check is satisfied at `content` by a sealed passing receipt at that content. The judgement
+/// rule of R-58 belongs to the checkpoint's checks, where a reviewer can record it, so it is not asked
+/// here: a unit check that failed and then passed on a deliberate repeat counts.
+pub fn satisfied_unit_at<'a>(
     receipts: &'a [Receipt],
     check_id: &str,
     content: &str,
@@ -778,7 +932,164 @@ pub fn satisfied_at<'a>(
     receipts
         .iter()
         .rev()
-        .find(|r| r.check() == check_id && r.passes() && r.content() == content)
+        .find(|r| r.check() == check_id && r.content() == content && r.passes())
+}
+
+/// Whether the check has a pass at this content that waits for the reviewer's judgement of an earlier
+/// failure: the one case where a passing receipt does not count yet.
+pub fn awaits_judgement(receipts: &[Receipt], check_id: &str, content: &str) -> bool {
+    satisfied_at(receipts, check_id, content).is_none()
+        && receipts
+            .iter()
+            .any(|r| r.check() == check_id && r.content() == content && r.passes())
+        && !receipts.iter().any(|r| {
+            r.check() == check_id && r.content() == content && s(&r.v, "judgement") == "failure"
+        })
+}
+
+/// The judgements the checkpoint reviewer can record (R-58).
+pub const JUDGEMENTS: [&str; 3] = ["flaky", "failure", "other"];
+
+/// `bf evidence run <check> --judge flaky|failure|other --reason ...`: the checkpoint reviewer judges a
+/// check that failed and then passed on a deliberate repeat at the same content. Flaky and other count
+/// the pass (flaky is flagged on the receipt); a failure stands as a `fail` receipt, so the check goes
+/// to the checkpoint fix.
+pub fn judge(p: &Project, check_id: &str, judgement: &str, reason: &str, top: &Path) -> R<Value> {
+    if !JUDGEMENTS.contains(&judgement) {
+        return Err(refuse(
+            format!("judge {check_id} as `{judgement}`"),
+            "that is not a judgement",
+            &["Use `flaky` (acceptable flakiness), `failure` (the failure stands) or `other` (another cause, such as an interrupted run)."],
+            "The command prints a receipt.",
+        ));
+    }
+    if reason.trim().is_empty() {
+        return Err(refuse(
+            format!("judge {check_id}"),
+            "a judgement needs a reason",
+            &["Add `--reason \"<what you saw>\"`."],
+            "The command prints a receipt.",
+        ));
+    }
+    let chk = p.require_record(check_id)?;
+    if s(&chk, "kind") != "check" || s(&chk, "how") != "command" {
+        return Err(refuse(
+            format!("judge {check_id}"),
+            "only a command check that failed and then passed is judged",
+            &["Use the ID of a command check."],
+            "The command prints a receipt.",
+        ));
+    }
+    let content = p.content_hash(top)?;
+    let receipts = load_receipts(p)?;
+    let here: Vec<&Receipt> = receipts
+        .iter()
+        .filter(|r| r.check() == check_id && r.content() == content)
+        .collect();
+    let failed = here
+        .iter()
+        .any(|r| r.is_run() && r.seal_ok && r.v["exit"].as_i64() != Some(0));
+    let passed = here.iter().any(|r| r.passes());
+    if !(failed && passed) {
+        return Err(refuse(
+            format!("judge {check_id}"),
+            "it has no failing run followed by a passing run at this content, so there is nothing to judge",
+            &["Judge only a check that failed and then passed on a deliberate repeat at the same content (`--attempt <n> --reason ...`)."],
+            "The command prints a receipt.",
+        ));
+    }
+    let (kind, flag) = match judgement {
+        "failure" => ("fail", ""),
+        "flaky" => ("judge", "flaky"),
+        _ => ("judge", ""),
+    };
+    let v = json!({
+        "type": kind,
+        "check": check_id,
+        "judgement": judgement,
+        "flag": flag,
+        "reason": format!("{judgement}: {}", reason.trim()),
+        "content_hash": content,
+        "at": util::now(),
+    });
+    let v = write_receipt(p, v)?;
+    events::append(
+        p,
+        "evidence.judged",
+        json!({"receipt": v["id"], "check": check_id, "judgement": judgement}),
+    )?;
+    Ok(v)
+}
+
+/// `bf evidence run --probe <K> -- <command...>`: a command the checkpoint reviewer runs in its own copy
+/// that is not one of the checkpoint's checks, such as a probe test. It is recorded with the command, the
+/// content it ran on, the exit code and the end of its output, and it settles nothing: no check, gate or
+/// close counts it as proof.
+pub fn probe(p: &Project, checkpoint: &str, argv: &[String], top: &Path) -> R<Value> {
+    if argv.is_empty() {
+        return Err(refuse(
+            "run a probe",
+            "no command was given after `--`",
+            &["Put the command after `--`, for example `bf evidence run --probe K-1 -- cargo test probe_`."],
+            "The command prints a probe receipt.",
+        ));
+    }
+    let content = p.content_hash(top)?;
+    let (exit, tail, out_hash, total, sandboxed) =
+        exec_capture(p, top, argv, p.policy.evidence.tail_bytes)?;
+    let after = p.content_hash(top)?;
+    let v = json!({
+        "type": "probe",
+        "check": checkpoint,
+        "command": argv.join(" "),
+        "program": CHECK_SHELL,
+        "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
+        "exit": exit,
+        "content_hash": content,
+        "content_after": after,
+        "output_hash": out_hash,
+        "bytes": total,
+        "output_tail": tail,
+        "at": util::now(),
+    });
+    let v = write_receipt(p, v)?;
+    events::append(
+        p,
+        "evidence.probe",
+        json!({"receipt": v["id"], "checkpoint": checkpoint, "exit": exit}),
+    )?;
+    Ok(v)
+}
+
+/// The engine's own receipt for the checkpoint review, written when the reviewer reports a clean review:
+/// the review settles the check that names it, at the content it judged.
+pub fn review_receipt(p: &Project, check_id: &str, content: &str, says: &str) -> R<Value> {
+    let v = json!({
+        "type": "attach",
+        "check": check_id,
+        "reason": says,
+        "content_hash": content,
+        "at": util::now(),
+    });
+    let v = write_receipt(p, v)?;
+    events::append(
+        p,
+        "evidence.attach",
+        json!({"receipt": v["id"], "check": check_id, "unit": null}),
+    )?;
+    Ok(v)
+}
+
+fn refuse_review_check(chk: &Value, what: &str) -> R<()> {
+    if s(chk, "named") == crate::checks::CHECKPOINT_REVIEW {
+        return Err(refuse(
+            format!("{what} for {}", s(chk, "id")),
+            "the checkpoint review is settled only by the checkpoint reviewer's own report; no verifier or auditor settles it, and the reviewer settles no other check",
+            &["The checkpoint reviewer reports with `bf report <K> --result findings --role reviewer --token <token>`."],
+            "`bf evidence verify` lists the review's receipt after a clean report.",
+        ));
+    }
+    Ok(())
 }
 
 pub struct VerifyRow {
@@ -820,6 +1131,10 @@ pub fn verify(
     let mut rows = Vec::new();
     let mut all_ok = true;
     for r in &receipts {
+        // A probe run settles nothing; it is in the evidence, never in a verification.
+        if matches!(s(&r.v, "type"), "probe" | "judge") {
+            continue;
+        }
         if let Some((_, ids)) = &current {
             if !ids.iter().any(|i| i == r.check()) {
                 continue;
@@ -848,7 +1163,14 @@ pub fn verify(
     // With a scope, every check in scope must have at least one passing receipt at the current content.
     if let Some((h, ids)) = &current {
         for id in ids {
-            if satisfied_at(&receipts, id, h).is_none() {
+            // A unit's checks land by the unit rule, so verification asks the same; a checkpoint's
+            // checks also need the judgement of a pass that followed a failure.
+            let met = if checkpoint.is_some() {
+                satisfied_at(&receipts, id, h)
+            } else {
+                satisfied_unit_at(&receipts, id, h)
+            };
+            if met.is_none() {
                 all_ok = false;
             }
         }

@@ -425,11 +425,19 @@ fn the_sandbox_costs_a_little_and_the_policy_can_switch_it_off() {
         "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\n",
     );
     fx.put("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"true\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
+    let runs = std::cell::Cell::new(0u32);
     let time = |n: usize| {
         let mut v: Vec<f64> = (0..n)
             .map(|_| {
+                runs.set(runs.get() + 1);
+                let k = runs.get().to_string();
+                let mut args = vec!["evidence", "run", "X-5"];
+                if runs.get() > 1 {
+                    args.extend(["--attempt", &k, "--reason", "timing run"]);
+                }
+                args.extend(["--", "true"]);
                 let t = std::time::Instant::now();
-                let o = fx.bf(&["evidence", "run", "X-5", "--", "true"]);
+                let o = fx.bf(&args);
                 assert_eq!(o.code, 0, "{}", o.all());
                 t.elapsed().as_secs_f64() * 1000.0
             })
@@ -476,13 +484,33 @@ fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_info
     // A version manager rehashes its shims: the folder changes, the check still runs.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(extra_dir.join("shim"), "#!/bin/sh\nexit 0\n").unwrap();
-    let o = fx.must(&["evidence", "run", "X-5", "--", "true"]);
+    let o = fx.must(&[
+        "evidence",
+        "run",
+        "X-5",
+        "--attempt",
+        "2",
+        "--reason",
+        "after the shim",
+        "--",
+        "true",
+    ]);
     assert!(!o.stderr.contains("refused"), "{}", o.stderr);
     // A folder inside the project is only information in `bf doctor`.
     let inside = fx.root.join("tools");
     fs::create_dir_all(&inside).unwrap();
     fx.set_policy("path = \"", &format!("path = \"{}:", inside.display()));
-    fx.must(&["evidence", "run", "X-5", "--", "true"]);
+    fx.must(&[
+        "evidence",
+        "run",
+        "X-5",
+        "--attempt",
+        "3",
+        "--reason",
+        "path changed",
+        "--",
+        "true",
+    ]);
     let d = fx.bf(&["doctor"]);
     assert!(
         d.stdout.contains("check path: ok") && d.stdout.contains("inside the project"),
@@ -778,25 +806,20 @@ fn a_program_replaced_after_the_plan_gate_is_noted_in_the_receipt_and_the_check_
     let wc = started_unit(&fx);
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/hello.txt"), "hi\n").unwrap();
-    let run = |fx: &Fx| {
-        fx.bf_in(
-            &wc,
-            &[
-                "evidence",
-                "run",
-                "X-1",
-                "--unit",
-                "U-1",
-                "--",
-                tool.to_str().unwrap(),
-            ],
-        )
+    let run = |fx: &Fx, attempt: u32| {
+        let n = attempt.to_string();
+        let mut args = vec!["evidence", "run", "X-1", "--unit", "U-1"];
+        if attempt > 1 {
+            args.extend(["--attempt", &n, "--reason", "run again"]);
+        }
+        args.extend(["--", tool.to_str().unwrap()]);
+        fx.bf_in(&wc, &args)
     };
-    let o = run(&fx);
+    let o = run(&fx, 1);
     assert_eq!(o.code, 0, "the recorded program runs: {}", o.all());
     // Replace the program's contents (a longer file, so size differs whatever the clock says).
     fs::write(&tool, "#!/bin/sh\n# changed\ntrue\n").unwrap();
-    let o = run(&fx);
+    let o = run(&fx, 2);
     assert_eq!(o.code, 0, "an upgrade is ordinary: {}", o.all());
     assert!(
         o.stderr.contains("checkit") && o.stderr.contains("recorded when the plan was approved"),
@@ -812,7 +835,7 @@ fn a_program_replaced_after_the_plan_gate_is_noted_in_the_receipt_and_the_check_
         "the receipt carries the note"
     );
     // The change is noted once; the next run is quiet.
-    let o = run(&fx);
+    let o = run(&fx, 3);
     assert_eq!(o.code, 0);
     assert!(!o.stderr.contains("note:"), "{}", o.stderr);
 }

@@ -564,13 +564,21 @@ pub fn checkpoint_gaps(
         });
         if !ok {
             unproven.push(c.name.to_string());
+            let waits = recs
+                .iter()
+                .any(|r| evidence::awaits_judgement(receipts, s(r, "id"), content));
             gaps.push(format!(
-                "the required check `{}` has no passing receipt at this content from {}",
+                "the required check `{}` has no passing receipt at this content from {}{}",
                 c.name,
                 recs.iter()
                     .map(|r| s(r, "id"))
                     .collect::<Vec<_>>()
-                    .join(" or ")
+                    .join(" or "),
+                if waits {
+                    " (it passed after a failure at this content: the checkpoint reviewer judges that first)"
+                } else {
+                    ""
+                }
             ));
         }
     }
