@@ -18,6 +18,27 @@ pub struct Row {
     pub checks: Vec<String>,
     pub evidence: Vec<String>,
     pub missing: Vec<&'static str>,
+    /// The switched-off checks that left this part unproven: it is not demanded, and says so.
+    pub off: Vec<String>,
+}
+
+/// The names of the switched-off checks that are the only checks of a closed checkpoint proving this
+/// part. The close follows the same rule (`enforce::off_unproven`).
+fn off_waiver(pl: &Plan, st: &State, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for k in &pl.checkpoints {
+        if !st.closed.contains_key(s(k, "id")) {
+            continue;
+        }
+        for (i, names) in crate::enforce::off_unproven(pl, st, k) {
+            if i == id {
+                out.extend(names);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Evidence for a part: a sealed passing receipt, at the content a checkpoint closed on, from one of that
@@ -120,10 +141,16 @@ pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) ->
         if checks.is_empty() {
             missing.push("check");
         }
-        if with_evidence && evidence.is_empty() {
+        let off = if with_evidence && evidence.is_empty() {
+            off_waiver(pl, st, &id)
+        } else {
+            vec![]
+        };
+        if with_evidence && evidence.is_empty() && off.is_empty() {
             missing.push("evidence");
         }
         out.push(Row {
+            off,
             id,
             title: s(d, "title").to_string(),
             kind: s(d, "kind").to_string(),
@@ -151,6 +178,7 @@ pub fn rows(pl: &Plan, receipts: &[Receipt], with_evidence: bool, st: &State) ->
             missing.push("evidence");
         }
         out.push(Row {
+            off: vec![],
             id,
             title: format!("{} from {} to {}", s(h, "thing"), s(h, "from"), s(h, "to")),
             kind: "handoff".into(),

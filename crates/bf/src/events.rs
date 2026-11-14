@@ -908,6 +908,14 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 u.last_seq = seq;
                 u.last_at = at;
             }
+            "unit.role-report" => {
+                // The cost a role reports counts in the total, and for a unit also in the unit's.
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                st.cost += c;
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    u.cost += c;
+                }
+            }
             "unit.land" => {
                 let u = st.units.entry(sv("unit")).or_default();
                 u.state = "landed".into();

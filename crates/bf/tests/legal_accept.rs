@@ -145,3 +145,142 @@ fn a_message_from_before_the_latest_change_of_the_record_does_not_count() {
     );
     assert_eq!(o.code, 0, "{}", o.all());
 }
+
+fn legal_full(id: &str, title: &str, text: &str, outcome: &str) -> String {
+    format!(
+        "id=\"{id}\"\nkind=\"legal\"\ntitle=\"{title}\"\ntext=\"{text}\"\nseverity=\"high\"\noutcome=\"{outcome}\"\n"
+    )
+}
+
+#[test]
+fn the_put_that_accepts_cannot_also_change_what_is_accepted() {
+    let fx = Fx::new();
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
+        None,
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    sleep(Duration::from_millis(1100));
+    fx.human("Fine, I accept the notice risk as it is.");
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Something else", "Other text.", "accepted"),
+        Some("I accept the notice risk"),
+    );
+    assert_eq!(o.code, 2, "{}", o.all());
+    let r = fx.bf(&["record", "get", "L-1", "--json"]).stdout;
+    assert!(r.contains("Notice") && r.contains("open"), "{r}");
+    // The same content with the outcome accepted passes.
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "accepted"),
+        Some("I accept the notice risk"),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+#[test]
+fn an_accepted_record_that_changes_goes_back_to_open() {
+    let fx = Fx::new();
+    put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
+        None,
+    );
+    sleep(Duration::from_millis(1100));
+    fx.human("Fine, I accept the notice risk as it is.");
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "accepted"),
+        Some("I accept the notice risk"),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Other", "Other text.", "accepted"),
+        None,
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    let r = fx.bf(&["record", "get", "L-1", "--json"]).json();
+    assert_eq!(r["outcome"], "open", "{r}");
+}
+
+#[test]
+fn a_new_record_cannot_be_created_as_accepted() {
+    let fx = Fx::new();
+    fx.human("I accept the risk, go on.");
+    sleep(Duration::from_millis(1100));
+    let o = put_legal(
+        &fx,
+        &legal_full(
+            "L-7",
+            "Never seen",
+            "Written after the message.",
+            "accepted",
+        ),
+        Some("I accept the risk"),
+    );
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert_ne!(fx.bf(&["record", "get", "L-7"]).code, 0);
+}
+
+#[test]
+fn the_put_that_resets_an_accepted_record_says_so() {
+    let fx = Fx::new();
+    put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
+        None,
+    );
+    sleep(Duration::from_millis(1100));
+    fx.human("Fine, I accept the notice risk as it is.");
+    let o = put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "accepted"),
+        Some("I accept the notice risk"),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    let f = fx.root.join("legal-put.toml");
+    std::fs::write(&f, legal_full("L-1", "Other", "Other text.", "accepted")).unwrap();
+    let o = fx.bf(&[
+        "record",
+        "put",
+        "legal",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(o.stdout.contains("back to open"), "{}", o.all());
+}
+
+#[test]
+fn the_json_of_the_put_says_the_record_went_back_to_open() {
+    let fx = Fx::new();
+    put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
+        None,
+    );
+    sleep(Duration::from_millis(1100));
+    fx.human("Fine, I accept the notice risk as it is.");
+    put_legal(
+        &fx,
+        &legal_full("L-1", "Notice", "One sentence is missing.", "accepted"),
+        Some("I accept the notice risk"),
+    );
+    let f = fx.root.join("legal-put.toml");
+    std::fs::write(&f, legal_full("L-1", "Other", "Other text.", "accepted")).unwrap();
+    let o = fx.bf(&[
+        "record",
+        "put",
+        "legal",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(o.json()["reset_to_open"], true, "{}", o.all());
+}
