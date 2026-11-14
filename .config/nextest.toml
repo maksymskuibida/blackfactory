@@ -1,0 +1,9 @@
+[profile.default]
+# Every test runs in its own process; show slow ones and stop a hung test.
+slow-timeout = { period = "60s", terminate-after = 5 }
+failure-output = "immediate-final"
+status-level = "pass"
+
+[profile.ci]
+fail-fast = false
+retries = 0
