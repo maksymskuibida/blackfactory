@@ -131,6 +131,22 @@ fn one_segment_per_state_with_the_round_of_each_unit() {
 }
 
 #[test]
+fn a_checkpoint_under_review_or_being_fixed_has_its_own_states() {
+    assert_eq!(
+        render(&[it("K-1", "fix-fixing", 0)]),
+        "↻ K-1 checkpoint being fixed"
+    );
+    assert_eq!(
+        render(&[it("K-1", "fix-review", 2)]),
+        "◐ K-1 checkpoint fix in review, round 2"
+    );
+    assert_eq!(
+        render(&[it("K-1", "parked", 0), it("U-1", "landed", 0)]),
+        "✔ U-1 landed · ⚠ K-1 parked"
+    );
+}
+
+#[test]
 fn blocked_and_parked_units_share_one_segment() {
     assert_eq!(
         render(&[it("U-1", "blocked", 0), it("U-2", "parked", 0)]),

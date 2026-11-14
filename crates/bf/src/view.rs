@@ -847,6 +847,14 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             for n in &us.notes {
                 body.push(text(n));
             }
+            body.extend(round_lines(&us.review_rounds));
+        }
+        let fx = crate::ckfix::fixes_of_unit(st, id);
+        if !fx.is_empty() {
+            body.push(text(&format!(
+                "Checkpoint fixes attributed: {}.",
+                fx.join(", ")
+            )));
         }
         for c in pl.unit_checks(id) {
             if let Some(r) = rc.iter().rfind(|r| r.check() == s(c, "id") && r.is_run()) {
@@ -931,6 +939,188 @@ fn strip_event(e: &Value) -> Value {
     m
 }
 
+/// One line per review round: its number, the content it judged, what it covered and its result.
+fn round_lines(rounds: &[Value]) -> Vec<Value> {
+    rounds
+        .iter()
+        .map(|r| {
+            let content = r["content"].as_str().unwrap_or("");
+            let result = r["result"].as_str().unwrap_or("");
+            text(&format!(
+                "Review round {} judged content {}; covered: {}.{}",
+                r["round"],
+                &content[..content.len().min(12)],
+                r["covered"].as_str().unwrap_or(""),
+                if result.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Result: {result}.")
+                }
+            ))
+        })
+        .collect()
+}
+
+fn failed_line(x: &Value) -> String {
+    let tail = x["tail"]
+        .as_str()
+        .unwrap_or("")
+        .lines()
+        .last()
+        .unwrap_or("");
+    format!(
+        "failed check {} (`{}`), exit {}, output ends: {}",
+        x["check"].as_str().unwrap_or(""),
+        x["command"].as_str().unwrap_or(""),
+        if x["exit"].is_null() {
+            "none".to_string()
+        } else {
+            x["exit"].to_string()
+        },
+        tail
+    )
+}
+
+fn finding_line(x: &Value) -> String {
+    format!(
+        "[{}] {} at {}",
+        x["severity"].as_str().unwrap_or(""),
+        x["title"].as_str().unwrap_or(""),
+        x["where"].as_str().unwrap_or("")
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fix_row(
+    id: &str,
+    checkpoint: &str,
+    source: &str,
+    phase: &str,
+    note: &str,
+    failed: &[Value],
+    findings: &[Value],
+    files: Option<&[String]>,
+    units: &[String],
+    by_file: &Value,
+    rounds: &[Value],
+) -> Value {
+    let mut body = vec![text(&format!(
+        "Set off by: {}.",
+        if source == "check" {
+            "a failed checkpoint check"
+        } else {
+            "findings of the checkpoint review"
+        }
+    ))];
+    for x in failed {
+        body.push(text(&format!("- {}", failed_line(x))));
+    }
+    for x in findings {
+        body.push(text(&format!("- finding {}", finding_line(x))));
+    }
+    body.push(text(&format!(
+        "Phase: {phase}.{}",
+        if note.is_empty() {
+            String::new()
+        } else {
+            format!(" {note}")
+        }
+    )));
+    body.push(text(&match files {
+        Some(f) if !f.is_empty() => format!("Files changed: {}.", f.join(", ")),
+        Some(_) => "Files changed: none.".to_string(),
+        None => "Files changed: recorded when the fix finishes.".to_string(),
+    }));
+    if units.is_empty() {
+        body.push(text("Units: none attributed yet."));
+    } else {
+        let per: Vec<String> = by_file
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(f, us)| {
+                        let us: Vec<&str> = us
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|u| u.as_str())
+                            .collect();
+                        format!("{f} -> {}", us.join(", "))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        body.push(text(&format!(
+            "Units: {}.{}",
+            units.join(", "),
+            if per.is_empty() {
+                String::new()
+            } else {
+                format!(" By file: {}.", per.join("; "))
+            }
+        )));
+    }
+    if rounds.is_empty() {
+        body.push(text("Review rounds: none yet."));
+    }
+    body.extend(round_lines(rounds));
+    json!({"id": id, "title": format!("Fix of {checkpoint} ({})", if source == "check" { "check failed" } else { "review findings" }),
+        "needs_you": matches!(phase, "parked" | "gap"),
+        "handled": {"tone": if phase == "done" { "ok" } else { "open" }, "text": phase},
+        "body": body})
+}
+
+/// The fixes of a checkpoint: every finished one in order, then the open one.
+fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
+    let mut rows: Vec<Value> = st
+        .ck_fixes
+        .iter()
+        .filter(|d| d.checkpoint == kid)
+        .map(|d| {
+            fix_row(
+                &d.id,
+                kid,
+                &d.source,
+                "done",
+                "Reviewed clean and the checkpoint's checks passed again.",
+                &d.origin_failed,
+                &d.origin_findings,
+                Some(&d.files),
+                &d.units,
+                &d.by_file,
+                &d.rounds_log,
+            )
+        })
+        .collect();
+    if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == kid) {
+        let n = rows.len() + 1;
+        let mut note = String::new();
+        if !f.reason.is_empty() {
+            note.push_str(&format!("Reason: {}.", f.reason.trim_end_matches('.')));
+        }
+        if !f.missing.is_empty() {
+            if !note.is_empty() {
+                note.push(' ');
+            }
+            note.push_str(&format!("Missing: {}.", f.missing.join("; ")));
+        }
+        rows.push(fix_row(
+            &format!("{kid}-fix-{n}"),
+            kid,
+            &f.source,
+            &f.phase,
+            &note,
+            &f.origin_failed,
+            &f.origin_findings,
+            None,
+            &[],
+            &Value::Null,
+            &f.rounds_log,
+        ));
+    }
+    rows
+}
+
 fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
     let pl = plan::load(p)?;
     let kid = match arg {
@@ -990,7 +1180,27 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             fact("Units", str_list(k, "after").len(), "before it"),
         ],
     );
-    v["sections"] = json!([{"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows}]);
+    let fixes = fix_rows(st, &kid);
+    let unit_rows: Vec<Value> = pl
+        .units
+        .iter()
+        .filter(|u| s(u, "checkpoint") == kid)
+        .map(|u| {
+            let id = s(u, "id");
+            let fx = crate::ckfix::fixes_of_unit(st, id);
+            json!({"id": id, "title": s(u, "title"),
+            "body": [text(&if fx.is_empty() {
+                "Fixes attributed: none.".to_string()
+            } else {
+                format!("Fixes attributed: {}.", fx.join(", "))
+            })]})
+        })
+        .collect();
+    v["sections"] = json!([
+        {"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows},
+        {"id": "fixes", "title": "Fixes", "hint": "What set each fix off, its files, units and review rounds", "open": !fixes.is_empty(), "blocks": [], "rows": fixes},
+        {"id": "units", "title": "Units", "hint": "The fixes attributed to each unit", "open": false, "blocks": [], "rows": unit_rows},
+    ]);
     v["answer"] = json!({"how": "chat", "prompt": "Close with `bf checkpoint close` once every row is proven."});
     Ok(v)
 }

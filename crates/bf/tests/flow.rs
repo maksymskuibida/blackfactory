@@ -625,10 +625,19 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
             &vt,
         ],
     );
+    // A failed check opens a fix for a builder, not a question to the human; the fix turned down, the
+    // human decides as before.
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
     let n = fx.must(&["next", "--json"]).json();
     assert_eq!(n["directives"][0]["action"], "decide-check", "{n}");
-    // The human says look again: the token is still on the directive.
-    assert_eq!(n["directives"][0]["verifier_token"], vt.as_str(), "{n}");
+    // The human says look again: the directive carries the verifier's token (a new one, as the fix's
+    // directive took the place of the verifier's for a while).
+    let vt = n["directives"][0]["verifier_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     fx.must_in(
         &k,
         &[

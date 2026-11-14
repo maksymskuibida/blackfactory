@@ -29,7 +29,7 @@ pub fn is_open(f: &Value) -> bool {
     !matches!(s(f, "outcome"), "fixed" | "accepted")
 }
 
-fn need_run(st: &State) -> R<String> {
+pub(crate) fn need_run(st: &State) -> R<String> {
     st.active_run().map(|r| r.id.clone()).ok_or_else(|| {
         refuse(
             "continue without a run",
@@ -164,7 +164,10 @@ pub fn status(p: &Project) -> R<Value> {
         "test_mode": test,
         "chain_ok": st.chain_ok,
         "events": st.event_count,
-        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why})).collect::<Vec<_>>(),
+        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why,
+            "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
+            "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
+        "checkpoint_fix": crate::ckfix::status_json(&st),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
@@ -294,6 +297,16 @@ fn next_raw(p: &Project) -> R<Value> {
         };
         d["note_sync"] = json!(format!(
             "A sync of the main branch into {k} is open; no unit starts until it is settled."
+        ));
+        directives.push(d);
+        return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
+    }
+    // An open fix of a checkpoint: it is settled before anything else starts.
+    if let Some(f) = &st.ck_fix {
+        let mut d = crate::ckfix::directive(p, &st, f);
+        d["note_fix"] = json!(format!(
+            "A fix of {} is open; nothing else starts until it is settled.",
+            f.checkpoint
         ));
         directives.push(d);
         return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
@@ -602,6 +615,10 @@ pub fn next(p: &Project) -> R<Value> {
     if events::replay(p)?.active_run().is_some() {
         stuck(p, false)?;
     }
+    // A checkpoint whose check failed gets a fix for a builder, not a question to the human.
+    if events::replay(p)?.active_run().is_some() {
+        crate::ckfix::maybe_open(p)?;
+    }
     let mut v = next_raw(p)?;
     if p.policy.roles.tokens {
         sync_tokens(p, &mut v)?;
@@ -761,6 +778,10 @@ pub fn report(
         return role_report(p, unit, result, r, note, cost, token);
     }
     if unit.starts_with("K-") {
+        let st = events::require_chain(p)?;
+        if crate::ckfix::wants(&st, unit, result, role) {
+            return crate::ckfix::report(p, unit, result, role, note, findings, token);
+        }
         return sync_report(p, unit, result, role, note, findings, token);
     }
     let st = events::require_chain(p)?;
@@ -922,11 +943,26 @@ pub fn report(
     }
     let ev_kind = "unit.report";
     let _ = event_kind;
-    events::append(
-        p,
-        ev_kind,
-        json!({"unit": unit, "result": result, "role": expected_role, "from": cur, "to": to, "note": note, "cost": cost_total, "findings": finding_ids}),
-    )?;
+    let mut ev = json!({"unit": unit, "result": result, "role": expected_role, "from": cur, "to": to, "note": note, "cost": cost_total, "findings": finding_ids});
+    if cur == "review" {
+        // The round this report closes: its number, the content it judged and what it covered.
+        let round = st.units.get(unit).map(|u| u.rounds).unwrap_or(0) + 1;
+        let wc = p.work_dir().join(unit);
+        ev["round"] = json!(round);
+        ev["content"] = json!(p.content_hash(&wc).unwrap_or_default());
+        ev["head"] = json!(gitx::must(&wc, &["rev-parse", "HEAD"]).unwrap_or_default());
+        ev["covered"] = json!(if st
+            .units
+            .get(unit)
+            .map(|u| u.review_rounds.is_empty())
+            .unwrap_or(true)
+        {
+            "everything in its scope".to_string()
+        } else {
+            "the earlier findings and what changed since the round before".to_string()
+        });
+    }
+    events::append(p, ev_kind, ev)?;
     if to == "parked" {
         events::append(
             p,
@@ -942,6 +978,9 @@ fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
     if matches!(role, "builder" | "reviewer") {
         if let Some(so) = events::replay(p)?.sync_open.filter(|o| o.checkpoint == k) {
             return brief_sync(p, &so, role);
+        }
+        if let Some(f) = events::replay(p)?.ck_fix.filter(|f| f.checkpoint == k) {
+            return crate::ckfix::brief(p, &f, role);
         }
     }
     if role != "verifier" {
@@ -1201,6 +1240,32 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push('\n');
+    }
+    if role == "reviewer" {
+        let wc = p.work_dir().join(unit);
+        let prior: Vec<Value> = st
+            .units
+            .get(unit)
+            .map(|x| x.review_rounds.clone())
+            .unwrap_or_default();
+        md.push_str(&format!("## Review round {}\n\n", prior.len() + 1));
+        match prior.last() {
+            None => md.push_str("This is the first round and it is cold: no earlier report is given. Read everything in the unit's scope.\n\n"),
+            Some(l) => {
+                md.push_str("This is a later round. The findings above are every earlier finding with its outcome: check that each open one is fixed, and start from the changes made since the content the round before judged. Do not review the whole scope again when nothing points there. You may file a new finding on what changed, on something a fix broke, or on anything you came across while following a change.\n\n");
+                let head = l["head"].as_str().unwrap_or("");
+                if !head.is_empty() {
+                    let d = gitx::must(&wc, &["diff", head]).unwrap_or_default();
+                    let lines: Vec<&str> = d.lines().collect();
+                    md.push_str(&format!(
+                        "### Changes since round {}\n\n```diff\n{}\n```\n\n",
+                        l["round"],
+                        if lines.len() > 400 { format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400) } else { d.clone() }
+                    ));
+                }
+            }
+        }
+        md.push_str("In any round you may read outside the changes, anywhere in the working copy, when you need to in order to judge them: what a change touches, calls or could break, and the code it relies on.\n\n");
     }
     md.push_str("## Limits\n\n");
     md.push_str(&format!(
@@ -2481,7 +2546,7 @@ fn allowed_set(wt: &Path, before: &str, main: &str) -> Vec<String> {
 }
 
 /// The command checks of a checkpoint that the human switched off: a sync leaves them out, as the close does.
-fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+pub(crate) fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };
@@ -2499,7 +2564,7 @@ fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
 /// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
 /// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
-fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
+pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };

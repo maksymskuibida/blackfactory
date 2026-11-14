@@ -589,11 +589,29 @@ fn dispatch(args: &Args) -> R<()> {
                 });
                 return Ok(());
             }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("fix") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let v = crate::ckfix::command(
+                    &p,
+                    k,
+                    args.flag("quote").unwrap_or(""),
+                    args.has("abort"),
+                    args.has("release"),
+                )?;
+                out(args, &v, || {
+                    if v["aborted"] == true {
+                        format!("{k} is as it was before the fix")
+                    } else {
+                        format!("the fix of {k} is back with its builder")
+                    }
+                });
+                return Ok(());
+            }
             if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
                 return Err(refuse(
                     "run `bf checkpoint`",
-                    "only `bf checkpoint close` and `bf checkpoint sync` exist",
-                    &["Run `bf checkpoint close <K>` or `bf checkpoint sync <K> --quote \"...\"`."],
+                    "only `bf checkpoint close`, `bf checkpoint sync` and `bf checkpoint fix` exist",
+                    &["Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`."],
                     "The command prints the result.",
                 ));
             }
