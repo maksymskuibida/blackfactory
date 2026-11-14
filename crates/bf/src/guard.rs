@@ -458,7 +458,28 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// Programs that write or delete every path they are given.
 const WRITERS: &[&str] = &[
     "rm", "mv", "tee", "chmod", "chown", "truncate", "touch", "mkdir", "rmdir", "unlink", "shred",
-    "patch",
+    "patch", "mkfifo", "mknod", "mktemp", "sponge",
+];
+/// The compressors write a file next to the one they are given (or replace it), unless they print to
+/// standard output.
+const COMPRESSORS: &[&str] = &[
+    "gzip",
+    "bzip2",
+    "xz",
+    "zstd",
+    "lzma",
+    "compress",
+    "gunzip",
+    "bunzip2",
+    "unxz",
+    "unzstd",
+    "uncompress",
+    "lz4",
+    "brotli",
+];
+/// The line editors and full screen editors write the files they are given.
+const EDITORS: &[&str] = &[
+    "ed", "ex", "vi", "vim", "nvim", "view", "nano", "pico", "emacs", "red",
 ];
 /// Programs whose last argument (or `-t dir`) is where they write.
 const COPIERS: &[&str] = &["cp", "ln", "install", "rsync"];
@@ -633,29 +654,296 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
     } else if prog == "curl" || prog == "wget" {
         let mut it = args.iter();
         while let Some(a) = it.next() {
-            if matches!(a.as_str(), "-o" | "--output" | "-P" | "--directory-prefix")
-                || (prog == "wget" && a == "-O")
+            if matches!(
+                a.as_str(),
+                "-o" | "--output" | "-P" | "--directory-prefix" | "--output-dir"
+            ) || (prog == "wget" && a == "-O")
             {
                 out.extend(it.next().cloned());
+            } else if let Some(f) = a.strip_prefix("--output=") {
+                out.push(f.to_string());
+            } else if (prog == "curl" && matches!(a.as_str(), "-O" | "--remote-name"))
+                || prog == "wget"
+            {
+                // Saved under the name the server gives, in the working directory.
+                out.push(".".to_string());
             }
         }
     } else if prog == "tar" {
-        let mut it = args.iter();
-        while let Some(a) = it.next() {
-            if a == "-C" || a == "--directory" {
-                out.extend(it.next().cloned());
-            } else if let Some(d) = a.strip_prefix("--directory=") {
-                out.push(d.to_string());
+        out.extend(tar_targets(args));
+    } else if prog == "unzip" || prog == "7z" || prog == "7za" {
+        out.extend(unzip_targets(prog, args));
+    } else if COMPRESSORS.contains(&prog) {
+        // `-c`, `--stdout`, `-t`, `-l`: nothing is written.
+        let quiet = args.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--stdout" | "--to-stdout" | "--test" | "--list" | "--help" | "--version"
+            ) || (a.starts_with('-')
+                && !a.starts_with("--")
+                && a[1..]
+                    .chars()
+                    .any(|c| matches!(c, 'c' | 't' | 'l' | 'h' | 'V')))
+        });
+        if !quiet {
+            // The value of an option that takes one (`-T 4`, `-b 9`) is not a file; `-o out` names one.
+            let mut it = args.iter();
+            while let Some(a) = it.next() {
+                if matches!(
+                    a.as_str(),
+                    "-T" | "--threads"
+                        | "-b"
+                        | "-B"
+                        | "-M"
+                        | "--memory"
+                        | "-S"
+                        | "--suffix"
+                        | "-j"
+                        | "-p"
+                        | "--block-size"
+                        | "-w"
+                        | "--window"
+                ) {
+                    it.next();
+                } else if matches!(a.as_str(), "-o" | "--output") {
+                    out.extend(it.next().cloned());
+                } else if !is_flag(a) {
+                    out.push(a.clone());
+                }
             }
         }
-    } else if prog == "unzip" {
+    } else if EDITORS.contains(&prog) {
+        out.extend(
+            args.iter()
+                .filter(|a| !is_flag(a) && !a.starts_with('+'))
+                .cloned(),
+        );
+    } else if prog == "split" || prog == "csplit" {
+        // `split [options] [input [prefix]]` writes `prefix` followed by a suffix, `x` by default, in the
+        // working directory.
+        let mut positional: Vec<&String> = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
-            if a == "-d" {
-                out.extend(it.next().cloned());
+            if matches!(
+                a.as_str(),
+                "-l" | "-b"
+                    | "-n"
+                    | "-a"
+                    | "-C"
+                    | "--lines"
+                    | "--bytes"
+                    | "--number"
+                    | "--suffix-length"
+                    | "--line-bytes"
+                    | "--additional-suffix"
+                    | "-f"
+                    | "--filter"
+                    | "-t"
+                    | "--separator"
+            ) {
+                it.next();
+            } else if !is_flag(a) {
+                positional.push(a);
             }
+        }
+        if prog == "csplit" {
+            out.push("xx".to_string());
+        } else {
+            out.push(
+                positional
+                    .get(1)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "x".to_string()),
+            );
+        }
+    } else if prog == "sort" {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "-o" || a == "--output" {
+                out.extend(it.next().cloned());
+            } else if let Some(f) = a.strip_prefix("--output=") {
+                out.push(f.to_string());
+            } else if a.starts_with("-o") && !a.starts_with("--") && a.len() > 2 {
+                out.push(a[2..].to_string());
+            }
+        }
+    } else if matches!(
+        prog,
+        "uniq" | "xxd" | "zip" | "ditto" | "iconv" | "base64" | "openssl" | "gpg"
+    ) {
+        out.extend(filter_output(prog, args));
+    }
+    out
+}
+
+/// The file a filter writes besides standard output: the second file of `uniq` and `xxd`, the output
+/// option of `base64`, `openssl`, `gpg` and `iconv`, the archive of `zip`, the destination of `ditto`.
+fn filter_output(prog: &str, args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let valued: &[&str] = match prog {
+        "uniq" => &[
+            "-f",
+            "-s",
+            "-w",
+            "--skip-fields",
+            "--skip-chars",
+            "--check-chars",
+        ],
+        "xxd" => &["-c", "-g", "-l", "-s", "-o", "-n", "-i"],
+        _ => &[],
+    };
+    let mut positional: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if valued.contains(&a.as_str()) {
+            it.next();
+            continue;
+        }
+        match prog {
+            "base64" | "gpg" | "iconv" | "openssl" => {
+                if matches!(a.as_str(), "-o" | "--output" | "-out" | "--out") {
+                    out.extend(it.next().cloned());
+                    continue;
+                }
+                if let Some(f) = a.strip_prefix("--output=") {
+                    out.push(f.to_string());
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        if !is_flag(a) {
+            positional.push(a);
         }
     }
+    match prog {
+        "uniq" | "xxd" => out.extend(positional.get(1).map(|s| s.to_string())),
+        "zip" => out.extend(positional.first().map(|s| s.to_string())),
+        "ditto" => out.extend(
+            positional
+                .last()
+                .filter(|_| positional.len() > 1)
+                .map(|s| s.to_string()),
+        ),
+        _ => {}
+    }
+    out
+}
+
+/// The paths `tar` writes: the folder an archive is unpacked into (the working directory unless `-C`
+/// says otherwise) and each member named, or the archive it creates.
+fn tar_targets(args: &[String]) -> Vec<String> {
+    let mut dir: Option<String> = None;
+    let mut archive: Option<String> = None;
+    let mut mode: Option<char> = None;
+    let mut members: Vec<String> = Vec::new();
+    let mut i = 0;
+    let mut first = true;
+    let set_mode = |m: &mut Option<char>, letters: &str| {
+        for c in letters.chars() {
+            if m.is_none() && matches!(c, 'x' | 'c' | 'r' | 'u') {
+                *m = Some(c);
+            }
+        }
+    };
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "-C" || a == "--directory" {
+            dir = args.get(i + 1).cloned();
+            i += 2;
+        } else if let Some(d) = a.strip_prefix("--directory=") {
+            dir = Some(d.to_string());
+            i += 1;
+        } else if a == "--file" {
+            archive = args.get(i + 1).cloned();
+            i += 2;
+        } else if let Some(f) = a.strip_prefix("--file=") {
+            archive = Some(f.to_string());
+            i += 1;
+        } else if a.starts_with("--") {
+            match a {
+                "--extract" | "--get" => set_mode(&mut mode, "x"),
+                "--create" => set_mode(&mut mode, "c"),
+                "--append" | "--update" => set_mode(&mut mode, "r"),
+                _ => {}
+            }
+            i += 1;
+        } else if (a.starts_with('-') && a.len() > 1) || (first && !a.is_empty()) {
+            // A bundle of letters (`-xzf`, or `xzf` without the dash as the first word).
+            let letters = a.trim_start_matches('-');
+            set_mode(&mut mode, letters);
+            if letters.contains('f') {
+                archive = args.get(i + 1).cloned();
+                i += 2;
+            } else if letters.ends_with('C') {
+                dir = args.get(i + 1).cloned();
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            members.push(a.to_string());
+            i += 1;
+        }
+        first = false;
+    }
+    let mut out = Vec::new();
+    match mode {
+        Some('x') => {
+            let base = dir.unwrap_or_else(|| ".".to_string());
+            for m in members {
+                out.push(format!("{}/{}", base.trim_end_matches('/'), m));
+            }
+            out.push(base);
+        }
+        Some(_) => {
+            if let Some(a) = archive.filter(|a| a != "-") {
+                out.push(a);
+            }
+        }
+        None => out.extend(dir),
+    }
+    out
+}
+
+/// The paths `unzip` writes: the folder given with `-d`, or the working directory, and each member named.
+fn unzip_targets(prog: &str, args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut dir: Option<String> = None;
+    let mut positional: Vec<&String> = Vec::new();
+    let mut listing = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if prog == "unzip" && a == "-d" {
+            dir = it.next().cloned();
+        } else if let Some(d) = a
+            .strip_prefix("-o")
+            .filter(|_| prog != "unzip" && a.len() > 2)
+        {
+            dir = Some(d.to_string());
+        } else if prog == "unzip" && a == "-x" {
+            break;
+        } else if is_flag(a) {
+            if a[1..]
+                .chars()
+                .all(|c| matches!(c, 'l' | 'p' | 't' | 'v' | 'z'))
+            {
+                listing = true;
+            }
+        } else {
+            positional.push(a);
+        }
+    }
+    if listing || (prog != "unzip" && positional.first().map(|s| s.as_str()) != Some("x")) {
+        return out;
+    }
+    let base = dir.unwrap_or_else(|| ".".to_string());
+    if prog == "unzip" {
+        for m in positional.iter().skip(1) {
+            out.push(format!("{}/{}", base.trim_end_matches('/'), m));
+        }
+    }
+    out.push(base);
     out
 }
 
@@ -724,13 +1012,109 @@ fn unresolved_denial(t: &str, part: &str, why: &str) -> Decision {
 
 /// Judge a path a command writes or deletes: where it lands decides, never the words. Gives the
 /// resolved path when it is allowed and known.
+///
+/// A target that holds a variable assigned in the same line is read with the value; one that holds a
+/// brace is read as each of its alternatives; one that holds a glob or a command substitution is read
+/// as a pattern and refused when it could land in a protected place. Each path that is allowed comes
+/// back with `None` when it is exact, or with the whole pattern when it is one (the path then is the
+/// folder before its first wildcard).
 fn judge_target(
     table: &Value,
     t: &str,
     dir: &Option<String>,
     part: &str,
     reach: Reach,
-) -> Result<Option<String>, Decision> {
+    vars: &[HashMap<String, String>],
+) -> Result<Vec<(String, Option<String>)>, Decision> {
+    let mut out = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for v in vars {
+        let t = subst_vars(t, v);
+        if seen.contains(&t) {
+            continue;
+        }
+        for alt in brace_expand(&t) {
+            out.extend(judge_alt(table, &alt, dir, part, reach)?);
+        }
+        seen.push(t);
+    }
+    Ok(out)
+}
+
+fn judge_alt(
+    table: &Value,
+    t: &str,
+    dir: &Option<String>,
+    part: &str,
+    reach: Reach,
+) -> Result<Vec<(String, Option<String>)>, Decision> {
+    let t = &expand_home(t);
+    let has_glob = t.chars().any(|c| matches!(c, '*' | '?' | '['));
+    let has_subst = t.contains("$(..)") || t.contains("`..`");
+    if has_glob || has_subst {
+        let relative = !t.starts_with('/');
+        let abs_pattern = match (relative, dir) {
+            (false, _) => t.to_string(),
+            (true, Some(d)) => format!("{d}/{t}"),
+            (true, None) => {
+                return Err(unresolved_denial(
+                    t,
+                    part,
+                    "the folder it is relative to was built at run time",
+                ))
+            }
+        };
+        let segs = pattern_segments(&abs_pattern);
+        // A word that is nothing but a substitution or a variable is a path built at run time; it
+        // passes unless it names a protected folder, as before.
+        if !t.contains('/') && !has_glob && seg_tokens(t).iter().all(|k| matches!(k, Tok::Dyn)) {
+            return Ok(vec![]);
+        }
+        // A command substitution that is the whole first segment stands for a path of its own.
+        let first_free = relative
+            && t.split('/')
+                .next()
+                .map(|s| seg_tokens(s).iter().all(|k| matches!(k, Tok::Dyn)) && !s.is_empty())
+                .unwrap_or(false);
+        let segs_for_match: Vec<String> = if first_free {
+            let d_len = pattern_segments(dir.as_deref().unwrap_or("")).len();
+            segs[d_len..].to_vec()
+        } else {
+            segs.clone()
+        };
+        // A substitution can also stand for one folder name under the working directory; a variable the
+        // line does not assign is the environment's and is taken for an absolute path.
+        let first_is_subst = first_free
+            && t.contains('/')
+            && t.split('/')
+                .next()
+                .map(|s| s.contains("$(..)") || s.contains("`..`"))
+                .unwrap_or(false);
+        let hit = could_land(table, &segs_for_match, first_free).or_else(|| {
+            if first_is_subst {
+                could_land(table, &segs, false)
+            } else {
+                None
+            }
+        });
+        if let Some(hit) = hit {
+            return Err(pattern_denial(t, part, &hit));
+        }
+        let mut prefix = String::new();
+        for s in &segs {
+            if seg_tokens(s).iter().any(|k| !matches!(k, Tok::Lit(_))) {
+                break;
+            }
+            prefix.push('/');
+            prefix.push_str(s);
+        }
+        let prefix = if first_free { String::new() } else { prefix };
+        return Ok(if prefix.is_empty() {
+            vec![]
+        } else {
+            vec![(resolve(&prefix, "/"), Some(abs_pattern.clone()))]
+        });
+    }
     match target_abs(t, dir) {
         Some(abs) => {
             if in_state_or_base(table, &abs) {
@@ -742,7 +1126,7 @@ fn judge_target(
             if is_protected_abs(table, &abs) {
                 return Err(path_denial(&abs, part, reach));
             }
-            Ok(Some(abs))
+            Ok(vec![(abs, None)])
         }
         None => {
             if names_protected_segment(t) {
@@ -759,9 +1143,372 @@ fn judge_target(
                     "the folder it is relative to was built at run time",
                 ));
             }
-            Ok(None)
+            Ok(vec![])
         }
     }
+}
+
+fn pattern_denial(t: &str, part: &str, hit: &str) -> Decision {
+    deny(
+        &format!("write `{t}`"),
+        &format!("{part} writes a path with a wildcard, a brace or a substitution that could land in {hit}, a protected place"),
+        &[
+            "Write the path out in full, for example `src/a.rs`, so that the guard can see where it lands.",
+            "If you meant a file in your working copy, name it without a wildcard.",
+        ],
+        "The command names every path it writes and none of them can reach a protected place.",
+    )
+}
+
+/// One character of a path segment that may stand for more than itself.
+enum Tok {
+    Lit(char),
+    /// `*`, `?`, `[...]`: a glob.
+    Glob(bool),
+    /// A command substitution, a variable or a brace group: unknown text without a slash.
+    Dyn,
+}
+
+fn seg_tokens(seg: &str) -> Vec<Tok> {
+    let c: Vec<char> = seg.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            '*' => out.push(Tok::Glob(true)),
+            '?' => out.push(Tok::Glob(false)),
+            '[' => {
+                while i < c.len() && c[i] != ']' {
+                    i += 1;
+                }
+                out.push(Tok::Glob(false));
+            }
+            '$' => {
+                if i + 1 < c.len() && c[i + 1] == '(' {
+                    // `$(..)`
+                    i += 4;
+                } else if i + 1 < c.len() && c[i + 1] == '{' {
+                    while i < c.len() && c[i] != '}' {
+                        i += 1;
+                    }
+                } else {
+                    while i + 1 < c.len() && (c[i + 1].is_ascii_alphanumeric() || c[i + 1] == '_') {
+                        i += 1;
+                    }
+                }
+                out.push(Tok::Dyn);
+            }
+            '`' => {
+                // "`..`"
+                i += 3;
+                out.push(Tok::Dyn);
+            }
+            ch => out.push(Tok::Lit(ch)),
+        }
+        i += 1;
+    }
+    out
+}
+
+fn tok_match(toks: &[Tok], s: &[char]) -> bool {
+    match toks.split_first() {
+        None => s.is_empty(),
+        Some((Tok::Lit(c), rest)) => s.first() == Some(c) && tok_match(rest, &s[1..]),
+        Some((Tok::Glob(false), rest)) => !s.is_empty() && tok_match(rest, &s[1..]),
+        Some((_, rest)) => (0..=s.len()).any(|k| tok_match(rest, &s[k..])),
+    }
+}
+
+fn seg_matches(pat: &str, lit: &str) -> bool {
+    let chars: Vec<char> = lit.chars().collect();
+    tok_match(&seg_tokens(pat), &chars)
+}
+
+/// What a segment would be if every wildcard were an `x`.
+fn literalize(seg: &str) -> String {
+    seg_tokens(seg)
+        .iter()
+        .map(|k| match k {
+            Tok::Lit(c) => *c,
+            _ => 'x',
+        })
+        .collect()
+}
+
+/// The segments of an absolute pattern, with the `.` and `..` that are written out folded away.
+fn pattern_segments(p: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in p.split('/') {
+        match s {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s.to_string()),
+        }
+    }
+    out
+}
+
+/// Every place the guard protects, as absolute paths: the protected paths of the project and of each
+/// working copy, the state folder and its parent, and the transcript root.
+fn protected_roots(table: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let entries: Vec<String> = table["protected"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(|p| p.trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let root = table["root"].as_str().unwrap_or("");
+    if !root.is_empty() {
+        for e in &entries {
+            out.push(format!("{}/{e}", root.trim_end_matches('/')));
+        }
+    }
+    if table["workspace"].as_bool() != Some(true) {
+        if let Some(ws) = table["worktrees"].as_array() {
+            for w in ws {
+                if let Some(base) = w["path"].as_str() {
+                    for e in &entries {
+                        out.push(format!("{}/{e}", base.trim_end_matches('/')));
+                    }
+                }
+            }
+        }
+    }
+    let sd = state_dir(table);
+    if !sd.is_empty() {
+        out.push(sd.to_string());
+    }
+    if let Some(b) = state_base(table) {
+        out.push(b.to_string());
+    }
+    let tr = transcript_root(table);
+    if !tr.is_empty() {
+        out.push(tr.to_string());
+    }
+    out
+}
+
+fn forbidden_abs(table: &Value, abs: &str) -> bool {
+    in_state_or_base(table, abs) || in_transcripts(table, abs) || is_protected_abs(table, abs)
+}
+
+/// Could the pattern (the segments of an absolute path, or of a path that starts with an unknown
+/// absolute prefix) name a path in a protected place? Gives the protected place.
+fn could_land(table: &Value, segs: &[String], free_prefix: bool) -> Option<String> {
+    for root in protected_roots(table) {
+        let r = pattern_segments(&root);
+        let n = r.len();
+        if n == 0 {
+            continue;
+        }
+        if free_prefix {
+            // The first segment stands for any absolute prefix; the literal segments after it must
+            // meet the protected path.
+            let rest = &segs[1.min(segs.len())..];
+            for j in 0..n {
+                let overlap = rest.len().min(n - j);
+                if overlap == 0 || j + rest.len() < n {
+                    continue;
+                }
+                if (0..overlap).all(|k| seg_matches(&rest[k], &r[j + k])) {
+                    let mut concrete = r.clone();
+                    concrete.extend(rest[overlap..].iter().map(|s| literalize(s)));
+                    if forbidden_abs(table, &format!("/{}", concrete.join("/"))) {
+                        return Some(root);
+                    }
+                }
+            }
+        } else if segs.len() >= n && (0..n).all(|k| seg_matches(&segs[k], &r[k])) {
+            let mut concrete = r.clone();
+            concrete.extend(segs[n..].iter().map(|s| literalize(s)));
+            if forbidden_abs(table, &format!("/{}", concrete.join("/"))) {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
+/// The alternatives of the brace groups in a word (`{a,b}/x` gives `a/x` and `b/x`). A group without a
+/// comma (`{}`) is text. At most 64 alternatives; a larger set stays as it is.
+fn brace_expand(t: &str) -> Vec<String> {
+    let c: Vec<char> = t.chars().collect();
+    let mut depth = 0;
+    let mut start = None;
+    for (i, ch) in c.iter().enumerate() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let s = start.unwrap();
+                    let inner: Vec<char> = c[s + 1..i].to_vec();
+                    // Split the inside at top-level commas.
+                    let mut parts: Vec<String> = Vec::new();
+                    let mut cur = String::new();
+                    let mut d = 0;
+                    for ch in &inner {
+                        match ch {
+                            '{' => {
+                                d += 1;
+                                cur.push(*ch);
+                            }
+                            '}' => {
+                                d -= 1;
+                                cur.push(*ch);
+                            }
+                            ',' if d == 0 => parts.push(std::mem::take(&mut cur)),
+                            _ => cur.push(*ch),
+                        }
+                    }
+                    parts.push(cur);
+                    if parts.len() < 2 {
+                        continue;
+                    }
+                    let pre: String = c[..s].iter().collect();
+                    let post: String = c[i + 1..].iter().collect();
+                    let mut out = Vec::new();
+                    for p in parts {
+                        out.extend(brace_expand(&format!("{pre}{p}{post}")));
+                        if out.len() > 64 {
+                            return vec![braces_to_star(t)];
+                        }
+                    }
+                    return out;
+                }
+            }
+            _ => {}
+        }
+    }
+    vec![t.to_string()]
+}
+
+/// A word with every brace group read as a wildcard.
+fn braces_to_star(t: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    for ch in t.chars() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    out.push('*');
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => depth -= 1,
+            c if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A word with the variables that the same command line assigned replaced by their values.
+fn subst_vars(t: &str, vars: &HashMap<String, String>) -> String {
+    if vars.is_empty() || !t.contains('$') {
+        return t.to_string();
+    }
+    let c: Vec<char> = t.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '$' && i + 1 < c.len() {
+            let (name, next) = if c[i + 1] == '{' {
+                match c[i + 2..].iter().position(|x| *x == '}') {
+                    Some(e) => (c[i + 2..i + 2 + e].iter().collect::<String>(), i + 3 + e),
+                    None => (String::new(), i + 1),
+                }
+            } else {
+                let mut j = i + 1;
+                while j < c.len() && (c[j].is_ascii_alphanumeric() || c[j] == '_') {
+                    j += 1;
+                }
+                (c[i + 1..j].iter().collect::<String>(), j)
+            };
+            if let Some(v) = vars.get(&name) {
+                out.push_str(v);
+                i = next;
+                continue;
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out
+}
+
+fn is_assign_word(w: &str) -> bool {
+    match w.split_once('=') {
+        Some((k, _)) => {
+            !k.is_empty()
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !k.chars().next().unwrap().is_ascii_digit()
+        }
+        None => false,
+    }
+}
+
+/// The variables a command line assigns (`D=factory`, `export D=factory`), every value of each, in order.
+fn assigned_vars(parsed: &[crate::shellparse::Parsed]) -> HashMap<String, Vec<String>> {
+    let mut vars: HashMap<String, Vec<String>> = HashMap::new();
+    for p in parsed {
+        let mut declared = false;
+        for (k, w) in p.words.iter().enumerate() {
+            if matches!(
+                w.as_str(),
+                "export" | "declare" | "typeset" | "readonly" | "local" | "set" | "env"
+            ) {
+                declared = true;
+                continue;
+            }
+            if is_assign_word(w) && (declared || p.words[..k].iter().all(|x| is_assign_word(x))) {
+                if let Some((n, v)) = w.split_once('=') {
+                    vars.entry(n.to_string()).or_default().push(v.to_string());
+                }
+            } else if !declared {
+                break;
+            }
+        }
+    }
+    vars
+}
+
+/// The readings of the line's variables a target is judged under: the last value of each, each
+/// position of the assignments for all names together, and each value of one name with the others at
+/// their last. A name assigned again later cannot hide an earlier value.
+fn var_readings(vars: &HashMap<String, Vec<String>>) -> Vec<HashMap<String, String>> {
+    let last: HashMap<String, String> = vars
+        .iter()
+        .filter_map(|(k, v)| v.last().map(|x| (k.clone(), x.clone())))
+        .collect();
+    let mut out = vec![last.clone()];
+    let longest = vars.values().map(|v| v.len()).max().unwrap_or(0);
+    for i in 0..longest {
+        out.push(
+            vars.iter()
+                .filter_map(|(k, v)| v.get(i.min(v.len() - 1)).map(|x| (k.clone(), x.clone())))
+                .collect(),
+        );
+    }
+    for (k, v) in vars {
+        for x in v {
+            let mut m = last.clone();
+            m.insert(k.clone(), x.clone());
+            out.push(m);
+        }
+    }
+    out
 }
 
 /// Judge what a path in an interpreter's text or a script name would open or run.
@@ -970,6 +1717,31 @@ fn human_turn_denial() -> Decision {
     )
 }
 
+/// Programs whose arguments are text to print, search or list, never a command to run. `bf human-turn`
+/// as separate words after one of these is data.
+const DATA_PROGRAMS: &[&str] = &[
+    "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "cat", "head", "tail", "less", "more",
+    "ls", "wc", "which", "type", "whereis", "man", "stat", "diff", "test", "[", "true", "false",
+    "cd", "git", "sed", "awk", "gawk", "mawk",
+];
+
+/// Does a command hold the engine's name followed later by the word `human-turn`, as separate words,
+/// where the program is not one that only prints text? The engine's name may be a variable.
+fn names_human_turn_call(words: &[String]) -> bool {
+    let Some(i) = crate::shellparse::program_index(words) else {
+        return false;
+    };
+    if DATA_PROGRAMS.contains(&basename(&words[i])) {
+        return false;
+    }
+    let Some(h) = words.iter().rposition(|w| w == "human-turn") else {
+        return false;
+    };
+    words[i..h]
+        .iter()
+        .any(|w| basename(w) == "bf" || w.contains('$') || w.contains('`'))
+}
+
 /// A call of `bf` that cannot be read, or that only the harness may make.
 fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
     let misuse = |why: String| {
@@ -1035,6 +1807,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         }
     }
     let parsed = crate::shellparse::commands(cmd);
+    // The engine's name followed by `human-turn` in any argument position, behind any wrapper program the
+    // parse does not know (`stdbuf -o0 bf human-turn`, `find . -exec bf human-turn ;`), is the same call.
+    if parsed.iter().any(|p| names_human_turn_call(&p.words)) {
+        return human_turn_denial();
+    }
     // The state folder, however it is spelled: no command word or redirect target may name it. The body
     // of a heredoc is not a word.
     for p in &parsed {
@@ -1101,6 +1878,12 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
 
     // -- every command: where it runs, what it would execute, where it would write or delete
     let root = table["root"].as_str().unwrap_or("");
+    let all_vars = assigned_vars(&parsed);
+    let vars: HashMap<String, String> = all_vars
+        .iter()
+        .filter_map(|(k, v)| v.last().map(|x| (k.clone(), x.clone())))
+        .collect();
+    let readings = var_readings(&all_vars);
     let mut dirs: HashMap<usize, Option<String>> = HashMap::new();
     dirs.insert(0, Some(cwd.to_string()));
     for p in &parsed {
@@ -1137,11 +1920,12 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
             if prog != "bf" {
                 // -- leaving the working copy, and the folder later commands run in
                 if matches!(prog.as_str(), "cd" | "pushd" | "popd") {
-                    let target = args
+                    let target_text = args
                         .iter()
                         .find(|a| !is_flag(a))
-                        .map(|s| s.as_str())
-                        .unwrap_or("~");
+                        .map(|s| subst_vars(s, &vars))
+                        .unwrap_or_else(|| "~".to_string());
+                    let target = target_text.as_str();
                     if in_worker || in_cp {
                         let abs = resolve(target, &dir_str);
                         if under(&abs, &here.base).is_none() {
@@ -1222,15 +2006,16 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         }
 
         for (t, part, reach) in writes {
-            match judge_target(table, &t, &start, &part, reach) {
+            match judge_target(table, &t, &start, &part, reach, &readings) {
                 Err(d) => return d,
-                Ok(Some(abs)) => {
-                    // -- writes from a working copy stay in it
-                    let inside_root =
-                        under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
-                    let own = under(&abs, &here.base).is_some();
-                    if (in_cp && inside_root) || (in_worker && inside_root && !own) {
-                        return deny(
+                Ok(found) => {
+                    for (abs, pattern) in found {
+                        // -- writes from a working copy stay in it
+                        let inside_root =
+                            under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
+                        let own = under(&abs, &here.base).is_some();
+                        if (in_cp && inside_root) || (in_worker && inside_root && !own) {
+                            return deny(
                             "write outside your working copy",
                             &format!(
                                 "{part} would write {abs}, which is somewhere else in the project; you work in {}",
@@ -1239,16 +2024,28 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             &["Write only inside your working copy, in the files your unit may touch."],
                             "Every path you write is inside your working copy.",
                         );
-                    }
-                    // -- inside the unit's own copy, the unit's file scope governs, as for any write tool
-                    if in_worker && own {
-                        let d = check_write(table, cwd, &abs);
-                        if !d.allow {
-                            return d;
+                        }
+                        // -- inside the unit's own copy, the unit's file scope governs, as for any write tool
+                        // (A folder given as a whole, and the folder before a wildcard, are judged for where
+                        // they are, not for the scope of the files in them.)
+                        // A pattern is held to the scope as written: it must match a scope entry itself.
+                        // (Unpacking or downloading into the copy's root names no member, so it is a known
+                        // gap of the scope rule; docs/engine.md says so.)
+                        if in_worker && own {
+                            let checked = match &pattern {
+                                None if abs != here.base => Some(abs.clone()),
+                                Some(pat) => Some(pat.clone()),
+                                None => None,
+                            };
+                            if let Some(c) = checked {
+                                let d = check_write(table, cwd, &c);
+                                if !d.allow {
+                                    return d;
+                                }
+                            }
                         }
                     }
                 }
-                Ok(None) => {}
             }
         }
         dirs.insert(p.scope, after);
@@ -1835,7 +2632,7 @@ mod tests {
         assert!(bash("git add factory/ && git status", "/p"));
         assert!(bash("cp a.txt /p/.bf/work/U-1/a.txt", "/p"));
         assert!(
-            bash("echo x > src/factory/mod.rs", "/p/.bf/work/U-1"),
+            bash("echo x > docs/factory/mod.rs", "/p/.bf/work/U-1"),
             "a source folder called factory is not protected"
         );
         assert!(
