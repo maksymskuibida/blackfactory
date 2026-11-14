@@ -42,6 +42,7 @@ const VALUE_FLAGS: &[&str] = &[
     "accept",
     "decline",
     "fix-findings",
+    "wave",
     "root",
     "C",
 ];
@@ -609,6 +610,15 @@ fn dispatch(args: &Args) -> R<()> {
                     } else {
                         format!("the fix of {k} is back with its builder")
                     }
+                });
+                return Ok(());
+            }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("wave-check") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let wave = crate::wavecheck::parse_wave(args.flag("wave"))?;
+                let v = crate::wavecheck::run_step(&p, k, wave)?;
+                out(args, &v, || {
+                    format!("wave {wave} of {k}: wave check {}", s(&v, "state"))
                 });
                 return Ok(());
             }
@@ -2248,7 +2258,7 @@ State:    init | record put|get|list | id new | ledger check|impact | plan check
 Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
-Checks:   checks list|state|propose|set
+Checks:   checks list|state|propose|set | checks wave|unit question|propose|set|state | checkpoint wave-check
 Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>
 More:     ask | answer | questions | amend open|revise|narrow|approve|withdraw | cost | stuck | doctor [--perf] | guard

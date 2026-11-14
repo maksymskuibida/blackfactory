@@ -187,15 +187,17 @@ pub fn load_receipts(p: &Project) -> R<Vec<Receipt>> {
             None => false,
         };
         let cid = s(&v, "check").to_string();
+        let attached = cid.starts_with(crate::checks::ATTACHED_PREFIX);
         let (hash, how) = checks
             .entry(cid.clone())
             .or_insert_with(|| match p.get_record(&cid) {
                 Ok(Some(rec)) => (record_hash(&rec), s(&rec, "how").to_string()),
+                _ if attached => ("attached".to_string(), "command".to_string()),
                 _ => (String::new(), String::new()),
             })
             .clone();
         let stale = hash.is_empty()
-            || s(&v, "check_hash") != hash
+            || (!attached && s(&v, "check_hash") != hash)
             || floors
                 .get(&cid)
                 .map(|f| receipt_number(s(&v, "id")).unwrap_or(0) <= *f)
@@ -237,8 +239,11 @@ pub(crate) fn write_receipt(p: &Project, mut v: Value) -> R<Value> {
         )
     })?;
     fs::create_dir_all(p.receipts_dir())?;
-    if let Some(rec) = p.get_record(s(&v, "check"))? {
-        v["check_hash"] = json!(record_hash(&rec));
+    // A check the engine attached to a unit has no record; the receipt's sealed command says what ran.
+    if !s(&v, "check").starts_with(crate::checks::ATTACHED_PREFIX) {
+        if let Some(rec) = p.get_record(s(&v, "check"))? {
+            v["check_hash"] = json!(record_hash(&rec));
+        }
     }
     loop {
         let id = next_receipt_id(p);
@@ -288,6 +293,31 @@ pub fn run_at(
     top: &Path,
 ) -> R<Value> {
     run_with(p, check_id, unit, argv, top, None)
+}
+
+/// The check the engine attached to a unit (R-76), as a record-shaped value: it has no record file, the
+/// list that applies to the unit says what it is.
+fn attached_record(p: &Project, check_id: &str, unit: Option<&str>) -> R<Value> {
+    let Some(u) = unit else {
+        return Err(refuse(
+            format!("run evidence for {check_id}"),
+            "a check every unit must pass is run for one unit: name it with `--unit`",
+            &["Run `bf evidence run <check> --unit <U> -- <its command>`; the unit's brief gives the exact line."],
+            "The command prints a receipt with exit 0.",
+        ));
+    };
+    let st = events::replay(p)?;
+    let pl = crate::plan::load(p)?;
+    match crate::checks::attached_by_id(p, &pl, &st, u, check_id) {
+        Some(a) => Ok(json!({"id": check_id, "kind": "check", "how": "command",
+            "command": a.command})),
+        None => Err(refuse(
+            format!("run evidence for {check_id}"),
+            format!("no check of that name applies to {u}: the list that applies to it does not hold it"),
+            &["The unit's brief lists the checks that apply to it and where they come from."],
+            "`bf brief <U> --role builder` lists the check.",
+        )),
+    }
 }
 
 /// A deliberate repeat: the number of the attempt and the reason for it.
@@ -386,7 +416,11 @@ pub fn run_with(
             "The command prints a receipt with exit 0.",
         ));
     }
-    let chk = p.require_record(check_id)?;
+    let chk = if check_id.starts_with(crate::checks::ATTACHED_PREFIX) {
+        attached_record(p, check_id, unit)?
+    } else {
+        p.require_record(check_id)?
+    };
     if s(&chk, "kind") != "check" {
         return Err(refuse(
             format!("run evidence for {check_id}"),

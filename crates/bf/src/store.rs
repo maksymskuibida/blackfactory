@@ -30,6 +30,11 @@ unit = "USD"
 [review]
 required = true       # a unit needs a clean review before it can land
 
+[unit_checks]
+# Checks every unit must pass, each with its exact command, for example the lint step and the whole
+# test suite: list = [{{ name = "lint", command = "cargo clippy -- -D warnings" }}]. Empty as shipped.
+list = []
+
 [ledger]
 kinds = ["requirement", "component", "screen", "journey", "target", "threat", "decision"]
 
@@ -145,6 +150,20 @@ impl Default for Review {
         Review { required: true }
     }
 }
+/// One check every unit must pass: a name and the exact command.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct UnitCheckDef {
+    pub name: String,
+    pub command: String,
+}
+
+/// The checks every unit must pass (R-76). Empty as shipped; only the human edits it.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct UnitChecksPol {
+    pub list: Vec<UnitCheckDef>,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct LedgerPol {
@@ -377,6 +396,7 @@ pub struct Policy {
     pub ledger: LedgerPol,
     pub evidence: EvidencePol,
     pub guard: GuardPol,
+    pub unit_checks: UnitChecksPol,
 }
 
 #[derive(Deserialize, Clone, Debug)]

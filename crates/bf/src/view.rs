@@ -329,6 +329,10 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             let cov = ledger::rows(&pl, &[], false, st);
             sec["blocks"] = json!([wave_block(&pl, &states), coverage_block(&cov)]);
         }
+        // R-61 and R-76: the wave checks the run uses (or the plain statement that there are none) and the
+        // checks every unit must pass, with each override and its reason, are approved with the plan.
+        sections.push(crate::wavecheck::plan_section(&pl, st));
+        sections.push(crate::wavecheck::unit_checks_section(p, &pl, st));
         if !pl.problems.is_empty() {
             sections.insert(0, json!({"id": "problems", "title": "Plan problems", "hint": "Fix these before the gate opens", "open": true, "blocks": [],
                 "rows": pl.problems.iter().enumerate().map(|(i, x)| json!({"id": format!("P-{}", i + 1), "title": x, "needs_you": false, "label": "high", "body": []})).collect::<Vec<_>>()}));
@@ -807,6 +811,8 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
         "rows": pl.handoffs.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
     sections.push(json!({"id": "checkpoints", "title": "Checkpoints", "hint": "What each one proves", "open": false, "blocks": [],
         "rows": pl.checkpoints.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
+    sections.push(crate::wavecheck::plan_section(&pl, st));
+    sections.push(crate::wavecheck::unit_checks_section(p, &pl, st));
     if !pl.problems.is_empty() {
         sections.insert(0, json!({"id": "problems", "title": "Plan problems", "hint": "`bf plan check` refuses until these are fixed", "open": true, "blocks": [],
             "rows": pl.problems.iter().enumerate().map(|(i, x)| json!({"id": format!("P-{}", i + 1), "title": x, "needs_you": false, "label": "high", "body": []})).collect::<Vec<_>>()}));

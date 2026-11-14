@@ -68,12 +68,26 @@ fn unit_patterns(p: &Project, pl: &Plan, k: &str, u: &Value) -> Vec<String> {
 /// The set of files a fix of `k` may change: the union of the file lists of the checkpoint's units, plus the
 /// test folders those units use (for new test files).
 pub fn file_set(p: &Project, pl: &Plan, k: &str) -> FileSet {
+    file_set_of(p, pl, k, None)
+}
+
+/// The same, held to some of the checkpoint's units (`only`): a wave fix may change only the files of the
+/// units that landed since the last wave check passed, and new test files beside them.
+pub fn file_set_of(p: &Project, pl: &Plan, k: &str, only: Option<&[String]>) -> FileSet {
     let mut set = FileSet {
         allowed: vec![],
         test_dirs: vec![],
         units: vec![],
     };
-    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
+    for u in pl
+        .units
+        .iter()
+        .filter(|u| s(u, "checkpoint") == k)
+        .filter(|u| {
+            only.map(|o| o.iter().any(|x| x == s(u, "id")))
+                .unwrap_or(true)
+        })
+    {
         set.units.push(s(u, "id").to_string());
         for f in unit_patterns(p, pl, k, u) {
             if let Some(d) = test_folder(&f) {
@@ -223,11 +237,35 @@ pub fn maybe_open(p: &Project) -> R<()> {
         if st2.ck_fix.is_some() || st2.sync_open.is_some() {
             return Ok(());
         }
-        if open_locked(p, &pl, kid, "check", failed, vec![], &content, false)? {
+        if open_locked(p, &pl, kid, "check", failed, vec![], &content, false, None)? {
             return Ok(());
         }
     }
     Ok(())
+}
+
+/// Open a fix of a failed wave check of `k`: held to `units`, the ones that landed since the last wave
+/// check passed. The caller holds the engine lock.
+pub(crate) fn open_wave(
+    p: &Project,
+    pl: &Plan,
+    k: &str,
+    wave: u32,
+    failed: Vec<Value>,
+    units: &[String],
+    content: &str,
+) -> R<bool> {
+    open_locked(
+        p,
+        pl,
+        k,
+        "wave",
+        failed,
+        vec![],
+        content,
+        false,
+        Some((wave, units)),
+    )
 }
 
 /// Write the `checkpoint.fix.open` event. `strict` refuses on a working copy with uncommitted changes;
@@ -242,6 +280,7 @@ fn open_locked(
     findings: Vec<Value>,
     content: &str,
     strict: bool,
+    wave: Option<(u32, &[String])>,
 ) -> R<bool> {
     for (_, wt) in wts(p, pl, k)? {
         if gitx::has_uncommitted(&wt) {
@@ -256,13 +295,14 @@ fn open_locked(
             return Ok(false);
         }
     }
-    let set = file_set(p, pl, k);
+    let set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
     events::append(
         p,
         "checkpoint.fix.open",
         json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings,
                "allowed": set.allowed, "test_dirs": set.test_dirs, "units": set.units,
-               "before": heads(p, pl, k)?, "content": content}),
+               "before": heads(p, pl, k)?, "content": content,
+               "wave": wave.map(|(w, _)| w).unwrap_or(0)}),
     )?;
     write_overlay(p)?;
     p.write_guard()?;
@@ -277,7 +317,7 @@ pub(crate) fn open_chosen(
     findings: Vec<Value>,
     content: &str,
 ) -> R<()> {
-    open_locked(p, pl, k, "review", vec![], findings, content, true)?;
+    open_locked(p, pl, k, "review", vec![], findings, content, true, None)?;
     Ok(())
 }
 
@@ -464,17 +504,23 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
     };
     let abort = format!("bf checkpoint fix {k} --abort");
     match f.phase.as_str() {
-        "fix" => json!({"role": "builder", "action": "fix-checkpoint", "checkpoint": k,
+        "fix" => {
+            json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
+            "wave": f.wave,
             "source": f.source, "tier": p.policy.tiers.builder, "working_copy": wc,
             "brief": brief("builder"), "limits": lim,
             "may_change": f.allowed.iter().chain(f.test_dirs.iter()).collect::<Vec<_>>(),
             "failing_checks": f.failed.iter().filter_map(|x| x["check"].as_str()).collect::<Vec<_>>(),
             "findings": f.findings.iter().map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]})).collect::<Vec<_>>(),
-            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort}),
-        "review" => json!({"role": "reviewer", "action": "review-checkpoint-fix", "checkpoint": k,
+            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort})
+        }
+        "review" => {
+            json!({"role": "reviewer", "action": if f.source == "wave" { "review-wave-fix" } else { "review-checkpoint-fix" }, "checkpoint": k,
+            "wave": f.wave,
             "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"),
             "limits": lim, "round": f.rounds_log.len() + 1,
-            "commands": [format!("bf brief {k} --role reviewer")], "abort_command": abort}),
+            "commands": [format!("bf brief {k} --role reviewer")], "abort_command": abort})
+        }
         "gap" => json!({"role": "human", "action": "plan-gap", "checkpoint": k,
             "missing": f.missing,
             "note": format!("The fix of {k} needs what the plan never gave it: {}. Decide by amendment: a new unit, or an existing one extended. `{abort}` puts the checkpoint back as it was.", f.missing.join("; ")),
@@ -723,7 +769,12 @@ fn report_inner(
                     "`bf status` shows the fix in review.",
                 ));
             }
-            let failed = run::run_k_checks(p, &pl, k)?;
+            // A wave fix is tried on the wave checks; it counts only after the reviewer's clean round.
+            let failed = if f.source == "wave" {
+                crate::wavecheck::rerun(p, &pl, k, f.wave, false)?
+            } else {
+                run::run_k_checks(p, &pl, k)?
+            };
             if !failed.is_empty() {
                 let to = attempt(p, &f, &failed)?;
                 let mut steps = fail_lines(&failed);
@@ -771,7 +822,21 @@ fn report_inner(
         }
         ("review", "built") => {
             record_round(p, &pl, &f, "clean", "done", &[], String::new())?;
-            // Clean: the checkpoint's checks run again on the new content, through the engine.
+            // Clean: the checkpoint's checks run again on the new content, through the engine. A wave
+            // fix runs the wave checks again, and that run is the wave's new result.
+            if f.source == "wave" {
+                let failed = crate::wavecheck::rerun(p, &pl, k, f.wave, true)?;
+                if !failed.is_empty() {
+                    let to = attempt(p, &f, &failed)?;
+                    return Ok(json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+                        "failed_checks": failed}));
+                }
+                let again: Vec<String> = crate::wavecheck::records(&pl)
+                    .iter()
+                    .map(|c| s(c, "id").to_string())
+                    .collect();
+                return finish(p, &pl, &f, again);
+            }
             let failed = run::run_k_checks(p, &pl, k)?;
             if !failed.is_empty() {
                 let to = attempt(p, &f, &failed)?;
@@ -890,7 +955,7 @@ fn open_from_review(
         ));
     }
     let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
-    open_locked(p, pl, k, "review", vec![], listed, &content, true)?;
+    open_locked(p, pl, k, "review", vec![], listed, &content, true, None)?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
 }
 
@@ -1058,10 +1123,14 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     let mut md = format!("# Brief: the fix of {k} as {role}\n\n");
     md.push_str(&format!(
         "Checkpoint {k} {}. The fix is made in the checkpoint's own working copy, `{}`.\n\n",
-        if f.source == "check" {
-            "failed a check"
-        } else {
-            "drew findings in its review"
+        match f.source.as_str() {
+            "check" => "failed a check".to_string(),
+            "wave" => format!(
+                "failed the wave check of wave {}, which ran on a copy of its content after that wave landed. The fix is held to the files of the units that landed since the last wave check passed ({}), and new test files beside them",
+                f.wave,
+                f.units.join(", ")
+            ),
+            _ => "drew findings in its review".to_string(),
         },
         wc.display()
     ));

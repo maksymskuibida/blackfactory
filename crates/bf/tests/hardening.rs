@@ -997,6 +997,7 @@ fn a_git_alias_that_moves_main_is_noted_in_status_and_denied_to_agents() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
@@ -1218,6 +1219,7 @@ fn merging_onto_main_needs_the_humans_go_ahead_after_the_closure() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("approved");
     fx.must(&["gate", "approve", "plan", "--quote", "approved"]);

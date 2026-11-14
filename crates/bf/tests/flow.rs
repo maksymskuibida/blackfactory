@@ -746,7 +746,10 @@ fn walk_the_gates(fx: &Fx, skip_ui: bool) {
         match d["action"].as_str().unwrap() {
             "add-records" => {
                 // The directive says what is missing; the conductor writes it, or has the ui gate skipped.
-                if kind == "idea" {
+                if kind == "plan" {
+                    // The plan stage asks its two questions before the gate opens.
+                    fx.answer_plan_questions();
+                } else if kind == "idea" {
                     assert!(d["missing"].as_str().unwrap().contains("idea"), "{n}");
                     fs::write(fx.root.join("factory/idea.md"), "# A tiny greeter\n").unwrap();
                     seen.push("add-records idea".into());

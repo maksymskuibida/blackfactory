@@ -91,8 +91,29 @@ pub fn load(p: &Project) -> R<Plan> {
         let decided = crate::checks::decided(&st);
         let more = crate::enforce::plan_problems(&plan, &st, decided);
         plan.problems.extend(more);
+        plan.problems.extend(question_problems(&plan, &st));
     }
     Ok(plan)
+}
+
+/// The questions every run puts to the human at its plan stage (R-61, R-76): which wave checks it uses,
+/// and which checks every unit must pass. An active run that has not answered one has a plan problem, so
+/// the plan gate does not open. Before a run starts nothing can be answered, so nothing is asked then.
+fn question_problems(pl: &Plan, st: &State) -> Vec<String> {
+    let Some(run) = st.active_run() else {
+        return vec![];
+    };
+    if pl.units.is_empty() || st.gate_passed("plan", None) {
+        return vec![];
+    }
+    let mut out = vec![];
+    if run.wave.is_none() {
+        out.push("the human has not answered the wave-check question for this run: run `bf checks wave question`, ask the human, then `bf checks wave propose` and `bf checks wave set --quote \"<their words>\"`".to_string());
+    }
+    if run.unit_checks.is_none() {
+        out.push("the human has not answered the question about the checks every unit must pass for this run: run `bf checks unit question`, ask the human, then `bf checks unit propose` and `bf checks unit set --quote \"<their words>\"`".to_string());
+    }
+    out
 }
 
 fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {

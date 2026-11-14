@@ -168,6 +168,8 @@ pub fn status(p: &Project) -> R<Value> {
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
             "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
         "checkpoint_fix": crate::ckfix::status_json(&st),
+        "wave_checks": crate::wavecheck::status_json(&st),
+        "plan_questions": crate::wavecheck::plan_questions(&st),
         "checkpoint_reviews": crate::ckreview::status_json(p, &st),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
@@ -262,6 +264,17 @@ fn next_raw(p: &Project) -> R<Value> {
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
         _ => {
+            // The run's two plan questions come first: the plan gate does not open until both are answered.
+            if let Some(r) = st.active_run().filter(|_| !pl.units.is_empty()) {
+                if r.wave.is_none() {
+                    directives.push(json!({"role": "human", "action": "answer-wave-checks", "command": "bf checks wave question",
+                        "note": "Ask the human which wave checks this run uses (the project default, an override or none), then record the answer with `bf checks wave propose` and `bf checks wave set --quote`."}));
+                }
+                if r.unit_checks.is_none() {
+                    directives.push(json!({"role": "human", "action": "answer-unit-checks", "command": "bf checks unit question",
+                        "note": "Ask the human which checks every unit of this run must pass (the project's list, an override or none), then record the answer with `bf checks unit propose` and `bf checks unit set --quote`."}));
+                }
+            }
             directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": "plan", "command": "bf gate open plan"}));
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
@@ -305,12 +318,22 @@ fn next_raw(p: &Project) -> R<Value> {
     // An open fix of a checkpoint: it is settled before anything else starts.
     if let Some(f) = &st.ck_fix {
         let mut d = crate::ckfix::directive(p, &st, f);
-        d["note_fix"] = json!(format!(
-            "A fix of {} is open; nothing else starts until it is settled.",
-            f.checkpoint
-        ));
-        directives.push(d);
-        return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
+        if f.source == "wave" {
+            // A fix of a wave check does not hold the next wave back: its units are built without
+            // waiting, and only their landing waits for the wave check to pass.
+            d["note_fix"] = json!(format!(
+                "A fix of the wave check of wave {} of {} is open. The units of the next wave are offered below and are built without waiting; none of them lands until the wave check has passed.",
+                f.wave, f.checkpoint
+            ));
+            directives.push(d);
+        } else {
+            d["note_fix"] = json!(format!(
+                "A fix of {} is open; nothing else starts until it is settled.",
+                f.checkpoint
+            ));
+            directives.push(d);
+            return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
+        }
     }
     let limits = |us_rounds: u32| {
         json!({"max_rounds": p.policy.limits.max_rounds, "round": us_rounds, "idle_minutes": p.policy.limits.idle_minutes,
@@ -367,11 +390,38 @@ fn next_raw(p: &Project) -> R<Value> {
             _ => {}
         }
     }
+    // The step after a wave has landed: each wave check runs on a copy of the content, beside the units of
+    // the next wave. The engine runs it; it needs no worker's token.
+    for (k, w) in crate::wavecheck::due(p, &pl, &st) {
+        directives.push(crate::wavecheck::directive(&k, w, &pl));
+    }
+    for (k, w) in crate::wavecheck::running(p, &pl, &st) {
+        waiting.push(format!("{k}: the wave check of wave {w} is running"));
+    }
     // Checkpoints whose units have all landed.
     for k in &pl.checkpoints {
         let kid = s(k, "id");
         let after = str_list(k, "after");
         if st.closed.contains_key(kid) {
+            continue;
+        }
+        // The last wave's check counts for the checkpoint's own checks when it ran on the content the
+        // checkpoint closes on, so the checkpoint waits for it.
+        let wave_held = crate::wavecheck::close_blockers(&pl, &st, kid);
+        if !wave_held.is_empty()
+            && !after.is_empty()
+            && after.iter().all(|u| st.unit_state(u) == "landed")
+        {
+            waiting.push(format!("{kid}: {}", wave_held.join("; ")));
+            if st.ck_fix.is_none()
+                && st
+                    .wave_runs
+                    .iter()
+                    .any(|((c, _), r)| c == kid && r.state == "failed")
+            {
+                directives.push(json!({"role": "human", "action": "decide-wave-check", "checkpoint": kid,
+                    "note": format!("A wave check of {kid} failed and its fix was turned down. The human decides: change the plan by amendment, or have the fix tried again.")}));
+            }
             continue;
         }
         if held(kid) {
@@ -636,6 +686,8 @@ pub fn next(p: &Project) -> R<Value> {
     // A checkpoint whose check failed gets a fix for a builder, not a question to the human.
     if events::replay(p)?.active_run().is_some() {
         crate::ckfix::maybe_open(p)?;
+        // A wave check that failed gets a fix too, held to the units that landed since the last pass.
+        crate::wavecheck::maybe_open(p)?;
     }
     let mut v = next_raw(p)?;
     if p.policy.roles.tokens {
@@ -1179,6 +1231,18 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             cmd
         ));
     }
+    // The checks every unit must pass: the engine attaches them, and the unit cannot land without them.
+    let (attached, _, _) = crate::checks::attached_for_unit(p, &pl, &st, unit);
+    for (a, line) in attached
+        .iter()
+        .zip(crate::checks::attached_lines(p, &pl, &st, unit))
+    {
+        md.push_str(&format!(
+            "- {line}. Run it with `bf evidence run {} --unit {unit} -- {}`\n",
+            a.id(),
+            a.command_line()
+        ));
+    }
     md.push('\n');
     if role != "verifier" {
         md.push_str("## Where you work\n\n");
@@ -1252,7 +1316,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if role == "reviewer" {
         md.push_str("## Receipts\n\nVerify these instead of re-running the checks:\n\n");
         for r in evidence::load_receipts(p)? {
-            if pl.unit_checks(unit).iter().any(|c| s(c, "id") == r.check()) {
+            if pl.unit_checks(unit).iter().any(|c| s(c, "id") == r.check())
+                || (r.check().starts_with(crate::checks::ATTACHED_PREFIX)
+                    && s(&r.v, "unit") == unit)
+            {
                 md.push_str(&format!(
                     "- {} for {}: sealed={}, exit={}, content {}\n",
                     r.id(),
@@ -1551,6 +1618,17 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "No open findings remain.",
         ));
     }
+    if let Some(why) = crate::wavecheck::land_blocker(&pl, &st, unit) {
+        return Err(refuse(
+            format!("land {unit}"),
+            why,
+            &[
+                "`bf next` offers the wave check step, or the fix of a failed one.",
+                "The unit may be built and reviewed meanwhile; only its landing waits.",
+            ],
+            "`bf status` shows the wave check passed.",
+        ));
+    }
     let k = s(u, "checkpoint").to_string();
     let repo = p.repo_of_unit(u)?.clone();
     let cpb = p.checkpoint_branch(&k);
@@ -1591,6 +1669,10 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             ));
         }
     }
+    // R-76: the checks every unit must pass apply beside the unit's own, and no plan repeats them.
+    missing.extend(crate::checks::attached_missing(
+        p, &pl, &st, &receipts, unit, &content, &wt,
+    ));
     if !missing.is_empty() {
         let mut steps = missing;
         steps.push(format!("Run `bf unit land {unit}` again."));
@@ -1899,6 +1981,20 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ),
             &["Land them with `bf unit land`; `bf next` shows where each one is."],
             "`bf status` shows them landed.",
+        ));
+    }
+    let held = crate::wavecheck::close_blockers(&pl, &st, k);
+    if !held.is_empty() {
+        return Err(refuse_owned(
+            format!("close {k}"),
+            "a wave check has not passed",
+            held.iter()
+                .map(|h| format!("{h}."))
+                .chain([
+                    "`bf next` offers the wave check step, or the fix of a failed one.".to_string(),
+                ])
+                .collect(),
+            "`bf status` shows every wave check of the checkpoint passed.",
         ));
     }
     // The checkpoint's working copy: its folder, which holds one working copy per repository when its

@@ -297,6 +297,9 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
     w.conductor(&["run", "start"]);
     let mut gate_ids = Vec::new();
     for kind in ["idea", "requirements", "ui", "architecture", "plan"] {
+        if kind == "plan" {
+            fx.answer_plan_questions();
+        }
         let gid = w
             .conductor(&["gate", "open", kind])
             .stdout

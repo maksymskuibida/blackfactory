@@ -158,6 +158,10 @@ pub static KINDS: &[Kind] = &[
             f("checkpoint", Ty::Id("K"), true),
             f("estimate", Ty::Int, false),
             fe("tier", Ty::Str, false, &["cheap", "standard", "strong"]),
+            // R-76: a unit may replace the checks every unit must pass (an empty list means none),
+            // with a reason. Each entry is a table with a `name` and a `command`.
+            f("own_checks", Ty::Tables, false),
+            f("own_checks_reason", Ty::Str, false),
         ],
     },
     Kind {
@@ -190,6 +194,9 @@ pub static KINDS: &[Kind] = &[
             f("stop", Ty::Bool, false),
             f("stop_why", Ty::Str, false),
             f("pull_request", Ty::Bool, false),
+            // R-76: the checks for the units of this checkpoint, replacing the run's and the project's.
+            f("unit_checks", Ty::Tables, false),
+            f("unit_checks_reason", Ty::Str, false),
         ],
     },
     Kind {
@@ -204,7 +211,7 @@ pub static KINDS: &[Kind] = &[
             fe("how", Ty::Str, true, &["command", "agent", "human"]),
             f("command", Ty::Any, false),
             f("proves", Ty::Ids("+H"), true),
-            fe("scope", Ty::Str, true, &["unit", "checkpoint"]),
+            fe("scope", Ty::Str, true, &["unit", "checkpoint", "wave"]),
             f("unit", Ty::Id("U"), false),
             f("named", Ty::Str, false),
         ],
@@ -376,6 +383,48 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
         }
         if obj.get("scope").and_then(|v| v.as_str()) == Some("unit") && !obj.contains_key("unit") {
             bad.push("a check with scope = \"unit\" needs a `unit`".into());
+        }
+    }
+    if kind.name == "check" && obj.get("scope").and_then(|v| v.as_str()) == Some("wave") {
+        if obj.get("how").and_then(|v| v.as_str()) != Some("command") {
+            bad.push("a wave check needs how = \"command\": the engine runs it".into());
+        }
+        if obj.contains_key("unit") {
+            bad.push("a wave check belongs to no unit: drop `unit`".into());
+        }
+    }
+    if kind.name == "unit" || kind.name == "checkpoint" {
+        let (list, reason) = if kind.name == "unit" {
+            ("own_checks", "own_checks_reason")
+        } else {
+            ("unit_checks", "unit_checks_reason")
+        };
+        if let Some(a) = obj.get(list).and_then(|v| v.as_array()) {
+            for x in a {
+                let ok = |k: &str| {
+                    x.get(k)
+                        .and_then(|v| v.as_str())
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false)
+                };
+                if !ok("name") || !ok("command") {
+                    bad.push(format!(
+                        "every entry of `{list}` needs a non-empty `name` and `command`"
+                    ));
+                }
+            }
+            let has_reason = obj
+                .get(reason)
+                .and_then(|v| v.as_str())
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
+            if !has_reason {
+                bad.push(format!(
+                    "`{list}` overrides the checks every unit must pass, so it needs `{reason}`"
+                ));
+            }
+        } else if obj.contains_key(reason) {
+            bad.push(format!("`{reason}` is given without `{list}`"));
         }
     }
     if kind.name == "check" {

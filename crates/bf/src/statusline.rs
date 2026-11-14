@@ -20,6 +20,11 @@ pub fn sign(state: &str) -> Option<(&'static str, &'static str)> {
         "fix-review" => ("◐", "checkpoint fix in review"),
         "fix-fixing" => ("↻", "checkpoint being fixed"),
         "closed" => ("■", "checkpoint closed"),
+        "wave-running" => ("◌", "wave check running"),
+        "wave-passed" => ("✓", "wave check passed"),
+        "wave-failed" => ("✗", "wave check failed"),
+        "wave-fix-fixing" => ("↻", "wave check being fixed"),
+        "wave-fix-review" => ("◐", "wave check fix in review"),
         _ => return None,
     })
 }
@@ -39,6 +44,11 @@ pub fn render(items: &[Item]) -> String {
         "fix-review",
         "fix-fixing",
         "verifying",
+        "wave-running",
+        "wave-failed",
+        "wave-fix-fixing",
+        "wave-fix-review",
+        "wave-passed",
         "closed",
     ];
     // Blocked and parked units share one sign and so one segment.
@@ -114,13 +124,47 @@ pub fn items(p: &Project) -> R<Vec<Item>> {
     for k in &pl.checkpoints {
         let kid = s(k, "id").to_string();
         let after = str_list(k, "after");
+        // The latest wave check of a checkpoint that is not closed: running, passed or failed. A failed
+        // one with its fix open is shown as the fix.
+        let wave_fix_open = st
+            .ck_fix
+            .as_ref()
+            .map(|f| f.checkpoint == kid && f.source == "wave")
+            .unwrap_or(false);
+        if !st.closed.contains_key(&kid) && !wave_fix_open {
+            if let Some((w, r)) = st
+                .wave_runs
+                .iter()
+                .filter(|((c, _), _)| *c == kid)
+                .map(|((_, w), r)| (*w, r))
+                .max_by_key(|(w, _)| *w)
+            {
+                let state = match r.state.as_str() {
+                    "running" => "wave-running",
+                    "passed" => "wave-passed",
+                    "failed" => "wave-failed",
+                    _ => "",
+                };
+                if !state.is_empty() {
+                    out.push((format!("{kid} wave {w}"), state.into(), 0));
+                }
+            }
+        }
         if st.closed.contains_key(&kid) {
             out.push((kid, "closed".into(), 0));
         } else if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == kid) {
             // A checkpoint with a fix open: fixing (round of the findings it fixes), in review (the round
-            // under review), or waiting for the human like a parked unit.
+            // under review), or waiting for the human like a parked unit. A wave fix says so.
             let judged = f.rounds_log.len() as u32;
+            let label = if f.source == "wave" {
+                format!("{kid} wave {}", f.wave)
+            } else {
+                kid.clone()
+            };
+            let wave = f.source == "wave";
             match f.phase.as_str() {
+                "review" if wave => out.push((label, "wave-fix-review".into(), judged + 1)),
+                "fix" if wave => out.push((label, "wave-fix-fixing".into(), judged)),
                 "review" => out.push((kid, "fix-review".into(), judged + 1)),
                 "fix" => out.push((kid, "fix-fixing".into(), judged)),
                 "gap" => out.push((kid, "blocked".into(), 0)),
