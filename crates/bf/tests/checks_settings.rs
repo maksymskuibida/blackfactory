@@ -19,7 +19,7 @@ fn names_off(v: &serde_json::Value, key: &str) -> Vec<String> {
 
 #[test]
 fn the_default_choice_needs_a_human_quote_after_the_proposal_and_shows_the_reason() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.human("please keep the checks as they are, thanks");
     // Nothing proposed yet.
     let o = fx.refused(&["checks", "set", "--quote", "keep the checks"]);
@@ -73,7 +73,7 @@ fn the_default_choice_needs_a_human_quote_after_the_proposal_and_shows_the_reaso
 
 #[test]
 fn a_check_switched_off_needs_a_reason_and_a_known_name() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.refused(&["checks", "propose", "secret-scan=off:"]);
     fx.refused(&["checks", "propose", "secret-scan=off"]);
     fx.refused(&["checks", "propose", "no-such-check=off:x"]);
@@ -82,8 +82,9 @@ fn a_check_switched_off_needs_a_reason_and_a_known_name() {
 
 #[test]
 fn a_new_run_starts_from_the_default_and_a_run_choice_leaves_the_default_alone() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.tiny();
+    fx.name_every_check("R-1");
     fx.human("yes, test run with simulated approvals");
     fx.must(&[
         "test-mode",
@@ -155,7 +156,7 @@ fn a_new_run_starts_from_the_default_and_a_run_choice_leaves_the_default_alone()
 
 #[test]
 fn a_setting_event_without_a_valid_turn_is_ignored_on_replay() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.must(&["checks", "propose", OFF, "--scope", "default"]);
     let p = fx.project();
     // An agent that writes the event itself, with no human turn behind it.
@@ -173,6 +174,7 @@ fn a_setting_event_without_a_valid_turn_is_ignored_on_replay() {
 
 fn start_test_run(fx: &Fx) {
     fx.tiny();
+    fx.name_every_check("R-1");
     fx.human("yes, test run with simulated approvals");
     fx.must(&[
         "test-mode",
@@ -185,7 +187,7 @@ fn start_test_run(fx: &Fx) {
 
 #[test]
 fn a_proposal_is_confirmed_once_and_only_in_its_own_run() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     start_test_run(&fx);
     fx.must(&["checks", "propose", OFF]);
     fx.human("yes, switch that one off");
@@ -208,7 +210,7 @@ fn a_proposal_is_confirmed_once_and_only_in_its_own_run() {
 
 #[test]
 fn a_proposal_for_both_shows_the_default_and_the_run() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     start_test_run(&fx);
     let p = fx
         .must(&["checks", "propose", OFF, "--scope", "both", "--json"])
@@ -224,7 +226,7 @@ fn a_proposal_for_both_shows_the_default_and_the_run() {
 
 #[test]
 fn the_run_page_shows_the_reason_of_a_switched_off_check() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.must(&["checks", "propose", OFF, "--scope", "default"]);
     fx.human("agreed, secret scan is off for the project");
     fx.must(&["checks", "set", "--quote", "agreed, secret scan is off"]);
@@ -234,10 +236,16 @@ fn the_run_page_shows_the_reason_of_a_switched_off_check() {
 
 #[test]
 fn a_setting_that_cites_an_older_proposal_than_the_one_answered_is_ignored_on_replay() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.must(&["checks", "propose", OFF, "--scope", "default"]);
     let a = events::replay(&fx.project()).unwrap().checks_proposals[0].seq;
-    fx.must(&["checks", "propose", "accessibility=on", "--scope", "default"]);
+    fx.must(&[
+        "checks",
+        "propose",
+        "accessibility=on",
+        "--scope",
+        "default",
+    ]);
     fx.human("yes, go ahead with the harmless one");
     let st = events::replay(&fx.project()).unwrap();
     let turn = st.turns.last().unwrap().seq;

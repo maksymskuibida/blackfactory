@@ -84,6 +84,11 @@ pub fn load(p: &Project) -> R<Plan> {
         bad,
     };
     analyse(p, &mut plan, &ids);
+    // A required named check appears in the plan as a check record that names it.
+    if let Ok(st) = crate::events::replay(p) {
+        let more = crate::enforce::plan_problems(&plan, &st);
+        plan.problems.extend(more);
+    }
     Ok(plan)
 }
 

@@ -429,6 +429,8 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     if p.policy.gates.in_order && DESIGN_ORDER.contains(&kind) {
         check_order_and_content(p, &st, kind)?;
     }
+    // A required check's design-stage product comes before its gate.
+    crate::enforce::design_blocker(p, &st, kind)?;
     // Decision D-19: a stage's questions come before its gate.
     let open_q: Vec<String> = p
         .list_records(schema::kind_by_name("question"))?
@@ -470,7 +472,8 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
 /// or `None` when it would open. `bf next` uses it so that no directive carries a command the engine
 /// would refuse.
 pub fn open_blocker(p: &Project, st: &State, kind: &str) -> Option<String> {
-    match check_order_and_content(p, st, kind) {
+    let product = crate::enforce::design_blocker(p, st, kind);
+    match check_order_and_content(p, st, kind).and(product) {
         Ok(()) => None,
         Err(crate::refusal::Fail::Refused(r)) => {
             let mut why = r.because.clone();
@@ -793,13 +796,94 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
     all.sort();
     all.dedup();
     let id = format!("A-{}", st.amends.len() + 1);
+    // A later amendment over the same records replaces an earlier one that is not approved yet.
+    let replaced: Vec<String> = st
+        .amends
+        .iter()
+        .filter(|a| {
+            matches!(a.status.as_str(), "open" | "narrowed")
+                && a.ids.iter().any(|i| ids.contains(i))
+        })
+        .map(|a| a.id.clone())
+        .collect();
+    for old in &replaced {
+        events::append(
+            p,
+            "amend.withdraw",
+            json!({"amend": old, "reason": format!("replaced by {id}, which covers the same records"), "replaced_by": id}),
+        )?;
+    }
     events::append(
         p,
         "amend.open",
         json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}),
     )?;
     p.write_guard()?;
-    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}))
+    let mut v = json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all});
+    if !replaced.is_empty() {
+        v["withdrew"] = json!(replaced);
+        v["note"] = json!(format!(
+            "{} withdrawn: {id} covers the same records",
+            replaced.join(", ")
+        ));
+    }
+    Ok(v)
+}
+
+/// Withdraw an amendment the human has not approved. The log keeps that it existed and that it was
+/// withdrawn; it can no longer be narrowed or approved.
+pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(aid) = arg else {
+        return Err(refuse(
+            "withdraw an amendment",
+            "no amendment ID was given",
+            &["Run the withdraw command with the ID that the status lists as open."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    };
+    let Some(a) = st.amends.iter().find(|a| a.id == aid) else {
+        return Err(refuse(
+            "withdraw an amendment",
+            format!("{aid} does not exist"),
+            &["Use an ID that the status lists under amendments."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    };
+    if a.status == "approved" || a.status == "withdrawn" {
+        return Err(refuse(
+            format!("withdraw {aid}"),
+            format!("it is already {}", a.status),
+            &["Only an amendment that is not approved can be withdrawn; open a new one to change an approved one."],
+            "The status lists the amendment as withdrawn.",
+        ));
+    }
+    events::append(
+        p,
+        "amend.withdraw",
+        json!({"amend": aid, "reason": reason.trim(), "replaced_by": ""}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"amend": aid, "withdrawn": true, "reason": reason.trim()}))
+}
+
+/// The status of an amendment as the human sees it: open, approved or withdrawn.
+pub fn amend_status(a: &events::Amend) -> &'static str {
+    match a.status.as_str() {
+        "approved" => "approved",
+        "withdrawn" => "withdrawn",
+        _ => "open",
+    }
+}
+
+pub fn amendments_json(st: &State) -> Vec<Value> {
+    st.amends
+        .iter()
+        .map(|a| {
+            json!({"id": a.id, "ids": a.ids, "status": amend_status(a),
+                "withdrawn_why": a.withdrawn_why, "replaced_by": a.replaced_by})
+        })
+        .collect()
 }
 
 pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
@@ -812,7 +896,7 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             st.amends
                 .iter()
                 .rev()
-                .find(|a| a.status != "approved")
+                .find(|a| matches!(a.status.as_str(), "open" | "narrowed"))
                 .map(|a| a.id.clone())
         });
     let Some(aid) = aid else {
@@ -831,6 +915,14 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             "The command prints the narrowed set.",
         ));
     };
+    if a.status == "withdrawn" {
+        return Err(refuse(
+            "narrow an amendment",
+            format!("{aid} was withdrawn"),
+            &["Open a new amendment over the same records."],
+            "A new amendment ID is printed.",
+        ));
+    }
     if a.status == "approved" {
         return Err(refuse(
             "narrow an amendment",
@@ -914,6 +1006,14 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         ));
     };
     let a = st.amends.iter().find(|a| a.id == aid);
+    if a.map(|a| a.status == "withdrawn").unwrap_or(false) {
+        return Err(refuse(
+            "approve an amendment",
+            format!("{aid} was withdrawn"),
+            &["A withdrawn amendment cannot be approved: open a new one over the same records."],
+            "The approved set is printed.",
+        ));
+    }
     if a.map(|a| a.status != "narrowed").unwrap_or(true) {
         return Err(refuse(
             "approve an amendment",

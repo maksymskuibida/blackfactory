@@ -15,7 +15,7 @@ fn checks_and_checkpoints_may_prove_handoffs_and_every_handoff_needs_a_proof() {
     let k = fx.must(&["record", "get", "K-1", "--json"]).json();
     assert_eq!(k["proves"].as_array().unwrap().len(), 3);
     // A checkpoint may name the handoff too.
-    let o = fx.put("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\",\"H-1\"]\nchecks=[\"X-3\",\"X-1\"]\n");
+    let o = fx.put("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\",\"H-1\"]\nchecks=[\"X-3\",\"X-1\"]\n");
     assert_eq!(o.code, 2, "replacing needs --replace: {}", o.all());
     // Take H-1 out of every check: the plan is refused.
     let x1 = "id=\"X-1\"\nkind=\"check\"\ntitle=\"Greeting file\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n";

@@ -58,7 +58,7 @@ fn big(fx: &Fx) {
     }
     let after: Vec<String> = (1..=100).map(|u| format!("\"U-{u}\"")).collect();
     let checks: Vec<String> = (1..=100).map(|u| format!("\"X-{u}\"")).collect();
-    w("K-1", format!("id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"All\"\nafter=[{}]\nproves=[{}]\nchecks=[{}]\n", after.join(","), proves.join(","), checks.join(",")));
+    w("K-1", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"All\"\nafter=[{}]\nproves=[{}]\nchecks=[{}]\n", after.join(","), proves.join(","), checks.join(",")));
 }
 
 #[test]

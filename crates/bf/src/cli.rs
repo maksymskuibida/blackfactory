@@ -2,7 +2,9 @@
 
 use crate::refusal::{err, refuse, Fail, R};
 use crate::store::{default_policy_text, s, Project};
-use crate::{doctor, events, evidence, gates, gitx, guard, ledger, plan, run, schema, util, view};
+use crate::{
+    doctor, enforce, events, evidence, gates, gitx, guard, ledger, plan, run, schema, util, view,
+};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -852,6 +854,11 @@ fn dispatch(args: &Args) -> R<()> {
                     &p,
                     &read_data_in(&p, args.need("file", "a narrowing file")?)?,
                 )?,
+                Some("withdraw") => gates::amend_withdraw(
+                    &p,
+                    args.pos.get(2).map(|x| x.as_str()),
+                    args.flag("reason").unwrap_or(""),
+                )?,
                 Some("approve") => gates::amend_approve(
                     &p,
                     args.pos.get(2).map(|x| x.as_str()),
@@ -861,7 +868,7 @@ fn dispatch(args: &Args) -> R<()> {
                     return Err(refuse(
                         "run `bf amend`",
                         "unknown subcommand",
-                        &["Use `bf amend open <ID>...`, `narrow --file <f>` or `approve`."],
+                        &["Use `bf amend open <ID>...`, `narrow --file <f>`, `approve` or `withdraw <A-n>`."],
                         "The command prints the amendment.",
                     ))
                 }
@@ -1113,6 +1120,13 @@ fn status_text(v: &Value) -> String {
             "  gate {} {}\n",
             g["id"].as_str().unwrap_or(""),
             g["status"].as_str().unwrap_or("")
+        ));
+    }
+    for a in v["amendments"].as_array().into_iter().flatten() {
+        t.push_str(&format!(
+            "  amendment {} {}\n",
+            a["id"].as_str().unwrap_or(""),
+            a["status"].as_str().unwrap_or("")
         ));
     }
     t
@@ -1624,9 +1638,23 @@ fn cmd_ledger(args: &Args) -> R<()> {
                 std::process::exit(2);
             }
             ledger::refuse_if_gaps(&rows, plan_only)?;
-            out(args, &json!({"ok": true, "parts": rows.len()}), || {
-                format!("ledger closed: {} designed parts linked", rows.len())
-            });
+            let off = if plan_only {
+                json!([])
+            } else {
+                enforce::refuse_if_unproven(&p, &pl)?
+            };
+            out(
+                args,
+                &json!({"ok": true, "parts": rows.len(), "checks_off": off}),
+                || {
+                    let o: Vec<Value> = off.as_array().cloned().unwrap_or_default();
+                    let mut t = format!("ledger closed: {} designed parts linked", rows.len());
+                    if !o.is_empty() {
+                        t.push_str(&format!("\nchecks switched off: {}", enforce::off_text(&o)));
+                    }
+                    t
+                },
+            );
         }
         "impact" => {
             if args.pos.len() < 3 {

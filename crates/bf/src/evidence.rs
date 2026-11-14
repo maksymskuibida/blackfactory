@@ -581,7 +581,12 @@ pub fn attach(
                 "The command prints a receipt.",
             ));
         }
-        if p.policy.roles.tokens {
+        // A design-stage named check is settled before any run exists, when no worker holds a token.
+        let design_stage = crate::checks::by_name(s(&chk, "named"))
+            .map(|c| c.stage == crate::checks::Stage::Design)
+            .unwrap_or(false)
+            && events::replay(p)?.active_run().is_none();
+        if p.policy.roles.tokens && !design_stage {
             // The verifier's token for a checkpoint check; the reviewer's for a unit's own check. A
             // builder holds neither, so it cannot settle a check for its own unit.
             let pl = crate::plan::load(p)?;

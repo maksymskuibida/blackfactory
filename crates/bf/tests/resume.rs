@@ -122,7 +122,7 @@ fn t2_killed_after_the_merge_lands_exactly_once_and_is_not_redone() {
 
 #[test]
 fn t2_a_torn_last_line_in_the_log_is_ignored_and_healed() {
-    let fx = Fx::new();
+    let fx = Fx::with_checks();
     fx.human("first");
     let log = fx.root.join("factory/log/events.jsonl");
     let mut f = fs::OpenOptions::new().append(true).open(&log).unwrap();
