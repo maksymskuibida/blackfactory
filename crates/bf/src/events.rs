@@ -362,6 +362,9 @@ pub struct SyncRepo {
     pub before: String,
     pub files: Vec<String>,
     pub merge: String,
+    /// Patterns of the files the resolver may change here: what either side changed since the merge
+    /// base, and new test files beside them.
+    pub allowed: Vec<String>,
 }
 
 /// A sync of the main branch into a checkpoint that stopped at a conflict, while agents resolve it.
@@ -375,6 +378,10 @@ pub struct SyncOpen {
     pub reason: String,
     pub findings: Vec<Value>,
     pub open_seq: u64,
+    /// The newest receipt on file when the sync started: receipts after it count for the joined content.
+    pub floor: u64,
+    /// The checkpoint checks that failed on the joined content when the sync opened.
+    pub failed: Vec<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -798,6 +805,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             before: r["before"].as_str().unwrap_or("").to_string(),
                             files: crate::store::str_list(r, "files"),
                             merge: r["merge"].as_str().unwrap_or("").to_string(),
+                            allowed: crate::store::str_list(r, "allowed"),
                         })
                         .collect(),
                     phase: "resolve".into(),
@@ -805,6 +813,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     reason: String::new(),
                     findings: vec![],
                     open_seq: seq,
+                    floor: ev["receipt_floor"].as_u64().unwrap_or(0),
+                    failed: ev["failed"].as_array().cloned().unwrap_or_default(),
                 });
             }
             "checkpoint.sync.built" => {

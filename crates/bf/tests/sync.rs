@@ -8,6 +8,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn plan(fx: &Fx, repo: &str) {
+    plan_with(fx, repo, "ls src/a.txt");
+}
+
+/// The plan, with the command of the checkpoint's own check.
+fn plan_with(fx: &Fx, repo: &str, k_check: &str) {
     let r = if repo.is_empty() {
         String::new()
     } else {
@@ -17,7 +22,7 @@ fn plan(fx: &Fx, repo: &str) {
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n".to_string()),
         ("unit", format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\n{r}checkpoint=\"K-1\"\n")),
         ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n".to_string()),
-        ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"ls src/a.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".to_string()),
+        ("check", format!("id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"{k_check}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n")),
         ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n".to_string()),
     ] {
         assert_eq!(fx.put(k, &t).code, 0);
@@ -183,17 +188,7 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
         .json();
     assert_eq!(o["nothing_to_take_in"], true);
     // The checkpoint's own check is open again; the landed unit's receipts still count.
-    let o = fx.refused(&["checkpoint", "close", "K-1"]);
-    assert!(
-        o.stderr.contains("no sealed passing receipt"),
-        "{}",
-        o.stderr
-    );
     assert_eq!(fx.bf(&["evidence", "verify", "--unit", "U-1"]).code, 0);
-    fx.must_in(
-        &fx.work("K-1"),
-        &["evidence", "run", "X-2", "--", "ls", "src/a.txt"],
-    );
     let out = fx.merge_checkpoint("K-1");
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(code.join("docs/extra.txt").exists() && code.join("src/a.txt").exists());
@@ -237,12 +232,6 @@ fn a_hand_merge_without_the_command_is_not_refused_and_its_receipts_go_stale() {
     human_commit(&root, "docs/extra.txt", "main\n");
     let wt = fx.work("K-1");
     git(&wt, &["merge", "--no-edit", "main"]);
-    let o = fx.refused(&["checkpoint", "close", "K-1"]);
-    assert!(
-        o.stderr.contains("no sealed passing receipt"),
-        "{}",
-        o.stderr
-    );
     assert!(!fx
         .must(&["log", "--json"])
         .stdout
@@ -447,7 +436,7 @@ fn walk_resolve(fx: &Fx, code: &Path) {
     assert_eq!(o.code, 2, "{}", o.all());
     assert!(
         o.stderr
-            .contains("src/sneaky.txt was changed but was not in conflict"),
+            .contains("src/sneaky.txt was changed but is not a file either side changed"),
         "{}",
         o.stderr
     );
@@ -536,13 +525,7 @@ fn walk_resolve(fx: &Fx, code: &Path) {
         "{st}"
     );
     assert_ne!(tip(code, "bf/K-1"), before);
-    let o = fx.refused(&["checkpoint", "close", "K-1"]);
-    assert!(
-        o.stderr.contains("no sealed passing receipt"),
-        "{}",
-        o.stderr
-    );
-    fx.must_in(&k, &["evidence", "run", "X-2", "--", "ls", "src/a.txt"]);
+    // The checks ran on the joined content during the sync: the close needs nothing more.
     assert_eq!(fx.merge_checkpoint("K-1").code, 0);
     assert_eq!(
         fs::read_to_string(code.join("src/a.txt")).unwrap(),
@@ -653,4 +636,206 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
         .json();
     assert_eq!(o["synced"], true, "{o}");
     assert!(fx.must(&["status", "--json"]).json()["sync_open"].is_null());
+}
+
+/// The main branch adds a file that breaks the checkpoint's check once joined: no textual conflict.
+fn walk_repair(fx: &Fx, code: &Path) {
+    real_run(fx);
+    land_unit(fx);
+    human_commit(
+        code,
+        "src/banned.txt",
+        "added on main, before the run's rule\n",
+    );
+    let before = tip(code, "bf/K-1");
+    fx.human("Yes, bring main into the first checkpoint.");
+    let t = std::time::Instant::now();
+    let o = fx
+        .must(&[
+            "checkpoint",
+            "sync",
+            "K-1",
+            "--quote",
+            "bring main into the first checkpoint",
+            "--json",
+        ])
+        .json();
+    eprintln!(
+        "sync with one failing and no passing check run: {:?}",
+        t.elapsed()
+    );
+    // Merged without a conflict, and the check fails on the joined content: the sync stays open.
+    assert_eq!(o["synced"], false, "{o}");
+    assert_eq!(o["sync_open"], true, "{o}");
+    assert!(o["conflicted"].as_array().unwrap().is_empty(), "{o}");
+    assert_eq!(o["failed_checks"][0]["check"], "X-2", "{o}");
+    let k = fx.work("K-1");
+    assert!(k.join("src/banned.txt").exists(), "the merge is kept");
+    let d = directive(fx, "resolve-sync");
+    assert_eq!(d["failing_checks"][0], "X-2", "{d}");
+    assert!(
+        d["files"].as_array().unwrap().is_empty(),
+        "no conflicted file: {d}"
+    );
+    assert!(
+        d["may_change"].to_string().contains("src/banned.txt"),
+        "{d}"
+    );
+    assert_eq!(fx.bf(&["unit", "start", "U-1"]).code, 2);
+    // The brief names the failing check, its command and output tail, and what may be changed.
+    let brief = fs::read_to_string(
+        fx.must(&["brief", "K-1", "--role", "builder"])
+            .stdout
+            .trim(),
+    )
+    .unwrap();
+    assert!(
+        brief.contains("X-2")
+            && brief.contains("FAILS")
+            && brief.contains("test ! -f src/banned.txt")
+            && brief.contains("What you may change"),
+        "{brief}"
+    );
+    // The guard: a file either side changed, and a new test file beside it; nothing else.
+    assert_ne!(
+        guard_says(
+            fx,
+            &k,
+            "Write",
+            json!({"file_path": k.join("src/banned.txt").to_string_lossy()})
+        ),
+        "deny"
+    );
+    assert_ne!(
+        guard_says(
+            fx,
+            &k,
+            "Write",
+            json!({"file_path": k.join("src/a_test.txt").to_string_lossy()})
+        ),
+        "deny"
+    );
+    assert_eq!(
+        guard_says(
+            fx,
+            &k,
+            "Write",
+            json!({"file_path": k.join("src/other.txt").to_string_lossy()})
+        ),
+        "deny"
+    );
+    // Done outside the guard, a change to a file neither side changed is refused at the report.
+    fs::remove_file(k.join("src/banned.txt")).unwrap();
+    fs::write(k.join("src/other.txt"), "not asked for\n").unwrap();
+    git(&k, &["add", "-A"]);
+    git(&k, &["commit", "-q", "-m", "repair, and more"]);
+    let o = fx.bf_in(
+        &k,
+        &["report", "K-1", "--role", "builder", "--result", "built"],
+    );
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(
+        o.stderr
+            .contains("src/other.txt was changed but is not a file either side changed"),
+        "{}",
+        o.stderr
+    );
+    git(&k, &["rm", "-q", "src/other.txt"]);
+    git(&k, &["commit", "-q", "-m", "only the repair"]);
+    // The repair holds: the engine runs the checks through itself, then the reviewer sees the whole fix.
+    fx.must_in(
+        &k,
+        &["report", "K-1", "--role", "builder", "--result", "built"],
+    );
+    let d = directive(fx, "review-sync");
+    assert_eq!(d["role"], "reviewer");
+    let rbrief = fs::read_to_string(
+        fx.must(&["brief", "K-1", "--role", "reviewer"])
+            .stdout
+            .trim(),
+    )
+    .unwrap();
+    assert!(
+        rbrief.contains("compared with git's automatic merge") && rbrief.contains("banned.txt"),
+        "{rbrief}"
+    );
+    fx.must_in(
+        &k,
+        &["report", "K-1", "--role", "reviewer", "--result", "built"],
+    );
+    // Recorded; the receipts of the checks on the joined content count at the close, nothing to run again.
+    assert!(fx.must(&["status", "--json"]).json()["sync_open"].is_null());
+    assert!(fx
+        .must(&["log", "--json"])
+        .stdout
+        .contains("\"checkpoint.sync\""));
+    assert_ne!(tip(code, "bf/K-1"), before);
+    assert_eq!(fx.merge_checkpoint("K-1").code, 0);
+    assert!(!code.join("src/banned.txt").exists());
+}
+
+#[test]
+fn a_sync_without_a_conflict_whose_joined_content_fails_a_check_is_repaired_in_a_project_folder() {
+    let fx = Fx::new();
+    plan_with(&fx, "", "test ! -f src/banned.txt");
+    let root = fx.root.clone();
+    walk_repair(&fx, &root);
+}
+
+#[test]
+fn a_sync_without_a_conflict_whose_joined_content_fails_a_check_is_repaired_in_a_workspace() {
+    let fx = Fx::workspace(&["app"]);
+    let code = fx.root.join("code");
+    fs::create_dir_all(&code).unwrap();
+    git(&code, &["init", "-q", "-b", "main"]);
+    fs::write(code.join("README.md"), "# code\n").unwrap();
+    git(&code, &["add", "-A"]);
+    git(&code, &["commit", "-q", "-m", "init"]);
+    fx.must(&["repo", "add", "code", "code"]);
+    plan_with(&fx, "code", "test ! -f src/banned.txt");
+    walk_repair(&fx, &code);
+}
+
+#[test]
+fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_records_at_once() {
+    let fx = Fx::new();
+    plan_with(&fx, "", "test ! -f src/banned.txt");
+    let root = fx.root.clone();
+    real_run(&fx);
+    land_unit(&fx);
+    human_commit(&root, "src/banned.txt", "added on main\n");
+    let before = tip(&root, "bf/K-1");
+    fx.human("Yes, bring main into the first checkpoint.");
+    let o = fx
+        .must(&[
+            "checkpoint",
+            "sync",
+            "K-1",
+            "--quote",
+            "bring main into the first checkpoint",
+            "--json",
+        ])
+        .json();
+    assert_eq!(o["sync_open"], true);
+    assert_ne!(tip(&root, "bf/K-1"), before, "the merge was made");
+    // Abort puts the exact earlier tip back, with no human turn.
+    fx.must(&["checkpoint", "sync", "K-1", "--abort"]);
+    assert_eq!(tip(&root, "bf/K-1"), before);
+    assert!(!fx.work("K-1").join("src/banned.txt").exists());
+    assert!(fx.must(&["status", "--json"]).json()["sync_open"].is_null());
+    // A sync whose joined content passes is recorded at once (no review).
+    git(&root, &["rm", "-q", "src/banned.txt"]);
+    git(&root, &["commit", "-q", "-m", "main fixes itself"]);
+    fx.human("Yes, bring main in again.");
+    let o = fx
+        .must(&[
+            "checkpoint",
+            "sync",
+            "K-1",
+            "--quote",
+            "bring main in again",
+            "--json",
+        ])
+        .json();
+    assert_eq!(o["synced"], true, "{o}");
 }

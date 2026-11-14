@@ -12,7 +12,7 @@ use crate::store::{s, str_list, Project, Repo};
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Test hook: exit abruptly at a named point when `BF_CRASH_AT` names it.
 pub fn crash_point(name: &str) {
@@ -263,6 +263,8 @@ fn next_raw(p: &Project) -> R<Value> {
             "resolve" => json!({"role": "builder", "action": "resolve-sync", "checkpoint": k,
                 "tier": p.policy.tiers.builder, "working_copy": wc, "brief": brief("builder"), "limits": lim,
                 "files": sync_files(so),
+                "may_change": sync_allowed(so),
+                "failing_checks": so.failed.iter().filter_map(|f| f["check"].as_str()).collect::<Vec<_>>(),
                 "commands": [format!("bf brief {k} --role builder")],
                 "abort_command": format!("bf checkpoint sync {k} --abort")}),
             "review" => json!({"role": "reviewer", "action": "review-sync", "checkpoint": k,
@@ -2121,6 +2123,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
     // Merge, one repository after another. A conflict is left in progress in the checkpoint's working
     // copy for the factory's own agents to resolve; the human's part is the sentence that asked.
+    let floor = evidence::highest_receipt_number(p);
     let mut done: Vec<(String, String, String)> = Vec::new();
     let mut open_repos: Vec<Value> = Vec::new();
     let mut conflicted: Vec<String> = Vec::new();
@@ -2148,10 +2151,11 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
             ],
             &[],
         )?;
+        let allowed = allowed_set(&step.wt, &step.old_tip, &step.main_tip);
         if out.ok {
             let c = gitx::head_short(&step.wt);
             done.push((step.repo.name.clone(), step.main_tip.clone(), c.clone()));
-            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": [], "merge": c}));
+            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": [], "merge": c, "allowed": allowed}));
         } else {
             let files: Vec<String> =
                 gitx::must(&step.wt, &["diff", "--name-only", "--diff-filter=U"])
@@ -2166,19 +2170,34 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
                     f.clone()
                 });
             }
-            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": files, "merge": ""}));
+            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": files, "merge": "", "allowed": allowed}));
         }
     }
     if !conflicted.is_empty() {
         events::append(
             p,
             "checkpoint.sync.open",
-            json!({"checkpoint": k, "repos": open_repos, "turn": turn, "quote": quote.trim()}),
+            json!({"checkpoint": k, "repos": open_repos, "turn": turn, "quote": quote.trim(), "receipt_floor": floor, "failed": []}),
         )?;
         p.write_guard()?;
         return Ok(
             json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": conflicted,
             "message": "the main branch conflicts with the checkpoint; the merge is left in progress in the checkpoint's working copy and `bf next` gives the directive that resolves it (`bf checkpoint sync <K> --abort` puts everything back)"}),
+        );
+    }
+    // The joined content is proven before the sync counts: the checkpoint's own command checks run on it.
+    let failed = run_k_checks(p, &pl, k)?;
+    if !failed.is_empty() {
+        events::append(
+            p,
+            "checkpoint.sync.open",
+            json!({"checkpoint": k, "repos": open_repos, "turn": turn, "quote": quote.trim(), "receipt_floor": floor, "failed": failed}),
+        )?;
+        p.write_guard()?;
+        return Ok(
+            json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": [],
+            "failed_checks": failed,
+            "message": "the main branch merged without a conflict, but the checkpoint's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
     let reopen_checks = str_list(kr, "checks");
@@ -2189,7 +2208,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
             "checkpoint": k,
             "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>(),
             "turn": turn, "quote": quote.trim(),
-            "reopen_checks": reopen_checks, "receipt_floor": evidence::highest_receipt_number(p),
+            "reopen_checks": reopen_checks, "receipt_floor": floor,
         }),
     )?;
     // The repository's main branch is where the engine now counts from: the stack holds it.
@@ -2207,6 +2226,95 @@ fn sync_wt(p: &Project, k: &str, repo: &str) -> R<PathBuf> {
     let pl = plan::load(p)?;
     let r = p.repo(repo)?;
     checkpoint_wt(p, &pl, k, r)
+}
+
+/// The files the resolver of a sync may change in a repository: those either side changed since the merge
+/// base, and new test files beside them (a file with `test` in its name in the same folder, or any file
+/// in a folder named for tests).
+fn allowed_set(wt: &Path, before: &str, main: &str) -> Vec<String> {
+    let base = gitx::must(wt, &["merge-base", before, main]).unwrap_or_default();
+    let mut files: Vec<String> = Vec::new();
+    for side in [before, main] {
+        if base.is_empty() {
+            break;
+        }
+        let d = gitx::must(wt, &["diff", "--name-only", &base, side]).unwrap_or_default();
+        for f in d.lines() {
+            if !files.iter().any(|x| x == f) {
+                files.push(f.to_string());
+            }
+        }
+    }
+    let mut dirs: Vec<String> = Vec::new();
+    for f in &files {
+        let d = f
+            .rsplit_once('/')
+            .map(|x| x.0.to_string())
+            .unwrap_or_default();
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    files.truncate(3000);
+    for d in dirs {
+        let last = d.rsplit('/').next().unwrap_or("").to_lowercase();
+        if last.contains("test") {
+            files.push(format!("{d}/"));
+        } else if d.is_empty() {
+            files.push("*test*".into());
+        } else {
+            files.push(format!("{d}/*test*"));
+        }
+    }
+    files
+}
+
+/// Run the checkpoint's own command checks on the content now in its working copy, through the engine
+/// (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
+/// checkpoint with none skip this.
+fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
+    let Some(kr) = pl.checkpoint(k) else {
+        return Ok(vec![]);
+    };
+    let top = p.work_dir().join(k);
+    let mut failed = Vec::new();
+    for cid in str_list(kr, "checks") {
+        let Some(c) = pl.checks.iter().find(|c| s(c, "id") == cid) else {
+            continue;
+        };
+        if s(c, "how") != "command" {
+            continue;
+        }
+        let argv = evidence::command_words(c);
+        match evidence::run_at(p, &cid, None, &argv, &top) {
+            Ok(r) if r["exit"].as_i64() == Some(0) => {}
+            Ok(r) => failed.push(
+                json!({"check": cid, "command": argv.join(" "), "exit": r["exit"], "tail": s(&r, "output_tail")}),
+            ),
+            Err(e) => failed.push(
+                json!({"check": cid, "command": argv.join(" "), "exit": null, "tail": format!("{e:?}")}),
+            ),
+        }
+    }
+    Ok(failed)
+}
+
+/// What the resolver may change, as patterns inside the checkpoint's working copy folder (prefixed by the
+/// repository name when several are touched).
+pub fn sync_allowed(so: &events::SyncOpen) -> Vec<String> {
+    let several = so.repos.len() > 1;
+    so.repos
+        .iter()
+        .flat_map(|r| {
+            r.allowed.iter().map(move |f| {
+                if several {
+                    format!("{}/{f}", r.repo)
+                } else {
+                    f.clone()
+                }
+            })
+        })
+        .collect()
 }
 
 /// The conflicted files of an open sync, as paths inside the checkpoint's working copy folder.
@@ -2242,7 +2350,7 @@ fn finish_sync(
     }
     let mut ev = json!({
         "checkpoint": so.checkpoint, "repos": repos,
-        "reopen_checks": reopen_checks, "receipt_floor": evidence::highest_receipt_number(p),
+        "reopen_checks": reopen_checks, "receipt_floor": so.floor,
     });
     match human {
         Some((turn, quote)) => {
@@ -2307,7 +2415,7 @@ fn sync_problems(p: &Project, so: &events::SyncOpen) -> R<Vec<String>> {
                 &r.main[..r.main.len().min(10)]
             ));
         }
-        if !merging && !r.files.is_empty() && !r.before.is_empty() {
+        if !merging && !r.before.is_empty() {
             // Only the conflicted files may differ from what git's own merge produced.
             if let Ok(o) = gitx::run(
                 &wt,
@@ -2323,9 +2431,9 @@ fn sync_problems(p: &Project, so: &events::SyncOpen) -> R<Vec<String>> {
                     let diff =
                         gitx::must(&wt, &["diff", "--name-only", tree, "HEAD"]).unwrap_or_default();
                     for f in diff.lines() {
-                        if !r.files.iter().any(|c| c == f) {
+                        if !r.allowed.iter().any(|g| util::path_matches(g, f)) {
                             out.push(format!(
-                                "{}: {f} was changed but was not in conflict",
+                                "{}: {f} was changed but is not a file either side changed (nor a new test file beside one)",
                                 r.repo
                             ));
                         }
@@ -2409,6 +2517,30 @@ fn sync_hand_resolved(
             "`bf checkpoint sync` records the merge.",
         ));
     }
+    // The joined content must be proven too.
+    let failed = run_k_checks(p, pl, &so.checkpoint)?;
+    if !failed.is_empty() {
+        let mut steps: Vec<String> = failed
+            .iter()
+            .map(|f| {
+                format!(
+                    "{} fails ({})",
+                    f["check"].as_str().unwrap_or(""),
+                    f["command"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        steps.push("Repair the joined content, commit, then run the command again.".into());
+        return Err(refuse_owned(
+            format!("sync {}", so.checkpoint),
+            format!(
+                "the checkpoint's checks fail on the joined content: {}",
+                failed.len()
+            ),
+            steps,
+            "`bf checkpoint sync` records the merge.",
+        ));
+    }
     let (turn, _) = events::pick_turn(st, 0, events::Decide::Approve, quote)?;
     finish_sync(p, pl, so, Some((turn, quote)))
 }
@@ -2480,6 +2612,39 @@ pub fn sync_report(
                     steps,
                     "`bf status` shows the sync in review.",
                 ));
+            }
+            // The joined content must be proven: the checkpoint's own command checks run on it, through
+            // the engine, so the receipts are real.
+            let failed = run_k_checks(p, &pl, k)?;
+            if !failed.is_empty() {
+                let mut steps: Vec<String> = failed
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{} fails ({}): {}",
+                            f["check"].as_str().unwrap_or(""),
+                            f["command"].as_str().unwrap_or(""),
+                            f["tail"].as_str().unwrap_or("").lines().last().unwrap_or("")
+                        )
+                    })
+                    .collect();
+                steps.push("Repair it (only files either side changed, or new test files beside them), commit, run the failing checks again with `bf evidence run`, then report again.".into());
+                return Err(refuse_owned(
+                    format!("report the resolution of {k}"),
+                    format!("the checkpoint's checks fail on the joined content: {}", failed.len()),
+                    steps,
+                    "`bf status` shows the sync in review.",
+                ));
+            }
+            // Untouched since a clean merge: nothing was resolved, so there is nothing to review.
+            let untouched = so.repos.iter().all(|r| {
+                r.files.is_empty()
+                    && sync_wt(p, k, &r.repo)
+                        .map(|wt| gitx::head_short(&wt) == r.merge)
+                        .unwrap_or(false)
+            });
+            if untouched {
+                return finish_sync(p, &pl, &so, None);
             }
             events::append(p, "checkpoint.sync.built", json!({"checkpoint": k}))?;
             p.write_guard()?;
@@ -2573,6 +2738,86 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
                     gitx::must(&wt, &["diff", &base, &r.main, "--", f]).unwrap_or_default(),
                 ));
                 md.push_str("\n```\n\n");
+            }
+        }
+    }
+    // The checkpoint's own checks on the joined content.
+    let pl = plan::load(p)?;
+    if let Some(kr) = pl.checkpoint(k) {
+        let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+        let receipts = evidence::load_receipts(p)?;
+        let mut shown = false;
+        for cid in str_list(kr, "checks") {
+            let Some(c) = pl
+                .checks
+                .iter()
+                .find(|c| s(c, "id") == cid && s(c, "how") == "command")
+            else {
+                continue;
+            };
+            let argv = evidence::command_words(c).join(" ");
+            let last = receipts
+                .iter()
+                .rev()
+                .find(|r| r.check() == cid && r.is_run() && r.content() == content);
+            if !shown {
+                md.push_str("## The checkpoint's checks on the joined content\n\n");
+                shown = true;
+            }
+            match last {
+                Some(r) if r.passes() => {
+                    md.push_str(&format!("- {cid} (`{argv}`): passes on this content.\n"))
+                }
+                Some(r) => {
+                    let tail = s(&r.v, "output_tail");
+                    let lines: Vec<&str> = tail.lines().collect();
+                    let from = lines.len().saturating_sub(40);
+                    md.push_str(&format!(
+                        "- {cid} (`{argv}`): FAILS (exit {}). Output tail:\n\n```\n{}\n```\n\n",
+                        r.v["exit"],
+                        lines[from..].join("\n")
+                    ));
+                }
+                None => md.push_str(&format!(
+                    "- {cid} (`{argv}`): not run on this content yet.\n"
+                )),
+            }
+        }
+        if shown {
+            md.push_str(&format!(
+                "\nRun a check again, from inside `{}`, with `bf evidence run <check> -- <its command>` (the engine records a real receipt).\n\n",
+                p.work_dir().join(k).display()
+            ));
+        }
+    }
+    if role == "builder" {
+        md.push_str("## What you may change\n\nOnly files either side changed since the merge base, and new test files beside them:\n\n");
+        for g in sync_allowed(so).iter().take(60) {
+            md.push_str(&format!("- `{g}`\n"));
+        }
+        md.push('\n');
+    }
+    if role == "reviewer" {
+        // The whole fix (resolution and repairs) against git's own automatic merge.
+        for r in &so.repos {
+            let wt = sync_wt(p, k, &r.repo)?;
+            if let Ok(o) = gitx::run(
+                &wt,
+                &["merge-tree", "--write-tree", &r.before, &r.main],
+                &[],
+            ) {
+                if let Some(tree) = o
+                    .stdout
+                    .lines()
+                    .next()
+                    .filter(|t| t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()))
+                {
+                    md.push_str(&format!("## Everything changed compared with git's automatic merge (`{}`)\n\n```diff\n", r.repo));
+                    md.push_str(&limited(
+                        gitx::must(&wt, &["diff", tree, "HEAD"]).unwrap_or_default(),
+                    ));
+                    md.push_str("\n```\n\n");
+                }
             }
         }
     }

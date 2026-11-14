@@ -338,7 +338,7 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "The path is inside the unit's `files` list.",
         );
     }
-    if zone.kind == "checkpoint" && zone.files.iter().any(|f| f == rel) {
+    if zone.kind == "checkpoint" && zone.files.iter().any(|g| util::path_matches(g, rel)) {
         // An open sync: the resolver writes the conflicted files, and only those.
         return allow();
     }
