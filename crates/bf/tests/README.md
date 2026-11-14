@@ -27,6 +27,22 @@ Install nextest once with `cargo install cargo-nextest --locked` (or a prebuilt 
 https://nexte.st). Settings are in `.config/nextest.toml`; CI uses the `ci` profile
 (`--profile ci`). Nextest does not run documentation tests, so CI also runs `cargo test --doc`.
 
+## Two suites: default and extended
+
+A timing test is a test that holds a time limit. The default suite leaves timing tests out, so a
+busy machine never fails a unit's check. The extended suite is the default suite plus the timing
+tests, each run alone.
+
+```bash
+cargo nextest run --package=bf                     # default suite, no timing tests
+cargo nextest run --package=bf --profile extended  # extended suite, run at checkpoints on a quiet machine
+```
+
+A test becomes a timing test in one of three ways: it lives in `tests/timing.rs`, its name begins
+with `timing_`, or `.config/nextest.toml` names it (both the default filter and the extended
+override). That file is the one place that says which tests are timing tests. Never run a timing
+test or the extended suite while building a unit.
+
 ## Measured times
 
 Same machine, whole `bf` package, tests already built (336 tests including the library's own):

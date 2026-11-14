@@ -1,9 +1,30 @@
+# The one place that says which tests are timing tests (tests that hold a time limit):
+# every test of tests/timing.rs, every test whose name begins with timing_, and the tests
+# named one by one below. The default suite leaves them out; the extended suite runs them,
+# each alone. Run the default suite with `cargo nextest run --package=bf` and the extended
+# suite with `cargo nextest run --package=bf --profile extended`.
+
 [profile.default]
 # Every test runs in its own process; show slow ones and stop a hung test.
 slow-timeout = { period = "60s", terminate-after = 5 }
 failure-output = "immediate-final"
 status-level = "pass"
+default-filter = "not (test(/^timing::/) | test(/(^|::)timing_/) | test(=controls::the_sandbox_costs_a_little_and_the_policy_can_switch_it_off))"
 
 [profile.ci]
 fail-fast = false
 retries = 0
+default-filter = "not (test(/^timing::/) | test(/(^|::)timing_/) | test(=controls::the_sandbox_costs_a_little_and_the_policy_can_switch_it_off))"
+
+[profile.extended]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 5 }
+failure-output = "immediate-final"
+status-level = "pass"
+default-filter = "all()"
+
+# Each timing test runs alone: it takes every thread slot, so no other test runs beside it.
+[[profile.extended.overrides]]
+filter = "test(/^timing::/) | test(/(^|::)timing_/) | test(=controls::the_sandbox_costs_a_little_and_the_policy_can_switch_it_off)"
+threads-required = "num-test-threads"
