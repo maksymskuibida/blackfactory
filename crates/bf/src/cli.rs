@@ -1303,12 +1303,13 @@ fn cmd_repo(args: &Args) -> R<()> {
             ));
             util::atomic_write(&file, text.as_bytes())?;
             let mut p2 = Project::discover(&p.root)?;
-            let mut h = events::read_head(&p2).unwrap_or_default();
             let tip = gitx::must(&abs, &["rev-parse", &branch]).ok();
-            let e = h.repos.entry(name.to_string()).or_default();
-            e.branch = Some(branch.clone());
-            e.commit = tip;
-            events::write_head(&p2, &h)?;
+            events::update_head(&p2, |h| {
+                let e = h.repos.entry(name.to_string()).or_default();
+                e.branch = Some(branch.clone());
+                e.commit = tip;
+                true
+            })?;
             p2.reload_policy()?;
             p2.write_guard()?;
             let added = p2.ensure_excludes()?;
@@ -1531,12 +1532,7 @@ fn cmd_init(args: &Args) -> R<()> {
     // The first policy of a project on this machine is accepted by `bf init`; a later change on disk is
     // the human's to accept with `bf policy accept`.
     // The main branch as it stands now is where the engine starts counting.
-    {
-        let mut h = events::read_head(&p).unwrap_or_default();
-        if record_repo_heads(&p, &mut h) {
-            events::write_head(&p, &h)?;
-        }
-    }
+    events::update_head(&p, |h| record_repo_heads(&p, h))?;
     let mut p = p;
     if p.policy_state == crate::store::PolicyState::NeverAccepted {
         p.store_accepted_policy()?;
@@ -1686,7 +1682,7 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
         assigned = true;
     }
     schema::validate_or_refuse(kind, &rec)?;
-    let id = s(&rec, "id").to_string();
+    let mut id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
     let mut accepted_by: Option<(u64, String)> = None;
@@ -1792,7 +1788,13 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             }
         }
     }
-    p.write_record(&rec)?;
+    if assigned {
+        // A number the engine chose is taken with `create_new` and a retry, so records put at the
+        // same moment each keep their own file.
+        id = p.write_numbered(kind, &mut rec)?;
+    } else {
+        p.write_record(&rec)?;
+    }
     p.write_guard()?;
     if let Some((turn, message)) = accepted_by {
         // The acceptance leaves a trace: the record, the human's message and the words taken from it.

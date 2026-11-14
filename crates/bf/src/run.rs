@@ -460,6 +460,7 @@ pub fn holds_token(p: &Project, key: &str, token: Option<&str>) -> bool {
 /// The one-use token for `key` (`<unit>:<role>`): the one already handed out, or a new one kept in
 /// the state folder like the tokens of the existing roles.
 pub fn issue_token(p: &Project, key: &str) -> R<String> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(t) = v.get(key).and_then(|t| t.as_str()) {
         return Ok(t.to_string());
@@ -483,6 +484,7 @@ fn read_tokens(p: &Project) -> Value {
 /// out. A token is spent by one successful report, and tokens of directives that no longer exist are
 /// dropped.
 fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut tokens = read_tokens(p);
     // Old format (hash -> {unit, role}) is dropped.
     if tokens
@@ -585,6 +587,7 @@ fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<St
 }
 
 fn spend_token(p: &Project, key: &str) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
         o.remove(key);
@@ -730,6 +733,7 @@ fn role_report(
 /// A role's token ends with the run it was issued in: starting or stopping a run drops every token
 /// of the new roles (a design-stage token is dropped when the first run starts).
 fn drop_role_tokens(p: &Project) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
         o.retain(|k, _| {
@@ -878,7 +882,7 @@ pub fn report(
                 }
             }
             schema::validate_or_refuse(kind, &rec)?;
-            p.write_record(&rec)?;
+            let id = p.write_numbered(kind, &mut rec)?;
             finding_ids.push(id);
         }
     }
@@ -2026,9 +2030,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             merged = true;
             // Remember the commit the engine put on the main branch.
             if let Ok(tip) = gitx::must(&r.path, &["rev-parse", &main]) {
-                let mut h = events::read_head(p).unwrap_or_default();
-                h.set_commit(&r.name, Some(tip));
-                events::write_head(p, &h)?;
+                events::set_commits(p, &[(r.name.clone(), tip)])?;
             }
         }
     }
@@ -2419,11 +2421,11 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         }),
     )?;
     // The repository's main branch is where the engine now counts from: the stack holds it.
-    let mut h = events::read_head(p).unwrap_or_default();
-    for (name, main, _) in &done {
-        h.set_commit(name, Some(main.clone()));
-    }
-    events::write_head(p, &h)?;
+    let moved: Vec<(String, String)> = done
+        .iter()
+        .map(|(name, main, _)| (name.clone(), main.clone()))
+        .collect();
+    events::set_commits(p, &moved)?;
     p.write_guard()?;
     Ok(
         json!({"checkpoint": k, "synced": true, "skipped_checks": skipped,
@@ -2586,11 +2588,12 @@ fn finish_sync(
         None => ev["via_open"] = json!(true),
     }
     events::append(p, "checkpoint.sync", ev)?;
-    let mut h = events::read_head(p).unwrap_or_default();
-    for r in &so.repos {
-        h.set_commit(&r.repo, Some(r.main.clone()));
-    }
-    events::write_head(p, &h)?;
+    let moved: Vec<(String, String)> = so
+        .repos
+        .iter()
+        .map(|r| (r.repo.clone(), r.main.clone()))
+        .collect();
+    events::set_commits(p, &moved)?;
     p.write_guard()?;
     let skipped = skipped_k_checks(p, pl, &so.checkpoint)?;
     Ok(
@@ -2978,6 +2981,7 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
         let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
         let receipts = evidence::load_receipts(p)?;
         let mut shown = false;
+        let st = events::require_chain(p)?;
         for cid in str_list(kr, "checks") {
             let Some(c) = pl
                 .checks
@@ -2986,6 +2990,10 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
             else {
                 continue;
             };
+            // A check the human switched off is not run by the sync, so the brief does not ask for it.
+            if crate::enforce::is_off(&st, c) {
+                continue;
+            }
             let argv = evidence::command_words(c).join(" ");
             let last = receipts
                 .iter()

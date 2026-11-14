@@ -114,6 +114,35 @@ pub fn write_head(p: &Project, h: &Head) -> R<()> {
     Ok(())
 }
 
+/// Record where repositories' main branches stand in the head, under the log's lock, so an append
+/// at the same moment cannot write an old value back. Each pair is a repository name and a commit.
+pub fn set_commits(p: &Project, commits: &[(String, String)]) -> R<()> {
+    update_head(p, |h| {
+        for (repo, commit) in commits {
+            h.set_commit(repo, Some(commit.clone()));
+        }
+        true
+    })
+}
+
+/// Change the head under the log's lock: read it, let `f` change it, and write it back when `f`
+/// answers true. Any head change that is not an append goes through here, so an append at the same
+/// moment cannot put an old value back.
+pub fn update_head(p: &Project, f: impl FnOnce(&mut Head) -> bool) -> R<()> {
+    fs::create_dir_all(p.dot_bf())?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(p.dot_bf().join("log.lock"))?;
+    lock.lock()
+        .map_err(|e| err(format!("cannot lock the log: {e}")))?;
+    let mut h = read_head(p).unwrap_or_default();
+    let r = if f(&mut h) { write_head(p, &h) } else { Ok(()) };
+    let _ = lock.unlock();
+    r
+}
+
 /// Read the log and compare it with the head. A shared hold on the log lock keeps an append from
 /// finishing between the two reads, so a reader never sees a head one event ahead of the log it read.
 pub fn load_log(p: &Project) -> R<Log> {

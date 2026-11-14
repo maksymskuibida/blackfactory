@@ -684,11 +684,11 @@ impl Project {
         let disk = fs::read(self.root.join("factory/policy.toml"))?;
         util::atomic_write(&self.accepted_policy_path(), &disk)?;
         crate::events::ensure_head(self)?;
-        let mut h = crate::events::read_head(self).unwrap_or_default();
-        h.policy_hash = Some(util::sha256_hex(&disk));
-        h.policy_at = Some(util::now_secs());
-        crate::events::write_head(self, &h)?;
-        Ok(())
+        crate::events::update_head(self, |h| {
+            h.policy_hash = Some(util::sha256_hex(&disk));
+            h.policy_at = Some(util::now_secs());
+            true
+        })
     }
 
     /// The harness's transcript root from the accepted policy, as an absolute path.
@@ -1186,6 +1186,19 @@ impl Project {
         }
         max = max.max(self.reserved_max(kind));
         Ok(format!("{}-{}", kind.prefix, max + 1))
+    }
+
+    /// Number a new record and write it, taking the next number again when another command took
+    /// the one chosen. The record's `id` is set to the number that was kept, and returned.
+    pub fn write_numbered(&self, kind: &Kind, rec: &mut Value) -> R<String> {
+        for _ in 0..1000 {
+            let id = self.next_id(kind)?;
+            rec["id"] = json!(id);
+            if self.write_record_new(rec)? {
+                return Ok(id);
+            }
+        }
+        Err(err("cannot find a free record number"))
     }
 
     /// The highest number handed out by `bf id new` for this kind (derived, in `.bf/reserved.json`).
