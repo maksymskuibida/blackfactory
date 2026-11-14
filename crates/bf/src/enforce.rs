@@ -129,6 +129,61 @@ pub fn id_proven(
     })
 }
 
+/// The IDs of a checkpoint that went unproven because every check that proves them is switched off,
+/// each with the names of those checks. The close, the run summary and the ledger all use this rule.
+pub fn off_unproven(pl: &Plan, st: &State, k: &Value) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for id in str_list(k, "proves") {
+        let cs: Vec<&Value> = pl
+            .checks
+            .iter()
+            .filter(|c| {
+                str_list(k, "checks").iter().any(|x| x == s(c, "id"))
+                    && str_list(c, "proves").contains(&id)
+            })
+            .collect();
+        if !cs.is_empty() && cs.iter().all(|c| is_off(st, c)) {
+            let mut names: Vec<String> = cs.iter().map(|c| s(c, "named").to_string()).collect();
+            names.sort();
+            names.dedup();
+            out.push((id, names));
+        }
+    }
+    out
+}
+
+/// `off_unproven` for every checkpoint of the plan, as a summary value.
+pub fn off_unproven_summary(pl: &Plan, st: &State) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for k in &pl.checkpoints {
+        for (id, names) in off_unproven(pl, st, k) {
+            if seen.insert(id.clone()) {
+                out.push(json!({"id": id, "checks": names}));
+            }
+        }
+    }
+    out
+}
+
+/// What a summary says about IDs left unproven because their checks were off.
+pub fn unproven_text(list: &[Value]) -> String {
+    list.iter()
+        .map(|o| {
+            let names: Vec<&str> = o["checks"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            format!(
+                "{} (not proven: {} off)",
+                o["id"].as_str().unwrap_or(""),
+                names.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The checks the human switched off, with their reasons: what a summary says was off.
 pub fn off_summary(st: &State) -> Vec<Value> {
     checks::off_closing(st)

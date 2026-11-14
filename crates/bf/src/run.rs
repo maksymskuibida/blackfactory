@@ -69,10 +69,15 @@ pub fn run_stop(p: &Project) -> R<Value> {
     let id = need_run(&st)?;
     let pl = plan::load(p)?;
     let off = crate::enforce::refuse_if_unproven_for(p, &pl, "stop the run", "bf run stop")?;
-    events::append(p, "run.stop", json!({"run": id, "checks_off": off}))?;
+    let unproven = crate::enforce::off_unproven_summary(&pl, &st);
+    events::append(
+        p,
+        "run.stop",
+        json!({"run": id, "checks_off": off, "unproven_off": unproven}),
+    )?;
     drop_role_tokens(p)?;
     p.write_guard()?;
-    Ok(json!({"run": id, "stopped": true}))
+    Ok(json!({"run": id, "stopped": true, "unproven_off": unproven}))
 }
 
 /// Computed state of every unit: planned, ready, or the logged state.
@@ -1995,7 +2000,8 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         p.write_guard()?;
     }
     Ok(
-        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st)}),
+        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st),
+            "unproven_off": crate::enforce::off_unproven(&pl, &st, kr).into_iter().map(|(id, c)| json!({"id": id, "checks": c})).collect::<Vec<_>>()}),
     )
 }
 

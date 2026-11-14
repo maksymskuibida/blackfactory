@@ -588,8 +588,25 @@ fn a_legal_records_acceptance_is_reserved_for_the_human() {
         "id=\"L-1\"\nkind=\"legal\"\ntitle=\"Licence gap\"\noutcome=\"accepted\"\n",
     )
     .unwrap();
-    // No human message at all: refused.
+    // A new record cannot be created as accepted.
     fx.refused(&["record", "put", "legal", "--file", f.to_str().unwrap()]);
+    let open = fx.root.join("l-open.toml");
+    std::fs::write(
+        &open,
+        "id=\"L-1\"\nkind=\"legal\"\ntitle=\"Licence gap\"\noutcome=\"open\"\n",
+    )
+    .unwrap();
+    fx.must(&["record", "put", "legal", "--file", open.to_str().unwrap()]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // No human message at all: refused.
+    fx.refused(&[
+        "record",
+        "put",
+        "legal",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
     fx.human("Yes, I accept the licence gap.");
     fx.must(&[
         "record",
@@ -597,6 +614,7 @@ fn a_legal_records_acceptance_is_reserved_for_the_human() {
         "legal",
         "--file",
         f.to_str().unwrap(),
+        "--replace",
         "--quote",
         "I accept the licence gap",
     ]);

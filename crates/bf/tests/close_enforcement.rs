@@ -219,3 +219,38 @@ fn a_design_check_switched_on_after_its_gate_is_refused_when_its_product_is_miss
         o.stderr
     );
 }
+
+#[test]
+fn the_close_summary_names_the_ids_whose_checks_were_off() {
+    let fx = Fx::new();
+    fx.tiny();
+    let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"ls src/hello.txt src/bye.txt\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
+    let f = fx.root.join("x3.toml");
+    fs::write(&f, x3).unwrap();
+    fx.must(&[
+        "record",
+        "put",
+        "check",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    let _ = fs::remove_file(&f);
+    fx.commit_all("x3");
+    fx.start_test_run();
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    let v = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
+    let ids: Vec<&str> = v["unproven_off"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["R-1", "R-2", "C-1"], "{v}");
+}

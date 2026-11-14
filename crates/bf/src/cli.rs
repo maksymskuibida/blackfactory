@@ -400,7 +400,7 @@ fn dispatch(args: &Args) -> R<()> {
                 }
             };
             out(args, &v, || {
-                format!(
+                let mut t = format!(
                     "run {} {}",
                     v["run"].as_str().unwrap_or(""),
                     if v["test_mode"] == true {
@@ -408,7 +408,15 @@ fn dispatch(args: &Args) -> R<()> {
                     } else {
                         ""
                     }
-                )
+                );
+                let un: Vec<Value> = v["unproven_off"].as_array().cloned().unwrap_or_default();
+                if !un.is_empty() {
+                    t.push_str(&format!(
+                        "\nnot proven, their checks are off: {}",
+                        enforce::unproven_text(&un)
+                    ));
+                }
+                t
             });
             Ok(())
         }
@@ -592,14 +600,22 @@ fn dispatch(args: &Args) -> R<()> {
             let k = args.pos_at(2, "a checkpoint ID")?;
             let v = run::checkpoint_close(&p, k, args.has("merge"))?;
             out(args, &v, || {
-                format!(
+                let mut t = format!(
                     "{k} closed{}",
                     if v["merged"] == true {
                         " and merged onto the main branch"
                     } else {
                         ""
                     }
-                )
+                );
+                let un: Vec<Value> = v["unproven_off"].as_array().cloned().unwrap_or_default();
+                if !un.is_empty() {
+                    t.push_str(&format!(
+                        "\nnot proven, their checks are off: {}",
+                        enforce::unproven_text(&un)
+                    ));
+                }
+                t
             });
             Ok(())
         }
@@ -1673,6 +1689,29 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
                 format!("`bf record get {id}` shows the outcome."),
             ));
         }
+        // The human accepts a record that exists: a new record is never born accepted, and the step
+        // that accepts changes nothing but the outcome.
+        let Some(stored) = old.as_ref() else {
+            return Err(refuse(
+                format!("create the legal record {id} as accepted"),
+                "a record that did not exist cannot have been seen and accepted by the human",
+                &["Put the record with the outcome open, show it to the human, and let them accept it."],
+                format!("`bf record get {id}` shows the outcome open."),
+            ));
+        };
+        let mut same = rec.clone();
+        same["outcome"] = stored.get("outcome").cloned().unwrap_or(Value::Null);
+        if &same != stored {
+            return Err(refuse(
+                format!("accept the legal record {id} and change it in the same step"),
+                "the human accepts the record as it is stored; this file also changes its content",
+                &[
+                    "Put the changed record first, with the outcome as it is now.",
+                    "Show it to the human; after their message, put the same content with the outcome accepted.",
+                ],
+                format!("`bf record get {id}` shows the content the human accepted."),
+            ));
+        }
         // Only a message written after the record's latest change counts: the human accepts what they
         // saw, not what it was before it was changed.
         let changed_at = old
@@ -1728,25 +1767,45 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             ));
         }
     }
+    // An accepted legal record that changes is no longer what the human accepted: it goes back to open.
+    let mut reset_open = false;
+    if kind.name == "legal" && accepted_by.is_none() && s(&rec, "outcome") == "accepted" {
+        if let Some(old) = &old {
+            if s(old, "outcome") == "accepted" && old != &rec {
+                rec["outcome"] = json!("open");
+                reset_open = true;
+            }
+        }
+    }
     p.write_record(&rec)?;
     p.write_guard()?;
     if let Some((turn, message)) = accepted_by {
         // The acceptance leaves a trace: the record, the human's message and the words taken from it.
         // The message is used up.
         events::append(
-            &p,
+            p,
             "legal.accept",
             json!({"record": id, "turn": turn, "message": message,
                 "quote": args.flag("quote").unwrap_or("").trim()}),
         )?;
     }
-    out(args, &json!({"put": id, "assigned": assigned}), || {
-        if assigned {
-            format!("put {id} (the file had no id, so the engine assigned {id}; use this id when you refer to the record)")
-        } else {
-            format!("put {id}")
-        }
-    });
+    out(
+        args,
+        &json!({"put": id, "assigned": assigned, "reset_to_open": reset_open}),
+        || {
+            let mut t = if assigned {
+                format!("put {id} (the file had no id, so the engine assigned {id}; use this id when you refer to the record)")
+            } else {
+                format!("put {id}")
+            };
+            if reset_open {
+                t.push_str(&format!(
+                    "\n{id} was accepted and its content changed, so its outcome is back to open; the human must accept it again"
+                ));
+            }
+            t
+        },
+    );
     Ok(())
 }
 
@@ -1773,14 +1832,25 @@ fn cmd_ledger(args: &Args) -> R<()> {
             } else {
                 enforce::refuse_if_unproven(&p, &pl)?
             };
+            let unproven: Vec<Value> = rows
+                .iter()
+                .filter(|r| !r.off.is_empty())
+                .map(|r| json!({"id": r.id, "checks": r.off}))
+                .collect();
             out(
                 args,
-                &json!({"ok": true, "parts": rows.len(), "checks_off": off}),
+                &json!({"ok": true, "parts": rows.len(), "checks_off": off, "unproven_off": unproven}),
                 || {
                     let o: Vec<Value> = off.as_array().cloned().unwrap_or_default();
                     let mut t = format!("ledger closed: {} designed parts linked", rows.len());
                     if !o.is_empty() {
                         t.push_str(&format!("\nchecks switched off: {}", enforce::off_text(&o)));
+                    }
+                    if !unproven.is_empty() {
+                        t.push_str(&format!(
+                            "\nnot demanded, their checks are off: {}",
+                            enforce::unproven_text(&unproven)
+                        ));
                     }
                     t
                 },
