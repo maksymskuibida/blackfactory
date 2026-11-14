@@ -158,7 +158,20 @@ fn walk(fx: &Fx, repos: &[&str], dirs: &[PathBuf]) {
         "--json",
     ]);
     assert_eq!(o.json()["synced"], true, "{}", o.all());
-    run_k();
+    fx.must_in(
+        &k,
+        &[
+            "evidence",
+            "run",
+            &kx,
+            "--attempt",
+            "2",
+            "--reason",
+            "run again after the sync",
+            "--",
+            "true",
+        ],
+    );
     // Junk after the check: the receipt stays valid and the checkpoint closes.
     junk(&k, "after the checkpoint check\n");
     let out = fx.merge_checkpoint("K-1");

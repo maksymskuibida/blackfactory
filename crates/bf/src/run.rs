@@ -168,6 +168,7 @@ pub fn status(p: &Project) -> R<Value> {
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
             "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
         "checkpoint_fix": crate::ckfix::status_json(&st),
+        "checkpoint_reviews": crate::ckreview::status_json(p, &st),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
@@ -391,7 +392,14 @@ fn next_raw(p: &Project) -> R<Value> {
                         .any(|r| s(r, "id") == c && crate::enforce::is_off(&st, r))
                 })
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
+                // The checkpoint review is settled by its reviewer, never by the verifier.
+                .filter(|c| {
+                    !pl.checks.iter().any(|r| {
+                        s(r, "id") == c && s(r, "named") == crate::checks::CHECKPOINT_REVIEW
+                    })
+                })
                 .collect();
+            let review_needed = crate::ckreview::needed(p, &st, kid, &content)?;
             let human_needed =
                 crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
             let marked: Vec<Value> = str_list(k, "checks")
@@ -412,6 +420,11 @@ fn next_raw(p: &Project) -> R<Value> {
                     "limits": {"max_rounds": p.policy.limits.max_rounds, "idle_minutes": p.policy.limits.idle_minutes,
                                "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
                     "commands": [format!("bf brief {kid} --role verifier")]}));
+                if review_needed {
+                    directives.push(crate::ckreview::directive(p, &st, kid)?);
+                }
+            } else if review_needed {
+                directives.push(crate::ckreview::directive(p, &st, kid)?);
             } else if human_needed {
                 let open = st
                     .latest_gate("checkpoint-step", Some(kid))
@@ -599,7 +612,7 @@ fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<St
     ))
 }
 
-fn spend_token(p: &Project, key: &str) -> R<()> {
+pub(crate) fn spend_token(p: &Project, key: &str) -> R<()> {
     let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
@@ -779,6 +792,9 @@ pub fn report(
     }
     if unit.starts_with("K-") {
         let st = events::require_chain(p)?;
+        if crate::ckreview::wants(p, &st, unit, role) {
+            return crate::ckreview::report(p, unit, result, note, findings, token);
+        }
         if crate::ckfix::wants(&st, unit, result, role) {
             return crate::ckfix::report(p, unit, result, role, note, findings, token);
         }
@@ -982,6 +998,9 @@ fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
         if let Some(f) = events::replay(p)?.ck_fix.filter(|f| f.checkpoint == k) {
             return crate::ckfix::brief(p, &f, role);
         }
+    }
+    if role == "reviewer" {
+        return crate::ckreview::brief(p, k);
     }
     if role != "verifier" {
         return Err(refuse(
@@ -1554,7 +1573,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     let mut missing: Vec<String> = Vec::new();
     for c in &checks {
         let cid = s(c, "id");
-        if evidence::satisfied_at(&receipts, cid, &content).is_none() {
+        if evidence::satisfied_unit_at(&receipts, cid, &content).is_none() {
             let stale = receipts.iter().any(|r| r.check() == cid && r.passes());
             missing.push(format!(
                 "{cid}: {} - run `bf evidence run {cid} --unit {unit} -- <its command>` inside {}",
@@ -1828,6 +1847,10 @@ pub fn refuse_if_main_moved(p: &Project, st: &State) -> R<()> {
     ))
 }
 
+fn was_closed_already(st: &events::State, k: &str) -> bool {
+    st.closed.contains_key(k)
+}
+
 pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("close {k}"))?;
     let st = events::require_chain(p)?;
@@ -1951,8 +1974,16 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     if crate::enforce::stops(kr) && !st.gate_passed("checkpoint-step", Some(k)) {
         gaps.push(format!("the stop `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", if s(kr, "human_step").is_empty() { s(kr, "stop_why") } else { s(kr, "human_step") }));
     }
-    let (check_gaps, unproven_names) =
+    let (mut check_gaps, mut unproven_names) =
         crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
+    // R-49: no checkpoint closes before its review ran on the content being closed.
+    if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
+        check_gaps.push(format!(
+            "the checkpoint review has not run on this content (hash {}): `bf next` gives the reviewer's directive",
+            &content[..12.min(content.len())]
+        ));
+        unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
+    }
     let has_check_gaps = !check_gaps.is_empty();
     gaps.extend(check_gaps);
     if !gaps.is_empty() {
@@ -2579,7 +2610,14 @@ pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
             continue;
         }
         let argv = evidence::command_words(c);
-        match evidence::run_at(p, &cid, None, &argv, &top) {
+        // The engine runs the checks again on content they may already have run on: that is a deliberate
+        // repeat, stated as one.
+        let attempt = evidence::next_attempt(p, &cid, &argv, &top)?;
+        let repeat = (attempt > 1).then_some((
+            attempt,
+            "the engine runs the checkpoint's checks again after a fix or a sync",
+        ));
+        match evidence::run_with(p, &cid, None, &argv, &top, repeat) {
             Ok(r) if r["exit"].as_i64() == Some(0) => {}
             Ok(r) => failed.push(
                 json!({"check": cid, "command": argv.join(" "), "exit": r["exit"], "tail": s(&r, "output_tail")}),

@@ -910,3 +910,49 @@ fn a_checkpoint_with_a_human_step_follows_the_skill() {
     w.conductor(&["gate", "approve", &gid, "--simulated"]);
     w.conductor(&["checkpoint", "close", "K-1"]);
 }
+
+fn reviewer_role_file() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fs::read_to_string(root.join("harness/claude/agents/reviewer.md")).unwrap()
+}
+
+/// R-65 and R-79: the unit reviewer's role file says in plain words that a reviewer may read beyond the
+/// changes and that a later round does not review everything again, and it carries the rule for
+/// measurements.
+#[test]
+fn the_reviewer_role_file_carries_the_round_and_the_measurement_rules() {
+    let t = reviewer_role_file();
+    for must in [
+        "You may read beyond the changes, anywhere in the working copy",
+        "the first round is cold and reads everything in its scope",
+        "does not review the whole scope again when nothing points there",
+        "earlier findings with their outcomes and the changes since the content the round before judged",
+        "Run every measurement the unit's text names for the reviewer (a sentence that begins `The reviewer measures`)",
+        "from the working copy or a temporary folder outside it",
+        "say what each showed: in a finding when it contradicts what the unit claims, otherwise in your closing sentence",
+        "run a measurement of your own when reading the changes cannot settle a claim",
+        "cheap and changes nothing in the working copy",
+        "listing what a test runner selects, a dry run or the help output of a built program",
+        "Never re-run the suites or the unit's checks, whose receipts are the evidence",
+        "A measurement makes no receipt and proves nothing",
+    ] {
+        assert!(t.contains(must), "the reviewer's role file lacks: {must}");
+    }
+}
+
+/// R-55: the checkpoint reviewer runs every test and verification command through the engine.
+#[test]
+fn the_reviewer_role_file_sends_every_run_of_a_checkpoint_review_through_the_engine() {
+    let t = reviewer_role_file();
+    for must in [
+        "Run every test and verification command through the engine and never on your own",
+        "bf evidence run <check> -- <its command>",
+        "bf evidence run --probe <K> -- <command>",
+        "settles nothing",
+        "--attempt <n> --reason",
+        "A check judged by an agent stays with its own verifier",
+        "Try to get around each new rule",
+    ] {
+        assert!(t.contains(must), "the reviewer's role file lacks: {must}");
+    }
+}

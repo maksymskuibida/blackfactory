@@ -13,6 +13,8 @@ pub enum Family {
     Uiux,
     Security,
     Legal,
+    /// The cold review of a whole checkpoint, settled by the checkpoint reviewer.
+    Review,
 }
 
 impl Family {
@@ -21,6 +23,7 @@ impl Family {
             Family::Uiux => "uiux",
             Family::Security => "security",
             Family::Legal => "legal",
+            Family::Review => "review",
         }
     }
 }
@@ -122,7 +125,16 @@ pub static CATALOGUE: &[NamedCheck] = &[
         Proof::Human,
     ),
     c(Family::Legal, "legal-audit", Stage::Built, Proof::Agent),
+    c(
+        Family::Review,
+        CHECKPOINT_REVIEW,
+        Stage::Built,
+        Proof::Agent,
+    ),
 ];
+
+/// The named check of the cold review of a whole checkpoint (D-29).
+pub const CHECKPOINT_REVIEW: &str = "checkpoint-review";
 
 /// Handoff H-1: every named check with its family, stage and default.
 pub fn all() -> &'static [NamedCheck] {

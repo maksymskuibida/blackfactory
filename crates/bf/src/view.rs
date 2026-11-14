@@ -561,8 +561,7 @@ fn proof_row(p: &Project, pl: &Plan, rc: &[Receipt], id: &str, content: Option<&
                 body.push(text(&t));
                 continue;
             }
-            body.push(json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
-                "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")}));
+            body.push(evidence_row(r));
         }
     }
     // A verifier's standing outcome (failed or unreachable) means the human has to decide.
@@ -654,6 +653,21 @@ fn coverage_state(r: &ledger::Row) -> &'static str {
     } else {
         "proven"
     }
+}
+
+/// An evidence row of a page. A deliberate repeat (R-57) shows its attempt number and its reason.
+pub fn evidence_row(r: &evidence::Receipt) -> Value {
+    let mut row = json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
+        "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")});
+    if let Some(a) = r.v["attempt"].as_u64() {
+        let why = s(&r.v, "reason").trim();
+        row["reason"] = json!(if why.is_empty() {
+            format!("attempt {a}")
+        } else {
+            format!("attempt {a}, {why}")
+        });
+    }
+    row
 }
 
 /// What a check judged by an agent says: the outcome, the sentence about what was looked at, and the
@@ -858,8 +872,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
         }
         for c in pl.unit_checks(id) {
             if let Some(r) = rc.iter().rfind(|r| r.check() == s(c, "id") && r.is_run()) {
-                body.push(json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
-                    "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")}));
+                body.push(evidence_row(r));
             }
         }
         rows.push(json!({"id": id, "title": s(u, "title"), "needs_you": matches!(state.as_str(), "blocked" | "parked"),
@@ -1181,6 +1194,40 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         ],
     );
     let fixes = fix_rows(st, &kid);
+    let mut rows = rows;
+    let mut rbody = vec![];
+    let review_rounds = crate::ckreview::rounds(p, &kid)?;
+    if review_rounds.is_empty() {
+        rbody.push(text("Review rounds: none yet."));
+    }
+    for r in &review_rounds {
+        rbody.push(text(&format!(
+            "Review round {} judged content {}; covered: {}.{}",
+            r.round,
+            &r.content[..r.content.len().min(12)],
+            r.covered,
+            match r.result.as_deref() {
+                Some(x) if !x.is_empty() => format!(" Result: {x}."),
+                _ => String::new(),
+            }
+        )));
+    }
+    let flaky: Vec<String> = rc
+        .iter()
+        .filter(|r| {
+            r.v["flag"].as_str() == Some("flaky") && Some(r.content()) == content.as_deref()
+        })
+        .map(|r| r.check().to_string())
+        .collect();
+    rbody.push(text(&if flaky.is_empty() {
+        "Flaky: none flagged.".to_string()
+    } else {
+        format!(
+            "Flaky: {} passed on a repeat and was judged acceptable flakiness.",
+            flaky.join(", ")
+        )
+    }));
+    rows.push(json!({"id": format!("{kid}-review"), "title": "Checkpoint review", "needs_you": false, "body": rbody}));
     let unit_rows: Vec<Value> = pl
         .units
         .iter()

@@ -162,6 +162,17 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
             if !wp.is_empty() {
                 if let Some(rel) = under(abs, wp) {
                     if let Some(name) = rel.split('/').next().filter(|n| !n.is_empty()) {
+                        if name.starts_with("K-") && name.ends_with("-review") {
+                            // A checkpoint reviewer's own copy: it builds, runs and probes there.
+                            return Zone {
+                                kind: "review",
+                                id: name,
+                                base: format!("{}/{}", wp.trim_end_matches('/'), name),
+                                files: vec![],
+                                existing: vec![],
+                                sync: false,
+                            };
+                        }
                         if !name.starts_with("K-") {
                             return Zone {
                                 kind: "unit",
@@ -350,6 +361,18 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "that path belongs to the engine, the human or git, not to a unit's work",
             &["Change only files inside the unit's scope."],
             "The path is inside the unit's `files` list.",
+        );
+    }
+    if zone.kind == "review" {
+        // Its check runs become the checkpoint's receipts, so only the reviewer working in it writes there.
+        if here.kind == "review" && here.id == zone.id {
+            return allow();
+        }
+        return deny(
+            &format!("write {rel} in {}", zone.id),
+            "that is the checkpoint reviewer's own copy; only the reviewer working inside it writes there",
+            &["Write inside your own working copy.", "A change for the checkpoint goes through a unit's working copy and `bf unit land`."],
+            "The path starts with your own working copy's folder.",
         );
     }
     if zone.kind == "checkpoint"
