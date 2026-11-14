@@ -200,6 +200,7 @@ fn is_protected_in_wc(table: &Value, rel: &str) -> bool {
 /// Where the conductor and planners may write inside the protected folders.
 fn is_open_rel(rel: &str) -> bool {
     rel.starts_with(".bf/drafts/")
+        || rel == ".bf/drafts"
         || rel.starts_with(".bf/pages/")
         || rel == ".bf/pages"
         || rel == "factory/idea.md"
@@ -693,6 +694,36 @@ fn extra_kind(name: &str, qual: &str, recv_mod: bool, recv_path: bool) -> Option
     }
 }
 
+/// The text of a call's arguments, up to the parenthesis that closes it: inner parentheses (`open(('a'),
+/// 'w')`) are part of it and quoted text is skipped over.
+fn call_args(rest: &str) -> String {
+    let mut depth = 1i32;
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for ch in rest.chars() {
+        match quote {
+            Some(q) => {
+                if ch == q {
+                    quote = None;
+                }
+            }
+            None => match ch {
+                '"' | '\'' => quote = Some(ch),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            },
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// The paths that code written for an interpreter opens for writing or deletes, where the path is a
 /// string literal in the call (`open('a', 'w')`, `Path('a').write_text`, `writeFileSync('a', ...)`,
 /// `os.remove('a')`, perl's `open(F, '>a')` and `open(F, '>', 'a')`). Only these calls count: a path that
@@ -753,13 +784,36 @@ fn written_literals(code: &str) -> Vec<String> {
         let recv_mod = recv_lit.as_deref().is_some_and(is_fs_module);
         let recv_path = has_recv && !recv_mod && receiver_is_path(&b[..i - 1]);
         let extra = extra_kind(&name, qual.as_deref().unwrap_or(""), recv_mod, recv_path);
+        // A name that lists, sets and files all use (`remove`, `rename`, `unlink`, `truncate`, `mkdir`,
+        // `touch`, `rmdir`) is a file write only on a file module, a path object or by itself, never
+        // on any other receiver (`items.remove('a')`, `classList.remove('hidden')`).
+        let ambiguous = matches!(
+            name.as_str(),
+            "remove" | "rename" | "unlink" | "truncate" | "mkdir" | "touch" | "rmdir"
+        );
+        let on_file = recv_mod
+            || recv_path
+            || !(i > 0 && b[i - 1] == '.')
+            || matches!(
+                qual.as_deref().unwrap_or(""),
+                "os" | "shutil"
+                    | "fs"
+                    | "fse"
+                    | "fsp"
+                    | "promises"
+                    | "File"
+                    | "FileUtils"
+                    | "IO"
+                    | "Dir"
+            );
         if j < b.len()
             && b[j] == '('
+            && (!ambiguous || extra.is_some() || on_file)
             && (name == "open" || extra.is_some() || CALLS.contains(&name.as_str()))
         {
             let rest: String = b[j + 1..].iter().collect();
-            let args = rest.split(')').next().unwrap_or("");
-            let lits: Vec<String> = string_literals(args).into_iter().map(|l| l.0).collect();
+            let args = call_args(&rest);
+            let lits: Vec<String> = string_literals(&args).into_iter().map(|l| l.0).collect();
             if let Some(kind) = extra {
                 let recv = if recv_path { recv_lit.clone() } else { None };
                 match kind {
@@ -921,6 +975,18 @@ fn made_literals(code: &str) -> Vec<String> {
                 } else {
                     None
                 };
+            // A folder is made only by a file module, a path object or a bare call, not by any other
+            // receiver (`dirs.mkdir('a')` on an object of the code's own).
+            if recv.is_none() && before.last() == Some(&'.') {
+                let q = qualifier(&before, before.len()).unwrap_or_default();
+                if !matches!(
+                    q.as_str(),
+                    "os" | "shutil" | "fs" | "fse" | "fsp" | "promises" | "FileUtils" | "Dir"
+                ) {
+                    from = k + name.len() + 1;
+                    continue;
+                }
+            }
             if let Some(r) = recv {
                 out.push(r);
             } else if let Some(l) = string_literals(args).into_iter().map(|l| l.0).next() {
@@ -1083,18 +1149,38 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
             }
         }
     } else if prog == "find" {
-        let dangerous = args.iter().any(|x| {
-            matches!(
-                x.as_str(),
-                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir"
-            )
-        });
+        // Only `-delete` removes what the starting point holds; the command after `-exec` is judged
+        // by itself, with `{}` read as each starting point.
+        // A shell or an interpreter given `{}` as an argument (`-exec sh -c 'rm -f $1' _ {} \;`,
+        // `-exec python3 -c '...argv[1]...' {} \;`) reaches it only as `$1`, `$@` or `argv`, which the
+        // inner code is not read for, so the starting points stay write targets there.
+        let mut hands_start_to_code = false;
+        let mut k = 0;
+        while k < args.len() {
+            if matches!(args[k].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+                let mut j = k + 1;
+                let mut words: Vec<&String> = Vec::new();
+                while j < args.len() && args[j] != ";" && args[j] != "+" {
+                    words.push(&args[j]);
+                    j += 1;
+                }
+                // A wrapper (`env`, `nice`, `timeout`, ...) before the program is read through.
+                let owned: Vec<String> = words.iter().map(|w| (*w).clone()).collect();
+                if let Some(pi) = crate::shellparse::program_index(&owned) {
+                    let b = basename(&owned[pi]);
+                    if (SHELLS.contains(&b) || b == "eval" || is_interpreter(b))
+                        && owned.iter().skip(pi + 1).any(|w| w.contains("{}"))
+                    {
+                        hands_start_to_code = true;
+                    }
+                }
+                k = j;
+            }
+            k += 1;
+        }
+        let dangerous = hands_start_to_code || args.iter().any(|x| x == "-delete");
         if dangerous {
-            out.extend(
-                args.iter()
-                    .take_while(|a| !(a.starts_with('-') || *a == "(" || *a == "!"))
-                    .cloned(),
-            );
+            out.extend(crate::shellparse::find_starts(args));
         }
         let mut it = args.iter();
         while let Some(a) = it.next() {
@@ -1745,26 +1831,115 @@ fn judge_alt(
             }
             // A path that starts with a variable the command line does not assign (`$OUT`, `$TMPDIR/x`)
             // is whatever the environment holds, and that can be any path, a protected one included.
-            let first = t.split('/').next().unwrap_or("");
-            let starts_with_var = first
-                .strip_prefix('$')
-                .map(|r| {
-                    r.starts_with('{')
-                        || r.chars()
-                            .next()
-                            .is_some_and(|c| c.is_alphabetic() || c == '_')
-                })
-                .unwrap_or(false);
+            // The same holds one step later (`./$X/p`, `src/../$X/p`, `a$X/p`): a variable in the first
+            // segment or in any folder segment can be `..` or an absolute path. A variable only in
+            // the last segment after known folders (`src/out-$N.txt`) is not judged.
+            let segs: Vec<&str> = t.split('/').collect();
+            // A last segment that is nothing but a variable (`./$OUT`, `src/$OUT`) is judged like a
+            // folder segment: its value can hold slashes or `..`.
+            let starts_with_var = segs.iter().enumerate().any(|(k, s)| {
+                (k == 0 || k + 1 < segs.len() || is_whole_variable(s)) && holds_variable(s)
+            });
             if starts_with_var {
                 return Err(unresolved_denial(
                     t,
                     part,
-                    "it starts with a variable that this command does not assign, and the environment's value could be a protected place",
+                    "it holds a variable that this command does not assign, and the environment's value could be a protected place",
                 ));
             }
             Ok(vec![])
         }
     }
+}
+
+/// The paths a write target stands for when `$0`, `$1`, `$@` and `$*` are bound to `args`
+/// (`$0` is `args[0]`, `$1` is `args[1]`). A parameter with no word is replaced by a plain word.
+fn bind_positional(t: &str, args: &[String]) -> Vec<String> {
+    let c: Vec<char> = t.chars().collect();
+    let all = |out: &mut Vec<String>| {
+        let mut o = Vec::new();
+        for a in args.iter().skip(1) {
+            o.push(a.clone());
+        }
+        if o.is_empty() {
+            o.push("_".to_string());
+        }
+        *out = o;
+    };
+    let mut variants: Vec<String> = vec![String::new()];
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '$'
+            && i + 1 < c.len()
+            && (c[i + 1].is_ascii_digit() || matches!(c[i + 1], '@' | '*'))
+        {
+            let vals: Vec<String> = if c[i + 1].is_ascii_digit() {
+                let n = c[i + 1].to_digit(10).unwrap_or(0) as usize;
+                vec![args.get(n).cloned().unwrap_or_else(|| "_".to_string())]
+            } else {
+                let mut v = Vec::new();
+                all(&mut v);
+                v
+            };
+            let mut next = Vec::new();
+            for base in &variants {
+                for v in &vals {
+                    next.push(format!("{base}{v}"));
+                }
+            }
+            variants = next;
+            i += 2;
+        } else {
+            for v in variants.iter_mut() {
+                v.push(c[i]);
+            }
+            i += 1;
+        }
+    }
+    variants
+}
+
+/// A path with each positional parameter (`$1`, `$@`, `$*`) replaced by a plain word.
+fn neutral_positional(t: &str) -> String {
+    let c: Vec<char> = t.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '$'
+            && i + 1 < c.len()
+            && (c[i + 1].is_ascii_digit() || matches!(c[i + 1], '@' | '*'))
+        {
+            out.push('_');
+            i += 2;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Is a path segment nothing but one variable (`$X`, `${X}`)?
+fn is_whole_variable(seg: &str) -> bool {
+    let name = match seg.strip_prefix("${").and_then(|r| r.strip_suffix('}')) {
+        Some(n) => n,
+        None => match seg.strip_prefix('$') {
+            Some(n) => n,
+            None => return false,
+        },
+    };
+    matches!(name, "@" | "*")
+        || (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+}
+
+/// Does a path segment hold a named variable (`$X`, `${X}`)?
+fn holds_variable(seg: &str) -> bool {
+    let c: Vec<char> = seg.chars().collect();
+    c.windows(2).any(|w| {
+        // Positional parameters (`$1`, `$@`, `$*`) are set by `set --` or the caller, which the
+        // guard does not follow, so they count as variables the line does not assign.
+        w[0] == '$' && (w[1] == '{' || w[1].is_alphanumeric() || matches!(w[1], '_' | '@' | '*'))
+    })
 }
 
 fn pattern_denial(t: &str, part: &str, hit: &str) -> Decision {
@@ -2378,6 +2553,29 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         "merge" | "rebase" | "cherry-pick" | "am" if in_unit => {
             return why("taking in another branch's commits (merge, rebase, cherry-pick, am) brings in files outside the unit's scope; the engine joins the branches (`bf unit land`), and a change of yours is made with the editing tools");
         }
+        // Moving the working tree onto another branch's files brings in what the unit's scope never
+        // covered: `git switch`, `git read-tree`, and a reset that names the main branch or an engine
+        // branch, or a hard reset onto a revision.
+        "switch" | "read-tree" if in_unit => {
+            return why("switching branches or reading another tree into the working copy brings in files outside the unit's scope; the engine joins the branches (`bf unit land`)");
+        }
+        "reset" if in_unit => {
+            let before_paths: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
+            let hard = before_paths
+                .iter()
+                .any(|a| matches!(*a, "--hard" | "--merge" | "--keep"));
+            let revs: Vec<&str> = before_paths
+                .iter()
+                .copied()
+                .filter(|a| !a.starts_with('-') && !a.starts_with("HEAD"))
+                .collect();
+            let names_branch = revs
+                .iter()
+                .any(|a| *a == main_branch || a.starts_with(prefix) || a.starts_with("origin/"));
+            if names_branch || (hard && !revs.is_empty()) {
+                return why("a reset onto the main branch, an engine branch or a revision brings in files outside the unit's scope; `git reset --hard` with no revision, and `git reset HEAD <file>`, stay open");
+            }
+        }
         "merge" | "rebase" | "cherry-pick" | "revert" | "am" | "stash" | "clean" | "apply"
             if !in_unit =>
         {
@@ -2593,10 +2791,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
             let w = &p.words[i..];
             basename(&w[0]) == "cargo"
                 && w.get(1).is_some_and(|a| a == "run" || a == "r")
-                && w.iter()
-                    .position(|a| a == "--")
-                    .and_then(|k| w.get(k + 1))
-                    .is_some_and(|a| a == "human-turn")
+                // Cargo hands the words after the program's name to it, with or without `--`.
+                && w.iter().skip(2).any(|a| a == "human-turn")
         })
     }) {
         return human_turn_denial();
@@ -2676,6 +2872,17 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
     let unread = unread_vars(&parsed, &all_vars);
     let mut dirs: HashMap<usize, Option<String>> = HashMap::new();
     dirs.insert(0, Some(cwd.to_string()));
+    // The shells whose code sets its own positional parameters with `set --`.
+    let sets_positional: std::collections::HashSet<usize> = parsed
+        .iter()
+        .filter(|q| {
+            crate::shellparse::program_index(&q.words).is_some_and(|i| {
+                crate::shellparse::basename(&q.words[i]) == "set"
+                    && q.words.get(i + 1).is_some_and(|a| a == "--")
+            })
+        })
+        .map(|q| q.scope)
+        .collect();
     for p in &parsed {
         let start: Option<String> = match dirs.get(&p.scope) {
             Some(d) => d.clone(),
@@ -3060,7 +3267,26 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
             }
         }
 
+        let mut expanded: Vec<(String, String, Reach)> = Vec::new();
         for (t, part, reach) in writes {
+            // In a `sh -c` string, `$0`, `$1` and `$@` are the words given after the string: they
+            // are judged as the paths they stand for. A string that sets its own parameters with
+            // `set --` keeps them as variables the line does not assign. In a script fed to a
+            // shell the parameters are unknown and stand for a path the caller named.
+            if p.scope != 0 && !sets_positional.contains(&p.scope) {
+                match &p.bound {
+                    Some(args) => {
+                        for v in bind_positional(&t, args) {
+                            expanded.push((v, part.clone(), reach));
+                        }
+                    }
+                    None => expanded.push((neutral_positional(&t), part, reach)),
+                }
+            } else {
+                expanded.push((t, part, reach));
+            }
+        }
+        for (t, part, reach) in expanded {
             match judge_target(table, &t, &start, &part, reach, &readings) {
                 Err(d) => return d,
                 Ok(found) => {
