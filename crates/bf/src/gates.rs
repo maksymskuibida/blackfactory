@@ -31,8 +31,26 @@ const MACHINE_TAGS: &[&str] = &[
     "user-prompt-submit-hook",
     "teammate-message",
     "cross-session-message",
+    "agent-message",
     "channel",
 ];
+
+/// The wrapper tag a program or another session puts around its text, when the text starts with one
+/// (after leading whitespace; a `\` or `~` between `<` and the name is allowed). The human's own pasted
+/// text arrives as `<pasted_content` and is not one.
+pub fn machine_tag(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix('<')?;
+    let rest = rest.trim_start_matches(['\\', '~']);
+    let tag: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if MACHINE_TAGS.contains(&tag.as_str()) {
+        Some(tag)
+    } else {
+        None
+    }
+}
 
 /// Decide whether a UserPromptSubmit payload is a message the human typed.
 /// Returns Ok(text) or Err(reason).
@@ -92,14 +110,8 @@ pub fn classify_prompt(
     if trimmed.is_empty() {
         return Err("the prompt is empty".into());
     }
-    if let Some(rest) = trimmed.strip_prefix('<') {
-        let tag: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if MACHINE_TAGS.contains(&tag.as_str()) {
-            return Err(format!("the text starts with a <{tag}> wrapper: it was written by a program or another session"));
-        }
+    if let Some(tag) = machine_tag(trimmed) {
+        return Err(format!("the text starts with a <{tag}> wrapper: it was written by a program or another session"));
     }
     if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) {
         if !project_root.is_empty() {

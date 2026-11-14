@@ -14,6 +14,7 @@ pub mod refusal;
 pub mod run;
 pub mod sandbox;
 pub mod schema;
+pub mod shellparse;
 pub mod store;
 pub mod util;
 pub mod view;
