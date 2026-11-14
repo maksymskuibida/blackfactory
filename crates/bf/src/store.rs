@@ -1233,11 +1233,25 @@ impl Project {
         }
         for k in &cps {
             let id = k["id"].as_str().unwrap_or("");
+            // While a sync of the main branch into this checkpoint waits for its resolver, the resolver may
+            // write exactly the conflicted files here (and report); nothing else changes in a
+            // checkpoint's working copy.
+            let sync_files: Vec<String> = state
+                .as_ref()
+                .and_then(|s| s.sync_open.as_ref())
+                .filter(|o| o.checkpoint == id && o.phase == "resolve")
+                .map(crate::run::sync_files)
+                .unwrap_or_default();
             worktrees.push(json!({
                 "kind": "checkpoint",
                 "id": id,
                 "path": self.work_dir().join(id).to_string_lossy(),
-                "files": [],
+                "files": sync_files,
+                "sync": state
+                    .as_ref()
+                    .and_then(|s| s.sync_open.as_ref())
+                    .map(|o| o.checkpoint == id && matches!(o.phase.as_str(), "resolve" | "review"))
+                    .unwrap_or(false),
             }));
         }
         // Each table is newer than the last: the guard refuses a signed table older than the counter

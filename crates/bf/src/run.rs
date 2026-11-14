@@ -165,6 +165,11 @@ pub fn status(p: &Project) -> R<Value> {
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
         "main_ahead": main_ahead(p, &st, &pl),
+        "sync_open": st.sync_open.as_ref().map(|o| json!({
+            "checkpoint": o.checkpoint, "phase": o.phase, "rounds": o.rounds, "reason": o.reason,
+            "files": sync_files(o),
+            "next": "bf next gives the directive",
+        })),
         "pages": pages_json(&st),
         "human_turns_note": st.human_turns_note().unwrap_or_default(),
         "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
@@ -241,6 +246,40 @@ fn next_raw(p: &Project) -> R<Value> {
             directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": "plan", "command": "bf gate open plan"}));
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
+    }
+    // An open sync of the main branch into a checkpoint: nothing else starts until it is settled.
+    if let Some(so) = &st.sync_open {
+        let k = &so.checkpoint;
+        let wc = p.work_dir().join(k).to_string_lossy().to_string();
+        let lim = json!({"max_rounds": p.policy.limits.max_rounds, "round": so.rounds, "idle_minutes": p.policy.limits.idle_minutes,
+               "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }});
+        let brief = |role: &str| {
+            p.briefs_dir()
+                .join(format!("{k}-{role}.md"))
+                .to_string_lossy()
+                .to_string()
+        };
+        let mut d = match so.phase.as_str() {
+            "resolve" => json!({"role": "builder", "action": "resolve-sync", "checkpoint": k,
+                "tier": p.policy.tiers.builder, "working_copy": wc, "brief": brief("builder"), "limits": lim,
+                "files": sync_files(so),
+                "commands": [format!("bf brief {k} --role builder")],
+                "abort_command": format!("bf checkpoint sync {k} --abort")}),
+            "review" => json!({"role": "reviewer", "action": "review-sync", "checkpoint": k,
+                "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"), "limits": lim,
+                "files": sync_files(so),
+                "commands": [format!("bf brief {k} --role reviewer")],
+                "abort_command": format!("bf checkpoint sync {k} --abort")}),
+            _ => json!({"role": "human", "action": "decide-sync", "checkpoint": k,
+                "note": format!("The sync of {k} is parked ({}). The human says whether to try again (`bf checkpoint sync {k} --release --quote \"<their words>\"`) or to go back (`bf checkpoint sync {k} --abort`).", so.reason),
+                "release_command": format!("bf checkpoint sync {k} --release --quote \"<the human's words>\""),
+                "abort_command": format!("bf checkpoint sync {k} --abort")}),
+        };
+        d["note_sync"] = json!(format!(
+            "A sync of the main branch into {k} is open; no unit starts until it is settled."
+        ));
+        directives.push(d);
+        return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
     }
     let limits = |us_rounds: u32| {
         json!({"max_rounds": p.policy.limits.max_rounds, "round": us_rounds, "idle_minutes": p.policy.limits.idle_minutes,
@@ -555,6 +594,9 @@ pub fn report(
     cost: f64,
     token: Option<&str>,
 ) -> R<Value> {
+    if unit.starts_with("K-") {
+        return sync_report(p, unit, result, role, note, findings, token);
+    }
     let st = events::require_chain(p)?;
     need_run(&st)?;
     let pl = plan::load(p)?;
@@ -731,6 +773,11 @@ pub fn report(
 }
 
 fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
+    if matches!(role, "builder" | "reviewer") {
+        if let Some(so) = events::replay(p)?.sync_open.filter(|o| o.checkpoint == k) {
+            return brief_sync(p, &so, role);
+        }
+    }
     if role != "verifier" {
         return Err(refuse(
             format!("write a brief for {k} as {role}"),
@@ -1135,6 +1182,14 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     gates::refuse_if_drift(p, &st, &format!("start {unit}"))?;
+    if let Some(so) = &st.sync_open {
+        return Err(refuse(
+            format!("start {unit}"),
+            format!("a sync of the main branch into {} is open ({}): no unit starts until it is settled", so.checkpoint, so.phase),
+            &["`bf next` gives the directive that settles it.", &format!("To go back to how it was: `bf checkpoint sync {} --abort`.", so.checkpoint)],
+            "`bf status` shows no open sync.",
+        ));
+    }
     let cur = st.unit_state(unit).to_string();
     // Starting a unit that is already in flight only makes sure its working copy exists.
     if !cur.is_empty() && !matches!(cur.as_str(), "running" | "review" | "fixing" | "reviewed") {
@@ -1532,6 +1587,17 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             "The command prints the closure.",
         ));
     };
+    if let Some(so) = st.sync_open.as_ref().filter(|o| o.checkpoint == k) {
+        return Err(refuse(
+            format!("close {k}"),
+            format!("a sync of the main branch into it is open ({})", so.phase),
+            &[
+                "`bf next` gives the directive that settles it.",
+                &format!("Or go back: `bf checkpoint sync {k} --abort`."),
+            ],
+            "`bf status` shows no open sync.",
+        ));
+    }
     let after = str_list(kr, "after");
     let unlanded: Vec<&String> = after
         .iter()
@@ -1878,11 +1944,43 @@ pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
 /// `bf checkpoint sync <K> --quote "..." [--resolved]`: the human has the checkpoint branch take in the
 /// repository's local main branch (no network: pulling into main is an ordinary git command done before).
 /// Only at a quiet point; a conflict leaves everything as it was.
-pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, resolved: bool) -> R<Value> {
+/// What `bf checkpoint sync` was asked to do.
+#[derive(Clone, Copy, Default)]
+pub struct SyncMode {
+    /// The human merged by hand: record it.
+    pub resolved: bool,
+    /// Put the checkpoint back as it was before an open sync started (no human turn needed).
+    pub abort: bool,
+    /// The human releases a parked sync back to its builder.
+    pub release: bool,
+}
+
+pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<Value> {
+    let resolved = mode.resolved;
     let st = events::require_chain(p)?;
     need_run(&st)?;
-    refuse_if_main_moved(p, &st)?;
+    if mode.abort {
+        return sync_abort(p, &st, k);
+    }
+    if mode.release {
+        return sync_release(p, &st, k, quote);
+    }
     let pl = plan::load(p)?;
+    if let Some(so) = st.sync_open.clone() {
+        if so.checkpoint == k && resolved {
+            return sync_hand_resolved(p, &st, &pl, &so, quote);
+        }
+        return Err(refuse(
+            format!("sync {k}"),
+            format!("a sync of {} is open ({}): its conflict is being resolved", so.checkpoint, so.phase),
+            &[
+                "`bf next` gives the directive that settles it (`resolve-sync`, `review-sync` or, when parked, the human's decision).",
+                &format!("To go back to how the checkpoint was: `bf checkpoint sync {} --abort`.", so.checkpoint),
+            ],
+            "`bf status` shows no open sync.",
+        ));
+    }
+    refuse_if_main_moved(p, &st)?;
     let Some(kr) = pl.checkpoint(k) else {
         return Err(refuse(
             format!("sync {k}"),
@@ -2021,9 +2119,13 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, resolved: bool) -> R<V
     }
     // The human's words first: nothing is merged for a sync that could not be recorded.
     let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
-    // Merge, one repository after another; a conflict rolls the earlier ones back.
+    // Merge, one repository after another. A conflict is left in progress in the checkpoint's working
+    // copy for the factory's own agents to resolve; the human's part is the sentence that asked.
     let mut done: Vec<(String, String, String)> = Vec::new();
-    for (idx, step) in steps.iter().enumerate() {
+    let mut open_repos: Vec<Value> = Vec::new();
+    let mut conflicted: Vec<String> = Vec::new();
+    let several = steps.len() > 1;
+    for step in steps.iter() {
         if !step.lacks {
             if step.hand_merged {
                 done.push((
@@ -2046,38 +2148,38 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, resolved: bool) -> R<V
             ],
             &[],
         )?;
-        if !out.ok {
-            let conflicts = gitx::must(&step.wt, &["diff", "--name-only", "--diff-filter=U"])
-                .unwrap_or_default();
-            let _ = gitx::run(&step.wt, &["merge", "--abort"], &[]);
-            for earlier in steps.iter().take(idx).filter(|x| x.lacks) {
-                let _ = gitx::run(
-                    &earlier.wt,
-                    &["reset", "--hard", "-q", &earlier.old_tip],
-                    &[],
-                );
+        if out.ok {
+            let c = gitx::head_short(&step.wt);
+            done.push((step.repo.name.clone(), step.main_tip.clone(), c.clone()));
+            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": [], "merge": c}));
+        } else {
+            let files: Vec<String> =
+                gitx::must(&step.wt, &["diff", "--name-only", "--diff-filter=U"])
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|l| l.to_string())
+                    .collect();
+            for f in &files {
+                conflicted.push(if several {
+                    format!("{}/{f}", step.repo.name)
+                } else {
+                    f.clone()
+                });
             }
-            let files: Vec<String> = conflicts.lines().map(|l| l.to_string()).collect();
-            return Err(refuse(
-                format!("sync {k}"),
-                format!(
-                    "the main branch of `{}` conflicts with the checkpoint in: {}",
-                    step.repo.name,
-                    if files.is_empty() { out.stderr.lines().next().unwrap_or("").to_string() } else { files.join(", ") }
-                ),
-                &[
-                    "Nothing was changed: the merge was aborted.",
-                    &format!("The human resolves it in the checkpoint's working copy: `cd {}`, `git merge {}`, fix the files, `git add`, `git commit`.", step.wt.display(), step.repo.branch),
-                    &format!("Then run `bf checkpoint sync {k} --resolved --quote \"<the human's words>\"`, which checks that the branch now holds the main branch and records it."),
-                ],
-                "`bf checkpoint sync` records the sync.",
-            ));
+            open_repos.push(json!({"repo": step.repo.name, "main": step.main_tip, "before": step.old_tip, "files": files, "merge": ""}));
         }
-        done.push((
-            step.repo.name.clone(),
-            step.main_tip.clone(),
-            gitx::head_short(&step.wt),
-        ));
+    }
+    if !conflicted.is_empty() {
+        events::append(
+            p,
+            "checkpoint.sync.open",
+            json!({"checkpoint": k, "repos": open_repos, "turn": turn, "quote": quote.trim()}),
+        )?;
+        p.write_guard()?;
+        return Ok(
+            json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": conflicted,
+            "message": "the main branch conflicts with the checkpoint; the merge is left in progress in the checkpoint's working copy and `bf next` gives the directive that resolves it (`bf checkpoint sync <K> --abort` puts everything back)"}),
+        );
     }
     let reopen_checks = str_list(kr, "checks");
     events::append(
@@ -2099,6 +2201,402 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, resolved: bool) -> R<V
     p.write_guard()?;
     Ok(json!({"checkpoint": k, "synced": true,
         "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}))
+}
+
+fn sync_wt(p: &Project, k: &str, repo: &str) -> R<PathBuf> {
+    let pl = plan::load(p)?;
+    let r = p.repo(repo)?;
+    checkpoint_wt(p, &pl, k, r)
+}
+
+/// The conflicted files of an open sync, as paths inside the checkpoint's working copy folder.
+pub fn sync_files(so: &events::SyncOpen) -> Vec<String> {
+    let several = so.repos.len() > 1;
+    so.repos
+        .iter()
+        .flat_map(|r| {
+            r.files.iter().map(move |f| {
+                if several {
+                    format!("{}/{f}", r.repo)
+                } else {
+                    f.clone()
+                }
+            })
+        })
+        .collect()
+}
+
+/// Finish an open sync: the checkpoint holds the main branch. Records `checkpoint.sync`.
+fn finish_sync(
+    p: &Project,
+    pl: &Plan,
+    so: &events::SyncOpen,
+    human: Option<(u64, &str)>,
+) -> R<Value> {
+    let kr = pl.checkpoint(&so.checkpoint);
+    let reopen_checks = kr.map(|k| str_list(k, "checks")).unwrap_or_default();
+    let mut repos: Vec<Value> = Vec::new();
+    for r in &so.repos {
+        let wt = sync_wt(p, &so.checkpoint, &r.repo)?;
+        repos.push(json!({"repo": r.repo, "main": r.main, "merge": gitx::head_short(&wt)}));
+    }
+    let mut ev = json!({
+        "checkpoint": so.checkpoint, "repos": repos,
+        "reopen_checks": reopen_checks, "receipt_floor": evidence::highest_receipt_number(p),
+    });
+    match human {
+        Some((turn, quote)) => {
+            ev["turn"] = json!(turn);
+            ev["quote"] = json!(quote.trim());
+        }
+        None => ev["via_open"] = json!(true),
+    }
+    events::append(p, "checkpoint.sync", ev)?;
+    let mut h = events::read_head(p).unwrap_or_default();
+    for r in &so.repos {
+        h.set_commit(&r.repo, Some(r.main.clone()));
+    }
+    events::write_head(p, &h)?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": so.checkpoint, "synced": true, "repos": repos}))
+}
+
+/// What is still wrong with a resolution: unmerged paths, conflict markers, a merge not concluded or
+/// not holding the main branch, or files changed beyond the conflicted ones (compared with git's own
+/// automatic merge).
+fn sync_problems(p: &Project, so: &events::SyncOpen) -> R<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for r in &so.repos {
+        let wt = sync_wt(p, &so.checkpoint, &r.repo)?;
+        let unmerged =
+            gitx::must(&wt, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+        for f in unmerged.lines() {
+            out.push(format!(
+                "{}: {f} is still unmerged (resolve it, then `git add {f}`)",
+                r.repo
+            ));
+        }
+        for f in &r.files {
+            let text = fs::read_to_string(wt.join(f)).unwrap_or_default();
+            if text
+                .lines()
+                .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> ") || l == "=======")
+            {
+                out.push(format!("{}: {f} still has conflict markers", r.repo));
+            }
+        }
+        let merging = gitx::run(&wt, &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &[])
+            .map(|o| o.ok)
+            .unwrap_or(false);
+        if merging {
+            out.push(format!(
+                "{}: the merge is not concluded (`git commit --no-edit` in {})",
+                r.repo,
+                wt.display()
+            ));
+        } else if gitx::has_uncommitted(&wt) {
+            out.push(format!(
+                "{}: the working copy has uncommitted changes",
+                r.repo
+            ));
+        }
+        if !merging && !gitx::is_ancestor(&wt, &r.main, "HEAD") {
+            out.push(format!(
+                "{}: the checkpoint does not contain the main branch's commit {}",
+                r.repo,
+                &r.main[..r.main.len().min(10)]
+            ));
+        }
+        if !merging && !r.files.is_empty() && !r.before.is_empty() {
+            // Only the conflicted files may differ from what git's own merge produced.
+            if let Ok(o) = gitx::run(
+                &wt,
+                &["merge-tree", "--write-tree", &r.before, &r.main],
+                &[],
+            ) {
+                if let Some(tree) = o
+                    .stdout
+                    .lines()
+                    .next()
+                    .filter(|t| t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()))
+                {
+                    let diff =
+                        gitx::must(&wt, &["diff", "--name-only", tree, "HEAD"]).unwrap_or_default();
+                    for f in diff.lines() {
+                        if !r.files.iter().any(|c| c == f) {
+                            out.push(format!(
+                                "{}: {f} was changed but was not in conflict",
+                                r.repo
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn sync_abort(p: &Project, st: &State, k: &str) -> R<Value> {
+    let Some(so) = st.sync_open.clone().filter(|o| o.checkpoint == k) else {
+        return Err(refuse(
+            format!("abort the sync of {k}"),
+            "no sync is open for it",
+            &["`bf status` shows an open sync when there is one."],
+            "`bf status` shows no open sync.",
+        ));
+    };
+    for r in &so.repos {
+        let wt = sync_wt(p, k, &r.repo)?;
+        let _ = gitx::run(&wt, &["merge", "--abort"], &[]);
+        if !r.before.is_empty() {
+            gitx::must(&wt, &["reset", "--hard", "-q", &r.before])?;
+        }
+    }
+    events::append(p, "checkpoint.sync.abort", json!({"checkpoint": k}))?;
+    p.write_guard()?;
+    Ok(
+        json!({"checkpoint": k, "aborted": true, "message": "the checkpoint is as it was before the sync started"}),
+    )
+}
+
+fn sync_release(p: &Project, st: &State, k: &str, quote: &str) -> R<Value> {
+    let Some(so) = st.sync_open.clone().filter(|o| o.checkpoint == k) else {
+        return Err(refuse(
+            format!("release the sync of {k}"),
+            "no sync is open for it",
+            &["`bf status` shows an open sync when there is one."],
+            "`bf status` shows no open sync.",
+        ));
+    };
+    if so.phase != "parked" {
+        return Err(refuse(
+            format!("release the sync of {k}"),
+            format!("it is `{}`, not parked", so.phase),
+            &["`bf next` shows what it waits for."],
+            "`bf status` shows the sync back at work.",
+        ));
+    }
+    let (turn, _) = events::pick_turn(st, 0, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "checkpoint.sync.release",
+        json!({"checkpoint": k, "turn": turn, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "released": true}))
+}
+
+/// The human resolved the merge by hand in the checkpoint's working copy while a sync was open.
+fn sync_hand_resolved(
+    p: &Project,
+    st: &State,
+    pl: &Plan,
+    so: &events::SyncOpen,
+    quote: &str,
+) -> R<Value> {
+    let problems = sync_problems(p, so)?;
+    if !problems.is_empty() {
+        let mut steps = problems.clone();
+        steps.push(format!(
+            "Then run `bf checkpoint sync {} --resolved --quote \"<the human's words>\"` again.",
+            so.checkpoint
+        ));
+        return Err(refuse_owned(
+            format!("sync {}", so.checkpoint),
+            format!("the merge is not finished: {}", problems.len()),
+            steps,
+            "`bf checkpoint sync` records the merge.",
+        ));
+    }
+    let (turn, _) = events::pick_turn(st, 0, events::Decide::Approve, quote)?;
+    finish_sync(p, pl, so, Some((turn, quote)))
+}
+
+/// `bf report <K>` while a sync is open: the resolver says built or blocked; the reviewer says findings
+/// or clean.
+pub fn sync_report(
+    p: &Project,
+    k: &str,
+    result: &str,
+    role: Option<&str>,
+    note: &str,
+    findings: Option<&Value>,
+    token: Option<&str>,
+) -> R<Value> {
+    let st = events::require_chain(p)?;
+    need_run(&st)?;
+    let Some(so) = st.sync_open.clone().filter(|o| o.checkpoint == k) else {
+        return Err(refuse(
+            format!("report on {k}"),
+            "no sync is open for it; a checkpoint is not reported on",
+            &["Units are reported on with `bf report <U>`."],
+            "`bf status` shows the unit's new state.",
+        ));
+    };
+    let expected = match so.phase.as_str() {
+        "resolve" => "builder",
+        "review" => "reviewer",
+        _ => {
+            return Err(refuse(
+                format!("report on the sync of {k}"),
+                "the sync is parked: the human decides",
+                &["The human releases it (`bf checkpoint sync <K> --release --quote \"...\"`) or the conductor aborts it (`--abort`)."],
+                "`bf status` shows the sync back at work.",
+            ))
+        }
+    };
+    if role.map(|r| r != expected).unwrap_or(false) {
+        return Err(refuse(
+            format!("report as {}", role.unwrap_or("")),
+            format!("the sync of {k} waits for its {expected}"),
+            &["Report with the role the directive named."],
+            "`bf status` shows the sync in its new phase.",
+        ));
+    }
+    if p.policy.roles.tokens && !holds_token(p, &format!("{k}:{expected}"), token) {
+        return Err(refuse(
+            format!("report on the sync of {k} as {expected}"),
+            format!("a report needs the token of the {expected}'s directive; none, or the wrong one, was given"),
+            &["`bf next --json` shows the directive with its `token`; pass it with `--token`."],
+            "`bf status` shows the sync in its new phase.",
+        ));
+    }
+    let pl = plan::load(p)?;
+    match (so.phase.as_str(), result) {
+        ("resolve", "blocked") => {
+            events::append(p, "checkpoint.sync.park", json!({"checkpoint": k, "reason": if note.is_empty() { "the resolver is blocked" } else { note }}))?;
+            p.write_guard()?;
+            Ok(json!({"checkpoint": k, "phase": "parked"}))
+        }
+        ("resolve", "built" | "fixed") => {
+            let problems = sync_problems(p, &so)?;
+            if !problems.is_empty() {
+                let mut steps = problems.clone();
+                steps.push("Fix them, then report again.".into());
+                return Err(refuse_owned(
+                    format!("report the resolution of {k}"),
+                    format!("the resolution is not finished: {} problem(s)", problems.len()),
+                    steps,
+                    "`bf status` shows the sync in review.",
+                ));
+            }
+            events::append(p, "checkpoint.sync.built", json!({"checkpoint": k}))?;
+            p.write_guard()?;
+            Ok(json!({"checkpoint": k, "phase": "review"}))
+        }
+        ("review", "findings") => {
+            let listed: Vec<Value> = findings
+                .and_then(|f| f.as_array().cloned().or_else(|| f.get("findings").and_then(|x| x.as_array().cloned())))
+                .unwrap_or_default();
+            if listed.is_empty() {
+                return Err(refuse(
+                    format!("report findings on the sync of {k}"),
+                    "no finding was given",
+                    &["Give the findings (`--findings -` with a JSON list), or report `built` when the resolution is right."],
+                    "`bf status` shows the sync in its new phase.",
+                ));
+            }
+            let rounds = so.rounds + 1;
+            let over = rounds > p.policy.limits.max_rounds;
+            events::append(
+                p,
+                "checkpoint.sync.reviewed",
+                json!({"checkpoint": k, "to": if over { "parked" } else { "resolve" }, "findings": listed,
+                       "reason": if over { format!("more than {} review rounds", p.policy.limits.max_rounds) } else { String::new() }}),
+            )?;
+            p.write_guard()?;
+            Ok(json!({"checkpoint": k, "phase": if over { "parked" } else { "resolve" }}))
+        }
+        ("review", "built") => {
+            // The sync was asked for in the human's words when it opened.
+            let v = finish_sync(p, &pl, &so, None)?;
+            Ok(v)
+        }
+        (ph, r) => Err(refuse(
+            format!("report {r} on the sync of {k}"),
+            format!("a `{r}` report does not fit a sync in `{ph}`"),
+            &["The resolver reports built or blocked; the reviewer reports findings or built (clean)."],
+            "`bf status` shows the sync in its new phase.",
+        )),
+    }
+}
+
+/// The brief for the resolver or the reviewer of an open sync.
+fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
+    let k = &so.checkpoint;
+    let mut md = format!("# Brief: the sync of {k} as {role}\n\n");
+    md.push_str(&format!(
+        "The human asked for the main branch to be taken into checkpoint {k}. It conflicts in the files below; the merge is in progress in the checkpoint's working copy `{}`.\n\n",
+        p.work_dir().join(k).display()
+    ));
+    let limited = |t: String| -> String {
+        let lines: Vec<&str> = t.lines().collect();
+        if lines.len() > 200 {
+            format!(
+                "{}\n... ({} more lines)\n",
+                lines[..200].join("\n"),
+                lines.len() - 200
+            )
+        } else {
+            t
+        }
+    };
+    for r in &so.repos {
+        if r.files.is_empty() {
+            continue;
+        }
+        let wt = sync_wt(p, k, &r.repo)?;
+        let base = gitx::must(&wt, &["merge-base", &r.before, &r.main]).unwrap_or_default();
+        md.push_str(&format!("## Repository `{}`\n\n", r.repo));
+        for f in &r.files {
+            md.push_str(&format!("### `{f}`\n\n"));
+            if role == "reviewer" {
+                md.push_str("The resolution compared with the stack's side:\n\n```diff\n");
+                md.push_str(&limited(
+                    gitx::must(&wt, &["diff", &r.before, "HEAD", "--", f]).unwrap_or_default(),
+                ));
+                md.push_str(
+                    "\n```\n\nThe resolution compared with the main branch's side:\n\n```diff\n",
+                );
+                md.push_str(&limited(
+                    gitx::must(&wt, &["diff", &r.main, "HEAD", "--", f]).unwrap_or_default(),
+                ));
+                md.push_str("\n```\n\n");
+            } else {
+                md.push_str("What the stack changed:\n\n```diff\n");
+                md.push_str(&limited(
+                    gitx::must(&wt, &["diff", &base, &r.before, "--", f]).unwrap_or_default(),
+                ));
+                md.push_str("\n```\n\nWhat the main branch changed:\n\n```diff\n");
+                md.push_str(&limited(
+                    gitx::must(&wt, &["diff", &base, &r.main, "--", f]).unwrap_or_default(),
+                ));
+                md.push_str("\n```\n\n");
+            }
+        }
+    }
+    if role == "reviewer" {
+        md.push_str("## What to judge\n\nFor each file: does the resolution keep what the stack added AND what the main branch added, with no line lost or doubled by mistake? Report with `bf report <K> --role reviewer --result findings --findings -` (a JSON list of `{title, where, action}`), or `--result built` when every file is right. Pass the token of your directive with `--token`.\n");
+    } else {
+        md.push_str(&format!(
+            "## Rules\n\n- Change only the conflicted files named above, in the checkpoint's working copy; nothing else. Keep both sides' intent.\n- Remove every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`).\n- Then `git add` those files and run `git commit --no-edit` there to conclude the merge. Do not abort, reset or check out anything: the engine aborts.\n- Report with `bf report {k} --role builder --result built --token <token>`. If you cannot resolve it: `bf report {k} --role builder --result blocked --note \"why\"`.\n"
+        ));
+        if !so.findings.is_empty() {
+            md.push_str("\n## Findings of the review to fix\n\n");
+            for f in &so.findings {
+                md.push_str(&format!(
+                    "- {} at {}: {}\n",
+                    f["title"].as_str().unwrap_or(""),
+                    f["where"].as_str().unwrap_or(""),
+                    f["action"].as_str().unwrap_or("")
+                ));
+            }
+        }
+    }
+    let path = p.briefs_dir().join(format!("{k}-{role}.md"));
+    util::atomic_write(&path, md.as_bytes())?;
+    Ok(path)
 }
 
 pub fn stuck(p: &Project, dry: bool) -> R<Value> {

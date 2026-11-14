@@ -231,6 +231,8 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
         (_, "status") => true,
         (_, "evidence") => evidence_ok.contains(&sub),
         (_, "ask") => true,
+        // A checkpoint's working copy reports only on an open sync (the engine checks that).
+        ("checkpoint", "report") => true,
         ("unit", "report") => true,
         (_, "record") => matches!(sub, "get" | "list") || (zone == "unit" && sub == "put"),
         _ => false,
@@ -542,11 +544,27 @@ fn dispatch(args: &Args) -> R<()> {
                     &p,
                     k,
                     args.flag("quote").unwrap_or(""),
-                    args.has("resolved"),
+                    run::SyncMode {
+                        resolved: args.has("resolved"),
+                        abort: args.has("abort"),
+                        release: args.has("release"),
+                    },
                 )?;
                 out(args, &v, || {
                     if v["synced"] == true {
                         format!("{k} took in the main branch")
+                    } else if v["sync_open"] == true {
+                        format!(
+                            "the main branch conflicts in: {}; the merge is open in the checkpoint's working copy and `bf next` gives the directive that resolves it",
+                            v["conflicted"]
+                                .as_array()
+                                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+                                .unwrap_or_default()
+                        )
+                    } else if v["aborted"] == true {
+                        format!("{k} is as it was before the sync")
+                    } else if v["released"] == true {
+                        format!("the sync of {k} is back with its builder")
                     } else {
                         "nothing to take in".to_string()
                     }
@@ -1078,6 +1096,15 @@ fn status_text(v: &Value) -> String {
     }
     if let Some(n) = v["human_turns_note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
+    }
+    if let Some(o) = v["sync_open"].as_object() {
+        t.push_str(&format!(
+            "note: a sync of the main branch into {} is open ({}); conflicted: {}; `bf next` gives the directive, `bf checkpoint sync {} --abort` goes back\n",
+            o["checkpoint"].as_str().unwrap_or(""),
+            o["phase"].as_str().unwrap_or(""),
+            o["files"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+            o["checkpoint"].as_str().unwrap_or(""),
+        ));
     }
     for m in v["main_ahead"].as_array().into_iter().flatten() {
         t.push_str(&format!(
