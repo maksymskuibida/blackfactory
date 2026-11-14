@@ -72,7 +72,7 @@ fn a_workspace_with_one_external_repository_goes_through_the_whole_flow() {
             ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"Greeting\"\ndelivers=[\"R-1\"]\nfiles=[\"src/hello.txt\"]\ncheckpoint=\"K-1\"\n"),
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"hello\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
             ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"hello again\"\nhow=\"command\"\ncommand=\"ls src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"All\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"All\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
         ],
     );
     approve_plan(&fx);
@@ -128,7 +128,7 @@ fn a_workspace_with_two_repositories_closes_one_checkpoint_over_both() {
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
             ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"b\"\nhow=\"command\"\ncommand=\"test -f src/b.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-2\"\n"),
             ("check", "id=\"X-3\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls app/src/a.txt api/src/b.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\"]\nchecks=[\"X-3\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\"]\nchecks=[\"X-3\"]\n"),
         ],
     );
     approve_plan(&fx);
@@ -210,7 +210,7 @@ fn a_worker_cannot_write_into_a_code_repositorys_checkout_but_the_human_can() {
             ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
             ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/hello.txt\"]\ncheckpoint=\"K-1\"\n"),
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
         ],
     );
     fx.start_test_run();
@@ -297,7 +297,7 @@ fn the_same_path_in_two_repositories_is_no_clash_and_repo_add_has_rules() {
             ("unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/x.txt\"]\nrepo=\"api\"\ncheckpoint=\"K-1\"\n"),
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/x.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
             ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/x.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-2\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
         ],
     );
     fx.must(&["plan", "check"]);
@@ -356,7 +356,7 @@ fn unit_in_code(fx: &Fx) {
             ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/hello.txt\"]\nrepo=\"code\"\ncheckpoint=\"K-1\"\n"),
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
             ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"ls src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
         ],
     );
 }
@@ -490,7 +490,7 @@ fn a_worker_cannot_write_into_the_nested_checkout_and_the_workspace_wins_from_in
             ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
             ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"factory/data.txt\", \"src/hello.txt\"]\nrepo=\"code\"\ncheckpoint=\"K-1\"\n"),
             ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
-            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+            ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
         ],
     );
     fx.start_test_run();

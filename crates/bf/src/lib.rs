@@ -3,6 +3,7 @@
 pub mod checks;
 pub mod cli;
 pub mod doctor;
+pub mod enforce;
 pub mod events;
 pub mod evidence;
 pub mod gates;

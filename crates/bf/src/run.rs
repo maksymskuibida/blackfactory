@@ -157,6 +157,7 @@ pub fn status(p: &Project) -> R<Value> {
         "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why})).collect::<Vec<_>>(),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
+        "amendments": gates::amendments_json(&st),
         "checkpoints_closed": st.closed.keys().collect::<Vec<_>>(),
         "spent": st.cost,
         "budget_cap": p.policy.budget.cap,
@@ -321,7 +322,7 @@ fn next_raw(p: &Project) -> R<Value> {
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
                 .collect();
             let human_needed =
-                !s(k, "human_step").is_empty() && !st.gate_passed("checkpoint-step", Some(kid));
+                crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
             let marked: Vec<Value> = str_list(k, "checks")
                 .iter()
                 .filter_map(|c| {
@@ -350,7 +351,8 @@ fn next_raw(p: &Project) -> R<Value> {
                     .filter(|g| g.status == "open")
                     .map(|g| g.id.clone());
                 directives.push(json!({"role": "human", "action": if open { "decide-gate" } else { "open-gate" }, "gate_kind": "checkpoint-step", "checkpoint": kid, "gate": step_gate,
-                    "on_human_step": s(k, "on_human_step"),
+                    "on_human_step": "stop",
+                    "stop_why": s(k, "stop_why"),
                     "note": s(k, "human_step")}));
             } else {
                 directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
@@ -1635,9 +1637,12 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ));
         }
     }
-    if !s(kr, "human_step").is_empty() && !st.gate_passed("checkpoint-step", Some(k)) {
-        gaps.push(format!("the human step `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", s(kr, "human_step")));
+    if crate::enforce::stops(kr) && !st.gate_passed("checkpoint-step", Some(k)) {
+        gaps.push(format!("the stop `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", if s(kr, "human_step").is_empty() { s(kr, "stop_why") } else { s(kr, "human_step") }));
     }
+    gaps.extend(crate::enforce::checkpoint_gaps(
+        p, &pl, &st, &receipts, kr, &content,
+    )?);
     if !gaps.is_empty() {
         let mut steps = gaps.clone();
         steps.push(format!("Run `bf checkpoint close {k}` again."));
@@ -1778,7 +1783,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         p.write_guard()?;
     }
     Ok(
-        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend}),
+        json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st)}),
     )
 }
 

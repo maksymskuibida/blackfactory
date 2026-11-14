@@ -621,7 +621,7 @@ fn the_plan_is_frozen_once_its_gate_is_approved() {
     assert_eq!(
         fx.put(
             "checkpoint",
-            "id=\"K-2\"\nkind=\"checkpoint\"\ntitle=\"t\"\nafter=[\"U-9\"]\nproves=[\"R-1\"]\n"
+            "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"t\"\nafter=[\"U-9\"]\nproves=[\"R-1\"]\n"
         )
         .code,
         2

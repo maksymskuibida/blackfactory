@@ -421,7 +421,11 @@ pub struct Amend {
     pub keep: Vec<String>,
     pub waive: Vec<String>,
     pub reasons: Value,
+    /// `open`, `narrowed`, `approved` or `withdrawn`.
     pub status: String,
+    /// For a withdrawn amendment: why, and the amendment that replaced it, if one did.
+    pub withdrawn_why: String,
+    pub replaced_by: String,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -946,7 +950,21 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 waive: vec![],
                 reasons: Value::Null,
                 status: "open".into(),
+                withdrawn_why: String::new(),
+                replaced_by: String::new(),
             }),
+            "amend.withdraw" => {
+                let id = sv("amend");
+                if let Some(a) = st
+                    .amends
+                    .iter_mut()
+                    .find(|a| a.id == id && matches!(a.status.as_str(), "open" | "narrowed"))
+                {
+                    a.status = "withdrawn".into();
+                    a.withdrawn_why = sv("reason");
+                    a.replaced_by = sv("replaced_by");
+                }
+            }
             "amend.narrow" => {
                 let id = sv("amend");
                 if let Some(a) = st
