@@ -689,3 +689,386 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         assert_eq!(d, "deny", "should be refused: {cmd}");
     }
 }
+
+// ---- the fifth review: a copy into a folder, option words read as paths, honest filtered commands
+
+/// A project whose unit U-1 may write `src/hello.txt` and `scripts/run.sh`, with its working copy started.
+fn scripts_place() -> (Fx, PathBuf) {
+    let fx = Fx::new();
+    let recs: &[(&str, &str)] = &[
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A greeting exists\"\nacceptance=[\"src/hello.txt exists\"]\n"),
+        ("component", "id=\"C-1\"\nkind=\"component\"\ntitle=\"Messages\"\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"Greeting\"\ndelivers=[\"R-1\",\"C-1\"]\nfiles=[\"src/hello.txt\",\"scripts/run.sh\"]\ncheckpoint=\"K-1\"\nestimate=2\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"Greeting file\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("check", "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"ls src/hello.txt\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"checkpoint\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Both messages\"\nafter=[\"U-1\"]\nproves=[\"R-1\",\"C-1\"]\nchecks=[\"X-3\"]\n"),
+    ];
+    for (k, t) in recs {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.commit_all("records");
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    let _ = std::fs::create_dir_all(wc.join("src"));
+    (fx, wc)
+}
+
+fn check_rows(fx: &Fx, cwd: &Path, rows: &[String], want: &str) {
+    let mut wrong = Vec::new();
+    for cmd in rows {
+        let (d, why) = decision(fx, cwd, cmd);
+        let got = if d == "deny" { "refused" } else { "passed" };
+        if got != want {
+            wrong.push(format!(
+                "{} but wanted {want}: {cmd}\n    {}",
+                got,
+                why.lines().next().unwrap_or("")
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "wrong answers:\n{}", wrong.join("\n"));
+}
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+/// Z-1: a file copied, moved, linked, installed or synced into a folder lands on the file inside it,
+/// and a folder unpacked into one is judged by the folder.
+#[test]
+fn a_file_put_into_the_folder_of_a_protected_file_is_judged_where_it_lands() {
+    let fx = Fx::new();
+    fx.tiny();
+    let _ = std::fs::create_dir_all(fx.root.join(".claude"));
+    let refused = strings(&[
+        "cp /tmp/settings.json .claude/",
+        "cp /tmp/settings.json .claude",
+        "cp -f /tmp/settings.local.json .claude/",
+        "mv /tmp/settings.json .claude/",
+        "install -m 644 /tmp/settings.json .claude/",
+        "ln -sf /tmp/settings.json .claude/",
+        "cp -t .claude /tmp/settings.json",
+        "cp --target-directory=.claude /tmp/settings.json",
+        "rsync /tmp/settings.json .claude/",
+        "cp -rT /tmp/evil .claude",
+        "rsync -a /tmp/evil/ .claude/",
+        "tar xf /tmp/a.tar -C .claude",
+        "unzip -o /tmp/a.zip -d .claude",
+        "cp /tmp/config .git/",
+        "cp /tmp/config .git",
+        "cp /tmp/a.toml /tmp/b.toml factory/records/",
+        "cp /tmp/x factory/",
+        "mv -t /tmp .claude",
+        "mv --target-directory=/tmp .claude",
+        "mv -t /tmp .git",
+        "mv -t /tmp factory",
+        "cp /tmp/*.json .claude/",
+        "ls | xargs cp -t .claude",
+        "cd .claude && ln -sf /tmp/settings.json",
+        "cd factory && ln -sf /tmp/policy.toml",
+    ]);
+    check_rows(&fx, &fx.root, &refused, "refused");
+    let passed = strings(&[
+        "cp /tmp/notes.txt .",
+        "cp /tmp/notes.txt notes.txt",
+        "cp /tmp/a.txt /tmp/b.txt docs/",
+        "cp -t docs /tmp/a.txt",
+        "mv /tmp/a.txt .",
+        "mv -t docs /tmp/a.txt",
+        "install -m 755 /tmp/run.sh scripts/",
+        "ln -s /tmp/a.txt docs/",
+        "rsync -a /tmp/tpl/ docs/",
+        "cp -r /tmp/tpl docs/",
+        "tar xf /tmp/a.tar -C /tmp/out",
+        "unzip -o /tmp/a.zip -d /tmp/out",
+        "tar xf /tmp/a.tar",
+        "cd docs && ln -s /tmp/a.txt",
+        "ln -s /tmp/a.txt",
+    ]);
+    check_rows(&fx, &fx.root, &passed, "passed");
+}
+
+/// F-74: matches handed to code that only reads them pass at a protected folder and below it alike;
+/// code that can write them is refused at both.
+#[test]
+fn a_filtered_find_handing_matches_to_reading_code_gets_one_answer_at_every_depth() {
+    let fx = Fx::new();
+    fx.tiny();
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find factory -name '*.toml' -exec python3 -m json.tool {} \\;",
+            "find factory/records -name '*.toml' -exec python3 -m json.tool {} \\;",
+        ]),
+        "passed",
+    );
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find factory -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
+            "find factory/records -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
+        ]),
+        "refused",
+    );
+}
+
+/// Z-6: in a working copy, a copy into a folder is judged on the file that lands.
+#[test]
+fn a_copy_into_a_folder_of_a_working_copy_is_judged_on_the_file_that_lands() {
+    let (fx, wc) = scripts_place();
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "cp /tmp/hello.txt src/",
+            "cp -t src /tmp/hello.txt",
+            "mv -t src /tmp/hello.txt",
+            "install -m 755 /tmp/run.sh scripts/",
+        ]),
+        "passed",
+    );
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "cp /tmp/other.txt src/",
+            "cp -t src /tmp/other.txt",
+            "cp /tmp/a.txt /tmp/hello.txt src/",
+            "mv /tmp/other.txt src/",
+            "cp /tmp/hello.txt .",
+        ]),
+        "refused",
+    );
+}
+
+/// Z-3: a mode, size, time or template word is not a path.
+#[test]
+fn the_mode_and_value_words_of_the_writers_are_not_paths() {
+    let (fx, wc) = scripts_place();
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "chmod +x scripts/run.sh",
+            "chmod 755 scripts/run.sh",
+            "chmod u+x scripts/run.sh",
+            "chmod a+rx,go-w scripts/run.sh",
+            "chmod -w src/hello.txt",
+            "chmod -R u+x scripts/run.sh",
+            "truncate -s 0 src/hello.txt",
+            "truncate --size=0 src/hello.txt",
+            "mkdir -m 755 scripts",
+            "touch -t 202401010000 src/hello.txt",
+            "touch -d '2024-01-01' src/hello.txt",
+            "mktemp -p /tmp x.XXXX",
+            "mktemp -t x.XXXX",
+        ]),
+        "passed",
+    );
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "chmod +x src/other.txt",
+            "chmod -w src/other.txt",
+            "chmod 755 other.sh",
+            "truncate -s 0 src/other.txt",
+            "touch -t 202401010000 src/other.txt",
+            "mkdir -m 755 other",
+            "chmod +x factory/policy.toml",
+        ]),
+        "refused",
+    );
+    // From the main checkout the protected files stay out of reach whatever the option words are.
+    let fx = Fx::new();
+    fx.tiny();
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "chmod +x factory/policy.toml",
+            "chmod -w factory/policy.toml",
+            "chmod 644 .bf/guard.json",
+            "touch -t 202401010000 factory/policy.toml",
+            "truncate -s 0 factory/policy.toml",
+            "mkdir -m 755 factory/new",
+            "mktemp -p factory x.XXXX",
+        ]),
+        "refused",
+    );
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "chmod +x install.sh",
+            "chmod -R u+w target",
+            "chmod -R go-w .",
+            "mktemp -p /tmp x.XXXX",
+        ]),
+        "passed",
+    );
+}
+
+/// Z-4: honest commands from the main checkout that touch nothing protected pass.
+#[test]
+fn honest_cleaning_and_unstaging_from_the_main_checkout_pass() {
+    let fx = Fx::new();
+    fx.tiny();
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find . -name '.DS_Store' -delete",
+            "find . -name '*.pyc' -delete",
+            "find . -name '*.orig' -exec rm {} +",
+            "find . -type d -name __pycache__ -prune -exec rm -rf {} +",
+            "git restore --staged .",
+            "git restore --staged -- .",
+            "git rm -r --cached .",
+            "chmod -R go-w .",
+            "find . -name '*.json' -exec python3 -m json.tool {} \\;",
+            "find . -name '*.toml' -exec grep -l title {} \\;",
+        ]),
+        "passed",
+    );
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find . -name '*.toml' -delete",
+            "find . -name '*.toml' -exec rm {} +",
+            "find . -iname 'POLICY.TOML' -delete",
+            "find . -delete",
+            "find . -type f -delete",
+            "find factory -name '*.toml' -delete",
+            "git restore --worktree --staged .",
+            "git restore .",
+            "git rm -r .",
+            "git checkout .",
+            "rm -rf .",
+        ]),
+        "refused",
+    );
+}
+
+/// Z-5: in a working copy the root is a folder like any other.
+#[test]
+fn the_root_of_a_working_copy_is_judged_like_a_folder() {
+    let (fx, wc) = scripts_place();
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "rm -rf .",
+            "rm -rf ./",
+            "find . -delete",
+            "find . -name other.txt -delete",
+            "find src -name '*.orig' -delete",
+            "git rm -r .",
+            "find . -exec sh -c 'echo x > \"$1\"' _ {} \\;",
+            "rm -rf src",
+            "rm other.txt",
+        ]),
+        "refused",
+    );
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "find . -name '*.json' -exec python3 -m json.tool {} \\;",
+            "find src -name '*.py' -exec python3 -m py_compile {} \\;",
+            "find src -name '*.rs' -exec sh -c 'rustfmt --check \"$1\"' _ {} \\;",
+            "git restore --staged .",
+            "git checkout -- .",
+            "rm -f src/hello.txt",
+        ]),
+        "passed",
+    );
+}
+
+/// Z-7: an interpreter that only reads a record passes by its absolute path as by its relative one;
+/// one that opens it for writing stays refused.
+#[test]
+fn an_interpreter_reading_a_record_by_its_absolute_path_passes() {
+    let fx = Fx::new();
+    fx.tiny();
+    let root = fx.root.to_string_lossy().to_string();
+    let rec = format!("{root}/factory/records/R-1.toml");
+    let passed = vec![
+        format!("awk 'NR<3' {rec}"),
+        format!("python3 -c \"print(open('{rec}').read())\""),
+        format!("python3 -m json.tool {root}/.bf/guard.json"),
+        format!("head -3 {rec}"),
+        "awk 'NR<3' factory/records/R-1.toml".to_string(),
+        "python3 -c \"print(open('factory/records/R-1.toml').read())\"".to_string(),
+    ];
+    check_rows(&fx, &fx.root, &passed, "passed");
+    let refused = vec![
+        format!("python3 -c \"open('{root}/factory/policy.toml','w').write('x')\""),
+        format!("python3 -c \"p='{root}/factory/policy.toml'; open(p,'w').write('x')\""),
+        format!("python3 -c \"import os; os.remove('{rec}')\""),
+        format!("python3 - <<'EOF'\nimport shutil\nshutil.copy('/tmp/x', '{root}/factory/policy.toml')\nEOF"),
+        // Flags and calls that open for writing without a name like `write`.
+        format!("python3 -c \"import os; os.open('{root}/factory/policy.toml', os.O_WRONLY|os.O_TRUNC)\""),
+        format!("perl -e \"sysopen(F, '{root}/factory/policy.toml', O_WRONLY|O_TRUNC)\""),
+        format!("python3 -c \"import tarfile; tarfile.open('/tmp/a.tar').extractall('{root}/factory')\""),
+        format!("python3 -c \"import shutil; shutil.unpack_archive('/tmp/a.tar', '{root}/factory')\""),
+        format!("python3 -c \"import sqlite3; sqlite3.connect('{root}/factory/policy.toml')\""),
+    ];
+    check_rows(&fx, &fx.root, &refused, "refused");
+    // Words that only contain a call name are reads.
+    let reads = vec![
+        format!("python3 -c \"import json; print(json.dumps(json.load(open('{root}/.bf/guard.json')), indent=2))\""),
+        format!("python3 -c \"print(open('{rec}').read().replace('a','b'))\""),
+        format!("python3 -c \"import sys; sys.stdout.write(open('{rec}').read())\""),
+        format!("python3 -c \"import sys, json; json.dump(json.load(open('{rec}')), sys.stdout)\""),
+        format!("python3 -c \"import copy; print(copy.deepcopy(open('{rec}').read()))\""),
+    ];
+    check_rows(&fx, &fx.root, &reads, "passed");
+}
+
+/// A filtered `find` that hands its matches to code that writes them is a delete of the matches.
+#[test]
+fn a_filtered_find_that_hands_matches_to_writing_code_is_judged_as_a_delete() {
+    let fx = Fx::new();
+    fx.tiny();
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find . -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
+            "find . -name '*.toml' -exec sh -c 'rm $1' _ {} +",
+            "find . -name '*.toml' -exec sh -c 'echo x > \"$1\"' _ {} \\;",
+        ]),
+        "refused",
+    );
+    check_rows(
+        &fx,
+        &fx.root,
+        &strings(&[
+            "find . -name '*.json' -exec python3 -m json.tool {} \\;",
+            "find . -name '*.py' -exec python3 -m py_compile {} \\;",
+        ]),
+        "passed",
+    );
+    let (fx, wc) = scripts_place();
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "find src -name '*.txt' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
+            "find src -name '*.txt' -exec sh -c 'rm $1' _ {} +",
+        ]),
+        "refused",
+    );
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&["find src -name '*.py' -exec python3 -m py_compile {} \\;"]),
+        "passed",
+    );
+}

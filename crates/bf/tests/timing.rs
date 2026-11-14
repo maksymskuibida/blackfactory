@@ -1,7 +1,8 @@
 //! Timing tests. T-1: queries and state changes on 1,000 records. T-11: gate pages.
 //! T-12: the guard hook. They print medians and fail only on gross regressions:
 //! the thresholds are several times the design targets because the machine may be busy.
-//! Run with `cargo test --test timing -- --nocapture --test-threads=1` to see the numbers.
+//! Run with `cargo test --package=bf timing:: -- --nocapture --test-threads=1` to see the numbers
+//! (the test files are one program, so a file is selected by its test path, not by `--test`).
 
 mod common;
 use common::*;
