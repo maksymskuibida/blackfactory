@@ -20,6 +20,7 @@ pub mod run;
 pub mod sandbox;
 pub mod scan;
 pub mod schema;
+pub mod shellparse;
 pub mod statusline;
 pub mod store;
 pub mod uiux;
