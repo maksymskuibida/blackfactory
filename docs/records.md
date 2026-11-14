@@ -241,7 +241,7 @@ Only the human edits it. The guard keeps agents away from it.
 
 | Section | Keys | Meaning |
 |---|---|---|
-| `[limits]` | `max_rounds`, `idle_minutes`, `max_attempts` | Review rounds before parking (3); idle time before a running unit counts as stuck (60); failing check runs and blocked reports in a row before parking (10) |
+| `[limits]` | `max_rounds`, `idle_minutes`, `max_attempts`, `checkpoint_reviews` | Review rounds before parking (3); idle time before a running unit counts as stuck (60); failing check runs and blocked reports in a row before parking (10); reviews a checkpoint may have before it parks with a high or medium finding still open (3) |
 | `[tiers]` | `builder`, `reviewer`, `verifier` | Model tier by role |
 | `[budget]` | `cap`, `unit` | Spending cap (0 = none) and its unit |
 | `[review]` | `required` | A unit needs a clean review before landing |

@@ -269,6 +269,88 @@ fn open_locked(
     Ok(true)
 }
 
+/// Open a fix of `k` for findings the human picked or released. The checkpoint's working copy must be clean.
+pub(crate) fn open_chosen(
+    p: &Project,
+    pl: &Plan,
+    k: &str,
+    findings: Vec<Value>,
+    content: &str,
+) -> R<()> {
+    open_locked(p, pl, k, "review", vec![], findings, content, true)?;
+    Ok(())
+}
+
+/// The probes that exposed the findings this fix is for, which the fix must keep as permanent tests: each
+/// is a file in the checkpoint's working copy, committed, that holds the stored probe, and its command must
+/// give the expected answer. Returns what is still missing.
+fn probe_tests_missing(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<String>> {
+    let k = &f.checkpoint;
+    let top = p.work_dir().join(k);
+    let mut missing = Vec::new();
+    for x in f
+        .origin_findings
+        .iter()
+        .filter(|x| !s(x, "probe").is_empty())
+    {
+        let name = s(x, "probe");
+        let file = s(x, "probe_file");
+        let wt = wts(p, pl, k)?;
+        // The file's path starts with the repository folder when the checkpoint has several.
+        let in_repo = wt.iter().find_map(|(n, dir)| {
+            let rel = if several_repos(p, pl, k) {
+                file.strip_prefix(&format!("{n}/"))?.to_string()
+            } else {
+                file.to_string()
+            };
+            Some((dir.clone(), rel))
+        });
+        let Some((dir, rel)) = in_repo else {
+            missing.push(format!(
+                "probe `{name}`: its file `{file}` is in no repository of {k}"
+            ));
+            continue;
+        };
+        let committed = gitx::must(&dir, &["show", &format!("HEAD:{rel}")]).ok();
+        let stored = fs::read_to_string(p.root.join(s(x, "probe_stored"))).unwrap_or_default();
+        match committed {
+            None => {
+                missing.push(format!(
+                    "probe `{name}`: add `{file}` to the suite and commit it"
+                ));
+                continue;
+            }
+            Some(body) if !stored.trim().is_empty() && !body.contains(stored.trim()) => {
+                missing.push(format!(
+                    "probe `{name}`: `{file}` does not hold the probe the reviewer stored"
+                ));
+                continue;
+            }
+            Some(_) => {}
+        }
+        let argv: Vec<String> = s(x, "probe_command")
+            .split_whitespace()
+            .map(|w| w.to_string())
+            .collect();
+        if argv.is_empty() {
+            missing.push(format!("probe `{name}`: it has no command to run"));
+            continue;
+        }
+        let want = x["probe_expect_exit"].as_i64().unwrap_or(0);
+        let (exit, tail, _, _, _) =
+            evidence::exec_capture(p, &top, &argv, p.policy.evidence.tail_bytes)?;
+        if exit != want {
+            missing.push(format!(
+                "probe `{name}`: `{}` gave exit {exit}, and the expected answer is exit {want} ({}). {}",
+                s(x, "probe_command"),
+                s(x, "probe_expect"),
+                tail.lines().last().unwrap_or("")
+            ));
+        }
+    }
+    Ok(missing)
+}
+
 /// The paths in the units' test folders that existed when the fix opened and that no unit lists: a fix may
 /// add new test files there, never change one that was already there.
 fn existing_test_files(p: &Project, f: &CkFixOpen) -> Vec<String> {
@@ -509,12 +591,47 @@ pub fn report(
     findings: Option<&Value>,
     token: Option<&str>,
 ) -> R<Value> {
+    report_inner(p, k, result, role, note, findings, token, false)
+}
+
+/// The findings of a checkpoint review round that was recorded (with its areas): open the fix from them.
+/// Only the review round calls this; a bare reviewer report never does.
+pub fn report_from_round(
+    p: &Project,
+    k: &str,
+    note: &str,
+    findings: Option<&Value>,
+    token: Option<&str>,
+) -> R<Value> {
+    report_inner(
+        p,
+        k,
+        "findings",
+        Some("reviewer"),
+        note,
+        findings,
+        token,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_inner(
+    p: &Project,
+    k: &str,
+    result: &str,
+    role: Option<&str>,
+    note: &str,
+    findings: Option<&Value>,
+    token: Option<&str>,
+    via_round: bool,
+) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("report on the fix of {k}"))?;
     let st = events::require_chain(p)?;
     run::need_run(&st)?;
     let pl = plan::load(p)?;
     let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
-        return open_from_review(p, &st, &pl, k, result, role, findings, token);
+        return open_from_review(p, &st, &pl, k, result, role, findings, token, via_round);
     };
     let expected = match f.phase.as_str() {
         "fix" => "builder",
@@ -622,6 +739,17 @@ pub fn report(
                     "`bf status` shows the fix in review.",
                 ));
             }
+            let absent = probe_tests_missing(p, &pl, &f)?;
+            if !absent.is_empty() {
+                let mut steps = absent.clone();
+                steps.push("Add each probe to the suite as a permanent test with its expected answer, commit it, then report again.".into());
+                return Err(refuse_owned(
+                    format!("report the fix of {k}"),
+                    format!("a probe that exposed a fault is not yet a permanent test that passes: {}", absent.len()),
+                    steps,
+                    "`bf status` shows the fix in review.",
+                ));
+            }
             events::append(p, "checkpoint.fix.built", json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>()}))?;
             write_overlay(p)?;
             p.write_guard()?;
@@ -707,6 +835,7 @@ fn open_from_review(
     role: Option<&str>,
     findings: Option<&Value>,
     token: Option<&str>,
+    via_round: bool,
 ) -> R<Value> {
     let bad = |because: &str| {
         refuse(
@@ -728,6 +857,20 @@ fn open_from_review(
         || !after.iter().all(|u| st.unit_state(u) == "landed")
     {
         return Err(bad("no fix is open for it, and this is not a review of a checkpoint whose units have landed"));
+    }
+    // A checkpoint's review report goes through the review round (it needs an open round and the areas
+    // probed), and a parked checkpoint is released only by the human. The older path stays only for a
+    // checkpoint whose review is switched off for the run.
+    if !via_round && (crate::ckreview::required(st) || crate::ckreview::parked(p, st, k)?) {
+        return Err(refuse(
+            format!("report findings on {k}"),
+            "the review of a checkpoint reports through its review round, with the areas probed; no round is open, or the checkpoint is parked for the human",
+            &[
+                "Run `bf brief <K> --role reviewer` to open the round, then report with the areas probed.",
+                "A parked checkpoint is released only by the human, in their own words.",
+            ],
+            "`bf next` shows what the checkpoint waits for.",
+        ));
     }
     if p.policy.roles.tokens && !run::holds_token(p, &format!("{k}:reviewer"), token) {
         return Err(refuse(
@@ -944,6 +1087,17 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                 x["where"].as_str().unwrap_or(""),
                 x["action"].as_str().unwrap_or("")
             ));
+            if !s(x, "probe").is_empty() {
+                md.push_str(&format!(
+                    "  - A probe exposed it: `{}`, kept in `{}`. Add it to the suite as a permanent test at `{}`, with its expected answer ({}; exit {}), and commit it. Run it with `{}`. The fix does not count until that test is there and passes.\n",
+                    s(x, "probe"),
+                    s(x, "probe_stored"),
+                    s(x, "probe_file"),
+                    s(x, "probe_expect"),
+                    x["probe_expect_exit"],
+                    s(x, "probe_command")
+                ));
+            }
         }
         md.push('\n');
     }

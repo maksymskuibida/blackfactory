@@ -16,6 +16,7 @@ pub fn default_policy_text(exec_path: &str, git: &str) -> String {
 max_rounds = 3        # review rounds before a unit is parked
 idle_minutes = 60     # a running unit with no event for this long is stuck
 max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
+checkpoint_reviews = 3 # reviews a checkpoint may have before it parks with a high or medium finding open
 
 [tiers]               # model tier by role: cheap, standard or strong
 builder = "standard"
@@ -91,6 +92,8 @@ pub struct Limits {
     pub max_rounds: u32,
     pub idle_minutes: u64,
     pub max_attempts: u32,
+    /// Reviews a checkpoint may have before it parks with a high or medium finding still open.
+    pub checkpoint_reviews: u32,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -98,6 +101,7 @@ impl Default for Limits {
             max_rounds: 3,
             idle_minutes: 60,
             max_attempts: 10,
+            checkpoint_reviews: 3,
         }
     }
 }

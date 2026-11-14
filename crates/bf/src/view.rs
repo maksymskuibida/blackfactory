@@ -1211,6 +1211,23 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
                 _ => String::new(),
             }
         )));
+        for a in &r.areas {
+            rbody.push(text(&format!(
+                "Round {} probed: {} ({}).",
+                r.round,
+                a["area"].as_str().unwrap_or(""),
+                a["how"].as_str().unwrap_or("")
+            )));
+        }
+        for x in &r.probes {
+            rbody.push(text(&format!(
+                "Round {} probe {}: meant to show {}; showed {}.",
+                r.round,
+                x["name"].as_str().unwrap_or(""),
+                x["meant"].as_str().unwrap_or(""),
+                x["showed"].as_str().unwrap_or("")
+            )));
+        }
     }
     let flaky: Vec<String> = rc
         .iter()

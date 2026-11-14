@@ -532,6 +532,18 @@ pub struct CkFixOpen {
     pub history: Vec<Value>,
 }
 
+/// A finding of a checkpoint review that the human accepted, or declined with a reason.
+#[derive(Clone, Debug, Default)]
+pub struct CkSettled {
+    pub checkpoint: String,
+    pub round: u32,
+    /// The finding's number inside its round, from 1.
+    pub index: u32,
+    /// `accepted` or `declined`.
+    pub fate: String,
+    pub reason: String,
+}
+
 /// A checkpoint fix that was reviewed clean and whose checks passed again.
 #[derive(Clone, Debug, Default)]
 pub struct CkFixDone {
@@ -620,6 +632,11 @@ pub struct State {
     pub ck_fixes: Vec<CkFixDone>,
     /// `<checkpoint>@<content>` of fixes the human turned down: no fix opens for that content again.
     pub ck_declined: Vec<String>,
+    /// Findings of checkpoint reviews that the human accepted or declined, in log order.
+    pub ck_settled: Vec<CkSettled>,
+    /// Checkpoint -> the review round the human released it at: reviews before it no longer count towards
+    /// the number of reviews a checkpoint may have.
+    pub ck_review_floor: BTreeMap<String, u32>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -1257,6 +1274,43 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.reason.clear();
                     o.missing.clear();
                 }
+            }
+            "checkpoint.finding.settle" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let fate = sv("fate");
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
+                    || !matches!(fate.as_str(), "accepted" | "declined")
+                    || (fate == "declined" && sv("reason").trim().is_empty())
+                {
+                    st.ignored.push(format!(
+                        "event {seq}: a finding settled with no valid human turn and quote, or a decline with no reason"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                for id in ev["ids"].as_array().into_iter().flatten() {
+                    st.ck_settled.push(CkSettled {
+                        checkpoint: sv("checkpoint"),
+                        round: id["round"].as_u64().unwrap_or(0) as u32,
+                        index: id["index"].as_u64().unwrap_or(0) as u32,
+                        fate: fate.clone(),
+                        reason: sv("reason"),
+                    });
+                }
+            }
+            "checkpoint.review.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint review release cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                st.ck_review_floor.insert(
+                    sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
             }
             "checkpoint.fix.abort" => {
                 if let Some(o) = st.ck_fix.take() {

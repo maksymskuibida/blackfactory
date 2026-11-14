@@ -36,6 +36,10 @@ pub struct Round {
     /// `clean`, `findings` or `void` (the content changed before the reviewer reported); none while open.
     pub result: Option<String>,
     pub findings: Vec<Value>,
+    /// The areas the reviewer probed, each with how: read, built and run, or probed with a test of its own.
+    pub areas: Vec<Value>,
+    /// The probe tests the reviewer wrote: name, what it was meant to show, what it showed, where it is kept.
+    pub probes: Vec<Value>,
 }
 
 /// Every review round of `k`, in log order.
@@ -65,6 +69,8 @@ pub fn rounds(p: &Project, k: &str) -> R<Vec<Round>> {
                 if let Some(r) = out.iter_mut().rev().find(|r| r.round == n) {
                     r.result = Some(s(ev, "result").to_string());
                     r.findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                    r.areas = ev["areas"].as_array().cloned().unwrap_or_default();
+                    r.probes = ev["probes"].as_array().cloned().unwrap_or_default();
                 }
             }
             _ => {}
@@ -80,28 +86,108 @@ pub fn required(st: &State) -> bool {
         .any(|c| c.name == CHECK)
 }
 
-/// Whether the review ran clean on exactly this content.
-pub fn clean_at(p: &Project, k: &str, content: &str) -> R<bool> {
+/// Whether a finding stops the checkpoint from closing while it is open.
+fn blocking(f: &Value) -> bool {
+    matches!(s(f, "severity"), "critical" | "high" | "medium")
+}
+
+/// What became of a finding: `fixed` (with the unit or units that fixed it), `accepted` by the human, or
+/// `declined` with a reason. None while it is open.
+pub fn fate(st: &State, k: &str, round: u32, index: usize, f: &Value) -> Option<(String, String)> {
+    if let Some(x) = st
+        .ck_settled
+        .iter()
+        .rev()
+        .find(|x| x.checkpoint == k && x.round == round && x.index as usize == index + 1)
+    {
+        return Some((x.fate.clone(), x.reason.clone()));
+    }
+    st.ck_fixes
+        .iter()
+        .find(|d| d.checkpoint == k && d.origin_findings.contains(f))
+        .map(|d| {
+            let by = if d.units.is_empty() {
+                d.id.clone()
+            } else {
+                format!("{} ({})", d.units.join(", "), d.id)
+            };
+            ("fixed".to_string(), by)
+        })
+}
+
+/// The fate of a finding as a sentence: `open` while it has none.
+pub fn fate_text(st: &State, k: &str, round: u32, index: usize, f: &Value) -> String {
+    match fate(st, k, round, index, f) {
+        None => "open".to_string(),
+        Some((x, why)) if x == "fixed" => format!("fixed by {why}"),
+        Some((x, why)) if x == "accepted" => {
+            if why.is_empty() {
+                "accepted by the human".to_string()
+            } else {
+                format!("accepted by the human: {why}")
+            }
+        }
+        Some((_, why)) => format!("declined: {why}"),
+    }
+}
+
+/// The findings of a round that are open: (number inside the round from 1, the finding).
+fn open_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize, &'a Value)> {
+    r.findings
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| fate(st, k, r.round, *i, f).is_none())
+        .map(|(i, f)| (i + 1, f))
+        .collect()
+}
+
+/// Whether a round finished with a report (not void, not still open).
+fn reported(r: &Round) -> bool {
+    matches!(r.result.as_deref(), Some("clean") | Some("findings"))
+}
+
+/// The reviews the checkpoint has had since the human last released it.
+fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
+    let floor = st.ck_review_floor.get(k).copied().unwrap_or(0);
+    rs.iter().filter(|r| reported(r) && r.round > floor).count() as u32
+}
+
+/// Whether the review at exactly this content let the checkpoint go on: it filed no high and no medium
+/// finding, or each such finding has since been fixed, accepted or declined.
+pub fn passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
     Ok(rounds(p, k)?
         .iter()
-        .any(|r| r.result.as_deref() == Some("clean") && r.content == content))
+        .filter(|r| reported(r) && r.content == content)
+        .any(|r| !open_findings(st, k, r).iter().any(|(_, f)| blocking(f))))
 }
 
 /// Whether the checkpoint still needs its review before it can close.
 pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
-    Ok(required(st) && !clean_at(p, k, content)?)
+    Ok(required(st) && !passed_at(p, st, k, content)?)
 }
 
-/// The rounds that ended in findings: the limit of rounds counts these.
-fn spent(rs: &[Round]) -> u32 {
-    rs.iter()
-        .filter(|r| r.result.as_deref() == Some("findings"))
-        .count() as u32
+/// Whether the checkpoint is parked: it has had the number of reviews the policy allows, and the latest
+/// still has a high or medium finding open. Only the human releases it.
+pub fn parked(p: &Project, st: &State, k: &str) -> R<bool> {
+    let rs = rounds(p, k)?;
+    let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
+        return Ok(false);
+    };
+    Ok(reviews(st, k, &rs) >= p.policy.limits.checkpoint_reviews
+        && open_findings(st, k, last).iter().any(|(_, f)| blocking(f)))
 }
 
-/// Whether the review used up its rounds without a clean result at this content.
-pub fn exhausted(p: &Project, k: &str) -> R<bool> {
-    Ok(spent(&rounds(p, k)?) >= p.policy.limits.max_rounds)
+/// The low findings of the latest review that nobody has settled yet, for the human.
+pub fn open_low(p: &Project, st: &State, k: &str) -> R<Vec<Value>> {
+    let rs = rounds(p, k)?;
+    let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
+        return Ok(vec![]);
+    };
+    Ok(open_findings(st, k, last)
+        .into_iter()
+        .filter(|(_, f)| !blocking(f))
+        .map(|(i, f)| json!({"id": format!("r{}.{}", last.round, i), "title": s(f, "title"), "where": s(f, "where"), "action": s(f, "action")}))
+        .collect())
 }
 
 pub fn copy_path(p: &Project, k: &str) -> PathBuf {
@@ -115,10 +201,10 @@ fn open_round(rs: &[Round]) -> Option<&Round> {
 /// The directive for the reviewer of a checkpoint, or for the human when the rounds are used up.
 pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
     let rs = rounds(p, k)?;
-    if spent(&rs) >= p.policy.limits.max_rounds {
+    if parked(p, st, k)? {
         return Ok(
             json!({"role": "human", "action": "decide-checkpoint-review", "checkpoint": k,
-            "note": format!("The review of {k} filed findings in {} rounds and did not come back clean. The human decides: an amendment, or switching the checkpoint review off for the run with a reason (`bf checks propose --scope run {CHECK}=off:<why>`, then `bf checks set --quote \"<their words>\"`).", spent(&rs))}),
+            "note": format!("{k} is parked: it had {} reviews and a high or medium finding is still open. The human decides: release it in their own words (`bf checkpoint review {k} --release --quote \"<their words>\"`) so the findings go to a fix, accept or decline the findings (`bf checkpoint finding {k} --accept <ids> --quote \"<their words>\"`), or switch the checkpoint review off for the run with a reason (`bf checks propose --scope run {CHECK}=off:<why>`, then `bf checks set --quote \"<their words>\"`).", reviews(st, k, &rs))}),
         );
     }
     let round = open_round(&rs)
@@ -129,10 +215,24 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
         "tier": p.policy.tiers.reviewer, "round": round,
         "working_copy": copy_path(p, k).to_string_lossy(),
         "brief": p.briefs_dir().join(format!("{k}-reviewer.md")).to_string_lossy(),
-        "limits": {"max_rounds": p.policy.limits.max_rounds, "round": spent(&rs), "idle_minutes": p.policy.limits.idle_minutes,
+        "limits": {"max_rounds": p.policy.limits.checkpoint_reviews, "round": reviews(st, k, &rs), "idle_minutes": p.policy.limits.idle_minutes,
                    "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
         "commands": [format!("bf brief {k} --role reviewer")]}),
     )
+}
+
+/// The directive that lists the low findings of the latest review for the human: accept them together, or
+/// pick some to be fixed. None when there are none. They never hold the checkpoint back.
+pub fn low_directive(p: &Project, st: &State, k: &str) -> R<Option<Value>> {
+    let low = open_low(p, st, k)?;
+    if low.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        json!({"role": "human", "action": "decide-low-findings", "checkpoint": k, "findings": low,
+        "note": format!("The latest review of {k} filed low findings only (they do not hold the checkpoint back). The human accepts them together (`bf checkpoint finding {k} --accept low --quote \"<their words>\"`), declines some with a reason, or picks some to be fixed (`bf checkpoint finding {k} --fix-findings <ids>`)."),
+        "commands": [format!("bf checkpoint finding {k} --accept low --quote \"<the human's words>\"")]}),
+    ))
 }
 
 fn heads(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, String)>> {
@@ -224,23 +324,49 @@ fn refuse_not_ready(k: &str, because: &str) -> crate::refusal::Fail {
     )
 }
 
-fn outcome_of(st: &State, k: &str, r: &Round) -> &'static str {
-    if st
-        .ck_fixes
+/// The fate of every finding of a round, for the status and the page.
+fn outcomes_json(st: &State, k: &str, r: &Round) -> Value {
+    json!(r
+        .findings
         .iter()
-        .any(|f| f.checkpoint == k && f.origin_findings == r.findings)
-    {
-        "fixed (the fix was reviewed clean)"
-    } else if st
-        .ck_fix
-        .as_ref()
-        .map(|f| f.checkpoint == k && f.origin_findings == r.findings)
-        .unwrap_or(false)
-    {
-        "open (a fix is under way)"
-    } else {
-        "open"
+        .enumerate()
+        .map(
+            |(i, f)| json!({"id": format!("r{}.{}", r.round, i + 1), "title": s(f, "title"),
+            "severity": s(f, "severity"), "fate": fate_text(st, k, r.round, i, f)})
+        )
+        .collect::<Vec<_>>())
+}
+
+/// Lines that say, for each round, the areas it probed and how, and the probes it kept.
+fn report_lines(r: &Round) -> String {
+    let mut t = String::new();
+    for a in &r.areas {
+        t.push_str(&format!("  - Area: {} ({})\n", s(a, "area"), s(a, "how")));
     }
+    for x in &r.probes {
+        t.push_str(&format!(
+            "  - Probe {}: meant to show: {}. Showed: {}. Kept in `{}`.\n",
+            s(x, "name"),
+            s(x, "meant"),
+            s(x, "showed"),
+            s(x, "stored")
+        ));
+    }
+    t
+}
+
+/// The areas every review before round `n` probed, in order, without repeats: the angles already taken.
+fn areas_taken(rs: &[Round], n: u32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in rs.iter().filter(|r| r.round < n && reported(r)) {
+        for a in &r.areas {
+            let x = s(a, "area").to_string();
+            if !out.contains(&x) {
+                out.push(x);
+            }
+        }
+    }
+    out
 }
 
 fn read_unit_brief(p: &Project, u: &str) -> String {
@@ -279,17 +405,17 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     }
     let wc = p.work_dir().join(k);
     let content = p.content_hash(&wc)?;
-    if clean_at(p, k, &content)? {
+    if passed_at(p, &st, k, &content)? {
         return Err(refuse_not_ready(
             k,
-            "the review already ran clean on this content",
+            "the review already let the checkpoint go on at this content",
         ));
     }
     let mut rs = rounds(p, k)?;
-    if spent(&rs) >= p.policy.limits.max_rounds {
+    if parked(p, &st, k)? {
         return Err(refuse_not_ready(
             k,
-            "the review used up its rounds; the human decides",
+            "the checkpoint is parked after the reviews the policy allows; the human decides",
         ));
     }
     // A round still open on other content is void: the reviewer judged what is no longer there.
@@ -305,15 +431,12 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         Some(o) => o.round,
         None => {
             let n = rs.last().map(|r| r.round).unwrap_or(0) + 1;
-            let earlier = rs
-                .iter()
-                .rev()
-                .find(|r| r.result.as_deref() == Some("findings"));
+            let earlier = rs.iter().rev().find(|r| reported(r));
             let covered = match earlier {
                 None => "the whole checkpoint, cold".to_string(),
                 Some(e) => format!(
-                    "the whole checkpoint, the earlier findings with their outcomes, and what changed since round {}",
-                    e.round
+                    "the whole checkpoint, the report of round {} with what became of each finding, the probes kept, and what changed since round {}",
+                    e.round, e.round
                 ),
             };
             events::append(
@@ -359,8 +482,10 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         "# Brief: {k} as reviewer (checkpoint review, round {n})\n\nCheckpoint: {}\n\n",
         s(&kr, "title")
     );
+    let is_repeat = rs.iter().any(|r| r.round < n && reported(r));
     md.push_str(&format!(
-        "You review the whole checkpoint cold, on the strong tier. Round {n} covers: {}.\n\n",
+        "You review the whole checkpoint{}, on the strong tier. Round {n} covers: {}.\n\n",
+        if is_repeat { "" } else { " cold" },
         rs.iter()
             .find(|r| r.round == n)
             .map(|r| r.covered.as_str())
@@ -392,18 +517,19 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         ));
     }
     // Earlier rounds: the findings with their outcomes, and what changed since the round before.
-    let earlier: Vec<&Round> = rs
-        .iter()
-        .filter(|r| r.round < n && r.result.as_deref() == Some("findings"))
-        .collect();
+    let earlier: Vec<&Round> = rs.iter().filter(|r| r.round < n && reported(r)).collect();
     if !earlier.is_empty() {
-        md.push_str("## Earlier rounds\n\nCheck that each finding below is fixed. File a new finding for anything a fix broke or that you come across. The whole checkpoint stays in scope.\n\n");
+        md.push_str("## Earlier rounds\n\nThe scope of this round is the whole checkpoint, not only what changed. Work in this order: first confirm that each finding marked fixed below is fixed; then review the code that changed; then take angles the earlier reviews did not take (the areas below tell you which they took). File only new problems: do not file again a finding the human accepted or declined, or one that is open and listed here. Anything a fix broke is new.\n\n");
         for r in &earlier {
             md.push_str(&format!(
                 "Round {} judged content {}:\n",
                 r.round,
                 &r.content[..12.min(r.content.len())]
             ));
+            md.push_str(&report_lines(r));
+            if r.findings.is_empty() {
+                md.push_str("- It filed no finding.\n");
+            }
             for (i, f) in r.findings.iter().enumerate() {
                 md.push_str(&format!(
                     "- r{}.{} [{}] {} ({}): {}. Outcome: {}\n",
@@ -417,10 +543,19 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
                         s(f, "where")
                     },
                     s(f, "action"),
-                    outcome_of(&st, k, r)
+                    fate_text(&st, k, r.round, i, f)
                 ));
             }
         }
+        let taken = areas_taken(&rs, n);
+        md.push_str(&format!(
+            "\nAreas the reviews before you probed: {}.\n",
+            if taken.is_empty() {
+                "none listed".to_string()
+            } else {
+                taken.join("; ")
+            }
+        ));
         if let Some(last) = rs.iter().rev().find(|r| r.round < n && !r.heads.is_empty()) {
             let mut since = String::new();
             for r in run::checkpoint_repos(p, &pl, k)? {
@@ -469,7 +604,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     md.push_str(&format!("\nAnything else you run (a probe test, a build to look at) goes through `bf evidence run --probe {k} -- <command>`. It is recorded and settles nothing. A check that failed and then passed on a deliberate repeat at the same content needs your judgement before it counts: `bf evidence run <check> --judge flaky|failure|other --reason \"<what you saw>\" --token <token>`. A check judged by an agent stays with its own verifier: you do not settle it.\n\n"));
     md.push_str("## Try to get around the rules\n\nFor each new rule this checkpoint adds (the requirements above), try to get around it: find the input, the order of steps, the file or the command that the rule does not hold against, and show it with a probe. A rule you could not get around is worth saying so.\n\n");
     md.push_str(&format!(
-        "## Report\n\nFindings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`:\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n[{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\"}}]\nEOF\n```\n\nThey open the checkpoint fix. With nothing to file, run the same command without `--findings`: it needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
+        "## Report\n\nA report says which areas you probed and how, and not only what you found. Each area carries `how`: `read`, `built and run`, or `probed with a test of its own`. A report with no areas is refused. Findings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`. A finding that a probe exposed names it in `probe`. Every probe test you wrote goes in `probes` with `name`, `meant` (what it was meant to show), `showed` (what it showed), `file` (its path inside your copy), `command` (how to run it) and, for a probe that exposed a fault, `expect` (the right answer, which the fix must make the test give; `expect_exit` is the exit code that means so, 0 by default). A probe holds no name of a person or a private project, no home path and no private link.\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n{{\"areas\": [{{\"area\": \"the close rule\", \"how\": \"read\"}}],\n \"probes\": [{{\"name\": \"p1\", \"meant\": \"...\", \"showed\": \"...\", \"file\": \"tests/p1.rs\", \"command\": \"cargo test p1\", \"expect\": \"...\"}}],\n \"findings\": [{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\", \"probe\": \"p1\"}}]}}\nEOF\n```\n\nA high or medium finding opens the checkpoint fix, and the fix adds each probe that exposed it to the suite as a permanent test. Low findings do not hold the checkpoint back: the human accepts them together or picks some to be fixed. With nothing to file, give an empty `findings` list: the report needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
     ));
     let path = p.briefs_dir().join(format!("{k}-reviewer.md"));
     util::atomic_write(&path, md.as_bytes())?;
@@ -497,6 +632,290 @@ fn finding_list(findings: Option<&Value>) -> Vec<Value> {
                 .or_else(|| f.get("findings").and_then(|x| x.as_array().cloned()))
         })
         .unwrap_or_default()
+}
+
+fn object_list(findings: Option<&Value>, key: &str) -> Vec<Value> {
+    findings
+        .and_then(|f| f.get(key))
+        .and_then(|x| x.as_array().cloned())
+        .unwrap_or_default()
+}
+
+/// How an area was probed, in one of the three words the report may use.
+fn canonical_how(how: &str) -> Option<&'static str> {
+    let h = how
+        .trim()
+        .to_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match h.as_str() {
+        "read" => Some("read"),
+        "built and run" | "built" | "run" => Some("built and run"),
+        "probed with a test of its own" | "probed with a test" | "probed" | "probe" => {
+            Some("probed with a test of its own")
+        }
+        _ => None,
+    }
+}
+
+/// The areas of a report, each with its `how` in canonical form. A report with none is refused.
+fn check_areas(k: &str, raw: Vec<Value>) -> R<Vec<Value>> {
+    let mut out = Vec::new();
+    for (i, a) in raw.iter().enumerate() {
+        let name = s(a, "area").trim().to_string();
+        match (name.is_empty(), canonical_how(s(a, "how"))) {
+            (false, Some(how)) => out.push(json!({"area": name, "how": how})),
+            _ => {
+                return Err(refuse(
+                    format!("report on the review of {k}"),
+                    format!("area {} is not complete: it needs `area` and a `how` of read, built and run, or probed with a test of its own", i + 1),
+                    &["Give each area as `{\"area\": \"what you looked at\", \"how\": \"read\"}`."],
+                    "The command records the review.",
+                ));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(refuse(
+            format!("report on the review of {k}"),
+            "the report does not say which areas the reviewer probed and how",
+            &["Give `areas` beside the findings: a JSON object `{\"areas\": [{\"area\": \"...\", \"how\": \"read\"}], \"findings\": [...]}` through `--findings -`. `how` is read, built and run, or probed with a test of its own."],
+            "The command records the review with its areas.",
+        ));
+    }
+    Ok(out)
+}
+
+/// A word of `text` that is `name`, whole and in any case.
+fn has_word(text: &str, name: &str) -> bool {
+    let (t, n) = (text.to_lowercase(), name.to_lowercase());
+    t.match_indices(&n).any(|(i, m)| {
+        let before = t[..i].chars().next_back();
+        let after = t[i + m.len()..].chars().next();
+        !before.map(|c| c.is_alphanumeric()).unwrap_or(false)
+            && !after.map(|c| c.is_alphanumeric()).unwrap_or(false)
+    })
+}
+
+/// What a stored probe must not hold: a name of a person, a home path, an e-mail address or a link.
+fn leak_in(p: &Project, text: &str) -> Option<&'static str> {
+    let low = text.to_lowercase();
+    if ["/users/", "/home/", "c:\\users", "~/"]
+        .iter()
+        .any(|x| low.contains(x))
+    {
+        return Some("a home path");
+    }
+    if ["http", "https", "file", "ssh"]
+        .iter()
+        .any(|x| low.contains(&format!("{x}:{}", "//")))
+        || low.contains("git@")
+    {
+        return Some("a link");
+    }
+    let bytes: Vec<char> = text.chars().collect();
+    for (i, c) in bytes.iter().enumerate() {
+        if *c == '@'
+            && i > 0
+            && bytes[i - 1].is_alphanumeric()
+            && bytes
+                .get(i + 1..)
+                .map(|r| {
+                    let w: String = r.iter().take_while(|x| !x.is_whitespace()).collect();
+                    w.contains('.')
+                        && w.chars()
+                            .next()
+                            .map(|x| x.is_alphanumeric())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        {
+            return Some("an e-mail address");
+        }
+    }
+    let mut names: Vec<String> = ["USER", "LOGNAME"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .collect();
+    if let Ok(o) = gitx::run(&p.top, &["config", "--global", "user.name"], &[]) {
+        if o.ok {
+            names.push(o.stdout.trim().to_string());
+        }
+    }
+    for n in names.iter().filter(|n| n.chars().count() >= 4) {
+        if has_word(text, n) {
+            return Some("a person's name");
+        }
+    }
+    None
+}
+
+fn refuse_probe(k: &str, name: &str, because: String) -> crate::refusal::Fail {
+    refuse(
+        format!("report on the review of {k}"),
+        format!("probe `{name}`: {because}"),
+        &["A probe holds no name of a person or a private project, no home path and no private link. Give each probe `name`, `meant`, `showed`, and `file` and `command` when a finding names it."],
+        "The command records the review with its probes.",
+    )
+}
+
+/// The probes of a report, checked, with their files read from the reviewer's copy and stored as evidence
+/// files of the round. Returns the probes as stored with the review.
+fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value]) -> R<Vec<Value>> {
+    let copy = copy_path(p, k);
+    let dir = p
+        .evidence_dir()
+        .join("probes")
+        .join(format!("{k}-review-{round}"));
+    let mut out: Vec<Value> = Vec::new();
+    for x in raw {
+        let name = s(x, "name").trim().to_string();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
+            return Err(refuse_probe(
+                k,
+                &name,
+                "its name is empty or has characters beyond letters, digits, `_`, `-` and `.`"
+                    .into(),
+            ));
+        }
+        if out.iter().any(|o| s(o, "name") == name) {
+            return Err(refuse_probe(k, &name, "two probes have this name".into()));
+        }
+        for key in ["meant", "showed"] {
+            if s(x, key).trim().is_empty() {
+                return Err(refuse_probe(k, &name, format!("it has no `{key}`")));
+            }
+        }
+        let named_by_finding = list.iter().any(|f| s(f, "probe") == name);
+        let file = s(x, "file").trim().to_string();
+        let command = s(x, "command").trim().to_string();
+        let expect = s(x, "expect").trim().to_string();
+        if named_by_finding && (file.is_empty() || command.is_empty() || expect.is_empty()) {
+            return Err(refuse_probe(k, &name, "a finding names it, so it needs `file`, `command` and `expect` for the fix to keep it as a permanent test".into()));
+        }
+        let mut hold = vec![name.clone()];
+        for key in ["meant", "showed", "file", "command", "expect"] {
+            hold.push(s(x, key).to_string());
+        }
+        let mut stored = String::new();
+        if !file.is_empty() {
+            let rel = std::path::Path::new(&file);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(refuse_probe(
+                    k,
+                    &name,
+                    "its file is not a path inside the reviewer's copy".into(),
+                ));
+            }
+            let body = fs::read_to_string(copy.join(rel)).map_err(|_| {
+                refuse_probe(
+                    k,
+                    &name,
+                    format!("its file `{file}` is not in the reviewer's copy"),
+                )
+            })?;
+            hold.push(body.clone());
+            if let Some(why) = hold.iter().find_map(|t| leak_in(p, t)) {
+                return Err(refuse_probe(k, &name, format!("it holds {why}")));
+            }
+            fs::create_dir_all(&dir)?;
+            let base = rel.file_name().and_then(|b| b.to_str()).unwrap_or("probe");
+            let dest = dir.join(format!("{name}-{base}"));
+            util::atomic_write(&dest, body.as_bytes())?;
+            stored = format!("factory/evidence/probes/{k}-review-{round}/{name}-{base}");
+        } else if let Some(why) = hold.iter().find_map(|t| leak_in(p, t)) {
+            return Err(refuse_probe(k, &name, format!("it holds {why}")));
+        }
+        out.push(
+            json!({"name": name, "meant": s(x, "meant").trim(), "showed": s(x, "showed").trim(),
+            "file": file, "command": command, "expect": expect,
+            "expect_exit": x.get("expect_exit").and_then(|e| e.as_i64()).unwrap_or(0),
+            "stored": stored}),
+        );
+    }
+    Ok(out)
+}
+
+/// The findings, each naming a probe checked against the stored ones: a finding that a probe exposed
+/// carries what the fix needs to keep it. A finding the human already accepted or declined is not filed again.
+fn prepare_findings(
+    p: &Project,
+    st: &State,
+    k: &str,
+    list: &[Value],
+    probes: &[Value],
+) -> R<Vec<Value>> {
+    let settled: Vec<(String, String)> = rounds(p, k)?
+        .iter()
+        .flat_map(|r| {
+            r.findings
+                .iter()
+                .enumerate()
+                .filter(|(i, f)| {
+                    matches!(
+                        fate(st, k, r.round, *i, f).map(|x| x.0).as_deref(),
+                        Some("accepted") | Some("declined")
+                    )
+                })
+                .map(|(_, f)| (norm(s(f, "title")), norm(finding_where(f))))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut out = Vec::new();
+    for f in list {
+        if settled.contains(&(norm(s(f, "title")), norm(finding_where(f)))) {
+            return Err(refuse(
+                format!("report findings on {k}"),
+                format!("`{}` was accepted by the human or declined with a reason; a repeat review files only new problems", s(f, "title")),
+                &["Leave it out of the report."],
+                "The command records the review.",
+            ));
+        }
+        let mut f = f.clone();
+        let name = s(&f, "probe").to_string();
+        if !name.is_empty() {
+            let Some(pr) = probes.iter().find(|x| s(x, "name") == name) else {
+                return Err(refuse(
+                    format!("report findings on {k}"),
+                    format!("`{}` names the probe `{name}`, which the report does not list in `probes`", s(&f, "title")),
+                    &["List the probe with its name, what it was meant to show and what it showed."],
+                    "The command records the review.",
+                ));
+            };
+            f["probe_file"] = pr["file"].clone();
+            f["probe_command"] = pr["command"].clone();
+            f["probe_expect"] = pr["expect"].clone();
+            f["probe_expect_exit"] = pr["expect_exit"].clone();
+            f["probe_stored"] = pr["stored"].clone();
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
+fn norm(t: &str) -> String {
+    t.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn finding_where(f: &Value) -> &str {
+    if s(f, "where").is_empty() {
+        s(f, "file")
+    } else {
+        s(f, "where")
+    }
 }
 
 fn check_findings(k: &str, list: &[Value]) -> R<()> {
@@ -539,6 +958,8 @@ pub fn report(
     token: Option<&str>,
 ) -> R<Value> {
     let list = finding_list(findings);
+    let raw_areas = object_list(findings, "areas");
+    let raw_probes = object_list(findings, "probes");
     if !matches!(result, "findings" | "built") {
         return Err(refuse(
             format!("report `{result}` on the review of {k}"),
@@ -555,7 +976,7 @@ pub fn report(
             "`bf status` shows the review.",
         ));
     }
-    {
+    let list = {
         let _lock = crate::lock::engine(p, &format!("report on the review of {k}"))?;
         let st = events::require_chain(p)?;
         run::need_run(&st)?;
@@ -578,7 +999,12 @@ pub fn report(
                 "`bf status` shows the review.",
             ));
         }
-        if list.is_empty() {
+        let areas = check_areas(k, raw_areas)?;
+        check_findings(k, &list)?;
+        let probes = store_probes(p, k, round.round, &raw_probes, &list)?;
+        let list = prepare_findings(p, &st, k, &list, &probes)?;
+        let held_back = list.iter().any(blocking);
+        if !held_back {
             let receipts = evidence::load_receipts(p)?;
             let missing = unrun_checks(&pl, &st, &receipts, k, &content);
             if !missing.is_empty() {
@@ -595,17 +1021,26 @@ pub fn report(
                     "`bf evidence verify --checkpoint <K>` shows a passing receipt for each.",
                 ));
             }
+            let result = if list.is_empty() { "clean" } else { "findings" };
             events::append(
                 p,
                 "checkpoint.review.done",
-                json!({"checkpoint": k, "round": round.round, "content": content, "result": "clean",
-                       "findings": [], "note": note}),
+                json!({"checkpoint": k, "round": round.round, "content": content, "result": result,
+                       "findings": list, "areas": areas, "probes": probes, "note": note}),
             )?;
             // The review settles the named check at the content it judged.
-            let says = format!(
-                "The checkpoint reviewer judged the whole of {k} in round {} and found nothing to fix.",
-                round.round
-            );
+            let says = if list.is_empty() {
+                format!(
+                    "The checkpoint reviewer judged the whole of {k} in round {} and found nothing to fix.",
+                    round.round
+                )
+            } else {
+                format!(
+                    "The checkpoint reviewer judged the whole of {k} in round {} and filed no high and no medium finding; {} low finding(s) go to the human.",
+                    round.round,
+                    list.len()
+                )
+            };
             for c in pl.checks.iter().filter(|c| s(c, "named") == CHECK) {
                 evidence::review_receipt(p, s(c, "id"), &content, &says)?;
             }
@@ -614,26 +1049,33 @@ pub fn report(
                 run::spend_token(p, &format!("{k}:reviewer"))?;
             }
             p.write_guard()?;
-            return Ok(json!({"checkpoint": k, "round": round.round, "result": "clean"}));
+            return Ok(
+                json!({"checkpoint": k, "round": round.round, "result": result,
+                "low_findings": list.len(), "goes_on": true}),
+            );
         }
-        check_findings(k, &list)?;
         events::append(
             p,
             "checkpoint.review.done",
             json!({"checkpoint": k, "round": round.round, "content": content, "result": "findings",
-                   "findings": list, "note": note}),
+                   "findings": list, "areas": areas, "probes": probes, "note": note}),
         )?;
         remove_copy(p, &pl, k);
-    }
-    let v = crate::ckfix::report(
-        p,
-        k,
-        "findings",
-        Some("reviewer"),
-        note,
-        Some(&json!(list)),
-        token,
-    )?;
+        // The number of reviews the policy allows is reached with a high or medium finding open: the
+        // checkpoint parks and the human is asked. No fix opens.
+        if reviews(&st, k, &rs) + 1 >= p.policy.limits.checkpoint_reviews {
+            if p.policy.roles.tokens {
+                run::spend_token(p, &format!("{k}:reviewer"))?;
+            }
+            p.write_guard()?;
+            return Ok(
+                json!({"checkpoint": k, "round": round.round, "result": "findings",
+                "parked": true, "note": "the checkpoint is parked: the human decides"}),
+            );
+        }
+        list
+    };
+    let v = crate::ckfix::report_from_round(p, k, note, Some(&json!(list)), token)?;
     if p.policy.roles.tokens {
         run::spend_token(p, &format!("{k}:reviewer"))?;
     }
@@ -767,11 +1209,174 @@ pub fn status_json(p: &Project, st: &State) -> Value {
         if rs.is_empty() {
             continue;
         }
-        out.push(json!({"checkpoint": k, "rounds": rs.iter().map(|r| json!({
+        out.push(
+            json!({"checkpoint": k, "parked": parked(p, st, k).unwrap_or(false),
+            "rounds": rs.iter().map(|r| json!({
             "round": r.round, "content": r.content, "covered": r.covered,
             "result": r.result, "findings": r.findings.len(),
-            "outcomes": if r.findings.is_empty() { Value::Null } else { json!(outcome_of(st, k, r)) },
-        })).collect::<Vec<_>>()}));
+            "areas": r.areas, "probes": r.probes,
+            "outcomes": if r.findings.is_empty() { Value::Null } else { outcomes_json(st, k, r) },
+        })).collect::<Vec<_>>()}),
+        );
     }
     json!(out)
+}
+
+/// The findings a human names: `low` for every low finding of the latest review that is still open, or ids
+/// such as `r1.2,r1.3`. Each must exist and still be open. Returns (round, number inside the round, finding).
+fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, usize, Value)>> {
+    let rs = rounds(p, k)?;
+    let bad = |because: String| {
+        refuse(
+            format!("name findings of {k}"),
+            because,
+            &["Name findings as `r<round>.<number>`, separated by commas, or `low` for every open low finding of the latest review. `bf status` lists them."],
+            "`bf status` shows what became of each finding.",
+        )
+    };
+    let mut out: Vec<(u32, usize, Value)> = Vec::new();
+    for word in spec.split(',').map(|w| w.trim()).filter(|w| !w.is_empty()) {
+        if word == "low" {
+            let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
+                return Err(bad(format!("{k} has no review report yet")));
+            };
+            for (i, f) in open_findings(st, k, last)
+                .into_iter()
+                .filter(|(_, f)| !blocking(f))
+            {
+                out.push((last.round, i, f.clone()));
+            }
+            continue;
+        }
+        let parsed = word
+            .strip_prefix('r')
+            .and_then(|x| x.split_once('.'))
+            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<usize>().ok()?)));
+        let Some((round, idx)) = parsed else {
+            return Err(bad(format!("`{word}` is not a finding id")));
+        };
+        let Some(f) = rs
+            .iter()
+            .find(|r| r.round == round)
+            .and_then(|r| r.findings.get(idx.wrapping_sub(1)))
+        else {
+            return Err(bad(format!("`{word}` is not a finding of {k}")));
+        };
+        if fate(st, k, round, idx - 1, f).is_some() {
+            return Err(bad(format!(
+                "`{word}` already has an end: {}",
+                fate_text(st, k, round, idx - 1, f)
+            )));
+        }
+        out.push((round, idx, f.clone()));
+    }
+    out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    if out.is_empty() {
+        return Err(bad("no open finding is named".to_string()));
+    }
+    Ok(out)
+}
+
+/// `bf checkpoint finding <K> --accept <ids> --quote ...` or `--decline <ids> --reason ... --quote ...`: the
+/// human ends findings in their own words. A decline needs a reason.
+pub fn settle(
+    p: &Project,
+    k: &str,
+    spec: &str,
+    fate_name: &str,
+    reason: &str,
+    quote: &str,
+) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("settle findings of {k}"))?;
+    let st = events::require_chain(p)?;
+    run::need_run(&st)?;
+    if fate_name == "declined" && reason.trim().is_empty() {
+        return Err(refuse(
+            format!("decline findings of {k}"),
+            "a declined finding needs its reason",
+            &["Add `--reason \"<why it is declined>\"`."],
+            "`bf status` shows the reason with the finding.",
+        ));
+    }
+    let picked = pick_findings(p, &st, k, spec)?;
+    let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    let ids: Vec<Value> = picked
+        .iter()
+        .map(|(r, i, _)| json!({"round": r, "index": i}))
+        .collect();
+    events::append(
+        p,
+        "checkpoint.finding.settle",
+        json!({"checkpoint": k, "ids": ids, "fate": fate_name, "reason": reason.trim(),
+               "turn": turn, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "settled": picked.len(), "fate": fate_name}))
+}
+
+/// `bf checkpoint finding <K> --fix-findings <ids>`: findings picked to be fixed open the checkpoint fix.
+pub fn fix_chosen(p: &Project, k: &str, spec: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("fix findings of {k}"))?;
+    let st = events::require_chain(p)?;
+    run::need_run(&st)?;
+    let picked = pick_findings(p, &st, k, spec)?;
+    let pl = plan::load(p)?;
+    if st.ck_fix.is_some() || st.sync_open.is_some() {
+        return Err(refuse(
+            format!("fix findings of {k}"),
+            "a fix or a sync is open already",
+            &["`bf next` shows what it waits for."],
+            "`bf status` shows the fix.",
+        ));
+    }
+    let content = cp_content(p, k)?;
+    crate::ckfix::open_chosen(
+        p,
+        &pl,
+        k,
+        picked.into_iter().map(|x| x.2).collect(),
+        &content,
+    )?;
+    Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
+}
+
+/// `bf checkpoint review <K> --release --quote ...`: only the human releases a parked checkpoint, in their
+/// own words. The reviews had so far stop counting, and the open high and medium findings go to a fix.
+pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("release the review of {k}"))?;
+    let st = events::require_chain(p)?;
+    run::need_run(&st)?;
+    if !parked(p, &st, k)? {
+        return Err(refuse(
+            format!("release the review of {k}"),
+            "the checkpoint is not parked",
+            &["`bf next` shows what the checkpoint waits for."],
+            "`bf status` shows the review.",
+        ));
+    }
+    let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    let rs = rounds(p, k)?;
+    let Some(last) = rs.iter().rev().find(|r| reported(r)).cloned() else {
+        return Err(refuse(
+            format!("release the review of {k}"),
+            "no review report",
+            &["`bf status` shows the review."],
+            "`bf status` shows the review.",
+        ));
+    };
+    let pl = plan::load(p)?;
+    let open: Vec<Value> = open_findings(&st, k, &last)
+        .into_iter()
+        .filter(|(_, f)| blocking(f))
+        .map(|(_, f)| f.clone())
+        .collect();
+    let content = cp_content(p, k)?;
+    crate::ckfix::open_chosen(p, &pl, k, open, &content)?;
+    events::append(
+        p,
+        "checkpoint.review.release",
+        json!({"checkpoint": k, "after_round": last.round, "turn": turn, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "released": true, "fix_opened": true}))
 }
