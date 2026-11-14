@@ -2024,8 +2024,10 @@ State:    init | record put|get|list | id new | ledger check|impact | plan check
 Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
+Checks:   checks list|state|propose|set
+Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>
-More:     ask | answer | questions | amend | cost | stuck | doctor [--perf] | guard
+More:     ask | answer | questions | amend open|revise|narrow|approve|withdraw | cost | stuck | doctor [--perf] | guard
 
 Every command that prints data takes --json. Exit codes: 0 done, 2 refused, 1 error.
 See docs/engine.md.";
