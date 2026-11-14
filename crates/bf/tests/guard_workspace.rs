@@ -167,6 +167,236 @@ fn copying_a_record_out_by_its_absolute_path_is_a_read() {
     );
 }
 
+/// F-87: ruby hands the file object a read call returns to a delete call. Both calls delete only on
+/// their owners (`File`, `FileUtils`); a key or a method of the same name on anything else passes.
+#[test]
+fn ruby_deleting_through_a_file_object_a_read_returns_is_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    let r = fx.root.display().to_string();
+    for cmd in [
+        format!("ruby -e \"File.delete(File.open('{r}/factory/policy.toml'))\""),
+        format!("ruby -e \"require 'fileutils'; FileUtils.rm(File.open('{r}/factory/records/R-1.toml'))\""),
+    ] {
+        refused(&fx, &fx.root, &cmd);
+    }
+    for cmd in [
+        format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); File.delete(f)\""),
+        format!("ruby -e \"require 'fileutils'; f=File.new('{r}/factory/records/R-1.toml'); FileUtils.rm_f(f)\""),
+        format!("ruby -e \"File.unlink(File.open('{r}/factory/policy.toml'))\""),
+        format!("ruby -e \"require 'fileutils'; FileUtils.rm_rf(File.open('{r}/factory/records/R-1.toml').path)\""),
+        "ruby -e \"File.delete(File.open('factory/policy.toml'))\"".to_string(),
+    ] {
+        refused(&fx, &fx.root, &cmd);
+    }
+    for cmd in [
+        format!("ruby -e \"h={{'delete'=>1}}; puts h['delete']; puts File.read('{r}/factory/policy.toml')\""),
+        format!("ruby -e \"a=[1,2]; a.delete(1); puts File.open('{r}/factory/policy.toml').read\""),
+        format!("ruby -e \"require 'fileutils'; puts File.open('{r}/factory/records/R-1.toml').read.size\""),
+    ] {
+        passes(&fx, &fx.root, &cmd);
+    }
+}
+
+/// F-106: the path is a relative literal held in a variable, and the delete names only the variable.
+#[test]
+fn a_delete_through_a_variable_that_holds_a_relative_path_is_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    for cmd in [
+        "ruby -e \"f=File.open('factory/policy.toml'); File.delete(f)\"",
+        "ruby -e \"require 'fileutils'; f=File.open('factory/records/R-1.toml'); FileUtils.rm_f(f)\"",
+        // F-108: the same family in python and node.
+        "python3 -c \"import os; f=open('factory/policy.toml'); os.remove(f.name)\"",
+        "node -e \"const f='factory/policy.toml'; fs.rmSync(f)\"",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    // Reading the same file, and a delete that names nothing protected, pass.
+    passes(
+        &fx,
+        &fx.root,
+        "ruby -e \"puts File.open('factory/policy.toml').read\"",
+    );
+    passes(&fx, &fx.root, "ruby -e \"f='/tmp/x.txt'; File.delete(f)\"");
+}
+
+#[test]
+fn a_delete_through_a_variable_is_held_to_the_file_scope_in_a_working_copy() {
+    let fx = Fx::new();
+    records(&fx, "\"src/a.rs\"");
+    let wc = working_copy(&fx);
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    refused(
+        &fx,
+        &wc,
+        "ruby -e \"f=File.open('src/other.txt'); File.delete(f)\"",
+    );
+    refused(
+        &fx,
+        &wc,
+        "ruby -e \"f=File.open('docs/x.md'); File.delete(f)\"",
+    );
+    passes(
+        &fx,
+        &wc,
+        "ruby -e \"f=File.open('src/a.rs'); File.delete(f)\"",
+    );
+}
+
+/// F-111, F-113: node deletes by `unlinkSync` and the promise forms, and writes through a variable.
+#[test]
+fn node_unlink_and_writes_through_a_variable_are_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    for cmd in [
+        "node -e \"const fs=require('fs'); let p='factory/policy.toml'; fs.unlinkSync(p)\"",
+        "node -e \"const p='factory/policy.toml'; require('fs').rmdirSync(p)\"",
+        "node -e \"const p='factory/policy.toml'; require('fs').promises.unlink(p)\"",
+        "node -e \"const p='factory/policy.toml'; require('fs').promises.rm(p)\"",
+        "node -e \"const p='factory/policy.toml'; fs.writeFileSync(p,'x')\"",
+        "python3 -c \"p='factory/policy.toml'; open(p,'w').write('x')\"",
+        "ruby -e \"p='factory/policy.toml'; File.write(p,'x')\"",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+}
+
+#[test]
+fn node_unlink_through_a_variable_is_held_to_the_file_scope() {
+    let fx = Fx::new();
+    records(&fx, "\"src/a.rs\"");
+    let wc = working_copy(&fx);
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    refused(
+        &fx,
+        &wc,
+        "node -e \"const p='src/other.txt'; require('fs').unlinkSync(p)\"",
+    );
+    passes(
+        &fx,
+        &wc,
+        "node -e \"const p='src/a.rs'; require('fs').unlinkSync(p)\"",
+    );
+}
+
+/// F-112: a printed word next to a delete is not a path.
+#[test]
+fn a_printed_word_next_to_a_delete_is_not_a_write() {
+    let fx = Fx::new();
+    records(&fx, "\"src/a.rs\"");
+    let wc = working_copy(&fx);
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    passes(
+        &fx,
+        &wc,
+        "python3 -c \"import os; print('done'); os.remove('src/a.rs')\"",
+    );
+    passes(
+        &fx,
+        &wc,
+        "node -e \"console.log('ok'); require('fs').rmSync('src/a.rs')\"",
+    );
+    let r = fx.root.display().to_string();
+    passes(
+        &fx,
+        &fx.root,
+        &format!("python3 -c \"import os; os.remove('/tmp/x.txt'); print(open('{r}/factory/policy.toml').read())\""),
+    );
+}
+
+/// F-119: copies and opens for writing whose destination is a variable.
+#[test]
+fn copies_and_opens_through_a_variable_are_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    for cmd in [
+        "node -e \"const fs=require('fs'); const p='factory/policy.toml'; fs.copyFileSync('/tmp/x', p)\"",
+        "node -e \"const fs=require('fs'); const p='factory/policy.toml'; fs.openSync(p,'w')\"",
+        "node -e \"const fs=require('fs'); const p='factory/policy.toml'; fs.cpSync('/tmp/x', p)\"",
+        "python3 -c \"import shutil; p='factory/policy.toml'; shutil.copy('/tmp/x', p)\"",
+        "python3 -c \"import shutil; p='factory/policy.toml'; shutil.copy2('/tmp/x', p)\"",
+        "python3 -c \"import shutil; p='factory/policy.toml'; shutil.move('/tmp/x', p)\"",
+        "ruby -e \"require 'fileutils'; p='factory/policy.toml'; FileUtils.cp('/tmp/x', p)\"",
+        "ruby -e \"require 'fileutils'; p='factory/policy.toml'; FileUtils.mv('/tmp/x', p)\"",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    // Neighbours: the variable is the source, or the open is a read.
+    passes(
+        &fx,
+        &fx.root,
+        "python3 -c \"import shutil; p='factory/policy.toml'; shutil.copy(p, '/tmp/x')\"",
+    );
+    passes(
+        &fx,
+        &fx.root,
+        "node -e \"const fs=require('fs'); const p='/tmp/x'; fs.openSync(p,'r')\"",
+    );
+}
+
+/// F-120: a word with a period and a joined path are not a write of something else.
+#[test]
+fn a_printed_word_with_a_period_and_a_joined_path_pass_in_a_working_copy() {
+    let fx = Fx::new();
+    records(&fx, "\"src/a.rs\"");
+    let wc = working_copy(&fx);
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    passes(
+        &fx,
+        &wc,
+        "python3 -c \"import os; p='src/a.rs'; print('ok.'); os.remove(p)\"",
+    );
+    passes(
+        &fx,
+        &wc,
+        "python3 -c \"import os; p=os.path.join('src','a.rs'); os.remove(p)\"",
+    );
+    refused(
+        &fx,
+        &wc,
+        "python3 -c \"import os; p=os.path.join('src','other.txt'); os.remove(p)\"",
+    );
+}
+
+/// F-107: the other call forms on the owners.
+#[test]
+fn other_ruby_call_forms_of_a_file_delete_are_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    let r = fx.root.display().to_string();
+    for cmd in [
+        format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); File::delete(f)\""),
+        format!("ruby -e \"require 'fileutils'; f=File.open('{r}/factory/policy.toml'); FileUtils::rm(f)\""),
+        format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); File.send(:delete, f)\""),
+        format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); File.public_send('unlink', f)\""),
+        format!("ruby -e \"require 'fileutils'; include FileUtils; f=File.open('{r}/factory/policy.toml'); rm(f)\""),
+        format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); puts \\\"#{{File.delete(f)}}\\\"\""),
+    ] {
+        refused(&fx, &fx.root, &cmd);
+    }
+    // A bare `rm` with no include, and `delete` on other owners, pass.
+    for cmd in [
+        format!("ruby -e \"def rm(x); end; rm(1); puts File.read('{r}/factory/policy.toml')\""),
+        format!("ruby -e \"s='a'.delete('a'); m={{}}; m.delete(1); puts File.read('{r}/factory/policy.toml')\""),
+    ] {
+        passes(&fx, &fx.root, &cmd);
+    }
+}
+
+/// F-109: the words of a call inside a string are data.
+#[test]
+fn a_delete_call_named_in_a_ruby_string_is_not_a_call() {
+    let fx = Fx::new();
+    fx.tiny();
+    let r = fx.root.display().to_string();
+    passes(
+        &fx,
+        &fx.root,
+        &format!("ruby -e \"puts 'use File.delete(f) to remove'; puts File.read('{r}/factory/policy.toml')\""),
+    );
+}
+
 #[test]
 fn a_relative_link_target_is_read_from_the_links_folder() {
     let fx = Fx::new();
