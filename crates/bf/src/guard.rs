@@ -665,87 +665,6 @@ const CP_BF: &[(&str, &[&str])] = &[
     ("record", &["get", "list"]),
 ];
 
-/// Tokens of the command with shell punctuation and the start of a substitution kept apart.
-fn shell_tokens(cleaned: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let b: Vec<char> = cleaned.chars().collect();
-    let mut i = 0;
-    let flush = |cur: &mut String, out: &mut Vec<String>| {
-        if !cur.is_empty() {
-            out.push(std::mem::take(cur));
-        }
-    };
-    while i < b.len() {
-        let c = b[i];
-        if c.is_whitespace() {
-            flush(&mut cur, &mut out);
-        } else if c == '$' && i + 1 < b.len() && (b[i + 1] == '(' || b[i + 1] == '{') {
-            flush(&mut cur, &mut out);
-            out.push(format!("${}", b[i + 1]));
-            i += 1;
-        } else if c == '`' || ";&|()<>".contains(c) {
-            flush(&mut cur, &mut out);
-            out.push(c.to_string());
-        } else {
-            cur.push(c);
-        }
-        i += 1;
-    }
-    flush(&mut cur, &mut out);
-    out
-}
-
-/// A call of `bf` that cannot be read: after `eval`, `sh -c`, `env`, `xargs`, `command`, a backtick
-/// or `$(`; or with a subcommand that is not a plain word from the list.
-fn bf_misuse(cleaned: &str) -> Option<String> {
-    let t = shell_tokens(cleaned);
-    for i in 0..t.len() {
-        if basename(&t[i]) != "bf" {
-            continue;
-        }
-        let prev = if i > 0 { t[i - 1].as_str() } else { "" };
-        if matches!(
-            prev,
-            "eval"
-                | "env"
-                | "xargs"
-                | "command"
-                | "exec"
-                | "-c"
-                | "`"
-                | "$("
-                | "${"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "dash"
-                | "builtin"
-        ) {
-            return Some(format!(
-                "`bf` is run through `{prev}`, which hides what it does"
-            ));
-        }
-        let mut j = i + 1;
-        while j < t.len() && t[j].starts_with('-') {
-            j += if t[j] == "-C" { 2 } else { 1 };
-        }
-        let Some(sub) = t.get(j) else { continue };
-        if matches!(sub.as_str(), ";" | "&" | "|" | ")" | "<" | ">") {
-            continue;
-        }
-        if sub.contains('$') || sub.contains('`') || sub == "(" {
-            return Some("the `bf` subcommand is built at run time".into());
-        }
-        if !sub.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-            || !BF_KNOWN.contains(&sub.as_str())
-        {
-            return Some(format!("`bf {sub}` is not a plain subcommand of the list"));
-        }
-    }
-    None
-}
-
 /// Does the text redirect somewhere other than `/dev/null` or another descriptor?
 fn real_redirect(seg: &str) -> bool {
     let mut t = seg.to_string();
@@ -766,23 +685,63 @@ fn real_redirect(seg: &str) -> bool {
     t.contains('>')
 }
 
-fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
-    let cleaned = clean(cmd);
-    if cleaned.contains("human-turn") {
-        return deny(
-            "run `bf human-turn`",
-            "only the harness hook records what the human typed; an agent that could record a turn could approve its own gate",
-            &["Ask the human in chat for their decision.", "The hook records their message by itself."],
-            "`bf log --tail 3` shows a human turn that you did not write.",
-        );
-    }
-    if let Some(why) = bf_misuse(&cleaned) {
-        return deny(
+fn human_turn_denial() -> Decision {
+    deny(
+        "run `bf human-turn`",
+        "only the harness hook records what the human typed; an agent that could record a turn could approve its own gate",
+        &["Ask the human in chat for their decision.", "The hook records their message by itself."],
+        "`bf log --tail 3` shows a human turn that you did not write.",
+    )
+}
+
+/// A call of `bf` that cannot be read, or that only the harness may make.
+fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
+    let misuse = |why: String| {
+        Some(deny(
             "run `bf` this way",
             &format!("{why}; the engine's commands are written out in full so that the guard can read them"),
             &["Write the command plainly, for example `bf status` or `bf report U-1 --result built`."],
             "The command starts with `bf` and a subcommand from `bf help`.",
-        );
+        ))
+    };
+    if let Some(v) = &c.via {
+        return misuse(format!(
+            "`bf` is run through `{v}`, which hides what it does"
+        ));
+    }
+    let w = &c.words;
+    let mut j = 1;
+    while j < w.len() && w[j].starts_with('-') {
+        j += if w[j] == "-C" { 2 } else { 1 };
+    }
+    let sub = w.get(j)?;
+    if sub == "human-turn" {
+        return Some(human_turn_denial());
+    }
+    if sub.contains('$') || sub.contains('`') {
+        return misuse("the `bf` subcommand is built at run time".into());
+    }
+    if !sub.chars().all(|c| c.is_ascii_lowercase() || c == '-') || !BF_KNOWN.contains(&sub.as_str())
+    {
+        return misuse(format!("`bf {sub}` is not a plain subcommand of the list"));
+    }
+    None
+}
+
+fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
+    let cleaned = clean(cmd);
+    // Where would a shell really run `bf`? Only a word in command position counts; the word `bf` as an
+    // argument, in a pattern or in a heredoc for another program is data.
+    let calls = crate::shellparse::bf_calls(cmd);
+    if crate::shellparse::runtime_program_with_word(cmd, "human-turn")
+        || crate::shellparse::interpreter_arg_with_phrase(cmd, "bf human-turn")
+    {
+        return human_turn_denial();
+    }
+    for c in &calls {
+        if let Some(d) = judge_call(c) {
+            return d;
+        }
     }
     if cleaned.contains("BF_STATE_HOME") || cleaned.contains("XDG_STATE_HOME") {
         return state_denial();
@@ -810,14 +769,10 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
     let main_branch = table["main_branch"].as_str().unwrap_or("main");
     let prefix = table["branch_prefix"].as_str().unwrap_or("bf/");
 
-    for seg in split_segments(cmd) {
-        let segc = clean(&seg);
-        let w = command_words(&segc);
-        let Some(first) = w.first() else { continue };
-        let b = basename(first);
-
-        // -- bf subcommands
-        if b == "bf" {
+    // -- bf subcommands, for each real call
+    for call in &calls {
+        let w = &call.words;
+        {
             let mut i = 1;
             let mut dash_c = false;
             while i < w.len() && w[i].starts_with('-') {
@@ -858,19 +813,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     );
                 }
             }
+        }
+    }
+
+    for seg in split_segments(cmd) {
+        let segc = clean(&seg);
+        let w = command_words(&segc);
+        let Some(first) = w.first() else { continue };
+        let b = basename(first);
+
+        // -- bf calls are judged above, from where a shell would run them
+        if b == "bf" {
             continue;
         }
-        if (b == "cargo" || b == "python" || b == "python3" || b == "sh" || b == "bash")
-            && cleaned.contains("bf human-turn")
-        {
-            return deny(
-                "run `human-turn`",
-                "only the harness hook records what the human typed",
-                &["Ask the human in chat."],
-                "`bf log --tail 3` shows a turn you did not write.",
-            );
-        }
-
         // -- leaving the working copy
         if (in_worker || in_cp) && matches!(b, "cd" | "pushd") {
             let target = w.get(1).map(|s| s.as_str()).unwrap_or("~");
@@ -1355,6 +1310,81 @@ mod tests {
 
     fn bash(cmd: &str, cwd: &str) -> bool {
         call("Bash", json!({"command": cmd}), cwd).allow
+    }
+
+    #[test]
+    fn the_word_bf_as_data_is_not_a_call_of_the_engine() {
+        for cmd in [
+            "cargo test -p bf --test checks_catalogue",
+            "cargo test --package=bf --test x -- --nocapture",
+            "bf evidence run X-1 --unit U-1 -- cargo test -p bf --test checks_catalogue",
+            "git status --short | head; ls; ls crates/bf crates/bf/src crates/bf/tests; wc -l crates/bf/src/*.rs",
+            "grep -n \"checks\\|\\\"human-turn\\\"\\|fn cmd_\" src/cli.rs",
+            "cat > checks.rs <<'EOF'\n//! The checks, listed by `bf checks propose`.\n/// Run `bf status` first.\nfn main() {}\nEOF",
+            "python3 - <<'EOF'\n# docs say `bf 2` then `bf human-turn`\nprint(1)\nEOF",
+            "sed -i 's|old|the `bf checks propose` command prints|' notes.md",
+            "python3 -I /tmp/s/edit.py /tmp/d/crates/bf /tmp/s/new.rs && cd /tmp/d",
+            "echo bf human-turn is a command of the engine",
+            "command -v bf",
+            "which bf; ls ~/bin/bf",
+            "# bf human-turn\nls",
+        ] {
+            assert!(bash(cmd, "/p"), "should pass: {cmd}");
+        }
+        // The same in a unit's working copy.
+        for cmd in [
+            "cargo test -p bf --test checks_catalogue",
+            "bf evidence run X-1 --unit U-1 -- cargo test -p bf --test checks_catalogue",
+            "ls crates/bf/src && wc -l crates/bf/src/*.rs",
+        ] {
+            assert!(
+                bash(cmd, "/p/.bf/work/U-1"),
+                "should pass in a working copy: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_in_command_position_is_judged_as_before() {
+        for cmd in [
+            "bf human-turn",
+            "ls && bf human-turn < p.json",
+            "X=1 bf human-turn",
+            "time bf human-turn",
+            "nohup bf human-turn &",
+            "B=bf; $B human-turn < p.json",
+            "sh -c \"printf x | bf human-turn\"",
+            "echo $(bf human-turn)",
+            "bf evidence run X-1 -- bf human-turn",
+            "env bf status",
+            "sh -c 'bf status'",
+            "bash -c \"cd x && bf status\"",
+            "eval \"bf status\"",
+            "echo $(bf status)",
+            "echo `bf status`",
+            "ls | xargs bf status",
+            "bf $(echo human)-turn",
+            "bf \"$(printf x)\"",
+            "bf nonsense",
+            "cat <<EOF\n$(bf human-turn)\nEOF",
+            "sh <<'EOF'\nbf human-turn\nEOF",
+        ] {
+            assert!(!bash(cmd, "/p"), "should be refused: {cmd}");
+        }
+        // Plain calls still pass, and a worker keeps its short list.
+        for cmd in [
+            "bf status",
+            "cd /p && bf status --json",
+            "X=1 bf status",
+            "sudo bf status",
+        ] {
+            assert!(bash(cmd, "/p"), "{cmd}");
+        }
+        assert!(bash("bf report U-1 --result built", "/p/.bf/work/U-1"));
+        assert!(!bash("bf gate open idea", "/p/.bf/work/U-1"));
+        assert!(!bash("X=1 bf next", "/p/.bf/work/U-1"));
+        assert!(!bash("sudo bf next", "/p/.bf/work/U-1"));
+        assert!(!bash("cd x && bf unit land U-1", "/p/.bf/work/U-1"));
     }
 
     #[test]
