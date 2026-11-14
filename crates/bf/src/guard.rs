@@ -563,9 +563,399 @@ fn text_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Does ruby code delete a file by what it is handed (a file object a read call returned): `File.delete(f)`,
+/// `File.unlink(f)`, `FileUtils.rm(f)`, `rm_f`, `rm_r`, `rm_rf`? Only as a call on those owners: a hash key
+/// `'delete'` or `list.delete(x)` is not a file delete.
+///
+/// Quoted text is data and is not read (`puts 'use File.delete(f)'`), except the code of a `#{ }` in a
+/// double quoted string. A call is a call on its owner by `.` or `::`; `File.send(:delete, f)` and
+/// `File.method(:delete)` name the same call; after `include FileUtils` (or `extend`) a bare `rm(f)` is one.
+fn ruby_file_delete(code: &str) -> bool {
+    const FILE_CALLS: &[&str] = &["delete", "unlink", "remove_file"];
+    const UTIL_CALLS: &[&str] = &[
+        "rm",
+        "rm_f",
+        "rm_r",
+        "rm_rf",
+        "remove",
+        "remove_file",
+        "remove_dir",
+        "remove_entry",
+        "remove_entry_secure",
+        "safe_unlink",
+    ];
+    const INDIRECT: &[&str] = &[
+        "send",
+        "public_send",
+        "__send__",
+        "method",
+        "public_method",
+        "instance_method",
+    ];
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let raw: Vec<char> = code.chars().collect();
+    // The same text with the content of quoted strings blanked, one character for one.
+    let mut chars = raw.clone();
+    let mut i = 0;
+    while i < chars.len() {
+        let q = chars[i];
+        if q != '"' && q != '\'' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        while i < chars.len() && chars[i] != q {
+            if chars[i] == '\\' {
+                chars[i] = ' ';
+                i += 1;
+                if i < chars.len() {
+                    chars[i] = ' ';
+                    i += 1;
+                }
+                continue;
+            }
+            if q == '"' && chars[i] == '#' && chars.get(i + 1) == Some(&'{') {
+                // Code inside an interpolation stays code.
+                let mut depth = 0;
+                while i < chars.len() {
+                    match chars[i] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            chars[i] = ' ';
+            i += 1;
+        }
+        i += 1;
+    }
+    let owner_of = |end: usize| -> String {
+        chars[..end]
+            .iter()
+            .rev()
+            .take_while(|c| is_word(**c))
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
+    };
+    // `include FileUtils`: its methods are then called bare.
+    let mut bare_utils = false;
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_word(chars[i]) || (i > 0 && is_word(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_word(chars[i]) {
+            i += 1;
+        }
+        let name: String = chars[start..i].iter().collect();
+        if matches!(name.as_str(), "include" | "extend") {
+            let mut k = i;
+            while k < chars.len()
+                && (chars[k].is_whitespace() || chars[k] == ':' || chars[k] == '(')
+            {
+                k += 1;
+            }
+            let w: String = chars[k..].iter().take_while(|c| is_word(**c)).collect();
+            if w == "FileUtils" {
+                bare_utils = true;
+            }
+        }
+    }
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_word(chars[i]) || (i > 0 && is_word(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_word(chars[i]) {
+            i += 1;
+        }
+        let name: String = chars[start..i].iter().collect();
+        let dot = start >= 1 && chars[start - 1] == '.';
+        let colons = start >= 2 && chars[start - 1] == ':' && chars[start - 2] == ':';
+        let called = match chars.get(i) {
+            Some('(') => true,
+            Some(c) => c.is_whitespace(),
+            None => false,
+        };
+        if !dot && !colons {
+            // A bare call of a `FileUtils` method after it was included.
+            if bare_utils && called && UTIL_CALLS.contains(&name.as_str()) {
+                return true;
+            }
+            continue;
+        }
+        let owner = owner_of(start - if dot { 1 } else { 2 });
+        let file = owner == "File";
+        let utils = owner == "FileUtils";
+        if !file && !utils {
+            continue;
+        }
+        let names: &[&str] = if file { FILE_CALLS } else { UTIL_CALLS };
+        if called && names.contains(&name.as_str()) {
+            return true;
+        }
+        // `File.send(:delete, f)`, `File.method('delete')`: the name is read from the raw text.
+        if INDIRECT.contains(&name.as_str()) {
+            let mut k = i;
+            while k < raw.len()
+                && (raw[k].is_whitespace()
+                    || raw[k] == '('
+                    || raw[k] == ':'
+                    || raw[k] == '"'
+                    || raw[k] == '\'')
+            {
+                k += 1;
+            }
+            let w: String = raw[k..].iter().take_while(|c| is_word(**c)).collect();
+            if names.contains(&w.as_str()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A string literal of interpreter code that can stand for a path held in a variable: a word with no
+/// space that is not a mode or a module name. It is judged as a write when the code deletes or changes a
+/// file by whatever it is handed (`f = File.open('a'); File.delete(f)`, `fs.rmSync(p)`).
+fn literals_for_unnamed_writes(code: &str, dir: &Option<String>) -> Vec<String> {
+    // The word before the open call that the position `before` ends inside.
+    fn enclosing_call(before: &str) -> Option<String> {
+        let c: Vec<char> = before.chars().collect();
+        let mut depth = 0i32;
+        for k in (0..c.len()).rev() {
+            match c[k] {
+                ')' => depth += 1,
+                '(' if depth > 0 => depth -= 1,
+                '(' => {
+                    let mut w: Vec<char> = c[..k]
+                        .iter()
+                        .rev()
+                        .take_while(|ch| ch.is_alphanumeric() || **ch == '_')
+                        .copied()
+                        .collect();
+                    w.reverse();
+                    return Some(w.into_iter().collect());
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    let keep = |lit: &str, before: &str| -> bool {
+        // A printed word (`'done'`, `'ok.'`) is not a path: it holds a `/`, a name after a dot (a file
+        // extension), or names an entry on disk.
+        let ext = lit.rsplit_once('.').map_or("", |x| x.1);
+        let path_like = lit.contains('/')
+            || (!ext.is_empty() && ext.chars().all(|c| c.is_alphanumeric()))
+            || target_abs(lit, dir).is_some_and(|a| std::path::Path::new(&a).exists());
+        path_like && {
+            let b = before.trim_end().trim_end_matches('(').trim_end();
+            let loads = ["require", "require_relative", "import", "from", "load"]
+                .iter()
+                .any(|w| b.ends_with(w));
+            !lit.is_empty()
+                && lit.len() <= 512
+                && !lit
+                    .chars()
+                    .any(|c| c.is_whitespace() || c == '#' || c == '%')
+                && !lit.starts_with('/')
+                && !lit.starts_with('~')
+                && !lit.starts_with("$HOME")
+                && !lit.starts_with("../")
+                && !(lit.len() <= 3 && lit.chars().all(|c| "rwabxt+U".contains(c)))
+                && !loads
+        }
+    };
+    let mut out: Vec<String> = string_literals(code)
+        .into_iter()
+        .filter(|(lit, before, _)| {
+            // A component of a path-joining call is not a path by itself; the joined path is judged below.
+            enclosing_call(before).is_none_or(|w| w != "join") && keep(lit, before)
+        })
+        .map(|l| l.0)
+        .collect();
+    // `os.path.join('src', 'a.rs')`, `path.join(...)`, `File.join(...)`: arguments that are all literals
+    // make one path.
+    let mut from = 0;
+    while let Some(at) = code[from..].find("join(") {
+        let open = from + at + 5;
+        from = open;
+        let Some(len) = code[open..].find(')') else {
+            break;
+        };
+        let parts: Vec<&str> = code[open..open + len].split(',').map(str::trim).collect();
+        let lits: Vec<&str> = parts
+            .iter()
+            .filter_map(|p| {
+                let q = p.chars().next()?;
+                (p.len() >= 2 && (q == '\'' || q == '"') && p.ends_with(q))
+                    .then(|| &p[1..p.len() - 1])
+            })
+            .collect();
+        if !lits.is_empty() && lits.len() == parts.len() {
+            let joined = lits.join("/");
+            if keep(&joined, "") {
+                out.push(joined);
+            }
+        }
+    }
+    out
+}
+
+/// The code with each delete call that is given a string literal first (`os.remove('a')`,
+/// `fs.rmSync('a')`) renamed, so the call is not read as one that names no path: the literal is its path.
+fn mask_literal_deletes(code: &str) -> String {
+    const NAMES: &[&str] = &[
+        "remove",
+        "unlink",
+        "unlinksync",
+        "rmsync",
+        "rm",
+        "rmdir",
+        "rmdirsync",
+        "rmtree",
+    ];
+    let c: Vec<char> = code.chars().collect();
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut out = String::new();
+    let mut i = 0;
+    while i < c.len() {
+        if !is_word(c[i]) {
+            out.push(c[i]);
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < c.len() && is_word(c[i]) {
+            i += 1;
+        }
+        let w: String = c[s..i].iter().collect();
+        let mut k = i;
+        while k < c.len() && c[k].is_whitespace() {
+            k += 1;
+        }
+        let literal_call = c.get(k) == Some(&'(') && {
+            let mut m = k + 1;
+            while m < c.len() && c[m].is_whitespace() {
+                m += 1;
+            }
+            matches!(c.get(m), Some('\'' | '"'))
+        };
+        if literal_call && NAMES.contains(&w.to_lowercase().as_str()) {
+            out.push_str("named_literal_delete");
+        } else {
+            out.push_str(&w);
+        }
+    }
+    out
+}
+
+/// A write call whose path is a variable: `open(p, 'w')`, `fs.writeFileSync(p, x)`, `File.write(p, x)`.
+/// The path is a literal held elsewhere in the code, so every path-like literal is judged as written.
+fn write_through_variable(code: &str) -> bool {
+    const NODE: &[&str] = &[
+        "writefilesync",
+        "appendfilesync",
+        "writefile",
+        "appendfile",
+        "createwritestream",
+    ];
+    let c: Vec<char> = code.chars().collect();
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut i = 0;
+    while i < c.len() {
+        if !is_word(c[i]) {
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < c.len() && is_word(c[i]) {
+            i += 1;
+        }
+        let w: String = c[s..i].iter().collect::<String>().to_lowercase();
+        if c.get(i) != Some(&'(') {
+            continue;
+        }
+        let mut m = i + 1;
+        while m < c.len() && c[m].is_whitespace() {
+            m += 1;
+        }
+        let before: String = c[..s].iter().collect();
+        // A copy or a move writes its destination: the second argument, given as a name.
+        let on_shutil = before.ends_with("shutil.");
+        let on_utils = before.ends_with("FileUtils.") || before.ends_with("FileUtils::");
+        let copies = matches!(w.as_str(), "copyfilesync" | "copyfile" | "cpsync" | "copy2")
+            || (on_shutil && matches!(w.as_str(), "copy" | "move" | "copytree"))
+            || (on_utils && matches!(w.as_str(), "cp" | "mv" | "copy" | "move" | "cp_r"));
+        if copies {
+            let end = c[i + 1..]
+                .iter()
+                .position(|ch| *ch == ')')
+                .map_or(c.len(), |e| i + 1 + e);
+            let args: String = c[i + 1..end].iter().collect();
+            let dest = args.split(',').nth(1).map(str::trim).unwrap_or("");
+            if dest
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+            {
+                return true;
+            }
+        }
+        // The first argument is a name, not a literal.
+        if !c.get(m).is_some_and(|ch| ch.is_alphabetic() || *ch == '_') {
+            continue;
+        }
+        let owner_file = before.ends_with("File.") || before.ends_with("IO.");
+        let hit = if NODE.contains(&w.as_str()) {
+            true
+        } else if matches!(w.as_str(), "write" | "binwrite") {
+            owner_file
+        } else if w == "open" || w == "opensync" {
+            // A mode given as a string after the path: `open(p, 'w')`.
+            let end = c[m..]
+                .iter()
+                .position(|ch| *ch == ')')
+                .map_or(c.len(), |e| m + e);
+            let args: String = c[m..end].iter().collect();
+            string_literals(&args).iter().any(|(l, _, _)| {
+                !l.is_empty()
+                    && l.len() <= 3
+                    && l.chars().all(|ch| "rwabxt+U".contains(ch))
+                    && l.chars().any(|ch| matches!(ch, 'w' | 'a' | 'x' | '+'))
+            })
+        } else {
+            false
+        };
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
 /// Can this code write, delete or change a file? A call that does, a mode that opens for writing, or a
 /// redirect string. Code that only reads a path it names is not a write of it.
 fn code_may_write(code: &str) -> bool {
+    if ruby_file_delete(code) || write_through_variable(code) {
+        return true;
+    }
     // Names are matched as whole words: `json.dumps` reads, `json.dump` writes to a file.
     const PREFIXES: &[&str] = &[
         "write", "append", "exec", "spawn", "popen", "unlink", "rmtree", "rmdir", "rmsync",
@@ -576,6 +966,7 @@ fn code_may_write(code: &str) -> bool {
     const EXACT: &[&str] = &[
         "move",
         "link",
+        "rm",
         "linksync",
         "dump",
         "system",
@@ -660,11 +1051,17 @@ fn code_may_write(code: &str) -> bool {
 /// changes a file by whatever it is handed (it may be the object an `open` returned, `f.name`), a shell-out,
 /// or a path taken from an object? Such code keeps every path it mentions judged as a write.
 fn writes_without_literal(code: &str) -> bool {
+    if ruby_file_delete(code) || write_through_variable(code) {
+        return true;
+    }
     const RISKY: &[&str] = &[
         "unlink",
+        "unlinksync",
         "remove",
+        "rm",
         "rmtree",
         "rmdir",
+        "rmdirsync",
         "rmsync",
         "chmod",
         "chown",
@@ -725,7 +1122,7 @@ fn writes_without_literal(code: &str) -> bool {
     // Names that are also everyday data keys or list methods: they count only as a call, and
     // `name` and `fileno` only as an attribute (`f.name`), never as a dict key or a bare word.
     const AMBIGUOUS: &[&str] = &[
-        "remove", "move", "link", "call", "run", "shell", "rename", "truncate",
+        "remove", "rm", "move", "link", "call", "run", "shell", "rename", "truncate",
     ];
     // Owners whose `remove(` deletes a file; any other owner is a list or a set.
     const FILE_OWNERS: &[&str] = &[
@@ -782,10 +1179,10 @@ fn writes_without_literal(code: &str) -> bool {
             continue;
         }
         if AMBIGUOUS.contains(&l.as_str()) {
-            if !is_call {
+            if !is_call || (l == "rm" && !is_attr) {
                 continue;
             }
-            if l == "remove" && is_attr {
+            if (l == "remove" || l == "rm") && is_attr {
                 let owner: String = chars[..start - 1]
                     .iter()
                     .rev()
@@ -1276,6 +1673,10 @@ fn written_literals(code: &str) -> Vec<String> {
 /// number of times it is read that way.
 fn read_literals(code: &str) -> HashMap<String, usize> {
     const READS: &[&str] = &[
+        "read",
+        "binread",
+        "readlines",
+        "foreach",
         "readFileSync",
         "readFile",
         "readdirSync",
@@ -3945,6 +4346,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     if matches!(prog.as_str(), "awk" | "gawk" | "mawk") {
                         written.extend(awk_written(&code));
                     }
+                    // Code that deletes or changes a file by whatever it is handed (a file object, a
+                    // variable, `f.name`) names its path outside the call: every path-like literal it
+                    // holds is judged as a write, as an absolute one already is.
+                    // `sys.path` is a list of folders to import from: `sys.path.remove('src')` is no delete.
+                    // A delete that is given a string literal first names its path in the call.
+                    let unnamed = mask_literal_deletes(&code.replace("sys.path", "sys_path"));
+                    if writes_without_literal(&unnamed) && code_may_write(&code) {
+                        for t in literals_for_unnamed_writes(&code, &start) {
+                            if !written.contains(&t) {
+                                written.push(t);
+                            }
+                        }
+                    }
                     for t in written {
                         let reach = if made.contains(&t) {
                             Reach::Make
@@ -3971,7 +4385,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         }
                         // A path that every mention reads (opened for reading, or the source of a copy)
                         // is not a write; the paths the code writes are judged above.
-                        let only_read = !writes_without_literal(&code)
+                        let only_read = !writes_without_literal(&unnamed)
                             && reads
                                 .get(&t)
                                 .is_some_and(|n| *n >= code.matches(&t).count());
