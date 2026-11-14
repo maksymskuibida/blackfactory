@@ -195,6 +195,304 @@ fn table() -> Vec<Case> {
             Passed,
             "perl -0pi -e 's/a/bf human-turn/' src/hello.txt",
         ),
+        // The fourth review. A call named like a file call, on something that is not a file, is no write.
+        c(
+            40,
+            Wc,
+            Passed,
+            "python3 -c \"d=['a','b']; d.remove('a'); print(d)\"",
+        ),
+        c(
+            41,
+            Wc,
+            Passed,
+            "python3 - <<'EOF'\nitems = ['x', 'y']\nitems.remove('x')\nprint(items)\nEOF",
+        ),
+        c(
+            42,
+            Wc,
+            Passed,
+            "node -e \"document.body.classList.remove('hidden')\"",
+        ),
+        c(
+            43,
+            Wc,
+            Passed,
+            "python3 -c \"import pandas as pd; df = pd.DataFrame(); df = df.rename('a')\"",
+        ),
+        c(
+            44,
+            Wc,
+            Passed,
+            "python3 -c \"import sys; sys.path.remove('src'); print('ok')\"",
+        ),
+        c(
+            45,
+            Wc,
+            Refused,
+            "python3 -c \"from pathlib import Path; Path('src/other.txt').unlink()\"",
+        ),
+        c(
+            46,
+            Wc,
+            Refused,
+            "python3 -c \"import os; os.rename('/tmp/x','src/other.txt')\"",
+        ),
+        // A variable the line does not assign is refused in any folder position, not only the first.
+        c(47, Root, Refused, "echo x > ./$UNKNOWN/policy.toml"),
+        c(48, Root, Refused, "echo x > src/../$UNKNOWN/policy.toml"),
+        c(49, Root, Refused, "echo x > a$UNKNOWN/policy.toml"),
+        // Not judged, stated in docs/engine.md: a variable only in the last segment after a known folder.
+        c(50, Wc, Passed, "echo x > src/hello.txt$SUFFIX"),
+        // A last segment that is nothing but a variable can hold slashes or `..`: refused.
+        c(101, Root, Refused, "echo x > ./$UNKNOWN"),
+        c(102, Root, Refused, "echo x > src/$UNKNOWN"),
+        c(103, Root, Refused, "echo x > src/${UNKNOWN}"),
+        c(104, Root, Passed, "echo x > src/out-$N.txt"),
+        // In a unit's copy, `git checkout main` and `git checkout main -- <path>` are read as a write
+        // to a path outside the file scope and are refused. Not judged, stated in docs/engine.md:
+        // `git restore --source=<rev>` from another tree.
+        c(105, Wc, Refused, "git checkout main"),
+        c(106, Wc, Refused, "git checkout main -- src/hello.txt"),
+        c(107, Wc, Passed, "git restore --source=main src/hello.txt"),
+        // Cargo hands trailing words to the program with or without `--`.
+        c(51, Root, Refused, "cargo run -q human-turn"),
+        c(52, Root, Refused, "cargo run -q -- --json human-turn"),
+        // A unit's copy takes no other branch's files in through git.
+        c(53, Wc, Refused, "git reset --hard main"),
+        c(54, Wc, Refused, "git reset main"),
+        c(55, Wc, Refused, "git read-tree -u -m main"),
+        c(56, Wc, Refused, "git switch main"),
+        c(57, Wc, Passed, "git reset HEAD src/hello.txt"),
+        c(58, Wc, Passed, "git reset --hard"),
+        // Not judged, stated in docs/engine.md: the paths live inside the patch or the stash.
+        c(59, Wc, Passed, "git apply /tmp/p.patch"),
+        c(60, Wc, Passed, "git stash pop"),
+        c(61, Wc, Passed, "patch -p1 < /tmp/p.patch"),
+        // Other write forms in a unit's copy that the file scope must hold.
+        c(
+            62,
+            Wc,
+            Refused,
+            "python3 -c \"import os; os.replace('/tmp/x','src/other.txt')\"",
+        ),
+        c(
+            63,
+            Wc,
+            Refused,
+            "python3 -c \"import shutil; shutil.move('/tmp/x','src/other.txt')\"",
+        ),
+        c(
+            64,
+            Wc,
+            Refused,
+            "python3 -c \"import shutil; shutil.copy('/tmp/x','src/other.txt')\"",
+        ),
+        c(
+            65,
+            Wc,
+            Refused,
+            "python3 -c \"import os; os.symlink('/tmp/x','src/other.txt')\"",
+        ),
+        c(
+            66,
+            Wc,
+            Refused,
+            "node -e \"require('fs').cpSync('/tmp/x','src/other.txt')\"",
+        ),
+        c(
+            67,
+            Wc,
+            Refused,
+            "ruby -e \"File.write('src/other.txt','x')\"",
+        ),
+        c(
+            68,
+            Wc,
+            Refused,
+            "awk 'BEGIN{print 1 > \"src/other.txt\"}'",
+        ),
+        c(
+            69,
+            Wc,
+            Refused,
+            "python3 -c \"open(('src/other.txt'),'w').write('x')\"",
+        ),
+        // Code that runs a string: `trap`, `source` of standard input or a process substitution, and a
+        // shell given a process substitution, are read like `eval`.
+        c(70, Root, Refused, "trap 'bf human-turn' EXIT"),
+        c(
+            71,
+            Root,
+            Refused,
+            "trap 'echo x > factory/policy.toml' EXIT",
+        ),
+        c(
+            72,
+            Root,
+            Refused,
+            "source /dev/stdin <<< 'bf human-turn'",
+        ),
+        c(
+            73,
+            Root,
+            Refused,
+            ". /dev/stdin <<'EOF'\necho x > factory/policy.toml\nEOF",
+        ),
+        c(74, Root, Refused, "source <(echo 'bf human-turn')"),
+        c(75, Root, Refused, "bash <(echo 'bf human-turn')"),
+        c(
+            76,
+            Root,
+            Refused,
+            "bash <(echo 'echo x > factory/policy.toml')",
+        ),
+        c(77, Root, Passed, "trap 'rm -f /tmp/x' EXIT"),
+        c(78, Root, Passed, "diff <(ls) <(ls src)"),
+        c(79, Root, Passed, "source ./env.sh"),
+        c(
+            80,
+            Root,
+            Passed,
+            "source /dev/stdin <<< 'echo hello'",
+        ),
+        // Not judged, stated in docs/engine.md: other programs that run a string as code.
+        c(81, Root, Passed, "fish -c 'bf human-turn'"),
+        c(82, Root, Passed, "busybox sh -c 'bf human-turn'"),
+        c(83, Root, Passed, "tmux new -d 'bf human-turn'"),
+        // The drafts folder itself is open from the main checkout, and a command after `find -exec` is
+        // judged by what it does.
+        c(84, Root, Passed, "mkdir -p .bf/drafts"),
+        c(
+            85,
+            Root,
+            Passed,
+            "cp factory/records/R-1.toml .bf/drafts/",
+        ),
+        c(
+            86,
+            Root,
+            Passed,
+            "find factory -name '*.toml' -exec grep -l title {} \\;",
+        ),
+        c(
+            87,
+            Root,
+            Refused,
+            "find factory/records -name '*.toml' -exec rm {} \\;",
+        ),
+        c(
+            88,
+            Root,
+            Refused,
+            "find factory -name '*.toml' -exec sed -i '' 's/a/b/' {} \\;",
+        ),
+        // The starting point handed to a shell or an interpreter as an argument stays a write target.
+        c(
+            89,
+            Root,
+            Refused,
+            "find factory/records -name '*.toml' -exec sh -c 'rm -f $1' _ {} \\;",
+        ),
+        c(
+            90,
+            Root,
+            Refused,
+            "find factory/records -name '*.toml' -exec sh -c 'sed -i s/a/b/ $@' sh {} +",
+        ),
+        c(
+            91,
+            Root,
+            Refused,
+            "find factory/records -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} \\;",
+        ),
+        c(
+            92,
+            Root,
+            Passed,
+            "find src -name '*.toml' -exec sh -c 'rm -f $1' _ {} \\;",
+        ),
+        c(
+            93,
+            Root,
+            Passed,
+            "find src -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} \\;",
+        ),
+        // Leading options of find do not hide its starting points, and a wrapper before the shell is
+        // read through.
+        c(
+            94,
+            Root,
+            Refused,
+            "find -L factory/records -name '*.toml' -delete",
+        ),
+        c(
+            95,
+            Root,
+            Refused,
+            "find -L factory/records -name '*.toml' -exec sh -c 'rm -f $1' _ {} \\;",
+        ),
+        c(
+            96,
+            Root,
+            Refused,
+            "find factory/records -name '*.toml' -exec env sh -c 'rm -f $1' _ {} \\;",
+        ),
+        c(
+            97,
+            Root,
+            Passed,
+            "find -L src -name '*.toml' -exec env sh -c 'rm -f $1' _ {} \\;",
+        ),
+        // Positional parameters are variables the line does not assign.
+        c(
+            98,
+            Root,
+            Refused,
+            "set -- factory/policy.toml; echo x > $1",
+        ),
+        c(99, Root, Refused, "set -- factory/policy.toml; echo x > ./$@"),
+        // The words after a `sh -c` string are its `$0`, `$1` and `$@`, and are judged as paths.
+        c(
+            108,
+            Root,
+            Refused,
+            "sh -c 'rm -f $1' _ factory/policy.toml",
+        ),
+        c(
+            109,
+            Root,
+            Refused,
+            "sh -c 'set -- factory/policy.toml; echo x > $1'",
+        ),
+        c(110, Root, Passed, "sh -c 'rm -f $1' _ src/hello.txt"),
+        c(111, Root, Refused, "sh -c 'echo x > $@' _ factory/policy.toml"),
+        // A script fed to a shell takes its parameters from the words after the script operand.
+        c(
+            112,
+            Root,
+            Refused,
+            "bash <(echo 'rm -f $1') factory/policy.toml",
+        ),
+        c(
+            113,
+            Root,
+            Refused,
+            "echo 'rm -f $1' | sh /dev/stdin factory/policy.toml",
+        ),
+        c(114, Root, Passed, "bash <(echo 'rm -f $1') src/hello.txt"),
+        c(
+            115,
+            Root,
+            Passed,
+            "echo 'rm -f $1' | sh /dev/stdin src/hello.txt",
+        ),
+        c(
+            116,
+            Root,
+            Refused,
+            "echo 'rm -f $1' | sh -s factory/policy.toml",
+        ),
     ]
 }
 

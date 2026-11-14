@@ -30,6 +30,8 @@ struct Cmd {
     redirs: Vec<String>,
     /// The command whose output is piped into this one (`a | this`).
     pipe_from: Option<usize>,
+    /// The text each process substitution (`<( )`) of this command writes, when it is text.
+    procs: Vec<String>,
 }
 
 struct Pending {
@@ -39,7 +41,7 @@ struct Pending {
     expands: bool,
 }
 
-fn basename(w: &str) -> &str {
+pub fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
 }
 
@@ -117,6 +119,8 @@ pub struct Parsed {
     pub scope: usize,
     /// The shell that started this one (its working directory is the starting point).
     pub parent: usize,
+    /// For the commands of a `sh -c` string: the words after the string (`$0`, `$1`, ...).
+    pub bound: Option<Vec<String>>,
 }
 
 /// The index of the program word of a simple command (after assignments, keywords and wrappers).
@@ -144,6 +148,18 @@ fn flatten(
     depth: usize,
     out: &mut Vec<Parsed>,
 ) {
+    flatten_bound(cmds, scope, parent, next_scope, depth, out, None)
+}
+
+fn flatten_bound(
+    cmds: Vec<Cmd>,
+    scope: usize,
+    parent: usize,
+    next_scope: &mut usize,
+    depth: usize,
+    out: &mut Vec<Parsed>,
+    bound: Option<Vec<String>>,
+) {
     if depth > 8 {
         return;
     }
@@ -161,12 +177,13 @@ fn flatten(
                 .or_else(|| cmd.pipe_from.and_then(|id| texts.get(&id).cloned())),
             scope,
             parent,
+            bound: bound.clone(),
         });
         let Some(i) = idx else { continue };
         let prog = basename(&cmd.words[i]);
         if prog == "find" {
             // The command after an execute flag is a command of its own.
-            for words in exec_commands(&cmd.words[i + 1..]) {
+            for words in exec_commands_at(&cmd.words[i + 1..]) {
                 let inner = vec![Cmd {
                     id: 0,
                     words,
@@ -174,6 +191,7 @@ fn flatten(
                     heredoc: None,
                     redirs: vec![],
                     pipe_from: None,
+                    procs: vec![],
                 }];
                 flatten(inner, scope, parent, next_scope, depth + 1, out);
             }
@@ -189,7 +207,8 @@ fn flatten(
                         parse(s, None, depth + 1, &mut c2, &mut inner);
                         let id = *next_scope;
                         *next_scope += 1;
-                        flatten(inner, id, scope, next_scope, depth + 1, out);
+                        let rest: Vec<String> = cmd.words[(j + 2).min(cmd.words.len())..].to_vec();
+                        flatten_bound(inner, id, scope, next_scope, depth + 1, out, Some(rest));
                         found = true;
                     }
                     break;
@@ -197,19 +216,53 @@ fn flatten(
                 j += 1;
             }
             if !found {
-                let script = cmd
-                    .heredoc
-                    .as_ref()
-                    .map(|(b, _)| b.clone())
-                    .or_else(|| cmd.pipe_from.and_then(|id| texts.get(&id).cloned()));
+                let script = script_text(&cmd, &texts);
                 if let Some(body) = &script {
                     let mut c2 = 0usize;
                     let mut inner = Vec::new();
                     parse(body, None, depth + 1, &mut c2, &mut inner);
                     let id = *next_scope;
                     *next_scope += 1;
-                    flatten(inner, id, scope, next_scope, depth + 1, out);
+                    // `$0`, `$1`, ... of the script are the words after the script operand
+                    // (`<(..)`, `/dev/stdin`, `-`), or after `-s`.
+                    let args = &cmd.words[i + 1..];
+                    let mut bound_words: Vec<String> = vec!["_".to_string()];
+                    let mut k = 0;
+                    while k < args.len() && args[k].starts_with('-') && args[k] != "-" {
+                        k += 1;
+                    }
+                    if k < args.len() {
+                        if args.iter().take(k).any(|a| a == "-s") {
+                            bound_words.extend(args[k..].iter().cloned());
+                        } else {
+                            bound_words = args[k..].to_vec();
+                        }
+                    }
+                    flatten_bound(
+                        inner,
+                        id,
+                        scope,
+                        next_scope,
+                        depth + 1,
+                        out,
+                        Some(bound_words),
+                    );
                 }
+            }
+        } else if matches!(prog, "source" | ".") && reads_input(&cmd.words[i + 1..]) {
+            // `source /dev/stdin <<< '...'`, `. <(echo '...')`: the text runs in this shell.
+            if let Some(body) = script_text(&cmd, &texts) {
+                let mut c2 = 0usize;
+                let mut inner = Vec::new();
+                parse(&body, None, depth + 1, &mut c2, &mut inner);
+                flatten(inner, scope, parent, next_scope, depth + 1, out);
+            }
+        } else if prog == "trap" {
+            if let Some(s) = trap_command(&cmd.words[i + 1..]) {
+                let mut c2 = 0usize;
+                let mut inner = Vec::new();
+                parse(&s, None, depth + 1, &mut c2, &mut inner);
+                flatten(inner, scope, parent, next_scope, depth + 1, out);
             }
         } else if prog == "eval" {
             let s = cmd.words[i + 1..].join(" ");
@@ -239,6 +292,7 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                     heredoc: None,
                     redirs: vec![],
                     pipe_from: None,
+                    procs: vec![],
                 }];
                 collect(inner, Some("find -exec"), depth + 1, calls);
             }
@@ -266,6 +320,7 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                             heredoc: None,
                             redirs: vec![],
                             pipe_from: None,
+                            procs: vec![],
                         }];
                         collect(inner, None, depth + 1, calls);
                     }
@@ -290,18 +345,29 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                 j += 1;
             }
             if !found {
-                // A heredoc or a pipe fed to a shell is a script: its lines are commands.
-                let script = cmd
-                    .heredoc
-                    .as_ref()
-                    .map(|(b, _)| b.clone())
-                    .or_else(|| cmd.pipe_from.and_then(|id| texts.get(&id).cloned()));
+                // A heredoc, a pipe or a process substitution fed to a shell is a script: its lines
+                // are commands.
+                let script = script_text(&cmd, &texts);
                 if let Some(body) = &script {
                     let mut c2 = 0usize;
                     let mut inner = Vec::new();
                     parse(body, None, depth + 1, &mut c2, &mut inner);
                     collect(inner, None, depth + 1, calls);
                 }
+            }
+        } else if matches!(prog.as_str(), "source" | ".") && reads_input(&cmd.words[i + 1..]) {
+            if let Some(body) = script_text(&cmd, &texts) {
+                let mut c2 = 0usize;
+                let mut inner = Vec::new();
+                parse(&body, None, depth + 1, &mut c2, &mut inner);
+                collect(inner, Some("source"), depth + 1, calls);
+            }
+        } else if prog == "trap" {
+            if let Some(s) = trap_command(&cmd.words[i + 1..]) {
+                let mut c2 = 0usize;
+                let mut inner = Vec::new();
+                parse(&s, None, depth + 1, &mut c2, &mut inner);
+                collect(inner, Some("trap"), depth + 1, calls);
             }
         } else if prog == "eval" {
             let s = cmd.words[i + 1..].join(" ");
@@ -404,6 +470,8 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     // The command that pipes into the one being read.
     let mut pipe_in: Option<usize> = None;
     let mut pending: Vec<Pending> = Vec::new();
+    // The text each `<( )` of the command being read writes.
+    let mut procs: Vec<String> = Vec::new();
     let mut cmd_id = *counter;
     *counter += 1;
     let mut bodies: HashMap<usize, (String, bool)> = HashMap::new();
@@ -439,6 +507,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     heredoc: None,
                     redirs: std::mem::take(&mut redirs),
                     pipe_from: pipe_in.take(),
+                    procs: std::mem::take(&mut procs),
                 });
             }
             cmd_id = *counter;
@@ -599,6 +668,27 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     }
                 }
             }
+            '>' | '<' if i + 1 < n && b[i + 1] == '(' => {
+                // A process substitution: its commands run, and what they print is a file for the
+                // command it stands in.
+                end_word!();
+                let (inner, next) = balanced(&b, i + 2);
+                let mut local: Vec<Cmd> = Vec::new();
+                parse(&inner, None, depth + 1, counter, &mut local);
+                if c == '<' {
+                    let texts = producer_texts(&local);
+                    for lc in &local {
+                        if let Some(t) = texts.get(&lc.id) {
+                            procs.push(t.clone());
+                        }
+                    }
+                }
+                out.extend(local);
+                cur.push_str("<(..)");
+                in_word = true;
+                i = next;
+                continue;
+            }
             '>' | '<' => {
                 // A file descriptor before the operator (`2>`) belongs to it.
                 if in_word && cur.chars().all(|d| d.is_ascii_digit()) && !cur.is_empty() {
@@ -700,6 +790,84 @@ fn producer_texts(cmds: &[Cmd]) -> HashMap<usize, String> {
         }
         if !text.is_empty() {
             out.insert(c.id, text);
+        }
+    }
+    out
+}
+
+/// The text a shell reads as a script from standard input: a heredoc or here string, what is piped in,
+/// or what a process substitution prints.
+fn script_text(cmd: &Cmd, texts: &HashMap<usize, String>) -> Option<String> {
+    cmd.heredoc
+        .as_ref()
+        .map(|(b, _)| b.clone())
+        .or_else(|| cmd.pipe_from.and_then(|id| texts.get(&id).cloned()))
+        .or_else(|| (!cmd.procs.is_empty()).then(|| cmd.procs.join("\n")))
+}
+
+/// Does `source` (or `.`) read its script from standard input or a process substitution?
+fn reads_input(args: &[String]) -> bool {
+    match args
+        .iter()
+        .find(|a| !a.starts_with('-') || a.as_str() == "-")
+    {
+        Some(a) => a == "/dev/stdin" || a == "/dev/fd/0" || a == "-" || a.starts_with("<("),
+        // `source <(...)` written with the substitution as a redirect: no word follows.
+        None => true,
+    }
+}
+
+/// The command string of `trap 'cmd' SIGNAL ...`; `None` for `trap -p`, `trap -l` and the reset form.
+fn trap_command(args: &[String]) -> Option<String> {
+    let mut it = args.iter().filter(|a| !a.starts_with('-') || a.len() == 1);
+    if args.iter().any(|a| a == "-p" || a == "-l") {
+        return None;
+    }
+    it.next().filter(|s| !s.is_empty()).cloned()
+}
+
+/// The starting points of a `find`: the words before its first expression, after the leading options
+/// `-H`, `-L`, `-P`, `-D <x>` and `-O<n>`.
+pub fn find_starts(args: &[String]) -> Vec<String> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if matches!(a, "-H" | "-L" | "-P") || a.starts_with("-O") {
+            i += 1;
+        } else if a == "-D" {
+            i += 2;
+        } else if a.starts_with("-D") {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    args[i.min(args.len())..]
+        .iter()
+        .take_while(|a| !(a.starts_with('-') || *a == "(" || *a == "!"))
+        .cloned()
+        .collect()
+}
+
+/// Like `exec_commands`, with `{}` read as each starting point of the `find`, so that what the command
+/// would touch is a path the guard can judge.
+fn exec_commands_at(args: &[String]) -> Vec<Vec<String>> {
+    let starts: Vec<String> = {
+        let s = find_starts(args);
+        if s.is_empty() {
+            vec![".".to_string()]
+        } else {
+            s
+        }
+    };
+    let mut out = Vec::new();
+    for words in exec_commands(args) {
+        if words.iter().any(|w| w.contains("{}")) {
+            for s in &starts {
+                out.push(words.iter().map(|w| w.replace("{}", s)).collect());
+            }
+        } else {
+            out.push(words);
         }
     }
     out
