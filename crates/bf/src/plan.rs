@@ -86,7 +86,13 @@ pub fn load(p: &Project) -> R<Plan> {
     analyse(p, &mut plan, &ids);
     // A required named check appears in the plan as a check record that names it.
     if let Ok(st) = crate::events::replay(p) {
-        let more = crate::enforce::plan_problems(&plan, &st);
+        // Decided means the log says so: a recorded setting for the default scope, or a started run.
+        let decided = st
+            .checks_proposals
+            .iter()
+            .any(|x| x.used && (x.scope == "default" || x.scope == "both"))
+            || !st.runs.is_empty();
+        let more = crate::enforce::plan_problems(&plan, &st, decided);
         plan.problems.extend(more);
     }
     Ok(plan)

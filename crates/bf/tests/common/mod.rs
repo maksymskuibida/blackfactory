@@ -75,9 +75,18 @@ impl Fx {
         fx
     }
 
-    /// The same as `new`, with the catalogue's defaults: every named check required.
+    /// The same as `new`, with the catalogue's defaults: every named check required, and nothing
+    /// decided by the human yet (`checks_decided_as_default` decides it).
     pub fn with_checks() -> Fx {
         Fx::build(true)
+    }
+
+    /// Decide the project default as the catalogue has it (nothing switched off), the way the human
+    /// does: a proposal, their words, the recorded choice.
+    pub fn checks_decided_as_default(&self) {
+        self.must(&["checks", "propose", "--scope", "default"]);
+        self.human("Yes, keep every check on.");
+        self.must(&["checks", "set", "--quote", "keep every check on"]);
     }
 
     /// The same, with the shipped policy as it is: role tokens on. Only the PATH, the git program
@@ -204,6 +213,35 @@ impl Fx {
             let o = self.put("check", &t);
             assert_eq!(o.code, 0, "{}", o.all());
         }
+        // The plan check wants the choice decided first, through the engine, unless it already is.
+        if !self.root.join("factory/checks.json").exists() {
+            self.checks_decided_as_default();
+        }
+        // Each is listed by the last checkpoint, where a built-stage check counts.
+        let list = self
+            .bf(&["record", "list", "--kind", "checkpoint", "--json"])
+            .json();
+        let last = list.as_array().unwrap().last().unwrap().clone();
+        let mut k = self
+            .bf(&["record", "get", last["id"].as_str().unwrap(), "--json"])
+            .json();
+        let mut ids: Vec<serde_json::Value> = k["checks"].as_array().cloned().unwrap_or_default();
+        for i in 0..bf::checks::all().len() {
+            ids.push(serde_json::json!(format!("X-{}", 90 + i)));
+        }
+        k["checks"] = serde_json::Value::Array(ids);
+        let f = self.root.join("k-revised.toml");
+        fs::write(&f, toml::to_string(&k).unwrap()).unwrap();
+        let o = self.bf(&[
+            "record",
+            "put",
+            "checkpoint",
+            "--file",
+            f.to_str().unwrap(),
+            "--replace",
+        ]);
+        assert_eq!(o.code, 0, "{}", o.all());
+        let _ = fs::remove_file(&f);
         self.commit_all("named checks");
     }
 
@@ -223,6 +261,25 @@ impl Fx {
             "set",
             "--quote",
             "Yes, switch those checks off for this test.",
+        ]);
+    }
+
+    /// Switch every named check off for the active run only, the way the human does, so the run may
+    /// be stopped: stopping a run asks for proof of every required check.
+    pub fn run_checks_all_off(&self) {
+        let changes: Vec<String> = bf::checks::all()
+            .iter()
+            .map(|c| format!("{}=off:the test stops the run early", c.name))
+            .collect();
+        let mut args: Vec<&str> = vec!["checks", "propose", "--scope", "run"];
+        args.extend(changes.iter().map(|x| x.as_str()));
+        self.must(&args);
+        self.human("Yes, switch those checks off for this run.");
+        self.must(&[
+            "checks",
+            "set",
+            "--quote",
+            "switch those checks off for this run",
         ]);
     }
 

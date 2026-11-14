@@ -186,11 +186,15 @@ fn the_architecture_page_shows_the_threat_model() {
 #[test]
 fn the_plan_check_names_each_required_check_that_has_no_check_record() {
     let fx = Fx::with_checks();
+    fx.checks_decided_as_default();
     fx.tiny();
     let o = fx.refused(&["plan", "check"]);
     for c in bf::checks::all() {
-        assert!(
+        // The threat model and the markets statement are proven by their records.
+        let proven_by_record = c.name == "threat-model" || c.name == "markets-statement";
+        assert_eq!(
             o.stderr.contains(&format!("`{}`", c.name)),
+            !proven_by_record,
             "{}: {}",
             c.name,
             o.stderr
@@ -228,7 +232,7 @@ fn built_project(fx: &Fx, checkpoint_extra: &str) {
         ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"Secret scan\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\nnamed=\"secret-scan\"\n".to_string()),
         ("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"The file again\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"checkpoint\"\n".to_string()),
         ("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"Accessibility\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n".to_string()),
-        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\",\"C-1\"]\nchecks=[\"X-2\",\"X-4\"]\n{checkpoint_extra}")),
+        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\",\"C-1\"]\nchecks=[\"X-2\",\"X-4\",\"X-5\"]\n{checkpoint_extra}")),
     ] {
         let o = fx.put(k, &t);
         assert_eq!(o.code, 0, "{}", o.all());
@@ -248,14 +252,21 @@ fn a_checkpoint_closes_only_with_a_passing_receipt_for_each_required_check_it_li
         &wc,
         &["evidence", "run", "X-4", "--", "test", "-f", "src/a.txt"],
     );
-    // The designed parts are proven, but the required secret scan has no receipt.
+    // The designed parts are proven, but the required secret scan and accessibility have no receipt.
     let o = fx.refused(&["checkpoint", "close", "K-1"]);
     assert!(
         o.stderr.contains("`secret-scan`") && o.stderr.contains("X-2"),
         "{}",
         o.stderr
     );
+    assert!(
+        o.stderr.contains("`accessibility`") && o.stderr.contains("X-5"),
+        "{}",
+        o.stderr
+    );
     fx.must_in(&wc, &["evidence", "run", "X-2", "--", "true"]);
+    fx.refused(&["checkpoint", "close", "K-1"]);
+    fx.must_in(&wc, &["evidence", "run", "X-5", "--", "true"]);
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true);
     assert_eq!(c["checks_off"].as_array().unwrap().len(), 7, "{c}");
@@ -271,7 +282,25 @@ fn the_ledger_refuses_to_close_the_run_and_names_each_required_check_with_no_pro
         &["evidence", "run", "X-4", "--", "test", "-f", "src/a.txt"],
     );
     fx.must_in(&wc, &["evidence", "run", "X-2", "--", "true"]);
+    // Accessibility is off for the run while the checkpoint closes, then the human switches it on.
+    fx.must(&[
+        "checks",
+        "propose",
+        "accessibility=off:no screens in this test",
+        "--scope",
+        "run",
+    ]);
+    fx.human("Yes, accessibility is off for this run.");
+    fx.must(&[
+        "checks",
+        "set",
+        "--quote",
+        "accessibility is off for this run",
+    ]);
     fx.must(&["checkpoint", "close", "K-1"]);
+    fx.must(&["checks", "propose", "accessibility=on", "--scope", "run"]);
+    fx.human("Yes, accessibility is on again.");
+    fx.must(&["checks", "set", "--quote", "accessibility is on again"]);
     // Accessibility is required, its check record exists and nothing ran it.
     let o = fx.refused(&["ledger", "check"]);
     assert!(
@@ -280,6 +309,9 @@ fn the_ledger_refuses_to_close_the_run_and_names_each_required_check_with_no_pro
         o.stderr
     );
     assert!(!o.stderr.contains("secret-scan"), "{}", o.stderr);
+    // Stopping the run is refused the same way.
+    let o = fx.refused(&["run", "stop"]);
+    assert!(o.stderr.contains("accessibility"), "{}", o.stderr);
     // The human switches it off for the run: it is not demanded, and the summary says it was off.
     fx.must(&[
         "checks",

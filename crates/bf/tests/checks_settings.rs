@@ -137,6 +137,7 @@ fn a_new_run_starts_from_the_default_and_a_run_choice_leaves_the_default_alone()
         .any(|c| c.name == "legal-audit"));
 
     // The next run starts from the default again.
+    fx.run_checks_all_off();
     fx.must(&["run", "stop"]);
     fx.must(&["run", "start"]);
     let st = events::replay(&fx.project()).unwrap();
@@ -198,6 +199,7 @@ fn a_proposal_is_confirmed_once_and_only_in_its_own_run() {
     assert!(o.all().contains("no proposal"), "{}", o.all());
     // A proposal of run-1 cannot be recorded into run-2.
     fx.must(&["checks", "propose", "legal-audit=off:later"]);
+    fx.run_checks_all_off();
     fx.must(&["run", "stop"]);
     fx.must(&["run", "start"]);
     fx.human("yes, do the legal one too");

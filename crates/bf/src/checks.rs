@@ -191,6 +191,23 @@ pub fn required_now(st: &State) -> Vec<&'static NamedCheck> {
     }
 }
 
+/// The checks required when the run is closed: the choice of the last run, also after it was stopped;
+/// the project default when no run was ever started.
+pub fn required_closing(st: &State) -> Vec<&'static NamedCheck> {
+    match st.runs.last() {
+        Some(r) => required_in_run(st, &r.id.clone()),
+        None => required_in_run(st, ""),
+    }
+}
+
+/// The switched-off checks of the last run (the close is judged by it), or of the project default.
+pub fn off_closing(st: &State) -> &BTreeMap<String, String> {
+    st.runs
+        .last()
+        .map(|r| &r.checks_off)
+        .unwrap_or(&st.checks_default)
+}
+
 /// The switched-off checks of the active run, or of the project default when no run is active.
 pub fn off_now(st: &State) -> &BTreeMap<String, String> {
     st.active_run()
@@ -289,6 +306,7 @@ pub fn run_in(
             let st = events::require_chain(p)?;
             let changes = parse_changes(rest)?;
             let scope = pick_scope(&st, scope)?;
+            refuse_if_plan_cannot_meet(p, &st, &changes, &scope)?;
             let ev = events::append(
                 p,
                 "checks.propose",
@@ -381,6 +399,42 @@ pub fn run_in(
         }
         _ => Err(unknown(sub, rest)),
     }
+}
+
+/// Switching a check on is refused when the frozen plan cannot meet it.
+fn refuse_if_plan_cannot_meet(
+    p: &Project,
+    st: &State,
+    changes: &[CheckChange],
+    scope: &str,
+) -> R<()> {
+    let on: Vec<&'static NamedCheck> = changes
+        .iter()
+        .filter(|(_, r)| r.is_none())
+        .filter_map(|(n, _)| by_name(n))
+        .filter(|c| c.required)
+        .collect();
+    if on.is_empty() || !st.gate_passed("plan", None) {
+        return Ok(());
+    }
+    let pl = crate::plan::load(p)?;
+    let problems = crate::enforce::plan_problems_for(&pl, st, &on);
+    if problems.is_empty() {
+        return Ok(());
+    }
+    let mut steps: Vec<String> = problems.iter().map(|x| format!("Fix: {x}.")).collect();
+    steps.push(format!(
+        "The plan is frozen: the human changes it by an amendment, or the check stays off (scope `{scope}`)."
+    ));
+    Err(refuse_owned(
+        "switch a check on",
+        format!(
+            "the frozen plan cannot meet {} check(s) switched on",
+            problems.len()
+        ),
+        steps,
+        "`bf checks state` shows the checks that are on and off.",
+    ))
 }
 
 fn pick_scope(st: &State, scope: Option<&str>) -> R<String> {
