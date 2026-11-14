@@ -329,6 +329,66 @@ pub struct Run {
     pub test_mode: bool,
     pub ended: bool,
     pub simulated_used: bool,
+    /// The checks switched off for this run, with the reason for each: the project default when the
+    /// run started, then what the human confirmed for this run.
+    pub checks_off: BTreeMap<String, String>,
+}
+
+/// One change of the check settings: a check name and, when it is switched off, the reason.
+/// `None` switches the check on.
+pub type CheckChange = (String, Option<String>);
+
+/// A proposal of check settings that was shown to the human before they were asked.
+#[derive(Clone, Debug)]
+pub struct CheckProposal {
+    pub seq: u64,
+    /// `run`, `default` or `both`.
+    pub scope: String,
+    pub changes: Vec<CheckChange>,
+    /// The run that was active when the proposal was made; empty when none.
+    pub run: String,
+    /// True once a setting recorded it: a proposal is confirmed only once.
+    pub used: bool,
+}
+
+pub fn changes_to_json(c: &[CheckChange]) -> Value {
+    Value::Array(
+        c.iter()
+            .map(|(n, r)| json!({"check": n, "off": r}))
+            .collect(),
+    )
+}
+
+pub fn changes_from_json(v: &Value) -> Vec<CheckChange> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .map(|x| {
+                    (
+                        x["check"].as_str().unwrap_or("").to_string(),
+                        x["off"].as_str().map(|s| s.to_string()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn apply_changes(off: &mut BTreeMap<String, String>, changes: &[CheckChange]) {
+    for (n, r) in changes {
+        if crate::checks::by_name(n).is_none() {
+            continue;
+        }
+        match r {
+            Some(r) if !r.trim().is_empty() => {
+                off.insert(n.clone(), r.clone());
+            }
+            Some(_) => {}
+            None => {
+                off.remove(n);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -402,6 +462,10 @@ pub struct State {
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
+    /// The project default: checks switched off, with the reason for each.
+    pub checks_default: BTreeMap<String, String>,
+    /// Proposals of check settings shown to the human, in log order.
+    pub checks_proposals: Vec<CheckProposal>,
 }
 
 impl State {
@@ -687,7 +751,77 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     test_mode,
                     ended: false,
                     simulated_used: false,
+                    checks_off: st.checks_default.clone(),
                 });
+            }
+            "checks.propose" => {
+                st.checks_proposals.push(CheckProposal {
+                    seq,
+                    scope: sv("scope"),
+                    changes: changes_from_json(&ev["changes"]),
+                    run: st
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|r| !r.ended)
+                        .map(|r| r.id.clone())
+                        .unwrap_or_default(),
+                    used: false,
+                });
+            }
+            "checks.set" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let pseq = ev["proposal"].as_u64().unwrap_or(0);
+                let changes = changes_from_json(&ev["changes"]);
+                let prop = st.checks_proposals.iter().find(|x| x.seq == pseq).cloned();
+                let ok = prop
+                    .as_ref()
+                    .map(|x| {
+                        let active = st
+                            .runs
+                            .iter()
+                            .rev()
+                            .find(|r| !r.ended)
+                            .map(|r| r.id.clone())
+                            .unwrap_or_default();
+                        x.scope == sv("scope")
+                            && x.changes == changes
+                            && !x.used
+                            && !st
+                                .checks_proposals
+                                .iter()
+                                .any(|y| y.seq > x.seq && y.seq < tseq)
+                            && (x.scope == "default" || (!active.is_empty() && x.run == active))
+                    })
+                    .unwrap_or(false)
+                    && decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        pseq,
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    );
+                if !ok {
+                    st.ignored.push(format!(
+                        "event {seq}: a check setting cites no matching proposal or no valid human turn and quote after it"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(x) = st.checks_proposals.iter_mut().find(|x| x.seq == pseq) {
+                    x.used = true;
+                }
+                let scope = sv("scope");
+                if scope == "default" || scope == "both" {
+                    apply_changes(&mut st.checks_default, &changes);
+                }
+                if scope == "run" || scope == "both" {
+                    if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                        apply_changes(&mut r.checks_off, &changes);
+                    }
+                }
             }
             "run.stop" => {
                 let rid = sv("run");

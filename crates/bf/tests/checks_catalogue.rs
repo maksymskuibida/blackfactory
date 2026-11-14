@@ -25,7 +25,10 @@ fn every_named_check_of_three_families_is_required_by_default() {
     for f in [Family::Uiux, Family::Security, Family::Legal] {
         assert!(!checks::in_family(f).is_empty());
     }
-    assert_eq!(checks::by_name("threat-model").unwrap().stage, Stage::Design);
+    assert_eq!(
+        checks::by_name("threat-model").unwrap().stage,
+        Stage::Design
+    );
     assert_eq!(checks::by_name("secret-scan").unwrap().stage, Stage::Built);
 }
 

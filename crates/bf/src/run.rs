@@ -54,9 +54,13 @@ pub fn run_start(p: &Project) -> R<Value> {
     plan::check_or_refuse(&pl)?;
     let id = format!("run-{}", st.runs.len() + 1);
     let grant = st.pending_grants.last().copied();
-    events::append(p, "run.start", json!({"run": id, "grant": grant}))?;
+    events::append(
+        p,
+        "run.start",
+        json!({"run": id, "grant": grant, "checks_off": st.checks_default}),
+    )?;
     p.write_guard()?;
-    Ok(json!({"run": id, "test_mode": grant.is_some()}))
+    Ok(json!({"run": id, "test_mode": grant.is_some(), "checks_off": st.checks_default}))
 }
 
 pub fn run_stop(p: &Project) -> R<Value> {

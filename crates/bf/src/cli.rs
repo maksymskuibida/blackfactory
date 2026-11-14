@@ -32,6 +32,7 @@ const VALUE_FLAGS: &[&str] = &[
     "context",
     "options",
     "reason",
+    "scope",
     "quote",
     "token",
     "root",
@@ -1697,11 +1698,11 @@ fn cmd_log(args: &Args) -> R<()> {
 
 /// The new command groups, each served by a module of its own.
 fn cmd_group(args: &Args, group: &str) -> R<()> {
-    let _p = project(args)?;
+    let p = project(args)?;
     let sub = args.pos.get(1).map(|x| x.as_str()).unwrap_or("");
     let rest: Vec<String> = args.pos.iter().skip(2).cloned().collect();
     let v = match group {
-        "checks" => crate::checks::run(sub, &rest)?,
+        "checks" => crate::checks::run_in(&p, sub, &rest, args.flag("scope"), args.flag("quote"))?,
         "scan" => crate::scan::run(sub, &rest)?,
         "legal" => crate::legal::run(sub, &rest)?,
         "preset" => crate::preset::run(sub, &rest)?,
