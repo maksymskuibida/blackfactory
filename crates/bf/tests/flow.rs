@@ -1244,6 +1244,11 @@ fn send_prompt(fx: &Fx, extra: serde_json::Value, prompt: &str) -> serde_json::V
 #[test]
 fn each_form_of_the_hosts_own_message_is_not_a_human_turn_and_names_the_form() {
     let fx = Fx::new();
+    let turns_before = fx
+        .must(&["log", "--json"])
+        .stdout
+        .matches("\"human.turn\"")
+        .count();
     let reminder = "<system-reminder>Some host context.</system-reminder>\n";
     for (text, names) in [
         (
@@ -1300,9 +1305,9 @@ fn each_form_of_the_hosts_own_message_is_not_a_human_turn_and_names_the_form() {
         let why = r["event"]["reason"].as_str().unwrap();
         assert!(why.contains(names), "{text}: {why}");
     }
-    // The log says so for each: rejected, never a turn.
+    // The log says so for each: rejected, never a turn. Only the fixture's own setup turn is there.
     let log = fx.must(&["log", "--json"]).stdout;
-    assert!(!log.contains("\"human.turn\""), "{log}");
+    assert_eq!(log.matches("\"human.turn\"").count(), turns_before, "{log}");
 }
 
 #[test]
