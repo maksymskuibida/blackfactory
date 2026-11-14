@@ -533,7 +533,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 turn_ix.insert(seq, st.turns.len());
                 // A turn recorded with a wrapper that marks text written by a program or another session
                 // (an older build recorded some) can never decide anything.
-                let machine = crate::gates::machine_tag(&sv("text")).is_some();
+                let machine = crate::gates::recorded_text_is_host(&sv("text"));
                 st.turns.push(Turn {
                     seq,
                     text: sv("text"),
