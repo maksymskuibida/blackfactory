@@ -133,6 +133,14 @@ After you approve the delivery plan, the conductor runs a loop: ask `bf next`, s
 
 For a human step that does not stop the run, the factory carries on with independent work and you answer when you can. If the conductor session ends, open Claude Code in the same folder and say "continue the build" (or "continue the <project> build", or `/factory`): a new session knows nothing, reads the state from the engine, tells you in a few lines where things stand and goes on, including a questions page it had already published. Restarting it is your part for now; a supervisor that does it for you is not built yet. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
 
+### Take in work that landed on main during a run
+
+When the main branch gets commits the run lacks, the conductor says so in one line and does nothing until you ask.
+Say "take main in" (pull into your local main branch first if the work is on the remote) at a quiet point: the open checkpoint is the latest one and no unit is mid-flight.
+The conductor lets running units land, then runs `bf checkpoint sync <K> --quote "<your words>"`, which merges the main branch into that checkpoint.
+On a conflict the engine changes nothing and lists the files. Run `git merge <main branch>` in `.bf/work/<K>` (or `.bf/work/<K>/<repo>`), resolve, commit, then tell the conductor, which runs it again with `--resolved`.
+The checkpoint's own checks then run again; landed units keep their receipts.
+
 ## 8. Test runs
 
 A test run completes a whole factory run without you approving each gate. It is for trying the factory on a toy project.
