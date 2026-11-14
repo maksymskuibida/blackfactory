@@ -20,6 +20,163 @@ pub const GATE_KINDS: &[&str] = &[
     "checkpoint-step",
 ];
 
+/// Host-written elements that are a prompt only when they are the WHOLE prompt (a message of the human
+/// that quotes one inside other words is still theirs): the tag and the names of its closing forms.
+const HOST_ELEMENTS: &[(&str, &str)] = &[
+    ("task-notification", "a background task's notification"),
+    (
+        "agent-message",
+        "an agent's message (a subagent's hand-back)",
+    ),
+    ("cross-session-message", "another session's message"),
+    ("side-sessions-event", "a side-session event"),
+    ("ci-monitor-event", "a CI monitor event"),
+];
+
+const QUIT_SENTENCE: &str =
+    "The app was quit while you were working. Please continue from where you left off.";
+
+/// The prompt without the `<system-reminder>` blocks the host puts in front of it.
+fn without_reminders(text: &str) -> (&str, bool) {
+    let mut t = text.trim();
+    let mut stripped = false;
+    while let Some(rest) = t.strip_prefix("<system-reminder>") {
+        match rest.find("</system-reminder>") {
+            Some(end) => {
+                t = rest[end + "</system-reminder>".len()..].trim();
+                stripped = true;
+            }
+            None => break,
+        }
+    }
+    (t, stripped)
+}
+
+/// Is the whole prompt one of the host's own forms? Names the form. Anchored at both ends for the
+/// element forms, so a human message that contains or quotes a block is not matched.
+pub fn host_form(text: &str) -> Option<String> {
+    let (t, stripped) = without_reminders(text);
+    if t.is_empty() {
+        return if stripped {
+            Some("only host reminders".into())
+        } else {
+            None
+        };
+    }
+    if t == QUIT_SENTENCE {
+        return Some("the host's note that the app was quit".into());
+    }
+    for lead in ["Background", "Task"] {
+        let head = format!("{lead} (from the session that started this one):");
+        if let Some(rest) = t.strip_prefix(&head) {
+            if rest.starts_with('\n') || rest.starts_with("\r\n") {
+                return Some("the brief a session is started with".into());
+            }
+        }
+    }
+    for (name, what) in HOST_ELEMENTS {
+        // `<name ...>` with an optional `\` and `~` before the name, and a matching close tag.
+        let Some(rest) = t.strip_prefix('<') else {
+            continue;
+        };
+        let rest = rest.trim_start_matches(['\\', '~']);
+        let Some(after) = rest.strip_prefix(name) else {
+            continue;
+        };
+        if !(after.starts_with('>') || after.starts_with(char::is_whitespace)) {
+            continue;
+        }
+        let closes = [
+            format!("</{name}>"),
+            format!("<~/{name}>"),
+            format!("<\\~/{name}>"),
+        ];
+        // The first close tag must be the end of the prompt: one element, not an element and more.
+        let first = closes
+            .iter()
+            .filter_map(|c| after.find(c.as_str()).map(|p| (p, c.len())))
+            .min();
+        if let Some((p, len)) = first {
+            if after[p + len..].trim().is_empty() {
+                return Some(format!("{what}, a <{name}> element"));
+            }
+        }
+    }
+    None
+}
+
+/// What the transcript row for this prompt says about who wrote it.
+enum Origin {
+    Host(String),
+    Human,
+}
+
+/// The row's own marks, when the row can be found (same prompt id and exactly this text). Host:
+/// `promptSource` = `system`; `turnOrigin` = `task_notification` or `peer`; `origin.kind` =
+/// `task-notification`, `coordinator`, `peer` or `auto-continuation`. Human: `origin.kind` or
+/// `turnOrigin` = `human`, or `promptSource` = `typed`. A row with neither mark decides nothing, and
+/// neither does a missing row (the transcript may be written after the hook runs).
+fn transcript_origin(payload: &Value, prompt: &str) -> Option<Origin> {
+    let tp = payload.get("transcript_path").and_then(|v| v.as_str())?;
+    let pid = payload
+        .get("prompt_id")
+        .or_else(|| payload.get("promptId"))
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())?;
+    let text = std::fs::read_to_string(tp).ok()?;
+    for line in text.lines().rev() {
+        if !line.contains(pid) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let id = v
+            .get("promptId")
+            .or_else(|| v.get("prompt_id"))
+            .and_then(|x| x.as_str());
+        if id != Some(pid) {
+            continue;
+        }
+        let said = match &v["message"]["content"] {
+            Value::String(x) => x.clone(),
+            Value::Array(a) => a
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        if said.trim() != prompt.trim() {
+            continue;
+        }
+        let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let kind = v["origin"]["kind"].as_str().unwrap_or("").to_string();
+        let (source, turn) = (g("promptSource"), g("turnOrigin"));
+        if kind == "human" || turn == "human" || source == "typed" {
+            return Some(Origin::Human);
+        }
+        if source == "system"
+            || matches!(turn.as_str(), "task_notification" | "peer")
+            || matches!(
+                kind.as_str(),
+                "task-notification" | "coordinator" | "peer" | "auto-continuation"
+            )
+        {
+            let mark = if source == "system" {
+                "promptSource = system".to_string()
+            } else if !turn.is_empty() && turn != "human" {
+                format!("turnOrigin = {turn}")
+            } else {
+                format!("origin.kind = {kind}")
+            };
+            return Some(Origin::Host(mark));
+        }
+        return None;
+    }
+    None
+}
+
 /// Wrapper tags that mark text written by a program or another session, not typed by the human.
 const MACHINE_TAGS: &[&str] = &[
     "system-reminder",
@@ -34,6 +191,30 @@ const MACHINE_TAGS: &[&str] = &[
     "agent-message",
     "channel",
 ];
+
+/// Wrappers that mark a prompt as the host's when it STARTS with one (no closing form is checked).
+const PREFIX_TAGS: &[&str] = &[
+    "local-command-stdout",
+    "local-command-caveat",
+    "user-prompt-submit-hook",
+    "teammate-message",
+    "channel",
+];
+
+fn machine_tag_prefix(text: &str) -> Option<String> {
+    let (t, _) = without_reminders(text);
+    machine_tag(t).filter(|tag| PREFIX_TAGS.contains(&tag.as_str()))
+}
+
+/// Can this recorded turn never be the human's? An older build recorded some host messages (a
+/// subagent's hand-back, another session's message) as human turns; replay treats them as used.
+pub fn recorded_text_is_host(text: &str) -> bool {
+    host_form(text).is_some()
+        || machine_tag_prefix(text).is_some()
+        || machine_tag(text)
+            .map(|t| matches!(t.as_str(), "agent-message" | "cross-session-message"))
+            .unwrap_or(false)
+}
 
 /// The wrapper tag a program or another session puts around its text, when the text starts with one
 /// (after leading whitespace; a `\` or `~` between `<` and the name is allowed). The human's own pasted
@@ -110,8 +291,25 @@ pub fn classify_prompt(
     if trimmed.is_empty() {
         return Err("the prompt is empty".into());
     }
-    if let Some(tag) = machine_tag(trimmed) {
-        return Err(format!("the text starts with a <{tag}> wrapper: it was written by a program or another session"));
+    // Who wrote this prompt? The transcript row for it, when it can be found, says so by its own marks;
+    // without a decisive mark the words decide: the whole prompt must be one of the host's own forms.
+    match transcript_origin(payload, text) {
+        Some(Origin::Host(why)) => {
+            return Err(format!(
+                "the transcript marks this prompt as the host's, not the human's ({why})"
+            ))
+        }
+        Some(Origin::Human) => {}
+        None => {
+            if let Some(form) = host_form(text) {
+                return Err(format!(
+                    "the prompt is {form}: the host's own message, not one the human typed"
+                ));
+            }
+            if let Some(tag) = machine_tag_prefix(text) {
+                return Err(format!("the text starts with a <{tag}> wrapper: it was written by a program or another session"));
+            }
+        }
     }
     if let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) {
         if !project_root.is_empty() {
