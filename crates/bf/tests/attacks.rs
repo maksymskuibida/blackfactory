@@ -335,6 +335,7 @@ fn t9_a_simulated_approval_outside_a_granted_run_satisfies_nothing() {
     fx.tiny();
     // No grant, no run: the command itself refuses.
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     let o = fx.refused(&["gate", "approve", "plan", "--simulated"]);
     assert!(o.stderr.contains("no granted test run"), "{}", o.stderr);
@@ -410,6 +411,7 @@ fn t9_a_real_run_with_human_approval_can_merge_onto_main() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("The plan looks right. I approve it.");
     fx.must(&[

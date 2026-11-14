@@ -474,8 +474,26 @@ impl Fx {
             "yes, make this a test run with simulated approvals",
         ]);
         self.must(&["run", "start"]);
+        self.answer_plan_questions();
         self.must(&["gate", "open", "plan"]);
         self.must(&["gate", "approve", "plan", "--simulated"]);
+    }
+
+    /// The two questions of the run's plan stage, answered with no wave checks and no checks for every
+    /// unit, so the plan gate can open.
+    pub fn answer_plan_questions(&self) {
+        self.must(&["checks", "wave", "propose", "none"]);
+        self.human("No wave checks for this run.");
+        self.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
+        self.must(&["checks", "unit", "propose", "none"]);
+        self.human("No checks for every unit in this run.");
+        self.must(&[
+            "checks",
+            "unit",
+            "set",
+            "--quote",
+            "No checks for every unit",
+        ]);
     }
 
     /// `bf next` shows the token of every open worker directive, every time it is asked.

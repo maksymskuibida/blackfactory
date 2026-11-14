@@ -29,3 +29,4 @@ pub mod store;
 pub mod uiux;
 pub mod util;
 pub mod view;
+pub mod wavecheck;

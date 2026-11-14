@@ -439,6 +439,7 @@ fn close_then_close_with_merge_merges_once_in_a_real_run() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("approved");
     fx.must(&["gate", "approve", "plan", "--quote", "approved"]);

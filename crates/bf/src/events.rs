@@ -380,6 +380,39 @@ pub struct Run {
     /// The checks switched off for this run, with the reason for each: the project default when the
     /// run started, then what the human confirmed for this run.
     pub checks_off: BTreeMap<String, String>,
+    /// The wave checks this run uses, as the human confirmed them: `{source, checks}` where `source` is
+    /// `default`, `override` or `none`. None until the human decides at the plan stage.
+    pub wave: Option<Value>,
+    /// The checks every unit must pass in this run: `{mode, checks}` where `mode` is `project`,
+    /// `override` or `none`. None until the human decides at the plan stage.
+    pub unit_checks: Option<Value>,
+}
+
+/// A proposal about the wave checks or the checks every unit must pass, shown to the human before they
+/// are asked. `topic` is `wave` or `unitchecks`.
+#[derive(Clone, Debug)]
+pub struct SettingProposal {
+    pub seq: u64,
+    pub topic: String,
+    /// `run`, `default` (wave checks only) or `both`.
+    pub scope: String,
+    pub value: Value,
+    pub run: String,
+    pub used: bool,
+}
+
+/// A wave check run: for a checkpoint and a wave, the content it ran on and how it ended.
+#[derive(Clone, Debug, Default)]
+pub struct WaveRun {
+    pub checkpoint: String,
+    pub wave: u32,
+    pub content: String,
+    /// `running`, `passed`, `failed` or `stale` (units landed while it ran, so it counts for nothing).
+    pub state: String,
+    pub failed: Vec<Value>,
+    pub start_seq: u64,
+    pub start_at: String,
+    pub receipts: Vec<String>,
 }
 
 /// One change of the check settings: a check name and, when it is switched off, the reason.
@@ -530,6 +563,8 @@ pub struct CkFixOpen {
     pub rounds_log: Vec<Value>,
     /// The findings of every earlier round, with the round they were filed in.
     pub history: Vec<Value>,
+    /// The wave a wave fix is for; 0 for every other fix.
+    pub wave: u32,
 }
 
 /// A finding of a checkpoint review that the human accepted, or declined with a reason.
@@ -644,6 +679,13 @@ pub struct State {
     pub checks_default: BTreeMap<String, String>,
     /// Proposals of check settings shown to the human, in log order.
     pub checks_proposals: Vec<CheckProposal>,
+    /// The project's default wave checks, kept by the engine: `{enabled, checks}`. None when the project
+    /// has no default.
+    pub wave_default: Option<Value>,
+    /// Proposals about the wave checks and the checks every unit must pass, in log order.
+    pub setting_proposals: Vec<SettingProposal>,
+    /// The latest wave check run of each checkpoint and wave.
+    pub wave_runs: BTreeMap<(String, u32), WaveRun>,
 }
 
 impl State {
@@ -933,7 +975,124 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ended: false,
                     simulated_used: false,
                     checks_off: st.checks_default.clone(),
+                    wave: None,
+                    unit_checks: None,
                 });
+            }
+            "wave.propose" | "unitchecks.propose" => {
+                st.setting_proposals.push(SettingProposal {
+                    seq,
+                    topic: if ev["kind"] == "wave.propose" {
+                        "wave"
+                    } else {
+                        "unitchecks"
+                    }
+                    .into(),
+                    scope: sv("scope"),
+                    value: ev["value"].clone(),
+                    run: st
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|r| !r.ended)
+                        .map(|r| r.id.clone())
+                        .unwrap_or_default(),
+                    used: false,
+                });
+            }
+            "wave.set" | "unitchecks.set" => {
+                let topic = if ev["kind"] == "wave.set" {
+                    "wave"
+                } else {
+                    "unitchecks"
+                };
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let pseq = ev["proposal"].as_u64().unwrap_or(0);
+                let active = st
+                    .runs
+                    .iter()
+                    .rev()
+                    .find(|r| !r.ended)
+                    .map(|r| r.id.clone())
+                    .unwrap_or_default();
+                let prop = st.setting_proposals.iter().find(|x| x.seq == pseq).cloned();
+                let ok = prop
+                    .as_ref()
+                    .map(|x| {
+                        x.topic == topic
+                            && x.scope == sv("scope")
+                            && x.value == ev["value"]
+                            && !x.used
+                            && !st
+                                .setting_proposals
+                                .iter()
+                                .any(|y| y.topic == topic && y.seq > x.seq && y.seq < tseq)
+                            && (x.scope == "default" || (!active.is_empty() && x.run == active))
+                    })
+                    .unwrap_or(false)
+                    && decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        pseq,
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    );
+                if !ok {
+                    st.ignored.push(format!(
+                        "event {seq}: a {topic} setting cites no matching proposal or no valid human turn and quote after it"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(x) = st.setting_proposals.iter_mut().find(|x| x.seq == pseq) {
+                    x.used = true;
+                }
+                let scope = sv("scope");
+                let value = ev["value"].clone();
+                if topic == "wave" {
+                    if scope == "default" || scope == "both" {
+                        st.wave_default = Some(json!({
+                            "enabled": value["source"] != "none",
+                            "checks": value["checks"],
+                        }));
+                    }
+                    if scope == "run" || scope == "both" {
+                        if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                            r.wave = Some(value);
+                        }
+                    }
+                } else if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                    r.unit_checks = Some(value);
+                }
+            }
+            "wave.check.start" => {
+                let key = (sv("checkpoint"), ev["wave"].as_u64().unwrap_or(0) as u32);
+                st.wave_runs.insert(
+                    key.clone(),
+                    WaveRun {
+                        checkpoint: key.0,
+                        wave: key.1,
+                        content: sv("content"),
+                        state: "running".into(),
+                        start_seq: seq,
+                        start_at: at.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+            "wave.check.run" => {
+                let key = (sv("checkpoint"), ev["wave"].as_u64().unwrap_or(0) as u32);
+                let w = st.wave_runs.entry(key.clone()).or_insert_with(|| WaveRun {
+                    checkpoint: key.0.clone(),
+                    wave: key.1,
+                    ..Default::default()
+                });
+                w.content = sv("content");
+                w.state = sv("state");
+                w.failed = ev["failed"].as_array().cloned().unwrap_or_default();
+                w.receipts = crate::store::str_list(ev, "receipts");
             }
             "checks.propose" => {
                 st.checks_proposals.push(CheckProposal {
@@ -1211,6 +1370,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     before: heads,
                     content: sv("content"),
                     open_seq: seq,
+                    wave: ev["wave"].as_u64().unwrap_or(0) as u32,
                     ..Default::default()
                 });
             }
