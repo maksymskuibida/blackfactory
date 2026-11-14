@@ -25,6 +25,21 @@ pub struct Role {
     pub blind: bool,
     /// The policy tier it runs at: `builder`, `reviewer` or `verifier`.
     pub tier: &'static str,
+    /// The check family whose checks this role's token may settle: `uiux`, `security` or `legal`.
+    pub family: &'static str,
+    /// A built-stage role that also works at the design stage (the UI/UX verifier judges the screens
+    /// before the plan exists).
+    pub also_design: bool,
+}
+
+/// The subject of a design-stage brief, token and report: the stage itself, since no unit exists yet.
+pub const DESIGN: &str = "design";
+
+impl Role {
+    /// Whether the role works at the design stage.
+    pub fn at_design(&self) -> bool {
+        self.stage == "design" || self.also_design
+    }
 }
 
 pub const ROLES: &[Role] = &[
@@ -43,6 +58,8 @@ pub const ROLES: &[Role] = &[
         ],
         blind: true,
         tier: "verifier",
+        family: "uiux",
+        also_design: true,
     },
     Role {
         name: "security-expert",
@@ -59,6 +76,8 @@ pub const ROLES: &[Role] = &[
         ],
         blind: false,
         tier: "reviewer",
+        family: "security",
+        also_design: false,
     },
     Role {
         name: "security-auditor",
@@ -76,6 +95,8 @@ pub const ROLES: &[Role] = &[
         ],
         blind: false,
         tier: "reviewer",
+        family: "security",
+        also_design: false,
     },
     Role {
         name: "lawyer",
@@ -97,6 +118,8 @@ pub const ROLES: &[Role] = &[
         ],
         blind: false,
         tier: "reviewer",
+        family: "legal",
+        also_design: false,
     },
     Role {
         name: "legal-auditor",
@@ -120,6 +143,8 @@ pub const ROLES: &[Role] = &[
         ],
         blind: false,
         tier: "reviewer",
+        family: "legal",
+        also_design: false,
     },
 ];
 
@@ -144,17 +169,113 @@ pub fn is_new_role(name: &str) -> bool {
 
 fn describe(r: &Role) -> Value {
     json!({
-        "name": r.name, "stage": r.stage, "summary": r.summary, "blind": r.blind, "tier": r.tier,
+        "name": r.name, "stage": r.stage, "also_design": r.also_design, "family": r.family, "summary": r.summary, "blind": r.blind, "tier": r.tier,
         "reads": r.reads, "writes": r.writes, "runs": r.runs,
         "may_write_code": false,
     })
 }
 
-/// The brief of one unit for one of the new roles, written to the briefs folder as `<unit>-<role>.md`.
-pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
+/// A role works only on a subject at its stage: the design stage (`design`, before any plan exists)
+/// for a design-stage role, a unit or a checkpoint of the plan for a built-stage role.
+pub fn check_subject(p: &Project, subject: &str, role: &str) -> R<&'static Role> {
     let Some(r) = get(role) else {
         return Err(unknown(role));
     };
+    if subject == DESIGN {
+        if !r.at_design() {
+            return Err(refuse(
+                format!("use the role `{role}` at the design stage"),
+                format!(
+                    "`{role}` works at the {} stage, on a unit or a checkpoint",
+                    r.stage
+                ),
+                &["Use a design-stage role here: `security-expert`, `lawyer` or `uiux-verifier`."],
+                "The command prints its result.",
+            ));
+        }
+        return Ok(r);
+    }
+    let pl = plan::load(p)?;
+    let known = pl.unit(subject).is_some() || pl.checkpoints.iter().any(|k| s(k, "id") == subject);
+    if !known {
+        return Err(refuse(
+            format!("use the role `{role}` on {subject}"),
+            "no such unit or checkpoint, and it is not the design stage",
+            &["Use a unit or checkpoint ID from `bf status`, or `design` for a design-stage role."],
+            "The command prints its result.",
+        ));
+    }
+    if r.stage != "built" {
+        return Err(refuse(
+            format!("use the role `{role}` on {subject}"),
+            format!("`{role}` works at the design stage, not on a unit or a checkpoint"),
+            &["Use `design` as the subject: `bf roles token design <role>`, `bf brief design --role <role>`."],
+            "The command prints its result.",
+        ));
+    }
+    Ok(r)
+}
+
+/// The brief of the design stage for a design-stage role: no unit exists, so it lists the design records.
+fn design_brief(p: &Project, r: &Role) -> R<std::path::PathBuf> {
+    let role = r.name;
+    let mut md = format!("# Brief: {DESIGN} as {role}\n\n");
+    md.push_str(&format!(
+        "## Your role\n\n{} Stage: design. No plan exists yet.\n\n## The design records\n\n",
+        r.summary
+    ));
+    for kind in [
+        "requirement",
+        "screen",
+        "journey",
+        "component",
+        "decision",
+        "target",
+        "threat",
+        "markets",
+    ] {
+        for rec in p.list_records(crate::schema::kind_by_name(kind))? {
+            md.push_str(&format!(
+                "- {} {}: {}\n",
+                kind,
+                s(&rec, "id"),
+                s(&rec, "title")
+            ));
+        }
+    }
+    md.push_str("\n## You may\n\nRead:\n");
+    for x in r.reads {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nWrite:\n");
+    if r.writes.is_empty() {
+        md.push_str("- nothing\n");
+    }
+    for x in r.writes {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nRun:\n");
+    for x in r.runs {
+        md.push_str(&format!("- `{x}`\n"));
+    }
+    md.push_str(&format!(
+        "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
+        p.policy.limits.max_rounds, p.policy.limits.idle_minutes
+    ));
+    md.push_str(&format!(
+        "\n## Rules\n\n- Report with `bf report {DESIGN} --result built|blocked --role {role} --token <token>`; the report spends your token and works outside a run.\n- Your token ends when a run starts or stops.\n- Never edit anything under the factory or engine folders.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\"`.\n- A check counts only when `bf evidence run` ran it.\n"
+    ));
+    let path = p.briefs_dir().join(format!("{DESIGN}-{role}.md"));
+    util::atomic_write(&path, md.as_bytes())?;
+    Ok(path)
+}
+
+/// The brief of one unit for one of the new roles, written to the briefs folder as `<unit>-<role>.md`.
+pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
+    let r = check_subject(p, unit, role)?;
+    if unit == DESIGN {
+        return design_brief(p, r);
+    }
     let pl = plan::load(p)?;
     let Some(u) = pl.unit(unit) else {
         return Err(refuse(
@@ -235,17 +356,7 @@ pub fn run_in(p: &Project, sub: &str, rest: &[String]) -> R<Value> {
         "token" => {
             let unit = rest.first().map(|x| x.as_str()).unwrap_or("");
             let role = rest.get(1).map(|x| x.as_str()).unwrap_or("");
-            if get(role).is_none() {
-                return Err(unknown(role));
-            }
-            if plan::load(p)?.unit(unit).is_none() {
-                return Err(refuse(
-                    format!("issue a token for {unit}"),
-                    "no such unit",
-                    &["Use a unit ID from `bf status`."],
-                    "The command prints the token.",
-                ));
-            }
+            check_subject(p, unit, role)?;
             let token = run::issue_token(p, &format!("{unit}:{role}"))?;
             Ok(json!({"unit": unit, "role": role, "token": token}))
         }

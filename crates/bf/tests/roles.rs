@@ -46,11 +46,16 @@ fn the_engine_writes_a_brief_for_each_role() {
     let fx = Fx::new();
     fx.tiny();
     for n in NAMES {
-        let v = fx.must(&["brief", "U-1", "--role", n, "--json"]).json();
+        let subject = if matches!(n, "security-expert" | "lawyer") {
+            "design"
+        } else {
+            "U-1"
+        };
+        let v = fx.must(&["brief", subject, "--role", n, "--json"]).json();
         let path = v["path"].as_str().unwrap();
-        assert!(path.ends_with(&format!("U-1-{n}.md")), "{path}");
+        assert!(path.ends_with(&format!("{subject}-{n}.md")), "{path}");
         let md = fs::read_to_string(path).unwrap();
-        assert!(md.contains(&format!("# Brief: U-1 as {n}")));
+        assert!(md.contains(&format!("# Brief: {subject} as {n}")));
         assert!(md.contains("R-1"));
         assert!(md.contains("## You may"));
         assert!(md.contains("## Limits"));
@@ -72,13 +77,13 @@ fn each_role_gets_its_own_stable_token() {
     let fx = Fx::new();
     fx.tiny();
     let t1 = fx
-        .must(&["roles", "token", "U-1", "lawyer", "--json"])
+        .must(&["roles", "token", "U-1", "security-auditor", "--json"])
         .json()["token"]
         .as_str()
         .unwrap()
         .to_string();
     let t1b = fx
-        .must(&["roles", "token", "U-1", "lawyer", "--json"])
+        .must(&["roles", "token", "U-1", "security-auditor", "--json"])
         .json()["token"]
         .as_str()
         .unwrap()
@@ -92,7 +97,7 @@ fn each_role_gets_its_own_stable_token() {
     assert_eq!(t1, t1b);
     assert_ne!(t1, t2);
     assert_eq!(t1.len(), 24);
-    assert!(fx.bf(&["roles", "token", "U-9", "lawyer"]).code != 0);
+    assert!(fx.bf(&["roles", "token", "U-9", "legal-auditor"]).code != 0);
     assert!(fx.bf(&["roles", "token", "U-1", "builder"]).code != 0);
 }
 
@@ -103,7 +108,7 @@ fn an_issued_role_token_survives_bf_next_and_reports_once() {
     fx.tiny();
     fx.start_test_run();
     let t = fx
-        .must(&["roles", "token", "U-1", "security-expert", "--json"])
+        .must(&["roles", "token", "design", "security-expert", "--json"])
         .json()["token"]
         .as_str()
         .unwrap()
@@ -111,7 +116,7 @@ fn an_issued_role_token_survives_bf_next_and_reports_once() {
     fx.must(&["next", "--json"]);
     fx.must(&["next", "--json"]);
     let again = fx
-        .must(&["roles", "token", "U-1", "security-expert", "--json"])
+        .must(&["roles", "token", "design", "security-expert", "--json"])
         .json()["token"]
         .as_str()
         .unwrap()
@@ -121,7 +126,7 @@ fn an_issued_role_token_survives_bf_next_and_reports_once() {
     let before = fx.must(&["status", "--json"]).json();
     let bad = fx.bf(&[
         "report",
-        "U-1",
+        "design",
         "--result",
         "built",
         "--role",
@@ -132,7 +137,7 @@ fn an_issued_role_token_survives_bf_next_and_reports_once() {
     assert!(bad.code != 0);
     let ok = fx.must(&[
         "report",
-        "U-1",
+        "design",
         "--result",
         "built",
         "--role",
@@ -149,7 +154,7 @@ fn an_issued_role_token_survives_bf_next_and_reports_once() {
     );
     let twice = fx.bf(&[
         "report",
-        "U-1",
+        "design",
         "--result",
         "built",
         "--role",
@@ -198,7 +203,7 @@ const THREAT: &str = "id=\"TH-1\"\nkind=\"threat\"\ntitle=\"Token theft\"\nprote
 const LEGAL: &str = "id=\"L-1\"\nkind=\"legal\"\ntitle=\"Consent\"\nseverity=\"high\"\n";
 
 #[test]
-fn a_threat_put_needs_the_security_experts_token() {
+fn a_threat_put_from_a_working_copy_is_refused_for_every_role() {
     let fx = Fx::new();
     let wc = wc_of_u1(&fx);
     let none = put_in(&fx, &wc, "threat", THREAT, None);
@@ -207,7 +212,9 @@ fn a_threat_put_needs_the_security_experts_token() {
         "{}",
         none.all()
     );
-    for role in ["security-auditor", "lawyer", "legal-auditor"] {
+    // The only writer of a threat is the security expert, who works at the design stage from the
+    // main checkout: no role can put a threat from a working copy.
+    for role in ["security-auditor", "legal-auditor", "uiux-verifier"] {
         let t = role_token(&fx, role);
         let o = put_in(&fx, &wc, "threat", THREAT, Some(&t));
         assert!(
@@ -218,14 +225,9 @@ fn a_threat_put_needs_the_security_experts_token() {
     }
     let wrong = put_in(&fx, &wc, "threat", THREAT, Some("0123456789abcdef01234567"));
     assert!(wrong.code != 0 && wrong.all().contains("token of a role that writes it"));
-    let t = role_token(&fx, "security-expert");
-    let ok = put_in(&fx, &wc, "threat", THREAT, Some(&t));
-    assert_eq!(ok.code, 0, "{}", ok.all());
-    assert!(
-        !ok.all().contains("token of a role that writes it"),
-        "{}",
-        ok.all()
-    );
+    // The security expert works at the design stage: no token for it exists on a unit.
+    let o = fx.bf(&["roles", "token", "U-1", "security-expert"]);
+    assert!(o.code != 0, "{}", o.all());
 }
 
 #[test]
@@ -238,7 +240,7 @@ fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
         "{}",
         none.all()
     );
-    for role in ["security-expert", "security-auditor", "uiux-verifier"] {
+    for role in ["security-auditor", "uiux-verifier"] {
         let t = role_token(&fx, role);
         let o = put_in(&fx, &wc, "legal", LEGAL, Some(&t));
         assert!(
@@ -247,10 +249,9 @@ fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
             o.all()
         );
     }
-    for (role, id) in [("lawyer", "L-1"), ("legal-auditor", "L-2")] {
-        let t = role_token(&fx, role);
-        let body = LEGAL.replace("L-1", id);
-        let ok = put_in(&fx, &wc, "legal", &body, Some(&t));
-        assert_eq!(ok.code, 0, "{role}: {}", ok.all());
-    }
+    let t = role_token(&fx, "legal-auditor");
+    let ok = put_in(&fx, &wc, "legal", LEGAL, Some(&t));
+    assert_eq!(ok.code, 0, "legal-auditor: {}", ok.all());
+    // The lawyer works at the design stage: no token for it exists on a unit.
+    assert!(fx.bf(&["roles", "token", "U-1", "lawyer"]).code != 0);
 }

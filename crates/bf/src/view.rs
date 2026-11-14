@@ -34,6 +34,7 @@ fn plural(kind: &str) -> String {
     match kind {
         "decision" => "Decisions".into(),
         "threat" => "Threats".into(),
+        "markets" => "Markets".into(),
         k => {
             let mut c = k.chars();
             let first = c
@@ -220,7 +221,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         "idea" => vec!["idea"],
         "requirements" => vec!["requirement"],
         "ui" => vec!["screen", "journey"],
-        "architecture" => vec!["component", "decision", "target", "threat"],
+        "architecture" => vec!["component", "decision", "target", "threat", "markets"],
         "plan" => vec!["unit", "handoff", "checkpoint", "check"],
         _ => vec![],
     };

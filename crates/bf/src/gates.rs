@@ -450,7 +450,7 @@ fn snapshot_kinds(kind: &str) -> &'static [&'static str] {
         "idea" => &["idea"],
         "requirements" => &["requirement"],
         "ui" => &["screen", "journey"],
-        "architecture" => &["component", "decision", "target", "threat"],
+        "architecture" => &["component", "decision", "target", "threat", "markets"],
         "plan" => &["unit", "handoff", "checkpoint", "check"],
         _ => &[],
     }
@@ -511,7 +511,7 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
         "idea" => Some("idea"),
         "requirement" => Some("requirements"),
         "screen" | "journey" => Some("ui"),
-        "component" | "decision" | "target" | "threat" => Some("architecture"),
+        "component" | "decision" | "target" | "threat" | "markets" => Some("architecture"),
         "unit" | "handoff" | "checkpoint" | "check" => Some("plan"),
         _ => None,
     }
