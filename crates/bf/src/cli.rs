@@ -1584,20 +1584,39 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let _lock = lock_records(p)?;
     // A worker's only record is a new, open finding for a unit that is in review. Marking a finding
     // fixed or accepted is not a worker's to do.
-    if real_zone(p).is_some() {
-        let st = events::replay(p)?;
-        let unit = s(&rec, "unit").to_string();
-        let outcome = s(&rec, "outcome").to_string();
-        if kind.name != "finding"
-            || st.unit_state(&unit) != "review"
-            || !(outcome.is_empty() || outcome == "open")
-        {
-            return Err(refuse(
+    if let Some((_, zone_id)) = real_zone(p) {
+        if matches!(kind.name, "threat" | "legal") {
+            // A threat or a legal record is put only with the token of a role that writes that kind.
+            let held = crate::roles::writers_of(kind.name)
+                .iter()
+                .any(|r| run::holds_token(p, &format!("{zone_id}:{r}"), args.flag("token")));
+            if !held {
+                return Err(refuse(
+                    format!("put a {} from a working copy", kind.name),
+                    format!(
+                        "a {} is put only with the token of a role that writes it ({}); none, or another role's, was given",
+                        kind.name,
+                        crate::roles::writers_of(kind.name).join(" or ")
+                    ),
+                    &["Put it with `--token <token>`; the conductor issues the token with `bf roles token <unit> <role>`."],
+                    format!("`bf record get` shows the {}.", kind.name),
+                ));
+            }
+        } else {
+            let st = events::replay(p)?;
+            let unit = s(&rec, "unit").to_string();
+            let outcome = s(&rec, "outcome").to_string();
+            if kind.name != "finding"
+                || st.unit_state(&unit) != "review"
+                || !(outcome.is_empty() || outcome == "open")
+            {
+                return Err(refuse(
                 format!("put a {} from a working copy", kind.name),
                 "a worker may file a new, open finding for a unit that is in review; every other record belongs to the planner and the human, and fixed and accepted are set by the engine and the human",
                 &["Report with `bf report <unit> --result findings --role reviewer` while the unit is in review.", "To accept a finding, ask the human; they put it from the main checkout."],
                 "`bf record get` shows the finding as open.",
             ));
+            }
         }
     }
     if rec.get("kind").is_none() {

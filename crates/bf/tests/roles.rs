@@ -168,3 +168,89 @@ fn the_uiux_verifier_is_staged_at_built() {
         .json();
     assert_eq!(v["stage"], "built");
 }
+
+fn wc_of_u1(fx: &Fx) -> std::path::PathBuf {
+    fx.tiny();
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap())
+}
+
+fn role_token(fx: &Fx, role: &str) -> String {
+    fx.must(&["roles", "token", "U-1", role, "--json"]).json()["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn put_in(fx: &Fx, wc: &std::path::Path, kind: &str, body: &str, token: Option<&str>) -> Out {
+    let f = wc.join("rec.toml");
+    fs::write(&f, body).unwrap();
+    let mut args = vec!["record", "put", kind, "--file", "rec.toml"];
+    if let Some(t) = token {
+        args.push("--token");
+        args.push(t);
+    }
+    fx.bf_in(wc, &args)
+}
+
+const THREAT: &str = "id=\"TH-1\"\nkind=\"threat\"\ntitle=\"Token theft\"\nprotects=\"the tokens\"\nattack=\"read the state folder\"\nmitigation=\"the folder is not readable\"\n";
+const LEGAL: &str = "id=\"L-1\"\nkind=\"legal\"\ntitle=\"Consent\"\nseverity=\"high\"\n";
+
+#[test]
+fn a_threat_put_needs_the_security_experts_token() {
+    let fx = Fx::new();
+    let wc = wc_of_u1(&fx);
+    let none = put_in(&fx, &wc, "threat", THREAT, None);
+    assert!(
+        none.code != 0 && none.all().contains("token of a role that writes it"),
+        "{}",
+        none.all()
+    );
+    for role in ["security-auditor", "lawyer", "legal-auditor"] {
+        let t = role_token(&fx, role);
+        let o = put_in(&fx, &wc, "threat", THREAT, Some(&t));
+        assert!(
+            o.code != 0 && o.all().contains("token of a role that writes it"),
+            "{role}: {}",
+            o.all()
+        );
+    }
+    let wrong = put_in(&fx, &wc, "threat", THREAT, Some("0123456789abcdef01234567"));
+    assert!(wrong.code != 0 && wrong.all().contains("token of a role that writes it"));
+    let t = role_token(&fx, "security-expert");
+    let ok = put_in(&fx, &wc, "threat", THREAT, Some(&t));
+    assert_eq!(ok.code, 0, "{}", ok.all());
+    assert!(
+        !ok.all().contains("token of a role that writes it"),
+        "{}",
+        ok.all()
+    );
+}
+
+#[test]
+fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
+    let fx = Fx::new();
+    let wc = wc_of_u1(&fx);
+    let none = put_in(&fx, &wc, "legal", LEGAL, None);
+    assert!(
+        none.code != 0 && none.all().contains("token of a role that writes it"),
+        "{}",
+        none.all()
+    );
+    for role in ["security-expert", "security-auditor", "uiux-verifier"] {
+        let t = role_token(&fx, role);
+        let o = put_in(&fx, &wc, "legal", LEGAL, Some(&t));
+        assert!(
+            o.code != 0 && o.all().contains("token of a role that writes it"),
+            "{role}: {}",
+            o.all()
+        );
+    }
+    for (role, id) in [("lawyer", "L-1"), ("legal-auditor", "L-2")] {
+        let t = role_token(&fx, role);
+        let body = LEGAL.replace("L-1", id);
+        let ok = put_in(&fx, &wc, "legal", &body, Some(&t));
+        assert_eq!(ok.code, 0, "{role}: {}", ok.all());
+    }
+}

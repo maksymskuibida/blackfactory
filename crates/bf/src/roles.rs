@@ -128,6 +128,16 @@ pub fn get(name: &str) -> Option<&'static Role> {
     ROLES.iter().find(|r| r.name == name)
 }
 
+/// The roles that write records of `kind` (`threat` or `legal`), by name.
+pub fn writers_of(kind: &str) -> Vec<&'static str> {
+    let needle = format!("`bf record put {kind}`");
+    ROLES
+        .iter()
+        .filter(|r| r.writes.iter().any(|w| w.contains(&needle)))
+        .map(|r| r.name)
+        .collect()
+}
+
 pub fn is_new_role(name: &str) -> bool {
     get(name).is_some()
 }
