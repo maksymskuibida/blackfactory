@@ -176,7 +176,7 @@ The only way a worker changes a unit's state.
 
 `--findings -` reads the list from standard input, so a reviewer needs no file. A findings file is a JSON list such as `[{"title": "...", "severity": "high", "where": "src/a.rs:10", "action": "..."}]`; each entry becomes a finding record with an ID that never changes. `--cost` adds to the budget count.
 
-A finding is open until its `outcome` is `fixed` or `accepted`. A reviewer can file one from the unit's working copy with `bf record put finding --file f.toml`, but only a new, open finding for a unit that is in review (workers may put nothing else, and may not mark a finding fixed or accepted); the human sets `outcome = "accepted"` by putting it from the main checkout.
+A finding is open until its `outcome` is `fixed` or `accepted`. A reviewer can file one from the unit's working copy with `bf record put finding --file f.toml`; the auditors (`security-auditor`, `legal-auditor`) can file findings only while a unit is in review, until a later unit changes that. Only a new, open finding can be filed, for a unit that is in review (workers may put nothing else, and may not mark a finding fixed or accepted); the human sets `outcome = "accepted"` by putting it from the main checkout.
 
 Refuses when: no run is active; the report does not fit the unit's state; a unit in review is reported on without `--role reviewer`; a clean review is reported while findings are open.
 

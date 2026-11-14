@@ -39,7 +39,26 @@ fn the_skill_names_each_new_demand() {
             "`bf roles list`",
             "`uiux-verifier`, `security-expert`, `security-auditor`, `lawyer` and `legal-auditor`",
             "bf amend withdraw <A-n> --reason",
+            "it works in the main checkout",
         ],
+    );
+    assert!(
+        !skill.contains("withdraws the earlier one"),
+        "the skill still states the replaced rule"
+    );
+}
+
+#[test]
+fn the_documents_state_the_corrected_rules() {
+    has(
+        &read("docs/engine.md"),
+        "engine.md",
+        &["can file findings only while a unit is in review, until a later unit changes that"],
+    );
+    has(
+        &read("docs/using.md"),
+        "using.md",
+        &["Stopping a run needs every required check proven or switched off"],
     );
 }
 

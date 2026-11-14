@@ -129,7 +129,7 @@ After you approve the delivery plan, the conductor runs a loop: ask `bf next`, s
 - a parked or blocked unit, or a failed or unreachable check, that needs a decision (only that unit or checkpoint waits; the rest goes on),
 - a question one of the workers put to you: it shows up in chat with its options, only that unit waits, and your answer reaches the worker in its next brief,
 - the budget cap,
-- the end of the run, after the last checkpoint closes. Each checkpoint's verifier is the verification of what it proves, and `bf ledger check` is the final test.
+- the end of the run, after the last checkpoint closes. Stopping a run needs every required check proven or switched off, so a run that is given up has its checks switched off first (you say so in chat, with a reason for each). Each checkpoint's verifier is the verification of what it proves, and `bf ledger check` is the final test.
 
 A checkpoint either stops and waits for you or has no stop. The plan page shows, for every checkpoint, whether a stop is proposed and one sentence on why; approving the plan approves those stops, and you change one by rejecting the gate with your words (the next round shows the change). If the conductor session ends, open Claude Code in the same folder and say "continue the build" (or "continue the <project> build", or `/factory`): a new session knows nothing, reads the state from the engine, tells you in a few lines where things stand and goes on, including a questions page it had already published. Restarting it is your part for now; a supervisor that does it for you is not built yet. If you set a budget cap in `factory/policy.toml` (`[budget] cap`), the conductor reports the cost of every piece of work and the engine refuses new work at the cap.
 
