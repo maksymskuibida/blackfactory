@@ -1240,7 +1240,7 @@ impl Project {
                 .as_ref()
                 .and_then(|s| s.sync_open.as_ref())
                 .filter(|o| o.checkpoint == id && o.phase == "resolve")
-                .map(crate::run::sync_files)
+                .map(crate::run::sync_allowed)
                 .unwrap_or_default();
             worktrees.push(json!({
                 "kind": "checkpoint",
