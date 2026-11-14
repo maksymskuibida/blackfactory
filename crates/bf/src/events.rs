@@ -454,9 +454,10 @@ pub struct Amend {
     pub reasons: Value,
     /// `open`, `narrowed`, `approved` or `withdrawn`.
     pub status: String,
-    /// For a withdrawn amendment: why, and the amendment that replaced it, if one did.
+    /// For a withdrawn amendment: why.
     pub withdrawn_why: String,
-    pub replaced_by: String,
+    /// The log position of its latest narrowing or revision: an approval needs a human message after it.
+    pub changed_seq: u64,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -1093,7 +1094,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 reasons: Value::Null,
                 status: "open".into(),
                 withdrawn_why: String::new(),
-                replaced_by: String::new(),
+                changed_seq: seq,
             }),
             "amend.withdraw" => {
                 let id = sv("amend");
@@ -1104,7 +1105,6 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 {
                     a.status = "withdrawn".into();
                     a.withdrawn_why = sv("reason");
-                    a.replaced_by = sv("replaced_by");
                 }
             }
             "amend.revise" => {
@@ -1120,6 +1120,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.waive = vec![];
                     a.reasons = Value::Null;
                     a.status = "open".into();
+                    a.changed_seq = seq;
                 }
             }
             "amend.narrow" => {
@@ -1133,14 +1134,29 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.waive = crate::store::str_list(ev, "waive");
                     a.reasons = ev.get("reasons").cloned().unwrap_or(Value::Null);
                     a.status = "narrowed".into();
+                    a.changed_seq = seq;
                 }
             }
             "amend.approve" => {
                 let id = sv("amend");
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                let changed = st
+                    .amends
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| a.changed_seq)
+                    .unwrap_or(0);
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    changed,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
-                        "event {seq}: amendment approval cites no valid human turn"
+                        "event {seq}: amendment approval cites no valid human turn after its latest change"
                     ));
                     continue;
                 }

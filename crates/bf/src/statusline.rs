@@ -28,21 +28,41 @@ pub type Item = (String, String, u32);
 /// Build the line. Items in the same state (and round) share one segment.
 pub fn render(items: &[Item]) -> String {
     let order = [
-        "running", "review", "fixing", "reviewed", "landed", "blocked", "parked", "verifying",
+        "running",
+        "review",
+        "fixing",
+        "reviewed",
+        "landed",
+        "blocked",
+        "parked",
+        "verifying",
         "closed",
     ];
-    let mut groups: BTreeMap<(usize, u32), Vec<&str>> = BTreeMap::new();
+    let mut groups: BTreeMap<usize, Vec<(&str, u32)>> = BTreeMap::new();
     for (id, state, round) in items {
         if let Some(ix) = order.iter().position(|o| o == state) {
-            groups.entry((ix, *round)).or_default().push(id);
+            groups.entry(ix).or_default().push((id, *round));
         }
     }
     let mut parts = Vec::new();
-    for ((ix, round), ids) in groups {
+    for (ix, units) in groups {
         let (sg, words) = sign(order[ix]).unwrap();
+        // One segment per state. When every unit is in the same round it is said once at the end;
+        // otherwise each unit carries its own round.
+        let same = units.iter().all(|(_, r)| *r == units[0].1);
+        let ids: Vec<String> = units
+            .iter()
+            .map(|(id, r)| {
+                if !same && *r > 0 {
+                    format!("{id} (round {r})")
+                } else {
+                    id.to_string()
+                }
+            })
+            .collect();
         let mut t = format!("{sg} {} {words}", ids.join(", "));
-        if round > 0 {
-            t.push_str(&format!(", round {round}"));
+        if same && units[0].1 > 0 {
+            t.push_str(&format!(", round {}", units[0].1));
         }
         parts.push(t);
     }

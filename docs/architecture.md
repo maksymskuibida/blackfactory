@@ -86,7 +86,7 @@ All records are structured files inside the project's repository, one record per
 | Design part: component, screen, journey, target, threat, decision | Agent drafts, human approves at its gate | Only by amendment |
 | Unit: what it delivers (IDs), what it depends on, files it may touch, estimate | Planner, approved at the Delivery plan gate | By amendment or re-plan |
 | Handoff: from, to, the thing handed over, its contract | Planner | By amendment |
-| Checkpoint: after which units, which IDs it proves, its checks, human step and its stop or carry-on | Planner, approved at the Delivery plan gate | By amendment |
+| Checkpoint: after which units, which IDs it proves, its checks, human step, and whether it stops for the human or has no stop, with one sentence why | Planner, approved at the Delivery plan gate | By amendment |
 | Check: a command, an agent task or a human step, and the IDs it proves | Planner; plugins add kinds | By amendment |
 | Receipt: check, content it ran on, exit code, output hash, attached files | Engine only | Never |
 | Finding: stable id, severity, where, required action, outcome | Reviewer through the engine | Outcome only |
@@ -110,7 +110,7 @@ ID families: `R` requirement, `C` component, `S` screen, `J` journey, `T` target
 7. Land locally. An engine command merges the unit's branch into the local branch of its checkpoint and refuses unless every receipt matches the content. No network. Units land on their checkpoint's branch, never on main.
 8. The ledger's links are updated from the unit record.
 9. When a checkpoint's units have landed, its checks run: verifiers, experts, and any human step. `close` refuses unless every ID the checkpoint names has a receipt at that content or an amendment approved by the human. Where the plan says so, the checkpoint's branch becomes a pull request, its required checks re-verify every receipt, and main moves only when it merges.
-10. A human step either stops the factory or lets independent work carry on, as the plan said.
+10. A checkpoint either stops and waits for the human or has no stop, as the plan said. The agent proposes which on the plan approval page, and approving the plan approves the proposal. There is no third form.
 
 At the end the whole result is verified again, and the ledger refuses to close while any ID lacks a link.
 

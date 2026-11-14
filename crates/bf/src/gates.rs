@@ -1102,10 +1102,20 @@ pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> 
             "The status lists the amendment as withdrawn.",
         ));
     }
+    if reason.trim().is_empty() {
+        return Err(refuse(
+            format!("withdraw {aid}"),
+            "no reason was given",
+            &[&format!(
+                "Run `bf amend withdraw {aid} --reason \"<why>\"`."
+            )],
+            "The status lists the amendment as withdrawn, with its reason.",
+        ));
+    }
     events::append(
         p,
         "amend.withdraw",
-        json!({"amend": aid, "reason": reason.trim(), "replaced_by": ""}),
+        json!({"amend": aid, "reason": reason.trim()}),
     )?;
     p.write_guard()?;
     Ok(json!({"amend": aid, "withdrawn": true, "reason": reason.trim()}))
@@ -1125,7 +1135,7 @@ pub fn amendments_json(st: &State) -> Vec<Value> {
         .iter()
         .map(|a| {
             json!({"id": a.id, "ids": a.ids, "status": amend_status(a),
-                "withdrawn_why": a.withdrawn_why, "replaced_by": a.replaced_by})
+                "withdrawn_why": a.withdrawn_why})
         })
         .collect()
 }
@@ -1136,13 +1146,7 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
         .get("amend")
         .and_then(|v| v.as_str())
         .map(|x| x.to_string())
-        .or_else(|| {
-            st.amends
-                .iter()
-                .rev()
-                .find(|a| matches!(a.status.as_str(), "open" | "narrowed"))
-                .map(|a| a.id.clone())
-        });
+        .or_else(|| open_amendment(&st).map(|a| a.id.clone()));
     let Some(aid) = aid else {
         return Err(refuse(
             "narrow an amendment",
