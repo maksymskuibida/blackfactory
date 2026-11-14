@@ -114,7 +114,26 @@ pub fn write_head(p: &Project, h: &Head) -> R<()> {
     Ok(())
 }
 
+/// Read the log and compare it with the head. A shared hold on the log lock keeps an append from
+/// finishing between the two reads, so a reader never sees a head one event ahead of the log it read.
 pub fn load_log(p: &Project) -> R<Log> {
+    let guard = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(p.dot_bf().join("log.lock"))
+        .ok();
+    if let Some(g) = &guard {
+        let _ = g.lock_shared();
+    }
+    let r = load_log_unlocked(p);
+    if let Some(g) = &guard {
+        let _ = g.unlock();
+    }
+    r
+}
+
+fn load_log_unlocked(p: &Project) -> R<Log> {
     let text = match fs::read(p.log_path()) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -243,7 +262,7 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
             "`bf doctor` reports `key: ok`.",
         )
     })?;
-    let log = load_log(p)?;
+    let log = load_log_unlocked(p)?;
     // Heal a torn last line left by a killed process.
     if log.file_len != log.valid_len {
         let f = fs::OpenOptions::new().write(true).open(p.log_path())?;

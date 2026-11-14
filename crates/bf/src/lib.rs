@@ -11,6 +11,7 @@ pub mod gitx;
 pub mod guard;
 pub mod ledger;
 pub mod legal;
+pub mod lock;
 pub mod plan;
 pub mod preset;
 pub mod programs;

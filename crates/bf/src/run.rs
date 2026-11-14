@@ -523,6 +523,29 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
             }
         }
     }
+    // A unit held by an open question has no directive, but its worker's token stays: the same token
+    // is given every time, until a report spends it.
+    let held: Vec<String> = p
+        .list_records(schema::kind_by_name("question"))?
+        .into_iter()
+        .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
+        .map(|q| s(&q, "unit").to_string())
+        .collect();
+    if let Some(o) = tokens.as_object() {
+        for (k, t) in o {
+            let keep = k
+                .split_once(':')
+                .map(|(u, r)| {
+                    held.iter().any(|h| h == u)
+                        && (matches!(r, "builder" | "reviewer" | "verifier")
+                            || crate::roles::is_new_role(r))
+                })
+                .unwrap_or(false);
+            if keep && fresh.get(k).is_none() {
+                fresh[k] = t.clone();
+            }
+        }
+    }
     // Tokens handed out by `bf roles token` stay until spent.
     if let Some(o) = tokens.as_object() {
         for (k, t) in o {
@@ -1300,6 +1323,7 @@ fn ensure_checkpoint_worktree(p: &Project, k: &str, repo: &Repo) -> R<PathBuf> {
 }
 
 pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("start {unit}"))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
     budget_check(p, &st)?;
@@ -1388,6 +1412,7 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
 }
 
 pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("land {unit}"))?;
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("land {unit}"))?;
     refuse_if_main_moved(p, &st)?;
@@ -1513,6 +1538,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     }
     let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
     if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
+        let before = gitx::must(&cpwt, &["rev-parse", "HEAD"])?;
         let out = gitx::run(
             &cpwt,
             &[
@@ -1526,10 +1552,24 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             &[],
         )?;
         if !out.ok {
+            // Put the working copy back exactly as it was before the merge started.
             let _ = gitx::run(&cpwt, &["merge", "--abort"], &[]);
+            let _ = gitx::run(&cpwt, &["reset", "--hard", &before], &[]);
+            let first = out.stderr.lines().next().unwrap_or("").to_string();
+            let conflict = out.stdout.contains("CONFLICT")
+                || out.stdout.contains("Automatic merge failed")
+                || out.stderr.contains("CONFLICT");
+            if !conflict {
+                return Err(refuse(
+                    format!("land {unit}"),
+                    format!("git could not merge into {cpb}: {first}"),
+                    &["The checkpoint's working copy was put back as it was. Run `bf unit land` again."],
+                    "`bf unit land` prints the merge.",
+                ));
+            }
             return Err(refuse(
                 format!("land {unit}"),
-                format!("the merge into {cpb} conflicts: {}", out.stderr.lines().next().unwrap_or("")),
+                format!("the merge into {cpb} conflicts: {first}"),
                 &["Rebase or merge the checkpoint branch into the unit's working copy and resolve the conflict there.", "Run the checks again, then `bf unit land` again."],
                 "`bf unit land` prints the merge.",
             ));
@@ -1720,6 +1760,7 @@ pub fn refuse_if_main_moved(p: &Project, st: &State) -> R<()> {
 }
 
 pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("close {k}"))?;
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("close {k}"))?;
     refuse_if_main_moved(p, &st)?;
@@ -2108,7 +2149,8 @@ pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
 
 /// `bf checkpoint sync <K> --quote "..." [--resolved]`: the human has the checkpoint branch take in the
 /// repository's local main branch (no network: pulling into main is an ordinary git command done before).
-/// Only at a quiet point; a conflict leaves everything as it was.
+/// Only at a quiet point; a conflict leaves the merge in progress in the checkpoint's working copy
+/// (`--abort` puts everything back). Checks the human switched off are not run, and the answer names them.
 /// What `bf checkpoint sync` was asked to do.
 #[derive(Clone, Copy, Default)]
 pub struct SyncMode {
@@ -2121,6 +2163,7 @@ pub struct SyncMode {
 }
 
 pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("sync {k}"))?;
     let resolved = mode.resolved;
     let st = events::require_chain(p)?;
     need_run(&st)?;
@@ -2350,6 +2393,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     }
     // The joined content is proven before the sync counts: the checkpoint's own command checks run on it.
     let failed = run_k_checks(p, &pl, k)?;
+    let skipped = skipped_k_checks(p, &pl, k)?;
     if !failed.is_empty() {
         events::append(
             p,
@@ -2359,7 +2403,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         p.write_guard()?;
         return Ok(
             json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": [],
-            "failed_checks": failed,
+            "failed_checks": failed, "skipped_checks": skipped,
             "message": "the main branch merged without a conflict, but the checkpoint's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
@@ -2381,8 +2425,10 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     }
     events::write_head(p, &h)?;
     p.write_guard()?;
-    Ok(json!({"checkpoint": k, "synced": true,
-        "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}))
+    Ok(
+        json!({"checkpoint": k, "synced": true, "skipped_checks": skipped,
+        "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}),
+    )
 }
 
 fn sync_wt(p: &Project, k: &str, repo: &str) -> R<PathBuf> {
@@ -2432,20 +2478,37 @@ fn allowed_set(wt: &Path, before: &str, main: &str) -> Vec<String> {
     files
 }
 
-/// Run the checkpoint's own command checks on the content now in its working copy, through the engine
-/// (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
+/// The command checks of a checkpoint that the human switched off: a sync leaves them out, as the close does.
+fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+    let Some(kr) = pl.checkpoint(k) else {
+        return Ok(vec![]);
+    };
+    let st = events::require_chain(p)?;
+    Ok(str_list(kr, "checks")
+        .into_iter()
+        .filter(|cid| {
+            pl.checks.iter().any(|c| {
+                s(c, "id") == *cid && s(c, "how") == "command" && crate::enforce::is_off(&st, c)
+            })
+        })
+        .collect())
+}
+
+/// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
+/// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
 fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };
+    let off = skipped_k_checks(p, pl, k)?;
     let top = p.work_dir().join(k);
     let mut failed = Vec::new();
     for cid in str_list(kr, "checks") {
         let Some(c) = pl.checks.iter().find(|c| s(c, "id") == cid) else {
             continue;
         };
-        if s(c, "how") != "command" {
+        if s(c, "how") != "command" || off.contains(&cid) {
             continue;
         }
         let argv = evidence::command_words(c);
@@ -2529,7 +2592,10 @@ fn finish_sync(
     }
     events::write_head(p, &h)?;
     p.write_guard()?;
-    Ok(json!({"checkpoint": so.checkpoint, "synced": true, "repos": repos}))
+    let skipped = skipped_k_checks(p, pl, &so.checkpoint)?;
+    Ok(
+        json!({"checkpoint": so.checkpoint, "synced": true, "skipped_checks": skipped, "repos": repos}),
+    )
 }
 
 /// What is still wrong with a resolution: unmerged paths, conflict markers, a merge not concluded or
@@ -2719,6 +2785,7 @@ pub fn sync_report(
     findings: Option<&Value>,
     token: Option<&str>,
 ) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("report on the sync of {k}"))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
     let Some(so) = st.sync_open.clone().filter(|o| o.checkpoint == k) else {
@@ -2811,7 +2878,8 @@ pub fn sync_report(
             }
             events::append(p, "checkpoint.sync.built", json!({"checkpoint": k}))?;
             p.write_guard()?;
-            Ok(json!({"checkpoint": k, "phase": "review"}))
+            let skipped = skipped_k_checks(p, &pl, k)?;
+            Ok(json!({"checkpoint": k, "phase": "review", "skipped_checks": skipped}))
         }
         ("review", "findings") => {
             let listed: Vec<Value> = findings

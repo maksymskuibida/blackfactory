@@ -194,6 +194,17 @@ Asked before a stage's gate.
 | `answered_at` | string | set by `bf answer` | |
 | `answered_turn` | integer | set by `bf answer` | The human turn after the question that the answer rests on |
 
+A question without an `id` in the file given to `bf ask` is numbered by the engine: the file is created only if no file of that number exists, and on a clash the next number is tried. Questions asked at the same moment therefore each keep their own number and file.
+
+## Notes for the engine document
+
+These behaviours are built and tested; `docs/engine.md` is to carry them.
+
+- **`bf checkpoint sync`** runs only the command checks that are switched on, as the close does. A check the human switched off is left out, in the sync, in `--resolved` and in the resolver's report. The answer lists the left-out checks in `skipped_checks`.
+- **Engine lock.** `bf unit start`, `bf unit land`, `bf checkpoint close`, `bf checkpoint sync` and the resolver's report on an open sync (`bf report <K>`) take a project-wide lock (`.bf/engine.lock`, in the engine's state folder) for the whole command. A second one started meanwhile is refused at once with "another engine command is running" and changes nothing. A landing whose merge fails puts the checkpoint's working copy back to the tip it had before (`merge --abort`, then `reset --hard`), and only a real conflict is reported as a conflict.
+- **`bf doctor`** has a check `checkpoint working copies`: it reports an open checkpoint's working copy that holds changes nobody committed (a sync that is open on purpose is not reported).
+- **Role tokens.** The token of a builder, reviewer or verifier stays the same while its unit is held by an open question, until a report spends it.
+
 ## Files the engine writes
 
 These are not put with `bf record put`.
