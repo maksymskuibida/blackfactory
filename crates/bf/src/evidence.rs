@@ -237,7 +237,7 @@ fn write_receipt(p: &Project, mut v: Value) -> R<Value> {
     }
 }
 
-fn command_words(check: &Value) -> Vec<String> {
+pub fn command_words(check: &Value) -> Vec<String> {
     match check.get("command") {
         Some(Value::String(c)) => c.split_whitespace().map(|x| x.to_string()).collect(),
         Some(Value::Array(a)) => a
@@ -250,6 +250,17 @@ fn command_words(check: &Value) -> Vec<String> {
 
 /// `bf evidence run <check> [--unit U] -- <command...>`
 pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> R<Value> {
+    run_at(p, check_id, unit, argv, &p.top.clone())
+}
+
+/// The same, in the working copy (or folder of working copies) `top`.
+pub fn run_at(
+    p: &Project,
+    check_id: &str,
+    unit: Option<&str>,
+    argv: &[String],
+    top: &Path,
+) -> R<Value> {
     if argv.is_empty() {
         return Err(refuse(
             "run evidence",
@@ -297,7 +308,7 @@ pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> 
             ));
         }
     }
-    let top = p.top.clone();
+    let top = top.to_path_buf();
     let before = p.content_hash(&top)?;
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();

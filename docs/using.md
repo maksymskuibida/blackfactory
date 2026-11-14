@@ -137,9 +137,12 @@ For a human step that does not stop the run, the factory carries on with indepen
 
 When the main branch gets commits the run lacks, the conductor says so in one line and does nothing until you ask.
 Say "take main in" (pull into your local main branch first if the work is on the remote) at a quiet point: the open checkpoint is the latest one and no unit is mid-flight.
-The conductor lets running units land, then runs `bf checkpoint sync <K> --quote "<your words>"`, which merges the main branch into that checkpoint.
-On a conflict the engine changes nothing and lists the files. Run `git merge <main branch>` in `.bf/work/<K>` (or `.bf/work/<K>/<repo>`), resolve, commit, then tell the conductor, which runs it again with `--resolved`.
-The checkpoint's own checks then run again; landed units keep their receipts.
+The conductor lets running units land, then runs `bf checkpoint sync <K> --quote "<your words>"`. That one sentence is your whole part.
+The factory then merges the main branch into the checkpoint, and its own agents resolve any conflict.
+It runs the checkpoint's checks on the joined code, repairs what fails, and has a reviewer read the result before the sync counts.
+No unit starts until it is settled, and landed units keep their receipts.
+You hear about it only if it parks (too many rounds, or the resolver is blocked): then you say whether to release it or abort.
+Prefer to merge yourself? Run `git merge <main branch>` in `.bf/work/<K>` (or `.bf/work/<K>/<repo>`), resolve, commit, then tell the conductor, which runs the command with `--resolved`.
 
 ## 8. Test runs
 

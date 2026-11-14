@@ -413,6 +413,37 @@ pub struct UnitSt {
     pub notes: Vec<String>,
 }
 
+/// One repository of an open sync: where the checkpoint branch stood before, the main branch's commit
+/// being taken in, and the files left in conflict (none when the merge was clean).
+#[derive(Clone, Debug)]
+pub struct SyncRepo {
+    pub repo: String,
+    pub main: String,
+    pub before: String,
+    pub files: Vec<String>,
+    pub merge: String,
+    /// Patterns of the files the resolver may change here: what either side changed since the merge
+    /// base, and new test files beside them.
+    pub allowed: Vec<String>,
+}
+
+/// A sync of the main branch into a checkpoint that stopped at a conflict, while agents resolve it.
+#[derive(Clone, Debug)]
+pub struct SyncOpen {
+    pub checkpoint: String,
+    pub repos: Vec<SyncRepo>,
+    /// `resolve` (a builder works), `review` (a reviewer judges) or `parked` (the human decides).
+    pub phase: String,
+    pub rounds: u32,
+    pub reason: String,
+    pub findings: Vec<Value>,
+    pub open_seq: u64,
+    /// The newest receipt on file when the sync started: receipts after it count for the joined content.
+    pub floor: u64,
+    /// The checkpoint checks that failed on the joined content when the sync opened.
+    pub failed: Vec<Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Amend {
     pub id: String,
@@ -465,6 +496,8 @@ pub struct State {
     pub skipped: Vec<(String, String, u64)>,
     /// Where each checkpoint branch took the main branch in: (checkpoint, repository, main's commit).
     pub synced: Vec<(String, String, String)>,
+    /// A sync that stopped at a conflict and is being resolved.
+    pub sync_open: Option<SyncOpen>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -889,7 +922,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                 }
             }
-            "checkpoint.sync" => {
+            "checkpoint.sync.open" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
                     st.ignored.push(format!(
@@ -898,6 +931,87 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     continue;
                 }
                 st.turns[turn_ix[&tseq]].used = true;
+                st.sync_open = Some(SyncOpen {
+                    checkpoint: sv("checkpoint"),
+                    repos: ev["repos"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|r| SyncRepo {
+                            repo: r["repo"].as_str().unwrap_or("").to_string(),
+                            main: r["main"].as_str().unwrap_or("").to_string(),
+                            before: r["before"].as_str().unwrap_or("").to_string(),
+                            files: crate::store::str_list(r, "files"),
+                            merge: r["merge"].as_str().unwrap_or("").to_string(),
+                            allowed: crate::store::str_list(r, "allowed"),
+                        })
+                        .collect(),
+                    phase: "resolve".into(),
+                    rounds: 0,
+                    reason: String::new(),
+                    findings: vec![],
+                    open_seq: seq,
+                    floor: ev["receipt_floor"].as_u64().unwrap_or(0),
+                    failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                });
+            }
+            "checkpoint.sync.built" => {
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.phase = "review".into();
+                }
+            }
+            "checkpoint.sync.reviewed" => {
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.rounds += 1;
+                    o.phase = sv("to");
+                    o.reason = sv("reason");
+                    o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                }
+            }
+            "checkpoint.sync.park" => {
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.phase = "parked".into();
+                    o.reason = sv("reason");
+                }
+            }
+            "checkpoint.sync.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a sync release cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.phase = "resolve".into();
+                    o.rounds = 0;
+                    o.reason.clear();
+                }
+            }
+            "checkpoint.sync.abort" => st.sync_open = None,
+            "checkpoint.sync" => {
+                // A sync that agents resolved was asked for in the human's words when it opened.
+                let via_open = ev["via_open"].as_bool().unwrap_or(false);
+                if !via_open {
+                    let tseq = ev["turn"].as_u64().unwrap_or(0);
+                    if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
+                    {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint sync cites no valid human turn and quote"
+                        ));
+                        continue;
+                    }
+                    st.turns[turn_ix[&tseq]].used = true;
+                }
+                if st
+                    .sync_open
+                    .as_ref()
+                    .map(|o| o.checkpoint == sv("checkpoint"))
+                    .unwrap_or(false)
+                {
+                    st.sync_open = None;
+                }
                 for r in ev["repos"].as_array().into_iter().flatten() {
                     st.synced.push((
                         sv("checkpoint"),
