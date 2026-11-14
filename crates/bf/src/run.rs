@@ -364,8 +364,14 @@ fn next_raw(p: &Project) -> R<Value> {
         if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
             let wc = p.work_dir().join(kid).to_string_lossy().to_string();
             let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+            // A check the human switched off is not asked for.
             let missing: Vec<String> = str_list(k, "checks")
                 .into_iter()
+                .filter(|c| {
+                    !pl.checks
+                        .iter()
+                        .any(|r| s(r, "id") == c && crate::enforce::is_off(&st, r))
+                })
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
                 .collect();
             let human_needed =
@@ -402,7 +408,34 @@ fn next_raw(p: &Project) -> R<Value> {
                     "stop_why": s(k, "stop_why"),
                     "note": s(k, "human_step")}));
             } else {
-                directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
+                // Offer the close only when the engine would accept it.
+                let waived = gates::waived_ids(&st);
+                let mut gaps: Vec<String> = str_list(k, "proves")
+                    .into_iter()
+                    .filter(|id| !waived.contains_key(id))
+                    .filter(|id| {
+                        let cs: Vec<&Value> = pl
+                            .checks
+                            .iter()
+                            .filter(|c| {
+                                str_list(k, "checks").iter().any(|x| x == s(c, "id"))
+                                    && str_list(c, "proves").contains(id)
+                            })
+                            .collect();
+                        !crate::enforce::id_proven(&st, &receipts, &cs, kid, &content)
+                    })
+                    .map(|id| format!("{id}: no passing receipt at this content from a check the checkpoint lists"))
+                    .collect();
+                let (check_gaps, unproven) =
+                    crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, k, &content)?;
+                gaps.extend(check_gaps);
+                if gaps.is_empty() {
+                    directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
+                } else {
+                    directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "gaps": gaps,
+                        "steps": crate::enforce::way_out_steps(&st, &unproven),
+                        "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
+                }
             }
         } else {
             waiting.push(format!("{kid}: waiting for its units to land"));
@@ -1771,13 +1804,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             .collect();
         // A command or agent check is settled by its receipt at this content; a human check only by the
         // human's own gate. An attached file proves nothing about a human check.
-        let ok = checks.iter().any(|c| {
-            if s(c, "how") == "human" {
-                st.gate_passed("checkpoint-step", Some(k))
-            } else {
-                evidence::satisfied_at(&receipts, s(c, "id"), &content).is_some()
-            }
-        });
+        let ok = crate::enforce::id_proven(&st, &receipts, &checks, k, &content);
         let marked: Vec<String> = checks
             .iter()
             .filter_map(|c| {

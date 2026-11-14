@@ -98,6 +98,37 @@ fn proven_as_catalogued(c: &NamedCheck, rec: &Value) -> bool {
     s(rec, "how") == c.proof.name()
 }
 
+/// Whether a check record names a named check that the human switched off (for the last run, which
+/// judges the close). Such a record is not demanded.
+pub fn is_off(st: &State, rec: &Value) -> bool {
+    let n = s(rec, "named");
+    !n.is_empty() && checks::off_closing(st).contains_key(n)
+}
+
+/// Whether an ID of a checkpoint is proven by one of the checks that prove it: a passing receipt at
+/// this content, the human's own gate for a human check, or the human having switched the check off.
+/// An ID that only switched-off checks prove is not demanded.
+pub fn id_proven(
+    st: &State,
+    receipts: &[Receipt],
+    checks: &[&Value],
+    k: &str,
+    content: &str,
+) -> bool {
+    let on: Vec<&&Value> = checks.iter().filter(|c| !is_off(st, c)).collect();
+    // Waived only when every check that proves the ID is switched off.
+    if on.is_empty() {
+        return !checks.is_empty();
+    }
+    on.iter().any(|c| {
+        if s(c, "how") == "human" {
+            st.gate_passed("checkpoint-step", Some(k))
+        } else {
+            evidence::satisfied_at(receipts, s(c, "id"), content).is_some()
+        }
+    })
+}
+
 /// The checks the human switched off, with their reasons: what a summary says was off.
 pub fn off_summary(st: &State) -> Vec<Value> {
     checks::off_closing(st)

@@ -264,3 +264,40 @@ fn a_setting_that_cites_an_older_proposal_than_the_one_answered_is_ignored_on_re
     assert!(st.checks_default.is_empty());
     assert!(!st.ignored.is_empty());
 }
+
+#[test]
+fn the_list_of_checks_works_outside_a_project() {
+    let fx = Fx::with_checks();
+    let outside = tempfile::TempDir::new().unwrap();
+    let o = fx.must_in(outside.path(), &["checks", "list", "--json"]);
+    let v = o.json();
+    assert_eq!(v["checks"].as_array().unwrap().len(), checks::all().len());
+    let o = fx.must_in(outside.path(), &["checks", "list"]);
+    assert!(o.stdout.contains("secret-scan"), "{}", o.stdout);
+    // The commands that read the settings still need a project.
+    let o = fx.bf_in(outside.path(), &["checks", "state"]);
+    assert_ne!(o.code, 0, "{}", o.all());
+}
+
+#[test]
+fn the_mirror_file_is_written_again_from_the_log() {
+    let fx = Fx::with_checks();
+    fx.must(&["checks", "propose", OFF, "--scope", "default"]);
+    fx.human("yes, switch the secret scan off for the project");
+    fx.must(&["checks", "set", "--quote", "switch the secret scan off"]);
+    let file = fx.root.join("factory").join("checks.json");
+    let kept = std::fs::read_to_string(&file).unwrap();
+    // Gone, or changed by hand: the command writes what the log says.
+    std::fs::remove_file(&file).unwrap();
+    assert!(fx.bf(&["doctor"]).all().contains("mirror file is missing"));
+    fx.must(&["checks", "mirror"]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), kept);
+    std::fs::write(&file, "{\"off\": {}}\n").unwrap();
+    fx.must(&["checks", "mirror"]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), kept);
+    let o = fx.must(&["doctor"]);
+    assert!(o.stdout.contains("check settings: ok"), "{}", o.stdout);
+    // It decides nothing: the choice is still the one in the log.
+    let s = fx.must(&["checks", "state", "--json"]).json();
+    assert_eq!(names_off(&s, "default"), vec!["secret-scan".to_string()]);
+}

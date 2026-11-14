@@ -136,6 +136,22 @@ fn the_architecture_gate_follows_the_settings_for_the_threat_model_and_the_legal
     fx.must(&["gate", "open", "architecture"]);
 }
 
+#[test]
+fn the_architecture_gate_follows_the_settings_the_other_way_round_too() {
+    let fx = Fx::with_checks();
+    design_records(&fx);
+    // Legal checks on, threat model off: the markets statement is demanded and a threat is not.
+    only_on(&fx, &["markets-statement"]);
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(o.stderr.contains("no markets statement"), "{}", o.stderr);
+    assert!(!o.stderr.contains("no threat is recorded"), "{}", o.stderr);
+    fx.put(
+        "markets",
+        "id=\"M-1\"\nkind=\"markets\"\ntitle=\"No market\"\nmarkets=[]\n",
+    );
+    fx.must(&["gate", "open", "architecture"]);
+}
+
 // ---- R-12: the threat model ----
 
 #[test]

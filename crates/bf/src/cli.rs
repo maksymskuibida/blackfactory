@@ -1658,6 +1658,7 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
+    let mut accepted_by: Option<(u64, String)> = None;
     // A legal record is accepted by the human alone: not by a role that writes it, and from the main
     // checkout only with the words of a human message.
     if kind.name == "legal"
@@ -1672,12 +1673,31 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
                 format!("`bf record get {id}` shows the outcome."),
             ));
         }
-        events::pick_turn(
+        // Only a message written after the record's latest change counts: the human accepts what they
+        // saw, not what it was before it was changed.
+        let changed_at = old
+            .as_ref()
+            .and_then(|_| p.record_path(&id).ok())
+            .and_then(|f| fs::metadata(f).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // A turn is stamped to the whole second; one at the same instant as the change, or in the
+        // same second before it, counts as before the change.
+        let after = st
+            .turns
+            .iter()
+            .filter(|t| util::parse_rfc3339(&t.at) * 1000 <= changed_at)
+            .map(|t| t.seq)
+            .max()
+            .unwrap_or(0);
+        accepted_by = Some(events::pick_turn(
             &st,
-            0,
+            after,
             events::Decide::Approve,
             args.flag("quote").unwrap_or(""),
-        )?;
+        )?);
     }
     // Once a stage's gate is approved, its records change, and new ones appear, only by amendment.
     if let Some(stage) = gates::stage_of_kind(kind.name) {
@@ -1710,6 +1730,16 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     }
     p.write_record(&rec)?;
     p.write_guard()?;
+    if let Some((turn, message)) = accepted_by {
+        // The acceptance leaves a trace: the record, the human's message and the words taken from it.
+        // The message is used up.
+        events::append(
+            &p,
+            "legal.accept",
+            json!({"record": id, "turn": turn, "message": message,
+                "quote": args.flag("quote").unwrap_or("").trim()}),
+        )?;
+    }
     out(args, &json!({"put": id, "assigned": assigned}), || {
         if assigned {
             format!("put {id} (the file had no id, so the engine assigned {id}; use this id when you refer to the record)")
@@ -1826,9 +1856,15 @@ fn cmd_log(args: &Args) -> R<()> {
 
 /// The new command groups, each served by a module of its own.
 fn cmd_group(args: &Args, group: &str) -> R<()> {
-    let p = project(args)?;
     let sub = args.pos.get(1).map(|x| x.as_str()).unwrap_or("");
     let rest: Vec<String> = args.pos.iter().skip(2).cloned().collect();
+    // The list of the named checks needs no project.
+    if group == "checks" && matches!(sub, "" | "list") {
+        let v = crate::checks::run(sub, &rest)?;
+        out(args, &v, || crate::checks::text(&v));
+        return Ok(());
+    }
+    let p = project(args)?;
     let v = match group {
         "checks" => crate::checks::run_in(&p, sub, &rest, args.flag("scope"), args.flag("quote"))?,
         "scan" => crate::scan::run(sub, &rest)?,
