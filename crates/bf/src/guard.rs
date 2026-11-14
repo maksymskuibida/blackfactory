@@ -112,6 +112,8 @@ struct Zone<'a> {
     id: &'a str,
     base: String,
     files: Vec<String>,
+    /// A sync of the main branch into this checkpoint is waiting for its resolver or reviewer.
+    sync: bool,
 }
 
 fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
@@ -140,6 +142,7 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            sync: w["sync"].as_bool().unwrap_or(false),
         },
         None => {
             // A working copy of a unit that has landed is no longer in the table. It is still a unit's
@@ -154,6 +157,7 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                                 id: name,
                                 base: format!("{}/{}", wp.trim_end_matches('/'), name),
                                 files: vec![],
+                                sync: false,
                             };
                         }
                     }
@@ -164,6 +168,7 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                 id: "",
                 base: table["root"].as_str().unwrap_or("").to_string(),
                 files: vec![],
+                sync: false,
             }
         }
     }
@@ -332,6 +337,10 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             &["Change only files inside the unit's scope."],
             "The path is inside the unit's `files` list.",
         );
+    }
+    if zone.kind == "checkpoint" && zone.files.iter().any(|f| f == rel) {
+        // An open sync: the resolver writes the conflicted files, and only those.
+        return allow();
     }
     if zone.kind == "checkpoint" {
         return deny(
@@ -797,6 +806,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 let second = w.get(i + 1).map(|x| x.as_str()).unwrap_or("");
                 let ok = sub.is_empty()
                     || matches!(sub, "help" | "version")
+                    // The resolver of an open sync reports from the checkpoint's working copy.
+                    || (in_cp && sub == "report" && here.sync)
                     || list.iter().any(|(c, subs)| *c == sub && (subs.is_empty() || subs.contains(&second)))
                     // Of `record put`, only a finding.
                     && !(sub == "record" && second == "put" && w.get(i + 2).map(|x| x.as_str()) != Some("finding"));
