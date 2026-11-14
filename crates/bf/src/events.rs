@@ -965,6 +965,21 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.replaced_by = sv("replaced_by");
                 }
             }
+            "amend.revise" => {
+                let id = sv("amend");
+                if let Some(a) = st
+                    .amends
+                    .iter_mut()
+                    .find(|a| a.id == id && matches!(a.status.as_str(), "open" | "narrowed"))
+                {
+                    a.ids = crate::store::str_list(ev, "ids");
+                    a.impact = ev.get("impact").cloned().unwrap_or(Value::Null);
+                    a.keep = crate::store::str_list(ev, "impact_ids");
+                    a.waive = vec![];
+                    a.reasons = Value::Null;
+                    a.status = "open".into();
+                }
+            }
             "amend.narrow" => {
                 let id = sv("amend");
                 if let Some(a) = st

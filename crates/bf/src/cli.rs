@@ -856,6 +856,7 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let v = match args.pos.get(1).map(|x| x.as_str()) {
                 Some("open") => gates::amend_open(&p, &args.pos[2..])?,
+                Some("revise") => gates::amend_revise(&p, &args.pos[2..])?,
                 Some("narrow") => gates::amend_narrow(
                     &p,
                     &read_data_in(&p, args.need("file", "a narrowing file")?)?,
@@ -874,7 +875,7 @@ fn dispatch(args: &Args) -> R<()> {
                     return Err(refuse(
                         "run `bf amend`",
                         "unknown subcommand",
-                        &["Use `bf amend open <ID>...`, `narrow --file <f>`, `approve` or `withdraw <A-n>`."],
+                        &["Use `bf amend open <ID>...`, `revise <ID>...`, `narrow --file <f>`, `approve` or `withdraw <A-n>`."],
                         "The command prints the amendment.",
                     ))
                 }

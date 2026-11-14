@@ -771,16 +771,15 @@ pub fn grant(p: &Project, quote: &str) -> R<Value> {
 
 // ---- amendments ----
 
-pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
-    let st = events::require_chain(p)?;
-    if ids.is_empty() {
-        return Err(refuse(
-            "open an amendment",
-            "no IDs were given",
-            &["Run `bf amend open R-1 C-2` with the IDs that change."],
-            "The command prints the impact set.",
-        ));
-    }
+/// The amendment that is open now (not approved, not withdrawn), if any.
+fn open_amendment(st: &State) -> Option<&events::Amend> {
+    st.amends
+        .iter()
+        .find(|a| matches!(a.status.as_str(), "open" | "narrowed"))
+}
+
+/// Check the IDs of an amendment and work out its impact set.
+fn amend_impact(p: &Project, ids: &[String]) -> R<(Value, Vec<String>)> {
     for id in ids {
         // A new record can be amended in too (the plan is frozen after its gate); it just has no links yet.
         if schema::kind_of_id(id).is_none() {
@@ -795,39 +794,74 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
     }
     all.sort();
     all.dedup();
-    let id = format!("A-{}", st.amends.len() + 1);
-    // A later amendment over the same records replaces an earlier one that is not approved yet.
-    let replaced: Vec<String> = st
-        .amends
-        .iter()
-        .filter(|a| {
-            matches!(a.status.as_str(), "open" | "narrowed")
-                && a.ids.iter().any(|i| ids.contains(i))
-        })
-        .map(|a| a.id.clone())
-        .collect();
-    for old in &replaced {
-        events::append(
-            p,
-            "amend.withdraw",
-            json!({"amend": old, "reason": format!("replaced by {id}, which covers the same records"), "replaced_by": id}),
-        )?;
+    Ok((imp, all))
+}
+
+pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
+    let st = events::require_chain(p)?;
+    if ids.is_empty() {
+        return Err(refuse(
+            "open an amendment",
+            "no IDs were given",
+            &["Run `bf amend open R-1 C-2` with the IDs that change."],
+            "The command prints the impact set.",
+        ));
     }
+    if let Some(open) = open_amendment(&st) {
+        let o = open.id.clone();
+        return Err(refuse_owned(
+            "open an amendment",
+            format!("{o} is still open; only one amendment is open at a time"),
+            vec![
+                format!("Run `bf amend revise <ID>...` to change the records {o} covers."),
+                format!("Or run `bf amend withdraw {o}` and open a new one."),
+            ],
+            "The status lists one open amendment.",
+        ));
+    }
+    let (imp, all) = amend_impact(p, ids)?;
+    let id = format!("A-{}", st.amends.len() + 1);
     events::append(
         p,
         "amend.open",
         json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}),
     )?;
     p.write_guard()?;
-    let mut v = json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all});
-    if !replaced.is_empty() {
-        v["withdrew"] = json!(replaced);
-        v["note"] = json!(format!(
-            "{} withdrawn: {id} covers the same records",
-            replaced.join(", ")
+    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}))
+}
+
+/// Change the records the open amendment covers. It keeps its ID, goes back to open (the narrowing
+/// is void) and needs a narrowing and a human message after this revision before it can be approved.
+pub fn amend_revise(p: &Project, ids: &[String]) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(open) = open_amendment(&st) else {
+        return Err(refuse(
+            "revise an amendment",
+            "no amendment is open",
+            &["Run `bf amend open <ID>...` to open one."],
+            "`bf amend open` prints an amendment ID.",
+        ));
+    };
+    let aid = open.id.clone();
+    if ids.is_empty() {
+        return Err(refuse(
+            "revise an amendment",
+            "no IDs were given",
+            &["Run `bf amend revise R-1 C-2` with the IDs the amendment should cover."],
+            "The command prints the impact set.",
         ));
     }
-    Ok(v)
+    let (imp, all) = amend_impact(p, ids)?;
+    events::append(
+        p,
+        "amend.revise",
+        json!({"amend": aid, "ids": ids, "impact": imp, "impact_ids": all}),
+    )?;
+    p.write_guard()?;
+    Ok(
+        json!({"amend": aid, "revised": true, "ids": ids, "impact": imp, "impact_ids": all,
+        "note": "Narrow it again with `bf amend narrow --file <f>`; the human approves after that."}),
+    )
 }
 
 /// Withdraw an amendment the human has not approved. The log keeps that it existed and that it was
@@ -1026,7 +1060,10 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         .events
         .iter()
         .rev()
-        .find(|e| e["kind"] == "amend.narrow" && e["amend"] == aid.as_str())
+        .find(|e| {
+            matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
+                && e["amend"] == aid.as_str()
+        })
         .and_then(|e| e["seq"].as_u64())
         .unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
