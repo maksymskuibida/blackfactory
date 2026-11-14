@@ -1658,6 +1658,27 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
+    // A legal record is accepted by the human alone: not by a role that writes it, and from the main
+    // checkout only with the words of a human message.
+    if kind.name == "legal"
+        && s(&rec, "outcome") == "accepted"
+        && old.as_ref().map(|o| s(o, "outcome")) != Some("accepted")
+    {
+        if real_zone(p).is_some() {
+            return Err(refuse(
+                format!("accept the legal record {id} from a working copy"),
+                "accepting a legal finding is the human's alone; no role may set the outcome accepted",
+                &["Leave the outcome open or fixed and report it; the human accepts it."],
+                format!("`bf record get {id}` shows the outcome."),
+            ));
+        }
+        events::pick_turn(
+            &st,
+            0,
+            events::Decide::Approve,
+            args.flag("quote").unwrap_or(""),
+        )?;
+    }
     // Once a stage's gate is approved, its records change, and new ones appear, only by amendment.
     if let Some(stage) = gates::stage_of_kind(kind.name) {
         let changes = old.as_ref().map(|o| o != &rec).unwrap_or(true);

@@ -1024,7 +1024,7 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
             format!("{o} is still open; only one amendment is open at a time"),
             vec![
                 format!("Run `bf amend revise <ID>...` to change the records {o} covers."),
-                format!("Or run `bf amend withdraw {o}` and open a new one."),
+                format!("Or run `bf amend withdraw {o} --reason \"<why>\"` and open a new one."),
             ],
             "The status lists one open amendment.",
         ));

@@ -200,6 +200,12 @@ pub fn required_closing(st: &State) -> Vec<&'static NamedCheck> {
     }
 }
 
+/// Whether the check settings are decided: a recorded choice for the project default, or for a run.
+/// A run begun before the engine knew the checks has neither, so it counts as undecided.
+pub fn decided(st: &State) -> bool {
+    st.checks_proposals.iter().any(|x| x.used)
+}
+
 /// The switched-off checks of the last run (the close is judged by it), or of the project default.
 pub fn off_closing(st: &State) -> &BTreeMap<String, String> {
     st.runs
@@ -414,11 +420,14 @@ fn refuse_if_plan_cannot_meet(
         .filter_map(|(n, _)| by_name(n))
         .filter(|c| c.required)
         .collect();
-    if on.is_empty() || !st.gate_passed("plan", None) {
+    if on.is_empty() {
         return Ok(());
     }
-    let pl = crate::plan::load(p)?;
-    let problems = crate::enforce::plan_problems_for(&pl, st, &on);
+    let mut problems = crate::enforce::design_product_gaps(p, st, &on)?;
+    if st.gate_passed("plan", None) {
+        let pl = crate::plan::load(p)?;
+        problems.extend(crate::enforce::plan_problems_for(&pl, st, &on));
+    }
     if problems.is_empty() {
         return Ok(());
     }

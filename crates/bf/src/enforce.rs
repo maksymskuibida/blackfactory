@@ -17,8 +17,21 @@ use crate::store::{s, str_list, Project};
 use serde_json::{json, Value};
 
 /// The check records of the plan that name this named check.
-pub fn records_naming<'a>(pl: &'a Plan, name: &str) -> Vec<&'a Value> {
+fn all_naming<'a>(pl: &'a Plan, name: &str) -> Vec<&'a Value> {
     pl.checks.iter().filter(|c| s(c, "named") == name).collect()
+}
+
+/// The check records that name this check and are proven the way the catalogue says (a scan is a
+/// command, so a record that says a human step or an agent's word settles it does not count).
+pub fn records_naming<'a>(pl: &'a Plan, name: &str) -> Vec<&'a Value> {
+    all_naming(pl, name)
+        .into_iter()
+        .filter(|c| {
+            checks::by_name(name)
+                .map(|n| proven_as_catalogued(n, c))
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 /// The named checks demanded now. A product with no interface (its ui gate skipped) has no UI/UX
@@ -50,6 +63,41 @@ fn listed_by_last(pl: &Plan, record: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// The way out that every refusal for a missing proof names: the human may switch the check off for
+/// this run.
+pub fn switch_off_step(name: &str) -> String {
+    format!(
+        "Or ask the human to switch `{name}` off for the run: `bf checks propose --scope run {name}=off:<why>`, show them the result, then `bf checks set --quote \"<their words>\"`."
+    )
+}
+
+/// The steps every refusal at a checkpoint close adds for a required check without proof.
+pub fn way_out_steps(st: &State, unproven: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = undecided_step(st).into_iter().collect();
+    v.extend(unproven.iter().map(|n| switch_off_step(n)));
+    v
+}
+
+/// Whether the check settings are decided: the human recorded the project default, or the settings of
+/// a run. A project whose run began before the engine knew the checks has neither.
+pub fn decided(st: &State) -> bool {
+    checks::decided(st)
+}
+
+/// When the settings are not decided yet, the step that says so (and names the way out for a run).
+fn undecided_step(st: &State) -> Option<String> {
+    if decided(st) {
+        return None;
+    }
+    Some("No check settings are decided yet (a run begun before the engine knew the checks counts as undecided): ask the human to switch off, for the run, each check that does not apply (`bf checks propose --scope run <check>=off:<why>`, then `bf checks set --quote \"<their words>\"`), or to decide the project default (`--scope default`).".into())
+}
+
+/// A check record counts for a named check only when it is proven the way the catalogue says: a scan
+/// is a command, so a human step or an agent's word cannot settle it.
+fn proven_as_catalogued(c: &NamedCheck, rec: &Value) -> bool {
+    s(rec, "how") == c.proof.name()
+}
+
 /// The checks the human switched off, with their reasons: what a summary says was off.
 pub fn off_summary(st: &State) -> Vec<Value> {
     checks::off_closing(st)
@@ -77,7 +125,11 @@ pub fn plan_problems(pl: &Plan, st: &State, decided: bool) -> Vec<String> {
         return vec![];
     }
     if !decided {
-        return vec!["no check settings are decided yet: run `bf checks propose` (with `--scope default`, naming each check to switch off and why), show the human the result, and record their answer with `bf checks set --quote \"<their words>\"`, before the plan check".into()];
+        let mut m = "no check settings are decided yet: run `bf checks propose` (with `--scope default`, naming each check to switch off and why), show the human the result, and record their answer with `bf checks set --quote \"<their words>\"`, before the plan check".to_string();
+        if st.active_run().is_some() {
+            m.push_str(". A run is active that began before the engine knew the checks: ask the human to switch off, for the run, each check that does not apply (`bf checks propose --scope run <check>=off:<why>`, then `bf checks set --quote \"<their words>\"`)");
+        }
+        return vec![m];
     }
     let mut out = plan_problems_for(pl, st, &required(st));
     // A named check record belongs to a unit or is listed by a checkpoint, or nothing runs it.
@@ -114,23 +166,44 @@ pub fn plan_problems_for(pl: &Plan, st: &State, req: &[&'static NamedCheck]) -> 
     }
     let mut out = Vec::new();
     for c in req {
-        let recs = records_naming(pl, c.name);
+        let all_recs = all_naming(pl, c.name);
+        let mut wrong = false;
+        for r in &all_recs {
+            if !proven_as_catalogued(c, r) {
+                wrong = true;
+                out.push(format!(
+                    "the check record {} names `{}`, which is proven by {} (`how = \"{}\"`), but its `how` is `{}`: a human step or an agent's word cannot settle it (change the record, or ask the human to switch the check off for the run with `bf checks propose --scope run {}=off:<why>`)",
+                    s(r, "id"),
+                    c.name,
+                    c.proof.name(),
+                    c.proof.name(),
+                    s(r, "how"),
+                    c.name
+                ));
+            }
+        }
+        let recs: Vec<&Value> = all_recs
+            .into_iter()
+            .filter(|r| proven_as_catalogued(c, r))
+            .collect();
         match c.stage {
             Stage::Design if c.name != "design-uiux-verification" => {}
             Stage::Design => {
-                if recs.is_empty() {
+                if recs.is_empty() && !wrong {
                     out.push(format!(
-                        "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off)",
-                        c.name, c.name
+                        "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off for the run with `bf checks propose --scope run {}=off:<why>`)",
+                        c.name, c.name, c.name
                     ));
                 }
             }
             Stage::Built => {
                 if recs.is_empty() {
-                    out.push(format!(
-                        "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off)",
-                        c.name, c.name
-                    ));
+                    if !wrong {
+                        out.push(format!(
+                            "the required check `{}` has no check record that names it (add a check record with `named = \"{}\"`, or ask the human to switch the check off for the run with `bf checks propose --scope run {}=off:<why>`)",
+                            c.name, c.name, c.name
+                        ));
+                    }
                 } else if let Some(k) = last_checkpoint(pl) {
                     if !recs.iter().any(|r| listed_by_last(pl, r)) {
                         out.push(format!(
@@ -169,6 +242,34 @@ fn design_receipt(p: &Project, pl: &Plan, receipts: &[Receipt], name: &str) -> R
 
 fn count(p: &Project, kind: &str) -> R<usize> {
     Ok(p.list_records(schema::kind_by_name(kind))?.len())
+}
+
+/// Design-stage checks switched on after their gate was approved: the ones whose product is missing,
+/// one line each. The gate cannot be opened again by the check alone, so the switch is refused.
+pub fn design_product_gaps(p: &Project, st: &State, on: &[&'static NamedCheck]) -> R<Vec<String>> {
+    let mut out = Vec::new();
+    for c in on.iter().filter(|c| c.stage == Stage::Design) {
+        let (gate, missing) = match c.name {
+            "design-uiux-verification" => {
+                if st.skipped_words("ui").is_some() {
+                    continue;
+                }
+                let pl = plan::load(p)?;
+                let receipts = evidence::load_receipts(p)?;
+                ("ui", !design_receipt(p, &pl, &receipts, c.name)?)
+            }
+            "threat-model" => ("architecture", count(p, "threat")? == 0),
+            "markets-statement" => ("architecture", count(p, "markets")? == 0),
+            _ => continue,
+        };
+        if missing && st.gate_passed(gate, None) {
+            out.push(format!(
+                "the design product of `{}` is missing and the `{gate}` gate is already approved",
+                c.name
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// R-5: why a design gate may not open for want of the design-stage product of a required check.
@@ -265,6 +366,7 @@ pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) ->
     let st = crate::events::require_chain(p)?;
     let receipts = evidence::load_receipts(p)?;
     let mut gaps: Vec<String> = Vec::new();
+    let mut unproven: Vec<&str> = Vec::new();
     for c in required_closing(&st) {
         let ok = match c.stage {
             Stage::Design => match c.name {
@@ -276,6 +378,7 @@ pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) ->
             Stage::Built => built_proof(pl, &receipts, &st, c.name),
         };
         if !ok {
+            unproven.push(c.name);
             gaps.push(match c.stage {
                 Stage::Design => format!("{}: its design-stage product is missing", c.name),
                 Stage::Built => no_record_or_proof(pl, c.name),
@@ -288,6 +391,8 @@ pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) ->
     }
     if !gaps.is_empty() {
         let mut steps: Vec<String> = gaps.iter().map(|g| format!("Fix: {g}.")).collect();
+        steps.extend(undecided_step(&st));
+        steps.extend(unproven.iter().map(|n| switch_off_step(n)));
         steps.push(format!("Run `{retry}` again."));
         return Err(refuse_owned(
             act.to_string(),
@@ -308,10 +413,11 @@ pub fn checkpoint_gaps(
     receipts: &[Receipt],
     k: &Value,
     content: &str,
-) -> R<Vec<String>> {
+) -> R<(Vec<String>, Vec<String>)> {
     let kid = s(k, "id");
     let listed = str_list(k, "checks");
     let mut gaps = Vec::new();
+    let mut unproven: Vec<String> = Vec::new();
     let is_last = last_checkpoint(pl)
         .map(|l| s(l, "id") == kid)
         .unwrap_or(false);
@@ -325,6 +431,7 @@ pub fn checkpoint_gaps(
             .collect();
         if recs.is_empty() {
             if is_last {
+                unproven.push(c.name.to_string());
                 gaps.push(format!(
                     "the required check `{}` is not listed by this last checkpoint: a built-stage check counts only at its content",
                     c.name
@@ -340,6 +447,7 @@ pub fn checkpoint_gaps(
             }
         });
         if !ok {
+            unproven.push(c.name.to_string());
             gaps.push(format!(
                 "the required check `{}` has no passing receipt at this content from {}",
                 c.name,
@@ -353,7 +461,7 @@ pub fn checkpoint_gaps(
     for m in crate::legal::unacknowledged(p)? {
         gaps.push(format!("{m}: a marked legal finding is not acknowledged"));
     }
-    Ok(gaps)
+    Ok((gaps, unproven))
 }
 
 /// A checkpoint stops for the human or has no stop. A record from an earlier build that says carry on
