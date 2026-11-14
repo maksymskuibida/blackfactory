@@ -53,10 +53,10 @@ fn refused(fx: &Fx, cwd: &Path, cmd: &str) -> String {
 fn an_edit_script_on_standard_input_may_hold_source_text_naming_the_factory_folders() {
     let (fx, wc) = setup();
     let cmd = "python3 - <<'EOF'\n\
-        s = open('src/guard.rs').read()\n\
+        s = open('src/hello.txt').read()\n\
         s = s.replace('\"factory/\"', '\"factory/\", \".bf/\"')\n\
         # protected: factory/, .bf/, .claude/settings.json, factory/policy.toml\n\
-        open('src/guard.rs', 'w').write(s)\n\
+        open('src/hello.txt', 'w').write(s)\n\
         EOF";
     passes(&fx, &wc, cmd);
     passes(&fx, &fx.root, cmd);
@@ -286,10 +286,17 @@ fn a_path_built_at_run_time_is_refused_only_where_it_could_write() {
     refused(&fx, &fx.root, "cd \"$D\" && echo x > a.txt");
     refused(&fx, &fx.root, "echo x > \"$D\"/factory/policy.toml");
     refused(&fx, &fx.root, "rm -rf $(pwd)/factory");
-    // Reading, or writing a path that holds no protected name, is not stopped.
+    // Reading is not stopped.
     passes(&fx, &fx.root, "cd \"$D\" && cat a.txt");
-    passes(&fx, &fx.root, "echo x > \"$OUT\"");
-    passes(&fx, &fx.root, "cargo test 2>&1 | tee \"$LOG\"");
+    // A write to a path that starts with a variable the line does not assign could land anywhere, the
+    // protected places included, so it is refused; assigning the variable in the line makes it known.
+    refused(&fx, &fx.root, "echo x > \"$OUT\"");
+    refused(&fx, &fx.root, "cargo test 2>&1 | tee \"$LOG\"");
+    passes(
+        &fx,
+        &fx.root,
+        "LOG=/tmp/t.log; cargo test 2>&1 | tee \"$LOG\"",
+    );
 }
 
 #[test]

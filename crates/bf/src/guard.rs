@@ -613,6 +613,150 @@ fn string_literals(code: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// The first string literal inside the call that ends just before `.method`: `Path('a')` in
+/// `Path('a').write_text('x')`. `before` ends with the closing parenthesis.
+fn receiver_literal(before: &[char]) -> Option<String> {
+    let mut depth = 0i32;
+    let mut start = None;
+    for k in (0..before.len()).rev() {
+        match before[k] {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    start = Some(k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let s: String = before[start? + 1..before.len() - 1].iter().collect();
+    string_literals(&s).into_iter().map(|l| l.0).next()
+}
+
+/// The paths that code written for an interpreter opens for writing or deletes, where the path is a
+/// string literal in the call (`open('a', 'w')`, `Path('a').write_text`, `writeFileSync('a', ...)`,
+/// `os.remove('a')`, perl's `open(F, '>a')` and `open(F, '>', 'a')`). Only these calls count: a path that
+/// is read, or that is only text, is not a write.
+fn written_literals(code: &str) -> Vec<String> {
+    const CALLS: &[&str] = &[
+        "write_text",
+        "write_bytes",
+        "writeFileSync",
+        "writeFile",
+        "appendFileSync",
+        "appendFile",
+        "createWriteStream",
+        "unlinkSync",
+        "rmSync",
+        "mkdirSync",
+        "renameSync",
+        "copyFileSync",
+        "unlink",
+        "remove",
+        "rmtree",
+        "rename",
+        "copyfile",
+        "copy2",
+        "copytree",
+        "truncate",
+        "mkdir",
+        "makedirs",
+        "touch",
+        "rmdir",
+    ];
+    let mut out = Vec::new();
+    let b: Vec<char> = code.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < b.len() {
+        if !is_word(b[i]) || (i > 0 && is_word(b[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let mut e = i;
+        while e < b.len() && is_word(b[e]) {
+            e += 1;
+        }
+        let name: String = b[i..e].iter().collect();
+        let mut j = e;
+        while j < b.len() && b[j] == ' ' {
+            j += 1;
+        }
+        if j < b.len() && b[j] == '(' && (name == "open" || CALLS.contains(&name.as_str())) {
+            let rest: String = b[j + 1..].iter().collect();
+            let args = rest.split(')').next().unwrap_or("");
+            let lits: Vec<String> = string_literals(args).into_iter().map(|l| l.0).collect();
+            if name == "open" {
+                let writes = |m: &str| m.chars().any(|c| matches!(c, 'w' | 'a' | 'x' | '+'));
+                match lits.as_slice() {
+                    [m, p, ..] if m.trim_start().starts_with('>') || m.starts_with("+<") => {
+                        if m.trim_start_matches(['>', '+', '<']).trim().is_empty() {
+                            out.push(p.clone());
+                        }
+                    }
+                    [p] if p.trim_start().starts_with('>') => {
+                        out.push(p.trim_start_matches(['>', '+']).trim().to_string())
+                    }
+                    [p, m, ..]
+                        if m.len() <= 3
+                            && m.chars().all(|c| "rwabxt+U".contains(c))
+                            && writes(m) =>
+                    {
+                        out.push(p.clone())
+                    }
+                    _ => {}
+                }
+            } else {
+                // A method on a path object (`Path('a').write_text('x')`) names its path in the
+                // receiver, not in the arguments.
+                let receiver = if i >= 2 && b[i - 1] == '.' && b[i - 2] == ')' {
+                    receiver_literal(&b[..i - 1])
+                } else {
+                    None
+                };
+                let method_only = matches!(name.as_str(), "write_text" | "write_bytes");
+                // A rename writes the destination and deletes the source; a copy only writes the
+                // destination, so reading a file by copying it is not a write of the source.
+                let moves = matches!(name.as_str(), "rename" | "renameSync");
+                let copies = matches!(
+                    name.as_str(),
+                    "copyfile" | "copy2" | "copytree" | "copyFileSync"
+                );
+                if let Some(r) = receiver {
+                    // `Path('a').rename('b')` also writes `b`; a copy leaves its receiver alone.
+                    if !copies {
+                        out.push(r);
+                    }
+                    if moves {
+                        out.extend(lits.iter().take(2).cloned());
+                    } else if copies {
+                        // `require('fs').copyFileSync(a, b)` has a module as its receiver and
+                        // names both paths; `Path('a').copy('b')` names the destination only.
+                        if let Some(p) = lits.get(1).or(lits.first()) {
+                            out.push(p.clone());
+                        }
+                    }
+                } else if !method_only {
+                    if moves {
+                        out.extend(lits.iter().take(2).cloned());
+                    } else if copies {
+                        if let Some(p) = lits.get(1) {
+                            out.push(p.clone());
+                        }
+                    } else if let Some(p) = lits.first() {
+                        out.push(p.clone());
+                    }
+                }
+            }
+        }
+        i = e;
+    }
+    out.retain(|p| !p.is_empty() && !p.starts_with("/dev/"));
+    out
+}
+
 /// A program started without a call word: a pipe open (a string that starts or ends with `|` given
 /// to `open`, the `-|` and `|-` modes) and the pipe forms of awk (`"cmd" | getline`, `print | "cmd"`).
 fn pipe_open_calls(code: &str) -> bool {
@@ -708,6 +852,11 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
             } else if !is_flag(a) {
                 last = Some(a.clone());
             }
+        }
+        // A link to a path is a second name for it: a write through the link lands there. So every path
+        // `ln` is given is judged as a write target, the one the link points at included.
+        if prog == "ln" {
+            out.extend(args.iter().filter(|a| !is_flag(a)).cloned());
         }
         out.extend(dest.or(last));
     } else if prog == "sed" || prog == "perl" {
@@ -997,6 +1146,61 @@ fn filter_output(prog: &str, args: &[String]) -> Vec<String> {
 /// The paths `tar` writes: the folder an archive is unpacked into (the working directory unless `-C`
 /// says otherwise) and each member named, or the archive it creates.
 fn tar_targets(args: &[String]) -> Vec<String> {
+    let (mode, dir, archive, members) = tar_parse(args);
+    let mut out = Vec::new();
+    match mode {
+        Some('x') => {
+            let base = dir.unwrap_or_else(|| ".".to_string());
+            for m in members {
+                out.push(format!("{}/{}", base.trim_end_matches('/'), m));
+            }
+            out.push(base);
+        }
+        Some(_) => {
+            if let Some(a) = archive.filter(|a| a != "-") {
+                out.push(a);
+            }
+        }
+        None => out.extend(dir),
+    }
+    out
+}
+
+/// Does this command unpack an archive and name no member? Then what lands is whatever the archive
+/// holds, and the guard cannot judge it against a unit's file scope.
+fn unpacks_unnamed(prog: &str, args: &[String]) -> bool {
+    match prog {
+        "tar" | "bsdtar" | "gtar" => {
+            let (mode, _, _, members) = tar_parse(args);
+            mode == Some('x') && members.is_empty()
+        }
+        "unzip" => {
+            let listing = args.iter().any(|a| {
+                is_flag(a)
+                    && a[1..]
+                        .chars()
+                        .all(|c| matches!(c, 'l' | 'p' | 't' | 'v' | 'z'))
+            });
+            let mut positional = 0;
+            let mut skip = false;
+            for a in args {
+                if skip {
+                    skip = false;
+                } else if a == "-d" {
+                    skip = true;
+                } else if a == "-x" {
+                    break;
+                } else if !is_flag(a) {
+                    positional += 1;
+                }
+            }
+            !listing && positional <= 1
+        }
+        _ => false,
+    }
+}
+
+fn tar_parse(args: &[String]) -> (Option<char>, Option<String>, Option<String>, Vec<String>) {
     let mut dir: Option<String> = None;
     let mut archive: Option<String> = None;
     let mut mode: Option<char> = None;
@@ -1051,23 +1255,7 @@ fn tar_targets(args: &[String]) -> Vec<String> {
         }
         first = false;
     }
-    let mut out = Vec::new();
-    match mode {
-        Some('x') => {
-            let base = dir.unwrap_or_else(|| ".".to_string());
-            for m in members {
-                out.push(format!("{}/{}", base.trim_end_matches('/'), m));
-            }
-            out.push(base);
-        }
-        Some(_) => {
-            if let Some(a) = archive.filter(|a| a != "-") {
-                out.push(a);
-            }
-        }
-        None => out.extend(dir),
-    }
-    out
+    (mode, dir, archive, members)
 }
 
 /// The paths `unzip` writes: the folder given with `-d`, or the working directory, and each member named.
@@ -1169,6 +1357,7 @@ fn unresolved_denial(t: &str, part: &str, why: &str) -> Decision {
         &[
             "Write the path out in full, for example `src/a.rs`.",
             "Change into a folder with a plain `cd <folder>` first, not a folder built from a variable.",
+            "Or assign the variable in the same command line with a value that lies in your working copy, for example `D=out; echo x > $D/a.txt`.",
         ],
         "The command names every path it writes and every folder it changes into.",
     )
@@ -1213,7 +1402,12 @@ fn judge_alt(
     reach: Reach,
 ) -> Result<Vec<(String, Option<String>)>, Decision> {
     let t = &expand_home(t);
-    let has_glob = t.chars().any(|c| matches!(c, '*' | '?' | '['));
+    // A folder reached by `cd fac*` is a pattern too: what is written relative to it is a pattern.
+    let dir_glob = !t.starts_with('/')
+        && dir
+            .as_deref()
+            .is_some_and(|d| d.chars().any(|c| matches!(c, '*' | '?' | '[')));
+    let has_glob = dir_glob || t.chars().any(|c| matches!(c, '*' | '?' | '['));
     let has_subst = t.contains("$(..)") || t.contains("`..`");
     if has_glob || has_subst {
         let relative = !t.starts_with('/');
@@ -1305,6 +1499,25 @@ fn judge_alt(
                     t,
                     part,
                     "the folder it is relative to was built at run time",
+                ));
+            }
+            // A path that starts with a variable the command line does not assign (`$OUT`, `$TMPDIR/x`)
+            // is whatever the environment holds, and that can be any path, a protected one included.
+            let first = t.split('/').next().unwrap_or("");
+            let starts_with_var = first
+                .strip_prefix('$')
+                .map(|r| {
+                    r.starts_with('{')
+                        || r.chars()
+                            .next()
+                            .is_some_and(|c| c.is_alphabetic() || c == '_')
+                })
+                .unwrap_or(false);
+            if starts_with_var {
+                return Err(unresolved_denial(
+                    t,
+                    part,
+                    "it starts with a variable that this command does not assign, and the environment's value could be a protected place",
                 ));
             }
             Ok(vec![])
@@ -1918,6 +2131,11 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         "fetch" if rest.iter().any(|a| a.contains(':') || a.starts_with('+')) => {
             return why("a fetch with a refspec can move the main branch or a checkpoint branch")
         }
+        // Taking in another branch's commits is the engine's step even in a unit's own working copy: it
+        // would bring in files that the unit's scope never covered, and the guard cannot judge them.
+        "merge" | "rebase" | "cherry-pick" | "am" if in_unit => {
+            return why("taking in another branch's commits (merge, rebase, cherry-pick, am) brings in files outside the unit's scope; the engine joins the branches (`bf unit land`), and a change of yours is made with the editing tools");
+        }
         "merge" | "rebase" | "cherry-pick" | "revert" | "am" | "stash" | "clean" | "apply"
             if !in_unit =>
         {
@@ -2127,6 +2345,20 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
     if parsed.iter().any(|p| names_human_turn_call(&p.words)) {
         return human_turn_denial();
     }
+    // `cargo run -- human-turn` runs the engine's own binary with that subcommand.
+    if parsed.iter().any(|p| {
+        crate::shellparse::program_index(&p.words).is_some_and(|i| {
+            let w = &p.words[i..];
+            basename(&w[0]) == "cargo"
+                && w.get(1).is_some_and(|a| a == "run" || a == "r")
+                && w.iter()
+                    .position(|a| a == "--")
+                    .and_then(|k| w.get(k + 1))
+                    .is_some_and(|a| a == "human-turn")
+        })
+    }) {
+        return human_turn_denial();
+    }
     // The state folder, however it is spelled: no command word or redirect target may name it. The body
     // of a heredoc is not a word.
     for p in &parsed {
@@ -2293,6 +2525,33 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                 }
 
+                // -- a makefile read from standard input: its recipe lines are shell commands that run
+                if matches!(prog.as_str(), "make" | "gmake") {
+                    let from_stdin = args.windows(2).any(|w| {
+                        (w[0] == "-f" || w[0] == "--file" || w[0] == "--makefile")
+                            && (w[1] == "/dev/stdin" || w[1] == "-")
+                    }) || args.iter().any(|a| {
+                        a == "-f/dev/stdin"
+                            || a == "-f-"
+                            || a == "--file=/dev/stdin"
+                            || a == "--file=-"
+                    });
+                    if let (true, Some(text)) = (from_stdin, &p.input) {
+                        let recipe: String = text
+                            .lines()
+                            .filter(|l| l.starts_with('\t'))
+                            .map(|l| l.trim_start_matches(['\t', '@', '-', '+']))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !recipe.trim().is_empty() {
+                            let d = check_bash(table, &dir_str, &recipe);
+                            if !d.allow {
+                                return d;
+                            }
+                        }
+                    }
+                }
+
                 // -- text fed to an interpreter: only paths in it count, never words
                 if interp {
                     // Code on standard input and code after an inline flag are judged alike: a call of
@@ -2304,6 +2563,15 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                     if code_calls_human_turn(&code) {
                         return human_turn_denial();
+                    }
+                    // A path the code opens for writing is a write like any other: the protected places
+                    // and, in a unit's working copy, the unit's file scope judge it.
+                    for t in written_literals(&code) {
+                        writes.push((
+                            t.clone(),
+                            format!("the code given to `{prog}` (it writes the path `{t}`)"),
+                            Reach::Write,
+                        ));
                     }
                     let from_main = zone_of(table, &dir_str).kind == "main";
                     for t in interpreter_paths(p, args, from_main) {
@@ -2433,6 +2701,25 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         );
                     }
                 }
+                // Unpacking an archive into the working copy with no member named: the members that land
+                // are the archive's own, so the unit's file scope cannot be applied to them.
+                if (in_worker || in_cp) && unpacks_unnamed(&prog, &writer_in) {
+                    if let Some(base) = writer_args(&prog, &writer_in).last() {
+                        if let Some(abs) = target_abs(base, &start) {
+                            if under(&abs, &here.base).is_some() {
+                                return deny(
+                                    &format!("unpack an archive into {abs} without naming its members"),
+                                    &format!("`{prog}` would write every member of the archive into your working copy, and the guard cannot tell whether each one is a file your unit may touch"),
+                                    &[
+                                        "Name the members to unpack, for example `tar xf a.tar src/hello.txt`.",
+                                        "Or unpack into a folder outside the project, such as `tar xf a.tar -C /tmp/x`, and copy the files you need with `cp`.",
+                                    ],
+                                    "Every file the command writes is named and lies in your unit's files.",
+                                );
+                            }
+                        }
+                    }
+                }
                 for t in writer_args(&prog, &writer_in) {
                     let part = if via_xargs {
                         format!("`{prog}` started by `xargs`, with the path `{t}`")
@@ -2487,7 +2774,18 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             };
                             if let Some(c) = checked {
                                 let d = check_write(table, cwd, &c);
-                                if !d.allow {
+                                // Position: removing (never creating) a backup copy of an allowed file,
+                                // the leftover of an editor or of `sed -i.bak`, is housekeeping on a file
+                                // the unit may touch. Only a delete of an exact `.bak`, `.orig` or `~`
+                                // name beside an allowed file passes; any other delete stays in scope.
+                                let backup_of_allowed = matches!(reach, Reach::Delete)
+                                    && pattern.is_none()
+                                    && ["~", ".bak", ".orig"].iter().any(|suf| {
+                                        c.strip_suffix(suf)
+                                            .filter(|stem| !stem.is_empty() && !stem.ends_with('/'))
+                                            .is_some_and(|stem| check_write(table, cwd, stem).allow)
+                                    });
+                                if !d.allow && !backup_of_allowed {
                                     return d;
                                 }
                             }
@@ -2989,7 +3287,11 @@ mod tests {
             !bash("git -C /p merge bf/U-1", "/p/.bf/work/U-1"),
             "judged by the target, not the cwd"
         );
-        assert!(bash("git merge origin/x", "/p/.bf/work/U-1"));
+        assert!(
+            !bash("git merge origin/x", "/p/.bf/work/U-1"),
+            "a unit's working copy takes in no other branch's commits"
+        );
+        assert!(bash("git revert HEAD", "/p/.bf/work/U-1"));
         assert!(!bash("git fetch . bf/K-1:main", "/p"));
         assert!(!bash("git pull", "/p"));
         assert!(!bash("git reset --hard", "/p"));
