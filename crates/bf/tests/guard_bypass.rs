@@ -325,3 +325,170 @@ fn a_compressor_option_value_is_not_a_file() {
     let why = refused(&fx, &wc, "xz -T 4 src/other.txt");
     assert!(why.contains("file scope"), "{why}");
 }
+
+// ------------------------------------------------ the third review of the first checkpoint
+
+#[test]
+fn an_in_place_edit_with_an_empty_suffix_word_is_read_with_its_files() {
+    let (fx, wc) = setup();
+    passes(&fx, &wc, "sed -i '' 's/hello/bye/' src/hello.txt");
+    passes(&fx, &wc, "sed -i '' -e 's/hello/bye/' src/hello.txt");
+    passes(&fx, &wc, "sed -i.bak 's/hello/bye/' src/hello.txt");
+    let why = refused(&fx, &wc, "sed -i '' 's/a/b/' src/other.txt");
+    assert!(why.contains("file scope"), "{why}");
+    refused(&fx, &fx.root, "sed -i '' 's/a/b/' factory/policy.toml");
+    refused(&fx, &wc, "sed -i '' 's/a/b/' ../../../factory/policy.toml");
+}
+
+#[test]
+fn a_loop_variable_a_read_variable_and_a_default_value_are_read_with_their_values() {
+    let (fx, _wc) = setup();
+    for cmd in [
+        "for d in factory; do rm -rf $d/records; done",
+        "for d in tmp factory; do echo x > $d/policy.toml; done",
+        "for d in factory\ndo\n  rm -r \"$d\"\ndone",
+        "echo factory | while read d; do rm -r $d; done",
+        "printf 'tmp\\nfactory\\n' | while read -r d; do rm -r $d; done",
+        "read d <<< factory; rm -r $d",
+        "read -r a b <<< \"x factory\"; rm -r $b",
+        "rm -r ${D:-factory}/records",
+        "echo x > ${D:-.bf}/guard.json",
+        "echo x > ${D-factory}/policy.toml",
+        "cd ${D:-factory} && echo x > policy.toml",
+        ": ${D:=factory}; echo x > $D/policy.toml",
+        ": ${D=.bf}; rm $D/guard.json",
+        // A read variable from input the guard cannot see, then a delete.
+        "find factory -type f | while read f; do rm \"$f\"; done",
+        "cat list | while read f; do rm $f; done",
+        "find factory -name policy.toml | while read f; do cp /tmp/evil \"$f\"; done",
+        "cat list | while read f; do gzip $f; done",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    for cmd in [
+        "for d in out build; do rm -rf $d/x; done",
+        "echo out | while read d; do rm -r $d; done",
+        "read d <<< out; rm -r $d",
+        "rm -r ${D:-out}/records",
+        "for f in factory; do cat $f/policy.toml; done",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+}
+
+#[test]
+fn a_copy_onto_a_read_variable_is_refused_as_a_write_not_a_delete() {
+    let (fx, _wc) = setup();
+    let why = refused(
+        &fx,
+        &fx.root,
+        "find factory -name policy.toml | while read f; do cp /tmp/evil \"$f\"; done",
+    );
+    assert!(why.contains("would write the files"), "{why}");
+    assert!(!why.contains("delete or edit in place"), "{why}");
+}
+
+#[test]
+fn a_writer_started_through_xargs_is_judged_by_its_input() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "echo factory/policy.toml | xargs rm",
+        "printf 'factory/policy.toml\\n' | xargs -n1 rm -f",
+        "echo factory | xargs -I{} rm -r {}/records",
+        "echo factory/policy.toml | xargs touch",
+        "echo factory/policy.toml | xargs -t chmod 600",
+        "cat <<EOF | xargs rm\nfactory/policy.toml\nEOF",
+        // The input is unknown and the writer deletes or edits in place.
+        "find . -name '*.tmp' | xargs rm",
+        "ls | xargs rm -f",
+        "git ls-files | xargs sed -i s/a/b/",
+        "xargs rm < list.txt",
+        "find factory -name '*.toml' | xargs truncate -s 0",
+        "find factory -name '*.toml' | xargs mv -t /tmp",
+        "echo out | xargs -a list rm",
+        "echo out | xargs --arg-file=list rm",
+        // The input becomes the write target.
+        "find factory -name policy.toml | xargs cp /tmp/evil",
+        "find factory -name policy.toml | xargs -I{} cp /tmp/evil {}",
+        "find factory -name '*.toml' | xargs gzip",
+        "find factory -name '*.toml' | xargs ln -sf /tmp/evil",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    for cmd in [
+        "ls | xargs echo",
+        "find . -name '*.rs' | xargs grep -n foo",
+        "echo out/a.o | xargs rm",
+        "echo a b | xargs -n1 echo",
+        "ls | xargs cp -t out",
+        "ls | xargs gzip -c",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+    passes(&fx, &wc, "echo src/hello.txt | xargs touch");
+    let why = refused(&fx, &wc, "echo src/other.txt | xargs touch");
+    assert!(why.contains("file scope"), "{why}");
+    let why = refused(&fx, &wc, "find . -name '*.tmp' | xargs rm");
+    assert!(why.contains("xargs"), "{why}");
+    assert!(why.contains("Name the files"), "{why}");
+}
+
+#[test]
+fn code_for_an_interpreter_that_names_a_protected_file_from_the_main_checkout_is_refused() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "python3 -c \"open('factory/policy.toml','w').write('x')\"",
+        "python3 -c \"open('./factory/policy.toml','w')\"",
+        "python3 - <<'EOF'\nopen('factory/policy.toml', 'w').write('x')\nEOF",
+        "node -e \"require('fs').writeFileSync('.bf/guard.json', 'x')\"",
+        "perl -e 'open(F, \">.claude/settings.json\")'",
+        "echo \"open('factory/policy.toml','w')\" | python3",
+    ] {
+        refused(&fx, &fx.root, cmd);
+    }
+    // The bare words, and source text in a working copy, are data.
+    passes(
+        &fx,
+        &fx.root,
+        "python3 -c \"print('factory .bf policy.toml')\"",
+    );
+    passes(&fx, &fx.root, "python3 -c \"print('src/main.py')\"");
+    passes(
+        &fx,
+        &wc,
+        "python3 - <<'EOF'\nprint('factory/policy.toml')\nEOF",
+    );
+}
+
+#[test]
+fn inline_code_is_judged_like_code_on_standard_input_for_the_human_turn_command() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "python3 -c \"import os; os.system('bf human-turn')\"",
+        "python3 -c \"import subprocess; subprocess.run(['bf', 'human-turn'])\"",
+        "python3 - <<'EOF'\nimport os\nos.system('bf human-turn')\nEOF",
+        "echo \"import os; os.system('bf human-turn')\" | python3",
+        "awk 'BEGIN { system(\"bf human-turn\") }'",
+        "perl -e 'system(\"bf\", \"human-turn\")'",
+        "node -e \"require('child_process').execSync('bf human-turn')\"",
+        // Programs started without a call word.
+        "perl -e 'open(F, \"bf human-turn |\")'",
+        "perl -e 'open(F, \"-|\", \"bf\", \"human-turn\")'",
+        "ruby -e 'open(\"|bf human-turn\")'",
+        "php -r 'proc_open(\"bf human-turn\", [], $p);'",
+        "awk 'BEGIN { \"bf human-turn\" | getline x }'",
+        "awk 'BEGIN { print \"x\" | \"bf human-turn\" }'",
+    ] {
+        refused(&fx, &fx.root, cmd);
+        refused(&fx, &wc, cmd);
+    }
+    // The phrase alone is not a call.
+    for cmd in [
+        "python3 -c \"print('bf human-turn')\"",
+        "python3 -c \"print('docs: run bf human-turn from the hook')\"",
+        "python3 - <<'EOF'\nprint('bf human-turn')\nEOF",
+        "awk 'BEGIN { print \"bf human-turn\" }'",
+    ] {
+        passes(&fx, &fx.root, cmd);
+    }
+}

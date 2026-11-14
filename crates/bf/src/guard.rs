@@ -500,15 +500,140 @@ fn text_paths(text: &str) -> Vec<String> {
 }
 
 /// The paths an interpreter's command holds as text: its arguments and the script fed to it.
-fn interpreter_paths(p: &crate::shellparse::Parsed, args: &[String]) -> Vec<String> {
+/// From the main checkout a relative path that starts in a protected folder is a real path too.
+fn interpreter_paths(
+    p: &crate::shellparse::Parsed,
+    args: &[String],
+    from_main: bool,
+) -> Vec<String> {
     let mut out = Vec::new();
-    for a in args {
-        out.extend(text_paths(a));
+    let mut texts: Vec<&String> = args.iter().collect();
+    if let Some(h) = &p.input {
+        texts.push(h);
     }
-    if let Some(h) = &p.heredoc {
-        out.extend(text_paths(h));
+    for a in texts {
+        out.extend(text_paths(a));
+        if from_main {
+            out.extend(relative_protected_paths(a));
+        }
     }
     out
+}
+
+/// The words of a text that are relative paths into a protected folder (`factory/policy.toml`,
+/// `./.bf/guard.json`), for code that runs from the main checkout.
+fn relative_protected_paths(text: &str) -> Vec<String> {
+    // A comment line is not code, and a folder name with nothing after it is not a file.
+    let code: String = text
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            !(l.starts_with('#') || l.starts_with("//"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    code.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]:".contains(c))
+        .filter(|t| {
+            let t = t.trim_start_matches("./");
+            !t.starts_with('/')
+                && names_protected_segment_first(t)
+                && t.split_once('/').map(|(_, r)| !r.is_empty()) == Some(true)
+        })
+        .map(|t| t.to_string())
+        .collect()
+}
+
+fn names_protected_segment_first(t: &str) -> bool {
+    matches!(t.split('/').next(), Some("factory" | ".bf" | ".claude"))
+}
+
+/// Does code given to an interpreter call the command that records a human message? A call is a
+/// system call, a process start or a shell-out that holds the engine's name and `human-turn`; the
+/// phrase in a string that is only printed is not.
+fn code_calls_human_turn(code: &str) -> bool {
+    // A comment line is not code.
+    let code: String = code
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            !(l.starts_with('#') || l.starts_with("//"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !code.contains("human-turn") || !code.contains("bf") {
+        return false;
+    }
+    const CALLS: &[&str] = &[
+        "system",
+        "popen",
+        "exec",
+        "spawn",
+        "subprocess",
+        "check_call",
+        "check_output",
+        "qx",
+        "shell_exec",
+        "passthru",
+        "Open3",
+        "`",
+        "%x",
+        "Deno.run",
+        "Deno.Command",
+        "child_process",
+        "Process",
+        "getoutput",
+        "getstatusoutput",
+        "pty.",
+    ];
+    if CALLS.iter().any(|c| code.contains(c)) || code.contains("proc_open") {
+        return true;
+    }
+    pipe_open_calls(&code)
+}
+
+/// The string literals of code, without their quotes, with the text just before and after each.
+fn string_literals(code: &str) -> Vec<(String, String, String)> {
+    let c: Vec<char> = code.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '"' || c[i] == '\'' {
+            let q = c[i];
+            if let Some(e) = c[i + 1..].iter().position(|x| *x == q) {
+                let lit: String = c[i + 1..i + 1 + e].iter().collect();
+                let before: String = c[..i].iter().collect();
+                let after: String = c[i + 2 + e..].iter().collect();
+                out.push((lit, before, after));
+                i += e + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A program started without a call word: a pipe open (a string that starts or ends with `|` given
+/// to `open`, the `-|` and `|-` modes) and the pipe forms of awk (`"cmd" | getline`, `print | "cmd"`).
+fn pipe_open_calls(code: &str) -> bool {
+    let lits = string_literals(code);
+    if code.contains("open")
+        && lits
+            .iter()
+            .any(|(l, _, _)| l.trim() == "-|" || l.trim() == "|-")
+    {
+        return true;
+    }
+    lits.iter().any(|(l, before, after)| {
+        let t = l.trim();
+        if !(l.contains("human-turn") && l.contains("bf")) {
+            return false;
+        }
+        t.starts_with('|')
+            || t.ends_with('|')
+            || before.trim_end().ends_with('|')
+            || after.trim_start().starts_with('|')
+    })
 }
 
 /// Does this word name the state folder or the variables that locate it?
@@ -594,7 +719,8 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
         if in_place {
             let mut script_given = false;
             let mut skip = false;
-            for a in args {
+            let mut it = args.iter().peekable();
+            while let Some(a) = it.next() {
                 if skip {
                     skip = false;
                     script_given = true;
@@ -607,6 +733,15 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
                     continue;
                 }
                 if is_flag(a) {
+                    // This machine's sed takes the backup suffix as the next word, and an empty one
+                    // (`-i ''`) is not the script.
+                    if prog == "sed"
+                        && a.ends_with('i')
+                        && it.peek().map(|n| n.is_empty()) == Some(true)
+                    {
+                        it.next();
+                        continue;
+                    }
                     if a.ends_with('e')
                         || (prog == "sed" && a.ends_with('f'))
                         || (prog == "perl" && a.ends_with('E'))
@@ -774,6 +909,35 @@ fn writer_args(prog: &str, args: &[String]) -> Vec<String> {
         out.extend(filter_output(prog, args));
     }
     out
+}
+
+/// Does this program, with these arguments, delete files or edit them in place?
+fn deletes_or_edits(prog: &str, args: &[String]) -> bool {
+    if matches!(
+        prog,
+        "rm" | "rmdir" | "unlink" | "shred" | "truncate" | "mv" | "chmod" | "chown" | "tee"
+    ) {
+        return true;
+    }
+    if prog == "find" {
+        return args.iter().any(|a| a == "-delete");
+    }
+    if prog == "sed" || prog == "perl" {
+        return args.iter().any(|a| {
+            a == "--in-place"
+                || a.starts_with("--in-place=")
+                || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('i'))
+        });
+    }
+    if prog == "git" {
+        let mut full = vec!["git".to_string()];
+        full.extend(args.iter().cloned());
+        return matches!(
+            git_sub(&full),
+            Some((_, "rm" | "clean" | "checkout" | "restore"))
+        );
+    }
+    false
 }
 
 /// The file a filter writes besides standard output: the second file of `uniq` and `xxd`, the output
@@ -1416,7 +1580,7 @@ fn braces_to_star(t: &str) -> String {
 
 /// A word with the variables that the same command line assigned replaced by their values.
 fn subst_vars(t: &str, vars: &HashMap<String, String>) -> String {
-    if vars.is_empty() || !t.contains('$') {
+    if !t.contains('$') {
         return t.to_string();
     }
     let c: Vec<char> = t.chars().collect();
@@ -1424,9 +1588,33 @@ fn subst_vars(t: &str, vars: &HashMap<String, String>) -> String {
     let mut i = 0;
     while i < c.len() {
         if c[i] == '$' && i + 1 < c.len() {
+            let mut default: Option<String> = None;
             let (name, next) = if c[i + 1] == '{' {
                 match c[i + 2..].iter().position(|x| *x == '}') {
-                    Some(e) => (c[i + 2..i + 2 + e].iter().collect::<String>(), i + 3 + e),
+                    Some(e) => {
+                        let inner: String = c[i + 2..i + 2 + e].iter().collect();
+                        // `${NAME:-value}`, `${NAME-value}`, `${NAME:=value}`, `${NAME=value}`: the
+                        // value stands in when the name is not set.
+                        let n = inner
+                            .chars()
+                            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                            .count();
+                        let (nm, rest) = inner.split_at(n);
+                        for op in [":-", ":=", "-", "="] {
+                            if n > 0 {
+                                if let Some(d) = rest.strip_prefix(op) {
+                                    default = Some(d.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                        let name = if default.is_some() {
+                            nm.to_string()
+                        } else {
+                            inner
+                        };
+                        (name, i + 3 + e)
+                    }
                     None => (String::new(), i + 1),
                 }
             } else {
@@ -1438,6 +1626,11 @@ fn subst_vars(t: &str, vars: &HashMap<String, String>) -> String {
             };
             if let Some(v) = vars.get(&name) {
                 out.push_str(v);
+                i = next;
+                continue;
+            }
+            if let Some(d) = default {
+                out.push_str(&d);
                 i = next;
                 continue;
             }
@@ -1459,10 +1652,132 @@ fn is_assign_word(w: &str) -> bool {
     }
 }
 
+/// The names a `read` command sets.
+fn read_names(rest: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut it = rest[1..].iter();
+    while let Some(a) = it.next() {
+        if matches!(a.as_str(), "-p" | "-n" | "-N" | "-t" | "-u" | "-d") {
+            it.next();
+        } else if a == "-a" {
+            names.extend(it.next().cloned());
+        } else if !is_flag(a) {
+            names.push(a.clone());
+        }
+    }
+    if names.is_empty() {
+        names.push("REPLY".to_string());
+    }
+    names
+}
+
+/// The names `read` sets from input the guard cannot see, and that the line gives no value.
+fn unread_vars(
+    parsed: &[crate::shellparse::Parsed],
+    known: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in parsed {
+        let rest: Vec<String> = p
+            .words
+            .iter()
+            .skip_while(|w| {
+                [
+                    "do", "then", "else", "elif", "if", "while", "until", "{", "!", "time",
+                ]
+                .contains(&w.as_str())
+            })
+            .cloned()
+            .collect();
+        if rest.first().map(|w| w.as_str()) == Some("read") && p.input.is_none() {
+            for n in read_names(&rest) {
+                if !known.contains_key(&n) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The first of these names a word reads (`$f`, `${f}`, `${f:-x}`).
+fn mentions_var(w: &str, names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|n| {
+            let plain = format!("${n}");
+            let braced = format!("${{{n}");
+            w.match_indices(&plain).any(|(i, _)| {
+                !w[i + plain.len()..]
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphanumeric() || c == '_')
+                    .unwrap_or(false)
+            }) || w.contains(&braced)
+        })
+        .cloned()
+}
+
 /// The variables a command line assigns (`D=factory`, `export D=factory`), every value of each, in order.
 fn assigned_vars(parsed: &[crate::shellparse::Parsed]) -> HashMap<String, Vec<String>> {
     let mut vars: HashMap<String, Vec<String>> = HashMap::new();
+    const LEAD: &[&str] = &[
+        "do", "then", "else", "elif", "if", "while", "until", "{", "!", "time",
+    ];
     for p in parsed {
+        let lead = p
+            .words
+            .iter()
+            .take_while(|w| LEAD.contains(&w.as_str()))
+            .count();
+        let rest = &p.words[lead..];
+        // `for d in a b c`: the variable takes each word in turn.
+        if rest.first().map(|w| w.as_str()) == Some("for")
+            && rest.get(2).map(|w| w.as_str()) == Some("in")
+        {
+            if let Some(name) = rest.get(1).filter(|n| is_assign_word(&format!("{n}="))) {
+                for v in &rest[3..] {
+                    vars.entry(name.to_string()).or_default().push(v.clone());
+                }
+            }
+        }
+        // `read d`: the variable takes the words of each line the command is given.
+        if rest.first().map(|w| w.as_str()) == Some("read") {
+            let names = read_names(rest);
+            if let Some(text) = &p.input {
+                for line in text.lines() {
+                    let mut toks = line.split_whitespace();
+                    for (n, name) in names.iter().enumerate() {
+                        let v = if n + 1 == names.len() {
+                            toks.by_ref().collect::<Vec<_>>().join(" ")
+                        } else {
+                            toks.next().unwrap_or("").to_string()
+                        };
+                        vars.entry(name.to_string()).or_default().push(v);
+                    }
+                }
+            }
+        }
+        // `${D:=value}` and `${D=value}` assign D for the commands that follow.
+        for w in &p.words {
+            let mut from = 0;
+            while let Some(o) = w[from..].find("${") {
+                let start = from + o + 2;
+                let Some(e) = w[start..].find('}') else { break };
+                let inner = &w[start..start + e];
+                let n = inner
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .count();
+                let (nm, rest2) = inner.split_at(n);
+                if n > 0 {
+                    if let Some(v) = rest2.strip_prefix(":=").or_else(|| rest2.strip_prefix('=')) {
+                        vars.entry(nm.to_string()).or_default().push(v.to_string());
+                    }
+                }
+                from = start + e;
+            }
+        }
         let mut declared = false;
         for (k, w) in p.words.iter().enumerate() {
             if matches!(
@@ -1884,6 +2199,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         .filter_map(|(k, v)| v.last().map(|x| (k.clone(), x.clone())))
         .collect();
     let readings = var_readings(&all_vars);
+    let unread = unread_vars(&parsed, &all_vars);
     let mut dirs: HashMap<usize, Option<String>> = HashMap::new();
     dirs.insert(0, Some(cwd.to_string()));
     for p in &parsed {
@@ -1979,7 +2295,18 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
 
                 // -- text fed to an interpreter: only paths in it count, never words
                 if interp {
-                    for t in interpreter_paths(p, args) {
+                    // Code on standard input and code after an inline flag are judged alike: a call of
+                    // the command that records a human message is refused, the phrase alone is not.
+                    let mut code = args.join("\n");
+                    if let Some(h) = &p.input {
+                        code.push('\n');
+                        code.push_str(h);
+                    }
+                    if code_calls_human_turn(&code) {
+                        return human_turn_denial();
+                    }
+                    let from_main = zone_of(table, &dir_str).kind == "main";
+                    for t in interpreter_paths(p, args, from_main) {
                         let part = format!("the code given to `{prog}` (it holds the path `{t}`)");
                         if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text) {
                             return d;
@@ -1990,8 +2317,128 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 // -- what it would write or delete
                 let deleting = matches!(prog.as_str(), "rm" | "rmdir" | "unlink" | "shred")
                     || (prog == "find" && args.iter().any(|a| a == "-delete"));
-                for t in writer_args(&prog, args) {
-                    let part = format!("`{prog}` with the argument `{t}`");
+                let mut writer_in: Vec<String> = args.to_vec();
+                let via_xargs = p.words[..i].iter().any(|w| basename(w) == "xargs");
+                if via_xargs {
+                    // xargs adds its input to the writer's arguments (or puts it where the
+                    // replacement string stands).
+                    let mut repl: Option<String> = None;
+                    for (k, w) in p.words[..i].iter().enumerate() {
+                        if w == "-I" {
+                            repl = p.words.get(k + 1).cloned();
+                        } else if let Some(r) = w.strip_prefix("-I").filter(|r| !r.is_empty()) {
+                            repl = Some(r.to_string());
+                        } else if w == "-i" || w == "--replace" {
+                            repl = Some("{}".to_string());
+                        } else if let Some(r) = w
+                            .strip_prefix("--replace=")
+                            .or_else(|| w.strip_prefix("-i"))
+                            .filter(|r| !r.is_empty())
+                        {
+                            repl = Some(r.to_string());
+                        }
+                    }
+                    // `-a FILE` and `--arg-file=FILE` read the input from a file, not the pipe.
+                    let arg_file = p.words[..i]
+                        .iter()
+                        .any(|w| w == "-a" || w == "--arg-file" || w.starts_with("--arg-file="));
+                    let known_input = if arg_file { &None } else { &p.input };
+                    match known_input {
+                        Some(text) => {
+                            let toks: Vec<String> = text
+                                .replace("\\0", "\n")
+                                .split_whitespace()
+                                .map(|s| s.to_string())
+                                .collect();
+                            match repl {
+                                Some(r) => {
+                                    writer_in = Vec::new();
+                                    for t in &toks {
+                                        writer_in.extend(args.iter().map(|a| a.replace(&r, t)));
+                                    }
+                                }
+                                None => writer_in.extend(toks),
+                            }
+                        }
+                        None => {
+                            // Does the unknown input become a write target? Without a replacement
+                            // string xargs appends it to the arguments; with one it lands where the
+                            // string stands.
+                            const SENTINEL: &str = "\u{1}xargs-input";
+                            let mut probe = args.to_vec();
+                            probe.push(SENTINEL.to_string());
+                            let becomes_target = match &repl {
+                                Some(r) => writer_args(&prog, args)
+                                    .iter()
+                                    .any(|t| t.contains(r.as_str())),
+                                None => writer_args(&prog, &probe).iter().any(|t| t == SENTINEL),
+                            };
+                            if becomes_target && !deletes_or_edits(&prog, args) {
+                                return deny(
+                                    &format!("run `{prog}` through `xargs` on input the guard cannot read"),
+                                    &format!("`{prog}` would write the files `xargs` hands it, and the guard cannot tell which files those are"),
+                                    &[
+                                        "Name the files in the command, for example `cp src/a.txt out/a.txt`.",
+                                        "Or feed `xargs` from `echo` or `printf` with the paths written out.",
+                                    ],
+                                    "The command names every path it writes.",
+                                );
+                            }
+                            if deletes_or_edits(&prog, args) {
+                                return deny(
+                                    &format!("run `{prog}` through `xargs` on input the guard cannot read"),
+                                    &format!("`{prog}` would delete or edit in place the files `xargs` hands it, and the guard cannot tell which files those are"),
+                                    &[
+                                        "Name the files in the command, for example `rm src/a.o src/b.o`.",
+                                        "Or feed `xargs` from `echo` or `printf` with the paths written out.",
+                                    ],
+                                    "The command names every path it deletes or edits.",
+                                );
+                            }
+                        }
+                    }
+                }
+                // A variable set by `read` from input the guard cannot see stands for unknown paths.
+                if !via_xargs && !unread.is_empty() {
+                    let destructive = deletes_or_edits(&prog, args);
+                    let hit = if destructive {
+                        args.iter()
+                            .filter(|a| !is_flag(a))
+                            .find_map(|a| mentions_var(a, &unread))
+                    } else {
+                        writer_args(&prog, args)
+                            .iter()
+                            .find_map(|a| mentions_var(a, &unread))
+                    };
+                    if let Some(n) = hit {
+                        if destructive {
+                            return deny(
+                                &format!("run `{prog}` on `${n}`, set by `read` from input the guard cannot read"),
+                                &format!("`{prog}` would delete or edit in place the files `${n}` names, and the guard cannot tell which files those are"),
+                                &[
+                                    "Name the files in the command, for example `rm src/a.o src/b.o`.",
+                                    "Or loop over paths written out: `for f in src/a.o src/b.o; do rm \"$f\"; done`.",
+                                ],
+                                "The command names every path it deletes or edits.",
+                            );
+                        }
+                        return deny(
+                            &format!("run `{prog}` on `${n}`, set by `read` from input the guard cannot read"),
+                            &format!("`{prog}` would write the files `${n}` names (a copy or compressed file lands on them), and the guard cannot tell which files those are"),
+                            &[
+                                "Name the destination in the command, for example `cp /tmp/new src/a.txt`.",
+                                "Or loop over destinations written out: `for f in src/a.txt src/b.txt; do cp /tmp/new \"$f\"; done`.",
+                            ],
+                            "The command names every path it writes.",
+                        );
+                    }
+                }
+                for t in writer_args(&prog, &writer_in) {
+                    let part = if via_xargs {
+                        format!("`{prog}` started by `xargs`, with the path `{t}`")
+                    } else {
+                        format!("`{prog}` with the argument `{t}`")
+                    };
                     writes.push((
                         t,
                         part,
@@ -2014,7 +2461,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         let inside_root =
                             under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
                         let own = under(&abs, &here.base).is_some();
-                        if (in_cp && inside_root) || (in_worker && inside_root && !own) {
+                        if (in_cp || in_worker) && inside_root && !own {
                             return deny(
                             "write outside your working copy",
                             &format!(
@@ -2031,7 +2478,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         // A pattern is held to the scope as written: it must match a scope entry itself.
                         // (Unpacking or downloading into the copy's root names no member, so it is a known
                         // gap of the scope rule; docs/engine.md says so.)
-                        if in_worker && own {
+                        // In a checkpoint's copy the files of an open sync are the only ones to write.
+                        if (in_worker || in_cp) && own {
                             let checked = match &pattern {
                                 None if abs != here.base => Some(abs.clone()),
                                 Some(pat) => Some(pat.clone()),
@@ -2230,7 +2678,7 @@ fn absolute_words(cmd: &str) -> Vec<String> {
         }
         if let Some(i) = crate::shellparse::program_index(&p.words) {
             if is_interpreter(basename(&p.words[i])) {
-                out.extend(interpreter_paths(&p, &p.words[i + 1..]));
+                out.extend(interpreter_paths(&p, &p.words[i + 1..], false));
             }
         }
     }
@@ -2623,11 +3071,16 @@ mod tests {
             "reading records is fine"
         );
         assert!(bash("ls factory/records", "/p"));
-        // Interpreters and `find` are left to the harness's own permission checks.
         assert!(bash("find . -name '*.toml' -path './factory/*'", "/p"));
-        assert!(bash(
+        // Code for an interpreter that names a protected file by a relative path from the main
+        // checkout is refused, as it is by an absolute path; from a working copy it is data.
+        assert!(!bash(
             "python3 -c \"import tomllib; print(tomllib.load(open('factory/records/R-1.toml','rb')))\"",
             "/p"
+        ));
+        assert!(bash(
+            "python3 -c \"import tomllib; print(tomllib.load(open('factory/records/R-1.toml','rb')))\"",
+            "/p/.bf/work/U-1"
         ));
         assert!(bash("git add factory/ && git status", "/p"));
         assert!(bash("cp a.txt /p/.bf/work/U-1/a.txt", "/p"));

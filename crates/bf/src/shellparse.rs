@@ -84,8 +84,8 @@ pub fn runtime_program_with_word(cmd: &str, word: &str) -> bool {
     })
 }
 
-/// Does an interpreter (or `cargo`) get an argument that holds `phrase` (`python3 -c \"... bf human-turn ...\"`)?
-/// The body of a heredoc is not an argument.
+/// Does `cargo` or a shell get an argument that holds `phrase`? The body of a heredoc is not an argument.
+/// (Code given to a language interpreter is judged by the guard for a call, not for the phrase alone.)
 pub fn interpreter_arg_with_phrase(cmd: &str, phrase: &str) -> bool {
     let mut counter = 0usize;
     let mut cmds = Vec::new();
@@ -93,18 +93,8 @@ pub fn interpreter_arg_with_phrase(cmd: &str, phrase: &str) -> bool {
     cmds.iter().any(|c| {
         resolve(&c.words)
             .map(|(i, _)| {
-                matches!(
-                    basename(&c.words[i]),
-                    "cargo"
-                        | "python"
-                        | "python3"
-                        | "perl"
-                        | "node"
-                        | "ruby"
-                        | "sh"
-                        | "bash"
-                        | "zsh"
-                ) && c.words[i + 1..].iter().any(|w| w.contains(phrase))
+                matches!(basename(&c.words[i]), "cargo" | "sh" | "bash" | "zsh")
+                    && c.words[i + 1..].iter().any(|w| w.contains(phrase))
             })
             .unwrap_or(false)
     })
@@ -119,6 +109,9 @@ pub struct Parsed {
     pub redirects: Vec<String>,
     /// The body of a heredoc fed to the command.
     pub heredoc: Option<String>,
+    /// The text the command reads on standard input when the line says what it is: a heredoc, a here
+    /// string, or what `echo` and `printf` pipe into it. `None` when the input is unknown.
+    pub input: Option<String>,
     /// The shell the command runs in: 0 for the command line itself, a new number for each `sh -c`
     /// string and each script fed to a shell. A `cd` holds only inside its own shell.
     pub scope: usize,
@@ -161,6 +154,11 @@ fn flatten(
             words: cmd.words.clone(),
             redirects: cmd.redirs.clone(),
             heredoc: cmd.heredoc.as_ref().map(|(b, _)| b.clone()),
+            input: cmd
+                .heredoc
+                .as_ref()
+                .map(|(b, _)| b.clone())
+                .or_else(|| cmd.pipe_from.and_then(|id| texts.get(&id).cloned())),
             scope,
             parent,
         });
