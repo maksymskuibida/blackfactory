@@ -129,3 +129,15 @@ fn one_segment_per_state_with_the_round_of_each_unit() {
         "◐ U-3, U-5 in review, round 2"
     );
 }
+
+#[test]
+fn blocked_and_parked_units_share_one_segment() {
+    assert_eq!(
+        render(&[it("U-1", "blocked", 0), it("U-2", "parked", 0)]),
+        "⚠ U-1 blocked, U-2 parked"
+    );
+    assert_eq!(
+        render(&[it("U-1", "parked", 0), it("U-2", "parked", 0)]),
+        "⚠ U-1, U-2 parked"
+    );
+}

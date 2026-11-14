@@ -34,19 +34,36 @@ pub fn render(items: &[Item]) -> String {
         "reviewed",
         "landed",
         "blocked",
-        "parked",
         "verifying",
         "closed",
     ];
+    // Blocked and parked units share one sign and so one segment.
     let mut groups: BTreeMap<usize, Vec<(&str, u32)>> = BTreeMap::new();
+    let mut stuck: Vec<(&str, &str)> = Vec::new();
     for (id, state, round) in items {
-        if let Some(ix) = order.iter().position(|o| o == state) {
+        let key = if state == "parked" { "blocked" } else { state };
+        if let Some(ix) = order.iter().position(|o| *o == key) {
             groups.entry(ix).or_default().push((id, *round));
+            if key == "blocked" {
+                stuck.push((id, state));
+            }
         }
     }
     let mut parts = Vec::new();
     for (ix, units) in groups {
         let (sg, words) = sign(order[ix]).unwrap();
+        if order[ix] == "blocked" {
+            let all_same = stuck.iter().all(|(_, s)| *s == stuck[0].1);
+            let t = if all_same {
+                let ids: Vec<&str> = stuck.iter().map(|(i, _)| *i).collect();
+                format!("{sg} {} {}", ids.join(", "), stuck[0].1)
+            } else {
+                let each: Vec<String> = stuck.iter().map(|(i, s)| format!("{i} {s}")).collect();
+                format!("{sg} {}", each.join(", "))
+            };
+            parts.push(t);
+            continue;
+        }
         // One segment per state. When every unit is in the same round it is said once at the end;
         // otherwise each unit carries its own round.
         let same = units.iter().all(|(_, r)| *r == units[0].1);

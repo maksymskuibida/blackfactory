@@ -562,3 +562,26 @@ fn a_second_amendment_is_refused_while_one_is_open() {
     );
     assert_eq!(amendment_status(&fx, "A-1"), "open");
 }
+
+#[test]
+fn a_legal_records_acceptance_is_reserved_for_the_human() {
+    let fx = Fx::new();
+    let f = fx.root.join("l.toml");
+    std::fs::write(
+        &f,
+        "id=\"L-1\"\nkind=\"legal\"\ntitle=\"Licence gap\"\noutcome=\"accepted\"\n",
+    )
+    .unwrap();
+    // No human message at all: refused.
+    fx.refused(&["record", "put", "legal", "--file", f.to_str().unwrap()]);
+    fx.human("Yes, I accept the licence gap.");
+    fx.must(&[
+        "record",
+        "put",
+        "legal",
+        "--file",
+        f.to_str().unwrap(),
+        "--quote",
+        "I accept the licence gap",
+    ]);
+}

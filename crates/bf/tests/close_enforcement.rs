@@ -176,3 +176,46 @@ fn the_doctor_compares_the_mirror_file_of_the_default_with_the_log() {
     let o = fx.bf(&["doctor"]);
     assert!(o.all().contains("differs"), "{}", o.all());
 }
+
+#[test]
+fn a_scan_cannot_be_settled_by_a_human_step_or_an_agents_word() {
+    let fx = Fx::with_checks();
+    fx.tiny();
+    fx.name_every_check("R-1");
+    fx.must(&["plan", "check"]);
+    // The secret scan is a command; a record that names it with another way of proof is refused.
+    let f = fx.root.join("x.toml");
+    fs::write(&f, "id=\"X-91\"\nkind=\"check\"\ntitle=\"secret-scan\"\nhow=\"agent\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\nnamed=\"secret-scan\"\n").unwrap();
+    let o = fx.bf(&[
+        "record",
+        "put",
+        "check",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = fx.refused(&["plan", "check"]);
+    assert!(
+        o.stderr.contains("X-91")
+            && o.stderr.contains("proven by command")
+            && o.stderr.contains("`how` is `agent`"),
+        "{}",
+        o.stderr
+    );
+}
+
+#[test]
+fn a_design_check_switched_on_after_its_gate_is_refused_when_its_product_is_missing() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.must(&["gate", "open", "architecture"]);
+    fx.must(&["gate", "approve", "architecture", "--simulated"]);
+    let o = fx.refused(&["checks", "propose", "threat-model=on", "--scope", "run"]);
+    assert!(
+        o.stderr.contains("threat-model") && o.stderr.contains("design product"),
+        "{}",
+        o.stderr
+    );
+}

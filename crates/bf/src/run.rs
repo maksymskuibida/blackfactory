@@ -136,8 +136,9 @@ pub fn page_set(p: &Project, name: &str, url: &str) -> R<Value> {
 
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
-    let main = main_position(p, &st)?;
+    // The positions are worked out once (each costs git calls); the combined one is built from them.
     let repo_positions = main_positions(p, &st)?;
+    let main = combine_positions(&repo_positions);
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
     let states = unit_states(p, &pl, &st, &receipts);
@@ -1626,7 +1627,10 @@ pub fn main_positions(p: &Project, st: &State) -> R<Vec<MainPos>> {
 /// All repositories together: moved if any is; the details and notes of each, named by repository when
 /// there are several.
 pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
-    let all = main_positions(p, st)?;
+    Ok(combine_positions(&main_positions(p, st)?))
+}
+
+fn combine_positions(all: &[MainPos]) -> MainPos {
     let several = all.len() > 1;
     let label = |m: &MainPos, t: &str| {
         if t.is_empty() {
@@ -1637,7 +1641,7 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
             t.to_string()
         }
     };
-    Ok(MainPos {
+    MainPos {
         repo: all.first().map(|m| m.repo.clone()).unwrap_or_default(),
         moved: all.iter().any(|m| m.moved),
         detail: all
@@ -1653,7 +1657,7 @@ pub fn main_position(p: &Project, st: &State) -> R<MainPos> {
             .filter(|x| !x.is_empty())
             .collect::<Vec<_>>()
             .join("; "),
-    })
+    }
 }
 
 fn short(c: &str) -> &str {
@@ -1805,11 +1809,15 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     if crate::enforce::stops(kr) && !st.gate_passed("checkpoint-step", Some(k)) {
         gaps.push(format!("the stop `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", if s(kr, "human_step").is_empty() { s(kr, "stop_why") } else { s(kr, "human_step") }));
     }
-    gaps.extend(crate::enforce::checkpoint_gaps(
-        p, &pl, &st, &receipts, kr, &content,
-    )?);
+    let (check_gaps, unproven_names) =
+        crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
+    let has_check_gaps = !check_gaps.is_empty();
+    gaps.extend(check_gaps);
     if !gaps.is_empty() {
         let mut steps = gaps.clone();
+        if has_check_gaps {
+            steps.extend(crate::enforce::way_out_steps(&st, &unproven_names));
+        }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
         return Err(refuse_owned(
             format!("close {k}"),
@@ -1841,7 +1849,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 p,
                 &pl,
                 &format!("merge {k} onto the main branch"),
-                &format!("bf checkpoint merge {k}"),
+                &format!("bf checkpoint close {k} --merge"),
             )?;
         }
         // A run with simulated approvals can never reach the main branch.
