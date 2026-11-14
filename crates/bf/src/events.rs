@@ -495,6 +495,8 @@ pub struct State {
     pub work_events: usize,
     /// Design gates the human skipped: (kind, the words, seq). Only `ui` can be skipped.
     pub skipped: Vec<(String, String, u64)>,
+    /// Legal records the human accepted: (record, the words, seq). Each used up one human message.
+    pub legal_accepts: Vec<(String, String, u64)>,
     /// Where each checkpoint branch took the main branch in: (checkpoint, repository, main's commit).
     pub synced: Vec<(String, String, String)>,
     /// A sync that stopped at a conflict and is being resolved.
@@ -1044,6 +1046,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 st.turns[turn_ix[&tseq]].used = true;
                 st.skipped.push((sv("gate_kind"), sv("quote"), seq));
+            }
+            "legal.accept" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
+                    || sv("record").is_empty()
+                {
+                    st.ignored.push(format!(
+                        "event {seq}: a legal acceptance cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                st.legal_accepts.push((sv("record"), sv("quote"), seq));
             }
             "unit.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);

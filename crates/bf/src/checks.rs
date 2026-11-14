@@ -164,7 +164,7 @@ fn unknown(sub: &str, _rest: &[String]) -> crate::refusal::Fail {
     refuse(
         "run `bf checks`",
         format!("unknown subcommand `{sub}`"),
-        &["Run `bf checks list`, `propose`, `set` or `state`."],
+        &["Run `bf checks list`, `propose`, `set`, `state` or `mirror`."],
         "The command prints the checks.",
     )
 }
@@ -308,6 +308,15 @@ pub fn run_in(
     match sub {
         "" | "list" => run(sub, rest),
         "state" => Ok(state_value(&events::replay(p)?)),
+        // The mirror file holds the project default as the log has it; this writes it again from the
+        // log, for a file that is missing or was changed by hand. It records nothing and decides nothing.
+        "mirror" => {
+            let st = events::require_chain(p)?;
+            write_default(p, &st.checks_default)?;
+            let mut v = state_value(&st);
+            v["mirror"] = json!("factory/checks.json");
+            Ok(v)
+        }
         "propose" => {
             let st = events::require_chain(p)?;
             let changes = parse_changes(rest)?;

@@ -127,7 +127,7 @@ pub fn doctor(p: &Project) -> R<Value> {
                 .iter()
                 .any(|x| x.used && (x.scope == "default" || x.scope == "both"));
             if decided || !st.checks_default.is_empty() {
-                (false, "the log has a project default for the checks but the mirror file is missing: record the default again with `bf checks propose --scope default` and `bf checks set`".to_string())
+                (false, "the log has a project default for the checks but the mirror file is missing: write it again from the log with `bf checks mirror`".to_string())
             } else {
                 (
                     true,
@@ -154,7 +154,7 @@ pub fn doctor(p: &Project) -> R<Value> {
                     "the mirror file matches the project default in the log".to_string(),
                 )
             } else {
-                (false, "the mirror file of the check default differs from the project default in the log: the log is the truth; record the default again with `bf checks set` to rewrite the file".to_string())
+                (false, "the mirror file of the check default differs from the project default in the log: the log is the truth; write the file again from the log with `bf checks mirror`".to_string())
             }
         }
     };
