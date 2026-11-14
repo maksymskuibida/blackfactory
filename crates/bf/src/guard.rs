@@ -401,8 +401,33 @@ fn git_sub(w: &[String]) -> Option<(usize, &str)> {
     None
 }
 
+/// The main checkouts of the code repositories that are not the project folder.
+fn other_repos(table: &Value) -> Vec<String> {
+    let root = table["root"].as_str().unwrap_or("");
+    table["repos"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| r["path"].as_str())
+                .filter(|p| *p != root && !p.is_empty())
+                .map(|p| p.trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Is the path inside the git folder of a code repository (its hooks, its config and the rest of it)?
+fn in_repo_git(table: &Value, abs: &str) -> bool {
+    other_repos(table)
+        .iter()
+        .any(|p| under(abs, p).is_some_and(|rel| rel == ".git" || rel.starts_with(".git/")))
+}
+
 /// Does a path that is protected (in the project root or in any working copy) get named?
 fn is_protected_abs(table: &Value, abs: &str) -> bool {
+    if in_repo_git(table, abs) {
+        return true;
+    }
     let root = table["root"].as_str().unwrap_or("");
     if let Some(rel) = under(abs, root) {
         if rel == ".bf/work" || rel.starts_with(".bf/work/") {
@@ -589,6 +614,166 @@ fn code_may_write(code: &str) -> bool {
             }
         }
         i += 1;
+    }
+    false
+}
+
+/// Can the code change a file by a means that names no path literal: a call that deletes, renames or
+/// changes a file by whatever it is handed (it may be the object an `open` returned, `f.name`), a shell-out,
+/// or a path taken from an object? Such code keeps every path it mentions judged as a write.
+fn writes_without_literal(code: &str) -> bool {
+    const RISKY: &[&str] = &[
+        "unlink",
+        "remove",
+        "rmtree",
+        "rmdir",
+        "rmsync",
+        "chmod",
+        "chown",
+        "chgrp",
+        "lchmod",
+        "fchmod",
+        "rename",
+        "renamesync",
+        "truncate",
+        "ftruncate",
+        "utime",
+        "symlink",
+        "link",
+        "hardlink",
+        "move",
+        "system",
+        "popen",
+        "subprocess",
+        "shell",
+        "spawn",
+        "spawnsync",
+        "run",
+        "call",
+        "check_call",
+        "check_output",
+        "name",
+        "sysopen",
+        "fdopen",
+        "fileno",
+    ];
+    // An attribute `.path` of an opened object (a node stream, a ruby file) returns the path it was
+    // opened with, like `.name`. `os.path.x`, `sys.path` and the `path` module are not that.
+    let mut from = 0;
+    while let Some(k) = code[from..].find(".path") {
+        let at = from + k;
+        let end = at + 5;
+        from = end;
+        let next = code[end..].chars().next();
+        if next.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+            continue;
+        }
+        let owner: String = code[..at]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if matches!(
+            owner.as_str(),
+            "os" | "sys" | "posixpath" | "ntpath" | "process"
+        ) {
+            continue;
+        }
+        return true;
+    }
+    // Names that are also everyday data keys or list methods: they count only as a call, and
+    // `name` and `fileno` only as an attribute (`f.name`), never as a dict key or a bare word.
+    const AMBIGUOUS: &[&str] = &[
+        "remove", "move", "link", "call", "run", "shell", "rename", "truncate",
+    ];
+    // Owners whose `remove(` deletes a file; any other owner is a list or a set.
+    const FILE_OWNERS: &[&str] = &[
+        "os",
+        "shutil",
+        "fs",
+        "fsp",
+        "promises",
+        "file",
+        "fileutils",
+        "dir",
+        "io",
+        "kernel",
+        "pathlib",
+        "path",
+        "unlink",
+    ];
+    let chars: Vec<char> = code.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_word(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_word(chars[i]) {
+            i += 1;
+        }
+        let l: String = chars[start..i].iter().collect::<String>().to_lowercase();
+        let prev = chars[..start].iter().rev().find(|c| !c.is_whitespace());
+        let prev_adjacent = if start > 0 {
+            Some(chars[start - 1])
+        } else {
+            None
+        };
+        let next = chars[i..].iter().find(|c| !c.is_whitespace()).copied();
+        let next_adjacent = chars.get(i).copied();
+        let is_call = next == Some('(');
+        let is_attr = prev_adjacent == Some('.');
+        if l == "name" || l == "fileno" {
+            if is_attr {
+                return true;
+            }
+            continue;
+        }
+        if matches!(prev_adjacent, Some('\'' | '"' | '[')) {
+            continue;
+        }
+        if l.starts_with("exec") && !l.starts_with("execute") {
+            return true;
+        }
+        if !RISKY.contains(&l.as_str()) {
+            continue;
+        }
+        if AMBIGUOUS.contains(&l.as_str()) {
+            if !is_call {
+                continue;
+            }
+            if l == "remove" && is_attr {
+                let owner: String = chars[..start - 1]
+                    .iter()
+                    .rev()
+                    .take_while(|c| is_word(**c))
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+                    .to_lowercase();
+                let after_call = chars[..start - 1].last().is_some_and(|c| *c == ')');
+                if !owner.is_empty() && !FILE_OWNERS.contains(&owner.as_str()) && !after_call {
+                    continue;
+                }
+            }
+            return true;
+        }
+        // Not ambiguous: a call, an attribute, or a ruby style call with no parenthesis. A word
+        // followed by `=`, `:`, a closing bracket or a quote is a key or an argument name.
+        let _ = prev;
+        if is_call
+            || is_attr
+            || next_adjacent.is_none()
+            || next_adjacent.is_some_and(|c| c.is_whitespace() || matches!(c, ';' | ',' | '.'))
+        {
+            return true;
+        }
     }
     false
 }
@@ -1048,6 +1233,82 @@ fn written_literals(code: &str) -> Vec<String> {
     out
 }
 
+/// The path literals that code only reads: the first path of a call that opens for reading (`open('a')`,
+/// `open('a', 'rb')`, `readFileSync('a')`, `read_text`), and the source of a copy. Each comes with the
+/// number of times it is read that way.
+fn read_literals(code: &str) -> HashMap<String, usize> {
+    const READS: &[&str] = &[
+        "readFileSync",
+        "readFile",
+        "readdirSync",
+        "readdir",
+        "createReadStream",
+        "statSync",
+        "existsSync",
+        "read_text",
+        "read_bytes",
+        "listdir",
+        "isfile",
+        "isdir",
+        "exists",
+        "stat",
+        "load",
+        "copyfile",
+        "copy2",
+        "copytree",
+        "copy",
+        "copyFileSync",
+        "cpSync",
+        "cp",
+    ];
+    let mut out: HashMap<String, usize> = HashMap::new();
+    let b: Vec<char> = code.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < b.len() {
+        if !is_word(b[i]) || (i > 0 && is_word(b[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let mut e = i;
+        while e < b.len() && is_word(b[e]) {
+            e += 1;
+        }
+        let name: String = b[i..e].iter().collect();
+        let mut j = e;
+        while j < b.len() && b[j] == ' ' {
+            j += 1;
+        }
+        if j < b.len() && b[j] == '(' && (name == "open" || READS.contains(&name.as_str())) {
+            let rest: String = b[j + 1..].iter().collect();
+            let args_text = call_args(&rest);
+            let lits: Vec<String> = string_literals(&args_text)
+                .into_iter()
+                .map(|l| l.0)
+                .collect();
+            let reads =
+                |m: &str| m.len() <= 3 && m.chars().all(|c| "rbtU".contains(c)) && !m.is_empty();
+            let first_is_read = if name == "open" {
+                match lits.as_slice() {
+                    // `os.open(p, os.O_WRONLY)` has one literal and a flag: only a bare path is a read.
+                    [_] => !args_text.contains(','),
+                    [_, m, ..] => reads(m),
+                    _ => false,
+                }
+            } else {
+                true
+            };
+            if first_is_read {
+                if let Some(p) = lits.first() {
+                    *out.entry(p.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        i = e;
+    }
+    out
+}
+
 /// The files an awk program prints to: `print > "a"`, `print >> "a"` and `printf(...) > "a"`, where the
 /// path is a string literal. A `>` that is a comparison (no `print` before it in its statement) is not a
 /// redirect.
@@ -1357,8 +1618,40 @@ fn landing(dest: &str, src: &str) -> String {
 fn transfer_targets(prog: &str, args: &[String], dir: &Option<String>) -> Vec<String> {
     let tp = transfer_parts(prog, args);
     let mut out = Vec::new();
-    if matches!(prog, "mv" | "ln") {
+    if prog == "mv" {
         out.extend(tp.sources.iter().cloned());
+    } else if prog == "ln" {
+        // The target of a symbolic link, when it is relative, is read from the folder the link is made
+        // in, not from the working directory.
+        let symbolic = args.iter().any(|a| {
+            a == "--symbolic"
+                || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('s'))
+        });
+        // With `-r` GNU ln reads the target from the working directory and writes the relative link
+        // itself, so the target is judged from there.
+        let from_cwd = args.iter().any(|a| {
+            a == "--relative"
+                || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('r'))
+        });
+        let link_dir = tp.dest.as_ref().map(|d| {
+            if goes_into_folder(&tp, d, dir) {
+                d.trim_end_matches('/').to_string()
+            } else {
+                match d.trim_end_matches('/').rsplit_once('/') {
+                    Some(("", _)) => "/".to_string(),
+                    Some((parent, _)) => parent.to_string(),
+                    None => ".".to_string(),
+                }
+            }
+        });
+        for s in &tp.sources {
+            let relative =
+                !(s.starts_with('/') || is_home_form(s) || s.contains('$') || s.contains('`'));
+            match (&link_dir, symbolic && relative && !from_cwd) {
+                (Some(l), true) if !l.is_empty() => out.push(format!("{l}/{s}")),
+                _ => out.push(s.clone()),
+            }
+        }
     }
     if let Some(d) = &tp.dest {
         if goes_into_folder(&tp, d, dir) {
@@ -2183,6 +2476,9 @@ enum Reach {
     /// Making a folder: refused like a write, except where it leads to a file the unit may write.
     Make,
     Write,
+    /// A recursive change of permissions or owner: judged like a write, and like a delete of the whole
+    /// working copy when it names the copy's root.
+    Perm,
     Delete,
     Run,
     Text,
@@ -2190,7 +2486,7 @@ enum Reach {
 
 fn path_denial(abs: &str, part: &str, reach: Reach) -> Decision {
     let (verb, steps): (&str, Vec<&str>) = match reach {
-        Reach::Write | Reach::Make => (
+        Reach::Write | Reach::Make | Reach::Perm => (
             "write",
             vec![
                 "Change a record, a finding or a report with an engine command: `bf record put`, `bf report`, `bf evidence run`.",
@@ -2223,7 +2519,7 @@ fn path_denial(abs: &str, part: &str, reach: Reach) -> Decision {
     deny(
         &format!("{verb} {abs}"),
         &format!(
-            "{part} would {verb} {abs}, a protected place: factory records, the policy, gates, the guard table and the hook settings are changed by the engine and the human only"
+            "{part} would {verb} {abs}, a protected place: factory records, the policy, gates, the guard table, the hook settings and the git folder of a code repository are changed by the engine and the human only"
         ),
         &steps,
         "The path the command writes, deletes, runs or opens lies outside those places.",
@@ -2239,6 +2535,7 @@ fn covers_protected(table: &Value, abs: &str) -> Option<String> {
     }
     let base = abs.trim_end_matches('/');
     let mut places = vec![root.to_string()];
+    places.extend(other_repos(table).into_iter().map(|r| format!("{r}/.git")));
     for e in table["protected"]
         .as_array()?
         .iter()
@@ -2660,6 +2957,9 @@ fn protected_roots(table: &Value) -> Vec<String> {
                 }
             }
         }
+    }
+    for r in other_repos(table) {
+        out.push(format!("{r}/.git"));
     }
     let sd = state_dir(table);
     if !sd.is_empty() {
@@ -3623,6 +3923,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     // record opened by its absolute path is judged as it is by a relative one. The state
                     // folder is closed to reads too.
                     let may_write = code_may_write(&code);
+                    let reads = read_literals(&code);
                     for t in interpreter_paths(p, args) {
                         let part = format!("the code given to `{prog}` (it holds the path `{t}`)");
                         if let Some(abs) = target_abs(&t, &start) {
@@ -3630,7 +3931,13 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                 return state_denial();
                             }
                         }
-                        if may_write {
+                        // A path that every mention reads (opened for reading, or the source of a copy)
+                        // is not a write; the paths the code writes are judged above.
+                        let only_read = !writes_without_literal(&code)
+                            && reads
+                                .get(&t)
+                                .is_some_and(|n| *n >= code.matches(&t).count());
+                        if may_write && !only_read {
                             if let Some(d) = judge_text_path(table, &t, &start, &part, Reach::Text)
                             {
                                 return d;
@@ -3898,6 +4205,16 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                 && !args.iter().any(|a| a.starts_with("-fprint") || a == "-fls"))
                         {
                             Reach::Delete
+                        } else if matches!(prog.as_str(), "chmod" | "chown" | "chgrp")
+                            && !(prog == "chmod" && chmod_only_removes(&writer_in))
+                            && writer_in.iter().any(|a| {
+                                a == "--recursive"
+                                    || (a.starts_with('-')
+                                        && !a.starts_with("--")
+                                        && a[1..].contains('R'))
+                            })
+                        {
+                            Reach::Perm
                         } else if prog == "mkdir"
                             || (prog == "install"
                                 && args.iter().any(|a| a == "-d" || a == "--directory"))
@@ -3962,11 +4279,16 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             // deletes files outside the scope too.
                             if abs == here.base
                                 && pattern.is_none()
-                                && matches!(reach, Reach::Delete)
+                                && matches!(reach, Reach::Delete | Reach::Perm)
                             {
+                                let verb = if matches!(reach, Reach::Perm) {
+                                    "change the permissions of"
+                                } else {
+                                    "delete"
+                                };
                                 return deny(
-                                    "delete the whole working copy",
-                                    &format!("{part} would delete {abs}, the whole working copy, and with it files outside the file scope of {}", here.id),
+                                    &format!("{verb} the whole working copy"),
+                                    &format!("{part} would {verb} {abs}, the whole working copy, and with it files outside the file scope of {}", here.id),
                                     &[
                                         "Name the files you mean, inside the scope, for example `rm src/old.rs`.",
                                         "To discard your own changes use `git restore <file>` on a file in scope.",
@@ -4356,6 +4678,40 @@ mod tests {
 
     fn bash(cmd: &str, cwd: &str) -> bool {
         call("Bash", json!({"command": cmd}), cwd).allow
+    }
+
+    #[test]
+    fn the_git_folder_of_a_nested_or_a_sibling_repository_is_closed_to_the_shell() {
+        let mut t = table();
+        t["workspace"] = json!(true);
+        t["repos"] = json!([{"name":"a","path":"/p/app"},{"name":"b","path":"/other/lib"}]);
+        let run = |cmd: &str| {
+            decide(
+                &json!({"tool_name":"Bash","tool_input":{"command":cmd},"cwd":"/p"}),
+                &t,
+            )
+            .allow
+        };
+        for cmd in [
+            "echo x > app/.git/hooks/post-merge",
+            "cp /tmp/h app/.git/hooks/",
+            "printf a >> /other/lib/.git/config",
+            "rm -rf app/.git",
+            "mv /other/lib/.git /tmp/x",
+            "chmod +x app/.git/hooks/pre-commit",
+            "cd app && echo x > .git/config",
+        ] {
+            assert!(!run(cmd), "{cmd}");
+        }
+        for cmd in [
+            "git -C app log -1",
+            "cat app/.git/config",
+            "cp /other/lib/.git/config /tmp/c",
+            "echo x > app/notes.txt",
+            "ls /other/lib/.git/hooks",
+        ] {
+            assert!(run(cmd), "{cmd}");
+        }
     }
 
     #[test]
