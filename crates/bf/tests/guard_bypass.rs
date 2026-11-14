@@ -178,7 +178,6 @@ fn a_write_target_with_a_wildcard_that_cannot_reach_a_protected_place_passes() {
         "rm -f /tmp/build-*",
         "touch notes-{1,2}.md",
         "D=out; echo x > $D/a.txt",
-        "echo x > $OUT/a.txt",
         "ls fact*/",
         "cat factory/*.toml > /tmp/all.txt",
     ] {
@@ -186,6 +185,10 @@ fn a_write_target_with_a_wildcard_that_cannot_reach_a_protected_place_passes() {
     }
     passes(&fx, &wc, "rm -f /tmp/build-*");
     passes(&fx, &wc, "echo x > src/hello.txt");
+    // A path that starts with a variable the line does not assign is whatever the environment holds.
+    let why = refused(&fx, &fx.root, "echo x > $OUT/a.txt");
+    assert!(why.contains("$OUT/a.txt"), "{why}");
+    refused(&fx, &wc, "echo x > $OUT");
     // In a working copy, a path before its first wildcard that is outside the copy is refused.
     refused(&fx, &wc, "echo x > ../../../notes-*.md");
 }
@@ -275,8 +278,13 @@ fn the_same_writers_pass_where_they_write_elsewhere_or_only_read() {
     ] {
         passes(&fx, &fx.root, cmd);
     }
-    // In a unit's working copy, unpacking into the copy's own folders is the unit's business.
-    passes(&fx, &wc, "tar xf /tmp/a.tar");
+    // In a unit's working copy, unpacking names its members (each held to the unit's files) or goes
+    // to a folder outside the project; an archive unpacked whole into the copy is refused.
+    passes(&fx, &wc, "tar xf /tmp/a.tar src/hello.txt");
+    passes(&fx, &wc, "tar xf /tmp/a.tar -C /tmp/elsewhere");
+    refused(&fx, &wc, "tar xf /tmp/a.tar");
+    refused(&fx, &wc, "unzip /tmp/a.zip");
+    passes(&fx, &wc, "unzip -l /tmp/a.zip");
     passes(&fx, &wc, "sort -o src/hello.txt src/hello.txt");
 }
 
