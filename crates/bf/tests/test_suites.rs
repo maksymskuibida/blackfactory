@@ -98,3 +98,52 @@ fn every_role_file_that_runs_checks_has_the_busy_machine_rule() {
     }
     assert!(seen >= 3, "expected the builder, verifier and reviewer");
 }
+
+fn role(name: &str) -> String {
+    fs::read_to_string(repo().join(format!("harness/claude/agents/{name}.md"))).unwrap()
+}
+
+#[test]
+fn the_builders_role_file_has_the_rule_for_a_sync() {
+    let text = role("builder");
+    for want in [
+        "For a sync: run only the tests you change, selected by name",
+        "never the checkpoint's own checks or the extended suite",
+        "the engine runs the sync's checks",
+    ] {
+        assert!(text.contains(want), "the builder's role file lacks: {want}");
+    }
+}
+
+#[test]
+fn the_reviewers_role_file_has_the_rule_for_the_review_of_a_sync() {
+    let text = role("reviewer");
+    for want in [
+        "For the review of a sync: list which checks the sync ran and on which content",
+        "bf evidence verify --checkpoint <K>",
+        "confirm they are the brief's sync checks, passing on the current content",
+        "A sync check missing or failing there is a finding",
+    ] {
+        assert!(
+            text.contains(want),
+            "the reviewer's role file lacks: {want}"
+        );
+    }
+}
+
+#[test]
+fn the_engine_document_names_the_checks_a_sync_runs_and_the_wave_and_unit_check_commands() {
+    let text = fs::read_to_string(repo().join("docs/engine.md")).unwrap();
+    for want in [
+        "The sync's checks are the command checks every unit of the checkpoint is held to",
+        "does not run the checkpoint's own checks in a sync",
+        "bf checkpoint wave-check <K>",
+        "bf checks wave question|propose|set|state",
+        "bf checks unit question|propose|set|state",
+        "[unit_checks]",
+        "unit_checks_reason",
+        "own_checks_reason",
+    ] {
+        assert!(text.contains(want), "docs/engine.md lacks: {want}");
+    }
+}

@@ -1095,6 +1095,47 @@ pub fn probe(p: &Project, checkpoint: &str, argv: &[String], top: &Path) -> R<Va
     Ok(v)
 }
 
+/// A run of a sync check: the engine runs one of the checks every unit of the checkpoint is held to on the
+/// joined content, as part of the sync `sync` (the newest receipt number when the sync started). It is
+/// recorded with its command, exit and content, and settles nothing: no unit's check and no checkpoint's
+/// check counts it. The receipt's `reason` is the label of the sync check, sealed with the rest.
+pub fn sync_run(
+    p: &Project,
+    checkpoint: &str,
+    label: &str,
+    argv: &[String],
+    top: &Path,
+    sync: u64,
+) -> R<Value> {
+    let content = p.content_hash(top)?;
+    let (exit, tail, out_hash, total, sandboxed) =
+        exec_capture(p, top, argv, p.policy.evidence.tail_bytes)?;
+    let after = p.content_hash(top)?;
+    let v = json!({
+        "type": "sync",
+        "check": checkpoint,
+        "reason": label,
+        "sync": sync,
+        "command": argv.join(" "),
+        "program": CHECK_SHELL,
+        "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
+        "exit": exit,
+        "content_hash": content,
+        "content_after": after,
+        "output_hash": out_hash,
+        "bytes": total,
+        "output_tail": tail,
+        "at": util::now(),
+    });
+    let v = write_receipt(p, v)?;
+    events::append(
+        p,
+        "evidence.sync",
+        json!({"receipt": v["id"], "checkpoint": checkpoint, "check": label, "exit": exit}),
+    )?;
+    Ok(v)
+}
+
 /// The engine's own receipt for the checkpoint review, written when the reviewer reports a clean review:
 /// the review settles the check that names it, at the content it judged.
 pub fn review_receipt(p: &Project, check_id: &str, content: &str, says: &str) -> R<Value> {
@@ -1166,7 +1207,8 @@ pub fn verify(
     let mut all_ok = true;
     for r in &receipts {
         // A probe run settles nothing; it is in the evidence, never in a verification.
-        if matches!(s(&r.v, "type"), "probe" | "judge") {
+        // A sync run settles nothing either; it is listed apart, below.
+        if matches!(s(&r.v, "type"), "probe" | "judge" | "sync") {
             continue;
         }
         if let Some((_, ids)) = &current {
@@ -1193,6 +1235,25 @@ pub fn verify(
             content_ok,
             exit: r.v["exit"].as_i64(),
         });
+    }
+    // The sync's runs of this checkpoint, apart from its own receipts: each row's check reads
+    // `sync:<the sync check>`. They are shown, never counted: only a bad seal fails the verification.
+    if let (Some(k), Some((h, _))) = (checkpoint, &current) {
+        for r in receipts
+            .iter()
+            .filter(|r| s(&r.v, "type") == "sync" && r.check() == k)
+        {
+            if !r.seal_ok {
+                all_ok = false;
+            }
+            rows.push(VerifyRow {
+                receipt: r.id().to_string(),
+                check: format!("sync:{}", s(&r.v, "reason")),
+                seal_ok: r.seal_ok,
+                content_ok: Some(h == r.content()),
+                exit: r.v["exit"].as_i64(),
+            });
+        }
     }
     // With a scope, every check in scope must have at least one passing receipt at the current content.
     if let Some((h, ids)) = &current {
