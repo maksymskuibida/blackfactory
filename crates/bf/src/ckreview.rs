@@ -190,6 +190,22 @@ pub fn passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
         && open_blocking(st, k, &rs).is_empty())
 }
 
+/// The high and medium findings still open in any review of the checkpoint, as `r<round>.<number>`, the
+/// severity and the title.
+pub fn open_blocking_named(p: &Project, st: &State, k: &str) -> R<Vec<(String, String, String)>> {
+    let rs = rounds(p, k)?;
+    Ok(open_blocking(st, k, &rs)
+        .into_iter()
+        .map(|(r, i, f, _)| {
+            (
+                format!("r{r}.{i}"),
+                s(&f, "severity").to_string(),
+                s(&f, "title").to_string(),
+            )
+        })
+        .collect())
+}
+
 /// Whether the checkpoint still needs its review before it can close.
 pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
     Ok(required(st) && !passed_at(p, st, k, content)?)
@@ -236,17 +252,15 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
     // A fix that ended without passing its review leaves its findings open. No new review is offered at
     // the content they were filed on while no fix is open: the human says what becomes of them.
     if st.ck_fix.is_none() && open_round(&rs).is_none() {
-        let content = cp_content(p, k)?;
         let open: Vec<Value> = open_blocking(st, k, &rs)
             .into_iter()
-            .filter(|(_, _, _, c)| *c == content)
             .map(|(r, i, f, _)| json!({"id": format!("r{r}.{i}"), "severity": s(&f, "severity"), "title": s(&f, "title"), "where": s(&f, "where"), "action": s(&f, "action")}))
             .collect();
         if !open.is_empty() {
             return Ok(
                 json!({"role": "human", "action": "decide-checkpoint-fix", "checkpoint": k, "findings": open,
-                "note": format!("The fix of a high or medium finding of {k} ended without passing its review, so the finding is still open and holds the close. No new review is offered at this content. The human decides: open the fix again (`bf checkpoint finding {k} --fix-findings <ids>`), or accept (`bf checkpoint finding {k} --accept <ids> --quote \"<their words>\"`) or decline (`bf checkpoint finding {k} --decline <ids> --reason \"<why>\" --quote \"<their words>\"`) each finding in their own words."),
-                "commands": [format!("bf checkpoint finding {k} --fix-findings <ids>")]}),
+                "note": format!("A high or medium finding of {k} is still open and holds the close, and no fix is open: the fix of it may have ended without passing its review, or may have been aborted. No new review is offered. The human decides: open the fix again (`bf checkpoint finding {k} --fix-findings <ids> --quote \"<their words>\"`), or accept (`bf checkpoint finding {k} --accept <ids> --quote \"<their words>\"`) or decline (`bf checkpoint finding {k} --decline <ids> --reason \"<why>\" --quote \"<their words>\"`) each finding in their own words."),
+                "commands": [format!("bf checkpoint finding {k} --fix-findings <ids> --quote \"<the human's words>\"")]}),
             );
         }
     }
@@ -649,7 +663,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     md.push_str(&format!("\nAnything else you run (a probe test, a build to look at) goes through `bf evidence run --probe {k} -- <command>`. It is recorded and settles nothing. A check that failed and then passed on a deliberate repeat at the same content needs your judgement before it counts: `bf evidence run <check> --judge flaky|failure|other --reason \"<what you saw>\" --token <token>`. A check judged by an agent stays with its own verifier: you do not settle it.\n\n"));
     md.push_str("## Try to get around the rules\n\nFor each new rule this checkpoint adds (the requirements above), try to get around it: find the input, the order of steps, the file or the command that the rule does not hold against, and show it with a probe. A rule you could not get around is worth saying so.\n\n");
     md.push_str(&format!(
-        "## Report\n\nA report says which areas you probed and how, and not only what you found. Each area carries `how`: `read`, `built and run`, or `probed with a test of its own`. A report with no areas is refused. Findings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`. A finding that a probe exposed names it in `probe`. Every probe test you wrote goes in `probes` with `name`, `meant` (what it was meant to show), `showed` (what it showed), `file` (its path inside your copy), `command` (how to run it: give a command that fails when it runs no test, such as `cargo nextest run` with a filter) and, for a probe that exposed a fault, `expect` (the right answer, which the fix must make the test give; `expect_exit` is the exit code that means so, 0 by default). A probe holds no name of a person or a private project, no home path and no private link.\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n{{\"areas\": [{{\"area\": \"the close rule\", \"how\": \"read\"}}],\n \"probes\": [{{\"name\": \"p1\", \"meant\": \"...\", \"showed\": \"...\", \"file\": \"tests/p1.rs\", \"command\": \"cargo test p1\", \"expect\": \"...\"}}],\n \"findings\": [{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\", \"probe\": \"p1\"}}]}}\nEOF\n```\n\nA high or medium finding opens the checkpoint fix, and the fix adds each probe that exposed it to the suite as a permanent test. Low findings do not hold the checkpoint back: the human accepts them together or picks some to be fixed. With nothing to file, give an empty `findings` list: the report needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
+        "## Report\n\nA report says which areas you probed and how, and not only what you found. Each area carries `how`: `read`, `built and run`, or `probed with a test of its own`. A report with no areas is refused. Findings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`. A finding that a probe exposed names it in `probe`. Every probe test you wrote goes in `probes` with `name`, `meant` (what it was meant to show), `showed` (what it showed), `file` (its path inside your copy), `command` (how to run it: one string of words with no quote and no operator, that fails when it runs no test: a nextest filter does, as in the example below) and, for a probe that exposed a fault, `expect` (the right answer, which the fix must make the test give; `expect_exit` is the exit code that means so, 0 by default). A probe holds no name of a person or a private project, no home path and no private link. A nextest filter fails when it selects no test, and a plain `cargo test` filter does not.\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n{{\"areas\": [{{\"area\": \"the close rule\", \"how\": \"read\"}}],\n \"probes\": [{{\"name\": \"p1\", \"meant\": \"...\", \"showed\": \"...\", \"file\": \"tests/p1.rs\", \"command\": \"cargo nextest run -E test(=p1)\", \"expect\": \"...\"}}],\n \"findings\": [{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\", \"probe\": \"p1\"}}]}}\nEOF\n```\n\nA high or medium finding opens the checkpoint fix, and the fix adds each probe that exposed it to the suite as a permanent test. Low findings do not hold the checkpoint back: the human accepts them together or picks some to be fixed. With nothing to file, give an empty `findings` list: the report needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
     ));
     let path = p.briefs_dir().join(format!("{k}-reviewer.md"));
     util::atomic_write(&path, md.as_bytes())?;
@@ -846,7 +860,7 @@ fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value])
             return Err(refuse_probe(
                 k,
                 &name,
-                crate::evidence::operator_message("its command", &w),
+                format!("its command holds `{w}`: a probe's command is one string of words with no quote and no operator, such as `cargo nextest run -E test(=p1)`; the list form and a quoted argument are not taken here"),
             ));
         }
         if named_by_finding && (file.is_empty() || command.is_empty() || expect.is_empty()) {
@@ -1369,11 +1383,34 @@ pub fn settle(
 }
 
 /// `bf checkpoint finding <K> --fix-findings <ids>`: findings picked to be fixed open the checkpoint fix.
-pub fn fix_chosen(p: &Project, k: &str, spec: &str) -> R<Value> {
+pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("fix findings of {k}"))?;
     let st = events::require_chain(p)?;
     run::need_run(&st)?;
+    if parked(p, &st, k)? {
+        return Err(refuse(
+            format!("fix findings of {k}"),
+            "the checkpoint is parked: only the human releases it, in their own words",
+            &[&format!(
+                "Ask the human, then run `bf checkpoint review {k} --release --quote \"<their words>\"`."
+            )],
+            "`bf next` shows what the checkpoint waits for.",
+        ));
+    }
     let picked = pick_findings(p, &st, k, spec)?;
+    let human = if picked.iter().any(|x| blocking(&x.2)) {
+        if quote.trim().is_empty() {
+            return Err(refuse(
+                format!("fix findings of {k}"),
+                "a critical, high or medium finding is picked to be fixed, and that is the human's choice in their own words",
+                &["Ask the human, then run the command again with `--quote \"<the words of their message>\"`."],
+                "The command opens the fix.",
+            ));
+        }
+        Some(events::pick_turn(&st, 0, events::Decide::Approve, quote)?.0)
+    } else {
+        None
+    };
     let pl = plan::load(p)?;
     if st.ck_fix.is_some() || st.sync_open.is_some() {
         return Err(refuse(
@@ -1392,6 +1429,7 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str) -> R<Value> {
         picked.into_iter().map(|x| x.2).collect(),
         ids,
         &content,
+        human.map(|t| (t, quote)),
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
 }
@@ -1425,7 +1463,7 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
     let ids: Vec<(u32, u32)> = held.iter().map(|x| (x.0, x.1 as u32)).collect();
     let open: Vec<Value> = held.into_iter().map(|x| x.2).collect();
     let content = cp_content(p, k)?;
-    crate::ckfix::open_chosen(p, &pl, k, open, ids, &content)?;
+    crate::ckfix::open_chosen(p, &pl, k, open, ids, &content, None)?;
     events::append(
         p,
         "checkpoint.review.release",

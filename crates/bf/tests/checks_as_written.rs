@@ -257,7 +257,60 @@ fn a_probe_whose_command_holds_an_operator_is_refused_at_the_report() {
         "{}",
         o.stderr
     );
-    assert!(o.stderr.contains("one check per program"), "{}", o.stderr);
+    assert!(
+        o.stderr.contains("one string of words with no quote and no operator"),
+        "{}",
+        o.stderr
+    );
+}
+
+fn probe_report(fx: &Fx, command: &str) -> Out {
+    fx.must(&["brief", "K-1", "--role", "reviewer", "--json"]);
+    let copy = fx.work("K-1-review");
+    fs::create_dir_all(copy.join("tests")).unwrap();
+    fs::write(copy.join("tests/p1.rs"), "// a probe\n").unwrap();
+    let probe = json!({"name": "p1", "meant": "m", "showed": "s", "file": "tests/p1.rs",
+        "command": command, "expect": "the answer is right"});
+    let finding = json!({"title": "t", "severity": "high", "where": "src/a.txt:1", "action": "a", "probe": "p1"});
+    let body = json!({"areas": [{"area": "the close rule", "how": "read"}],
+        "probes": [probe], "findings": [finding]});
+    fx.bf_stdin(
+        &fx.root,
+        &[
+            "report",
+            "K-1",
+            "--role",
+            "reviewer",
+            "--result",
+            "findings",
+            "--findings",
+            "-",
+        ],
+        &body.to_string(),
+    )
+}
+
+#[test]
+fn a_probe_command_with_a_quote_is_refused_with_the_form_a_probe_takes_and_the_same_without_quotes_is_accepted(
+) {
+    let fx = Fx::new();
+    review_project(&fx);
+    let o = probe_report(&fx, "cargo nextest run -E 'test(=p1)'");
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(o.stderr.contains("p1"), "{}", o.stderr);
+    assert!(
+        o.stderr.contains("one string of words with no quote and no operator"),
+        "{}",
+        o.stderr
+    );
+    assert!(
+        o.stderr.contains("cargo nextest run -E test(=p1)"),
+        "{}",
+        o.stderr
+    );
+    assert!(!o.stderr.contains("write the command as a list"), "{}", o.stderr);
+    let o = probe_report(&fx, "cargo nextest run -E test(=p1)");
+    assert_eq!(o.code, 0, "{}", o.all());
 }
 
 #[test]

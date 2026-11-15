@@ -295,6 +295,34 @@ fn open_locked(
     strict: bool,
     wave: Option<(u32, &[String])>,
 ) -> R<bool> {
+    open_locked_by(
+        p,
+        pl,
+        k,
+        source,
+        failed,
+        (findings, finding_ids),
+        content,
+        strict,
+        wave,
+        None,
+    )
+}
+
+/// The same, for a fix the human's words opened: `human` is the turn and the quote the event records.
+#[allow(clippy::too_many_arguments)]
+fn open_locked_by(
+    p: &Project,
+    pl: &Plan,
+    k: &str,
+    source: &str,
+    failed: Vec<Value>,
+    (findings, finding_ids): (Vec<Value>, Vec<(u32, u32)>),
+    content: &str,
+    strict: bool,
+    wave: Option<(u32, &[String])>,
+    human: Option<(u64, &str)>,
+) -> R<bool> {
     for (_, wt) in wts(p, pl, k)? {
         if gitx::has_uncommitted(&wt) {
             if strict {
@@ -309,10 +337,13 @@ fn open_locked(
         }
     }
     let set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
+    let by = human
+        .map(|(t, q)| json!({"turn": t, "quote": q.trim()}))
+        .unwrap_or(Value::Null);
     events::append(
         p,
         "checkpoint.fix.open",
-        json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings,
+        json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings, "human": by,
                "finding_ids": finding_ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
                "allowed": set.allowed, "test_dirs": set.test_dirs, "units": set.units,
                "before": heads(p, pl, k)?, "content": content,
@@ -331,8 +362,9 @@ pub(crate) fn open_chosen(
     findings: Vec<Value>,
     ids: Vec<(u32, u32)>,
     content: &str,
+    human: Option<(u64, &str)>,
 ) -> R<()> {
-    open_locked(
+    open_locked_by(
         p,
         pl,
         k,
@@ -342,6 +374,7 @@ pub(crate) fn open_chosen(
         content,
         true,
         None,
+        human,
     )?;
     Ok(())
 }
