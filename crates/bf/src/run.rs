@@ -2194,7 +2194,18 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     let (mut check_gaps, mut unproven_names) =
         crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
     // R-49: no checkpoint closes before its review ran on the content being closed.
-    if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
+    let held_by = if crate::ckreview::required(&st) {
+        crate::ckreview::open_blocking_named(p, &st, k)?
+    } else {
+        vec![]
+    };
+    if !was_closed_already(&st, k) && !held_by.is_empty() {
+        let (id, sev, title) = &held_by[0];
+        check_gaps.push(format!(
+            "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
+        ));
+        unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
+    } else if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
         check_gaps.push(format!(
             "the checkpoint review has not run on this content (hash {}): `bf next` gives the reviewer's directive",
             &content[..12.min(content.len())]

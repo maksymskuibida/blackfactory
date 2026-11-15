@@ -313,3 +313,125 @@ fn a_release_then_an_aborted_fix_keeps_both_findings_open_and_the_human_decides(
     assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
     assert_eq!(fates(&fx, 2), vec!["open".to_string()]);
 }
+
+fn next_directive(fx: &Fx, action: &str) -> Option<Value> {
+    fx.must(&["next", "--json"]).json()["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["action"] == action)
+        .cloned()
+}
+
+// R-91, D-65, TH-41: only the human's words take a parked checkpoint out of parking.
+#[test]
+fn a_parked_checkpoint_refuses_the_pick_to_fix_with_and_without_words() {
+    let fx = Fx::new();
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(directives(&fx).contains(&"decide-checkpoint-review".to_string()));
+    let a = fx.bf(&["checkpoint", "finding", "K-1", "--fix-findings", "r1.1"]);
+    eprintln!("without words: {}", a.stderr);
+    assert_eq!(a.code, 2, "{}", a.all());
+    assert!(a.stderr.contains("--release"), "{}", a.stderr);
+    fx.human("Fix it please.");
+    let b = fx.bf(&[
+        "checkpoint",
+        "finding",
+        "K-1",
+        "--fix-findings",
+        "r1.1",
+        "--quote",
+        "Fix it please.",
+    ]);
+    eprintln!("with words: {}", b.stderr);
+    assert_eq!(b.code, 2, "{}", b.all());
+    assert!(b.stderr.contains("--release"), "{}", b.stderr);
+    assert!(directives(&fx).contains(&"decide-checkpoint-review".to_string()));
+    let c = fx.bf(&["checkpoint", "close", "K-1"]);
+    assert_eq!(c.code, 2, "{}", c.all());
+}
+
+#[test]
+fn a_high_finding_is_picked_to_be_fixed_only_in_the_humans_words_taken_once() {
+    let fx = Fx::new();
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    let d = next_directive(&fx, "decide-checkpoint-fix").expect("the human is asked");
+    assert!(
+        d["commands"][0].as_str().unwrap().contains("--quote"),
+        "{d}"
+    );
+    assert!(d["note"].as_str().unwrap().contains("aborted"), "{d}");
+    let a = fx.bf(&["checkpoint", "finding", "K-1", "--fix-findings", "r1.1"]);
+    eprintln!("without words: {}", a.stderr);
+    assert_eq!(a.code, 2, "{}", a.all());
+    assert!(a.stderr.contains("--quote"), "{}", a.stderr);
+    fx.human("Yes, open the fix again.");
+    let q = [
+        "checkpoint",
+        "finding",
+        "K-1",
+        "--fix-findings",
+        "r1.1",
+        "--quote",
+        "open the fix again",
+    ];
+    fx.must(&q);
+    assert!(directives(&fx).contains(&"fix-checkpoint".to_string()));
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    let again = fx.bf(&q);
+    eprintln!("same words again: {}", again.stderr);
+    assert_eq!(again.code, 2, "{}", again.all());
+}
+
+#[test]
+fn after_an_abort_and_a_sync_the_human_is_asked_and_the_close_names_the_finding() {
+    let fx = Fx::new();
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fs::create_dir_all(fx.root.join("docs")).unwrap();
+    fs::write(fx.root.join("docs/note.txt"), "work on main\n").unwrap();
+    git(&fx.root, &["add", "docs/note.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+    fx.human("Yes, bring main in now.");
+    fx.must(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let d = directives(&fx);
+    eprintln!("next: {d:?}");
+    assert!(d.contains(&"decide-checkpoint-fix".to_string()), "{d:?}");
+    assert!(!d.contains(&"review-checkpoint".to_string()), "{d:?}");
+    let c = fx.bf(&["checkpoint", "close", "K-1"]);
+    eprintln!("close: {}", c.stderr);
+    assert_eq!(c.code, 2, "{}", c.all());
+    assert!(c.stderr.contains("r1.1"), "{}", c.stderr);
+    assert!(c.stderr.contains("high"), "{}", c.stderr);
+    assert!(c.stderr.contains("the answer is wrong"), "{}", c.stderr);
+    assert!(c.stderr.contains("bf next"), "{}", c.stderr);
+    assert!(
+        !c.stderr.contains("has not run on this content"),
+        "{}",
+        c.stderr
+    );
+}
+
+#[test]
+fn the_reviewers_brief_gives_the_nextest_example_probe_command() {
+    let fx = Fx::new();
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let text = fs::read_to_string(fx.project().briefs_dir().join("K-1-reviewer.md")).unwrap();
+    assert!(text.contains("cargo nextest run -E test(=p1)"), "{text}");
+    assert!(!text.contains("cargo test p1"), "{text}");
+    assert!(text.contains("fails when it selects no test"), "{text}");
+}

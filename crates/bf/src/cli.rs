@@ -722,7 +722,7 @@ fn dispatch(args: &Args) -> R<()> {
                 let quote = args.flag("quote").unwrap_or("");
                 let reason = args.flag("reason").unwrap_or("");
                 let v = if let Some(ids) = args.flag("fix-findings") {
-                    crate::ckreview::fix_chosen(&p, k, ids)?
+                    crate::ckreview::fix_chosen(&p, k, ids, quote)?
                 } else if let Some(ids) = args.flag("accept") {
                     crate::ckreview::settle(&p, k, ids, "accepted", reason, quote)?
                 } else if let Some(ids) = args.flag("decline") {

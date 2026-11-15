@@ -1475,6 +1475,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
             }
             "checkpoint.fix.open" => {
+                if let Some(tseq) = ev["human"]["turn"].as_u64() {
+                    let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
+                    if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &quote, Decide::Approve) {
+                        st.ignored.push(format!(
+                            "event {seq}: a fix opened for findings cites no valid human turn and quote"
+                        ));
+                        continue;
+                    }
+                    st.turns[turn_ix[&tseq]].used = true;
+                }
                 let heads: Vec<(String, String)> = ev["before"]
                     .as_array()
                     .into_iter()
