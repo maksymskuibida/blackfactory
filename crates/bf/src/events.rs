@@ -721,6 +721,8 @@ pub struct State {
     pub ck_fixes: Vec<CkFixDone>,
     /// `<checkpoint>@<content>` of fixes the human turned down: no fix opens for that content again.
     pub ck_declined: Vec<String>,
+    /// The seq of the latest event that ended, aborted or parked a checkpoint fix, of any checkpoint; 0 when none.
+    pub ck_end_seq: u64,
     /// Findings of checkpoint reviews that the human accepted or declined, in log order.
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
@@ -889,22 +891,19 @@ pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
         .unwrap_or(0)
 }
 
-/// The seq after which a human message may end these findings (round, number) of a checkpoint, or `None`
-/// when a fix opened for one of them is at work (open and not parked): then the human is not asked about
-/// it. When that fix is parked, the bound is the later of `put_to_human_seq` and the fix's park. One rule
-/// for the command and for the replay.
-pub fn settle_bound(st: &State, k: &str, ids: &[(u32, u32)]) -> Option<u64> {
-    let put = put_to_human_seq(st, k, ids);
-    match st.ck_fix.as_ref() {
-        Some(f) if f.checkpoint == k && ids.iter().any(|i| f.origin_ids.contains(i)) => {
-            if f.phase == "parked" {
-                Some(put.max(f.park_seq))
-            } else {
-                None
-            }
+/// The one bound of the human decisions on a checkpoint finding (accept, decline, a pick to fix, the release
+/// of a parked review, the release of a parked fix). `None` while a checkpoint fix opened before
+/// `opened_before` is at work (open and not parked, the gap phase counts as at work), whatever it was opened
+/// for and whichever checkpoint it is of: then the human is not asked. Otherwise the later of `base` and the
+/// latest end, abort or park of a checkpoint fix. Commands pass `u64::MAX` as `opened_before`; the replay
+/// passes the seq of the event it judges. One rule for the command and for the replay.
+pub fn decision_bound(st: &State, _k: &str, base: u64, opened_before: u64) -> Option<u64> {
+    if let Some(f) = st.ck_fix.as_ref() {
+        if f.open_seq < opened_before && f.phase != "parked" {
+            return None;
         }
-        _ => Some(put),
     }
+    Some(base.max(st.ck_end_seq))
 }
 
 pub fn replay_log_with(log: &Log, words: &Words) -> State {
@@ -1553,10 +1552,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(tseq) = ev["human"]["turn"].as_u64() {
                     let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
                     let ids = id_pairs(&ev["finding_ids"]);
-                    let bound = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                    let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                    let Some(bound) = decision_bound(&st, &sv("checkpoint"), base, seq) else {
+                        st.ignored.push(format!(
+                            "event {seq}: a fix was picked for findings while a checkpoint fix was at work"
+                        ));
+                        continue;
+                    };
                     if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
                         st.ignored.push(format!(
-                            "event {seq}: a fix opened for findings cites no valid human turn and quote"
+                            "event {seq}: a fix opened for findings cites no valid human turn and quote, or words written before the bound"
                         ));
                         continue;
                     }
@@ -1620,6 +1625,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.phase = sv("to");
                     if o.phase == "parked" {
                         o.park_seq = seq;
+                        st.ck_end_seq = seq;
                     }
                     o.reason = sv("reason");
                     o.failed = ev["failed"].as_array().cloned().unwrap_or_default();
@@ -1637,6 +1643,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         o.phase = sv("to");
                         if o.phase == "parked" {
                             o.park_seq = seq;
+                            st.ck_end_seq = seq;
                         }
                         o.reason = sv("reason");
                         o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
@@ -1649,6 +1656,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.phase = "parked".into();
                     o.park_seq = seq;
+                    st.ck_end_seq = seq;
                     o.reason = sv("reason");
                 }
             }
@@ -1661,7 +1669,23 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                let bound = st.ck_fix.as_ref().map_or(0, |f| f.park_seq);
+                let Some(parked_at) = st
+                    .ck_fix
+                    .as_ref()
+                    .filter(|f| f.phase == "parked")
+                    .map(|f| f.park_seq)
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix release of a fix that was not parked"
+                    ));
+                    continue;
+                };
+                let Some(bound) = decision_bound(&st, &sv("checkpoint"), parked_at, seq) else {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix release was written while a checkpoint fix was at work"
+                    ));
+                    continue;
+                };
                 if !decision_turn_ok(
                     &st,
                     &turn_ix,
@@ -1672,7 +1696,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     Decide::Approve,
                 ) {
                     st.ignored.push(format!(
-                        "event {seq}: a checkpoint fix release cites no valid human turn and quote"
+                        "event {seq}: a checkpoint fix release cites no valid human turn and quote, or words written before the park"
                     ));
                     continue;
                 }
@@ -1688,22 +1712,31 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.finding.settle" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 let fate = sv("fate");
-                let bound = settle_bound(&st, &sv("checkpoint"), &id_pairs(&ev["ids"]));
-                if bound.is_none()
-                    || !decision_turn_ok(
-                        &st,
-                        &turn_ix,
-                        tseq,
-                        bound.unwrap_or(0),
-                        seq,
-                        &sv("quote"),
-                        Decide::Approve,
-                    )
-                    || !matches!(fate.as_str(), "accepted" | "declined")
-                    || (fate == "declined" && sv("reason").trim().is_empty())
+                let ids = id_pairs(&ev["ids"]);
+                let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                let Some(bound) = decision_bound(&st, &sv("checkpoint"), base, seq) else {
+                    st.ignored.push(format!(
+                        "event {seq}: a finding settled while a checkpoint fix was at work"
+                    ));
+                    continue;
+                };
+                if fate == "declined" && sv("reason").trim().is_empty() {
+                    st.ignored
+                        .push(format!("event {seq}: a finding declined with no reason"));
+                    continue;
+                }
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) || !matches!(fate.as_str(), "accepted" | "declined")
                 {
                     st.ignored.push(format!(
-                        "event {seq}: a finding settled with no valid human turn and quote, or a decline with no reason"
+                        "event {seq}: a finding settled with no valid human turn and quote, or words written before the bound"
                     ));
                     continue;
                 }
@@ -1720,11 +1753,20 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.review.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                let bound = round_report_seq(
+                let base = round_report_seq(
                     &st,
                     &sv("checkpoint"),
                     ev["after_round"].as_u64().unwrap_or(0) as u32,
                 );
+                // The fix this release opened is the event just before it: set it aside.
+                let Some(bound) =
+                    decision_bound(&st, &sv("checkpoint"), base, seq.saturating_sub(1))
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint review release was written while a checkpoint fix was at work"
+                    ));
+                    continue;
+                };
                 if !decision_turn_ok(
                     &st,
                     &turn_ix,
@@ -1735,7 +1777,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     Decide::Approve,
                 ) {
                     st.ignored.push(format!(
-                        "event {seq}: a checkpoint review release cites no valid human turn and quote"
+                        "event {seq}: a checkpoint review release cites no valid human turn and quote, or words written before the bound"
                     ));
                     continue;
                 }
@@ -1754,6 +1796,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.abort" => {
                 if let Some(o) = st.ck_fix.take() {
+                    st.ck_end_seq = seq;
                     st.ck_fix_aborts.push(CkFixAbort {
                         checkpoint: o.checkpoint.clone(),
                         ids: o.origin_ids.clone(),
@@ -1765,6 +1808,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.done" => {
                 if let Some(o) = st.ck_fix.take() {
+                    st.ck_end_seq = seq;
                     let n = st
                         .ck_fixes
                         .iter()

@@ -1358,6 +1358,24 @@ fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, us
     Ok(out)
 }
 
+/// The refusal of a human decision on a checkpoint finding or of a review release while a checkpoint fix
+/// is at work: the human is not asked until it ends or parks.
+pub(crate) fn fix_at_work(st: &State, what: &str, k: &str) -> crate::refusal::Fail {
+    let fk = st
+        .ck_fix
+        .as_ref()
+        .map_or_else(|| k.to_string(), |f| f.checkpoint.clone());
+    refuse(
+        format!("{what} of {k}"),
+        "a checkpoint fix is at work, and the human is not asked about any finding until it ends or parks: words written while it runs decide nothing",
+        &[
+            "Wait for the fix: `bf next` shows what it waits for and who works on it.",
+            &format!("Or end the fix with `bf checkpoint fix {fk} --abort`, then ask the human in a new message."),
+        ],
+        "`bf next` shows the fix at work.",
+    )
+}
+
 /// `bf checkpoint finding <K> --accept <ids> --quote ...` or `--decline <ids> --reason ... --quote ...`: the
 /// human ends findings in their own words. A decline needs a reason.
 pub fn settle(
@@ -1381,15 +1399,16 @@ pub fn settle(
     }
     let picked = pick_findings(p, &st, k, spec)?;
     let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
-    let Some(bound) = events::settle_bound(&st, k, &pairs) else {
-        return Err(refuse(
-            format!("{} findings of {k}", if fate_name == "declined" { "decline" } else { "accept" }),
-            "a fix opened for that finding is at work, and the human is not asked about the finding until the fix ends or parks: words written while it runs cannot end it",
-            &[
-                "Wait for the fix: `bf next` shows what it waits for and who works on it.",
-                &format!("Or end the fix with `bf checkpoint fix {k} --abort`, then ask the human in a new message."),
-            ],
-            "`bf next` shows the fix at work.",
+    let base = events::put_to_human_seq(&st, k, &pairs);
+    let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
+        return Err(fix_at_work(
+            &st,
+            if fate_name == "declined" {
+                "decline findings"
+            } else {
+                "accept findings"
+            },
+            k,
         ));
     };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
@@ -1433,7 +1452,10 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
             ));
         }
         let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
-        let bound = events::put_to_human_seq(&st, k, &pairs);
+        let base = events::put_to_human_seq(&st, k, &pairs);
+        let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
+            return Err(fix_at_work(&st, "fix findings", k));
+        };
         Some(events::pick_turn(&st, bound, events::Decide::Approve, quote)?.0)
     } else {
         None
@@ -1485,7 +1507,10 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
             "`bf status` shows the review.",
         ));
     };
-    let bound = events::round_report_seq(&st, k, last.round);
+    let base = events::round_report_seq(&st, k, last.round);
+    let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
+        return Err(fix_at_work(&st, "release the review", k));
+    };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let pl = plan::load(p)?;
     let held = open_blocking(&st, k, &rs);
