@@ -29,6 +29,10 @@ unit = "USD"
 
 [review]
 required = true       # a unit needs a clean review before it can land
+# A builder that needs a file beyond its unit's list asks for it, and a cold reviewer says whether the
+# unit's original scope needs it. true: a needed file is granted at once, with no step of the human.
+# false: every request goes to the human as a plan repair, as before.
+scope_review = true
 
 [unit_checks]
 # Checks every unit must pass, each with its exact command, for example the lint step and the whole
@@ -144,10 +148,15 @@ impl Default for Budget {
 #[serde(default)]
 pub struct Review {
     pub required: bool,
+    /// Whether a cold reviewer judges a builder's request for files beyond its unit's list.
+    pub scope_review: bool,
 }
 impl Default for Review {
     fn default() -> Self {
-        Review { required: true }
+        Review {
+            required: true,
+            scope_review: true,
+        }
     }
 }
 /// One check every unit must pass: a name and the exact command.
@@ -1285,7 +1294,11 @@ impl Project {
                 "kind": "unit",
                 "id": id,
                 "path": self.work_dir().join(id).to_string_lossy(),
-                "files": u["files"],
+                // The record's list plus the grants of the run log (R-84).
+                "files": match state.as_ref() {
+                    Some(s) => json!(crate::scope::unit_files(s, u)),
+                    None => u["files"].clone(),
+                },
             }));
         }
         for k in &cps {

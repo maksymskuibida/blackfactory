@@ -164,7 +164,13 @@ pub fn status(p: &Project) -> R<Value> {
         "test_mode": test,
         "chain_ok": st.chain_ok,
         "events": st.event_count,
-        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why,
+        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_,
+            "waiting_for": match crate::scope::open_request(&st, i) {
+                Some(r) => json!(format!("a scope review of {} requested file(s)", r.files.len())),
+                None => json!(why),
+            },
+            "scope_request": crate::scope::request_json(&st, i),
+            "scope_grants": crate::scope::grants_json(&st, i),
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
             "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
         "checkpoint_fix": crate::ckfix::status_json(&st),
@@ -371,6 +377,11 @@ fn next_raw(p: &Project) -> R<Value> {
             "ready" => directives.push(json!({"role": "builder", "action": "start-unit", "unit": id, "tier": tier_for(p, u, "builder"),
                 "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
                 "commands": [format!("bf unit start {id}"), format!("bf brief {id} --role builder")]})),
+            "running" | "fixing" if crate::scope::open_request(&st, &id).is_some() => {
+                // A builder's request for files is with a cold reviewer: its directive replaces the
+                // builder's until the verdict is in.
+                directives.push(crate::scope::directive(p, &st, &id, limits(rounds)));
+            }
             "running" | "fixing" => {
                 let mut d = json!({"role": "builder", "action": if state == "fixing" { "fix" } else { "build" }, "unit": id,
                     "tier": tier_for(p, u, "builder"), "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
@@ -384,8 +395,25 @@ fn next_raw(p: &Project) -> R<Value> {
                 "working_copy": wc, "brief": brief("reviewer"), "limits": limits(rounds),
                 "commands": [format!("bf brief {id} --role reviewer")]})),
             "reviewed" => directives.push(json!({"role": "engine", "action": "land", "unit": id, "command": format!("bf unit land {id}")})),
-            "blocked" | "parked" => directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state,
-                "note": format!("{id} is {state}; the human decides whether to re-plan or release it.")})),
+            "blocked" | "parked" => {
+                let mut note = format!("{id} is {state}; the human decides whether to re-plan or release it.");
+                if let Some(r) = st.scope.get(&id).and_then(|sc| sc.refused.last()).filter(|_| state == "blocked") {
+                    let files: Vec<String> = r["files"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|f| {
+                            format!(
+                                "{}: {}",
+                                s(f, "path"),
+                                if s(f, "rule").is_empty() { s(f, "why") } else { s(f, "rule") }
+                            )
+                        })
+                        .collect();
+                    note.push_str(&format!(" A request for files was refused ({}): {}. The plan repair is the human's.", s(r, "refusal"), files.join("; ")));
+                }
+                directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state, "note": note}))
+            }
             "planned" => waiting.push(format!("{id}: {}", why.unwrap_or_default())),
             _ => {}
         }
@@ -645,7 +673,7 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
     Ok(())
 }
 
-fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
+pub(crate) fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
     let key = format!("{unit}:{role}");
     let have = read_tokens(p)
         .get(&key)
@@ -847,6 +875,9 @@ pub fn report(
     if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
         return role_report(p, unit, result, r, note, cost, token);
     }
+    if result == "scope" && !unit.starts_with("K-") {
+        return crate::scope::verdict(p, unit, role, note, findings, cost, token);
+    }
     if unit.starts_with("K-") {
         let st = events::require_chain(p)?;
         if crate::ckreview::wants(p, &st, unit, role) {
@@ -877,6 +908,14 @@ pub fn report(
         ));
     }
     let cur = st.unit_state(unit).to_string();
+    if crate::scope::open_request(&st, unit).is_some() {
+        return Err(refuse(
+            format!("report {result} on {unit}"),
+            "a request of this unit for files is with the scope reviewer; the unit goes on when the verdict is in",
+            &["`bf next` shows the review-scope directive; its reviewer reports the verdict."],
+            "`bf status` shows the unit without an open request.",
+        ));
+    }
     let expected_role = if cur == "review" {
         "reviewer"
     } else {
@@ -1159,6 +1198,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         ));
     };
     let st = events::replay(p)?;
+    if role == "reviewer" && crate::scope::open_request(&st, unit).is_some() {
+        return crate::scope::brief_review(p, unit);
+    }
     let mut md = String::new();
     md.push_str(&format!("# Brief: {} as {}\n\n", unit, role));
     md.push_str(&format!("Unit: {}\n\n", s(u, "title")));
@@ -1260,10 +1302,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push_str("Files you may change:\n");
-        for f in str_list(u, "files") {
+        for f in crate::scope::unit_files(&st, u) {
             md.push_str(&format!("- `{f}`\n"));
         }
         md.push('\n');
+        md.push_str(&crate::scope::undo_md(&st, unit));
+        if role == "reviewer" {
+            md.push_str(&crate::scope::grants_md_unit(&st, unit));
+        }
     } else {
         md.push_str("## Where you work\n\nYou are a blind verifier: judge the built result against the contract above. Do not read the source.\n\n");
     }
@@ -1698,7 +1744,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         &repo.path,
         &["diff", "--name-only", &format!("{cpb}...{ub}")],
     )?;
-    let scope = str_list(u, "files");
+    let scope = crate::scope::unit_files(&st, u);
     let outside: Vec<&str> = diff
         .lines()
         .filter(|f| !scope.iter().any(|g| util::path_matches(g, f)))
@@ -1711,6 +1757,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "`git diff --name-only` lists only files inside the scope.",
         ));
     }
+    crate::scope::landing_check(&st, unit, &repo.path, &format!("{cpb}...{ub}"))?;
     let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
     if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
         let before = gitx::must(&cpwt, &["rev-parse", "HEAD"])?;
