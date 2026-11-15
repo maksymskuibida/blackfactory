@@ -2220,9 +2220,22 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             steps.extend(crate::enforce::way_out_steps(&st, &unproven_names));
         }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
+        let because = match held_by.first() {
+            Some((id, sev, title)) if !was_closed_already(&st, k) => {
+                let head = format!(
+                    "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
+                );
+                if gaps.len() > 1 {
+                    format!("{head}, and {} other gap(s) have no proof", gaps.len() - 1)
+                } else {
+                    head
+                }
+            }
+            _ => format!("{} ID(s) have no proof", gaps.len()),
+        };
         return Err(refuse_owned(
             format!("close {k}"),
-            format!("{} ID(s) have no proof", gaps.len()),
+            because,
             steps,
             "`bf checkpoint close` prints the closure.",
         ));

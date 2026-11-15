@@ -563,6 +563,15 @@ pub struct SyncOpen {
     pub failed: Vec<Value>,
 }
 
+/// A checkpoint fix that was aborted.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixAbort {
+    pub checkpoint: String,
+    /// The (round, number) of each finding the aborted fix was opened for.
+    pub ids: Vec<(u32, u32)>,
+    pub seq: u64,
+}
+
 /// A fix of a checkpoint that failed a check or drew findings: a builder works in the checkpoint's own
 /// working copy, a reviewer judges it, and the checkpoint's checks run again.
 #[derive(Clone, Debug, Default)]
@@ -714,6 +723,9 @@ pub struct State {
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
     pub ck_round_done: Vec<(String, u32, u64)>,
+    /// Every checkpoint fix that was aborted: (checkpoint, the findings it was opened for as (round, number),
+    /// seq of the abort).
+    pub ck_fix_aborts: Vec<CkFixAbort>,
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
@@ -830,6 +842,49 @@ fn decision_turn_ok(
         && t.seq > after
         && t.seq < before
         && check_decision(&t.text, quote, kind, &words).is_ok()
+}
+
+fn id_pairs(v: &Value) -> Vec<(u32, u32)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(|x| {
+            (
+                x["round"].as_u64().unwrap_or(0) as u32,
+                x["index"].as_u64().unwrap_or(0) as u32,
+            )
+        })
+        .collect()
+}
+
+/// The seq of the report of a checkpoint's review round (the latest one, when it reported more than once);
+/// 0 when none.
+pub fn round_report_seq(st: &State, k: &str, round: u32) -> u64 {
+    st.ck_round_done
+        .iter()
+        .filter(|(c, r, _)| c == k && *r == round)
+        .map(|(_, _, q)| *q)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The seq of the latest event that put these findings (round, number) of a checkpoint to the human: for
+/// each, the later of the report of its round and the abort of the latest fix opened for it. A fix recorded
+/// without finding ids is not matched to its abort. The latest over all the findings; 0 when none.
+pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
+    ids.iter()
+        .map(|id| {
+            let abort = st
+                .ck_fix_aborts
+                .iter()
+                .filter(|a| a.checkpoint == k && a.ids.contains(id))
+                .map(|a| a.seq)
+                .max()
+                .unwrap_or(0);
+            abort.max(round_report_seq(st, k, id.0))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn replay_log_with(log: &Log, words: &Words) -> State {
@@ -1477,7 +1532,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.open" => {
                 if let Some(tseq) = ev["human"]["turn"].as_u64() {
                     let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
-                    if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &quote, Decide::Approve) {
+                    let ids = id_pairs(&ev["finding_ids"]);
+                    let bound = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                    if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
                         st.ignored.push(format!(
                             "event {seq}: a fix opened for findings cites no valid human turn and quote"
                         ));
@@ -1595,8 +1652,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.finding.settle" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 let fate = sv("fate");
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
-                    || !matches!(fate.as_str(), "accepted" | "declined")
+                let bound = put_to_human_seq(&st, &sv("checkpoint"), &id_pairs(&ev["ids"]));
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) || !matches!(fate.as_str(), "accepted" | "declined")
                     || (fate == "declined" && sv("reason").trim().is_empty())
                 {
                     st.ignored.push(format!(
@@ -1617,7 +1682,20 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.review.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                let bound = round_report_seq(
+                    &st,
+                    &sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
                         "event {seq}: a checkpoint review release cites no valid human turn and quote"
                     ));
@@ -1638,6 +1716,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.abort" => {
                 if let Some(o) = st.ck_fix.take() {
+                    st.ck_fix_aborts.push(CkFixAbort {
+                        checkpoint: o.checkpoint.clone(),
+                        ids: o.origin_ids.clone(),
+                        seq,
+                    });
                     st.ck_declined
                         .push(format!("{}@{}", o.checkpoint, o.content));
                 }
@@ -2124,24 +2207,59 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
         .rev()
         .filter(|t| t.seq > after_seq && !t.used)
         .peekable();
+    if !candidates.clone().any(|t| t.text.contains(q)) {
+        if st
+            .turns
+            .iter()
+            .any(|t| t.used && t.text.contains(q) && !crate::gates::recorded_text_is_host(&t.text))
+        {
+            return Err(refuse(
+                "record a decision with this quote",
+                "those words were already used for another decision: a message decides once",
+                &[
+                    "Ask the human in chat for their decision in a new message, in their own words.",
+                    "Then run the command again with `--quote` set to the words of that new message.",
+                ],
+                "`bf gate status` shows the decision with its quote.",
+            ));
+        }
+        if after_seq > 0
+            && st
+                .turns
+                .iter()
+                .any(|t| t.seq <= after_seq && !t.used && t.text.contains(q))
+        {
+            return Err(refuse(
+                "record a decision with this quote",
+                format!("no human turn written after this was put to the human can decide it: those words were written before the decision was put to the human (log event {after_seq})"),
+                &[
+                    "Ask the human in chat for their decision in a new message, written now, in their own words.",
+                    "Then run the command again with `--quote` set to the words of that new message.",
+                ],
+                "`bf gate status` shows the decision with its quote.",
+            ));
+        }
+    }
     if candidates.peek().is_none() {
         let cause = st.human_turns_note();
-        let first = cause.clone().unwrap_or_else(|| {
-            "Ask the human in chat for their decision, in their own words.".to_string()
-        });
-        return Err(refuse(
+        let mut steps: Vec<String> = Vec::new();
+        if let Some(c) = &cause {
+            steps.push(c.clone());
+        }
+        steps.push("Ask the human in chat for their decision, in their own words.".to_string());
+        steps.push("The harness hook records their message with `bf human-turn`; check with `bf log --tail 5`.".to_string());
+        steps.push(
+            "Then run the command again with `--quote` set to the sentence that decides it."
+                .to_string(),
+        );
+        return Err(crate::refusal::refuse_owned(
             "record a decision",
             if cause.is_some() {
                 "no human turn was recorded at all: the hook that records the human's messages is not loaded"
             } else {
                 "no human turn was recorded after this opened that can decide it: the human has not written since, or the message was already used for another decision"
             },
-            &[
-                &first,
-                "Then ask the human in chat for their decision, in their own words.",
-                "The harness hook records their message with `bf human-turn`; check with `bf log --tail 5`.",
-                "Then run the command again with `--quote` set to the sentence that decides it.",
-            ],
+            steps,
             "`bf gate status` shows the decision with its quote.",
         ));
     }

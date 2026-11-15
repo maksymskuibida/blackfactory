@@ -226,15 +226,15 @@ fn a_finding_needs_a_severity_and_a_file_and_opens_the_checkpoint_fix() {
     let d = directive(&fx, "fix-checkpoint").expect("the fix opened");
     assert_eq!(d["role"], "builder", "{d}");
     assert!(!fx.work("K-1-review").exists());
-    // The fix is put back: the review runs again on the content, in round 2, with the earlier findings.
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The fix passes: the review runs again on the new content, in round 2, with the earlier findings.
+    fx.pass_checkpoint_fix("changed by the fix\n");
     let md = brief_text(&fx);
     assert!(
         md.contains("round 2") && md.contains("Earlier rounds"),
         "{md}"
     );
     assert!(
-        md.contains("no edge case") && md.contains("Outcome: open"),
+        md.contains("no edge case") && md.contains("Outcome: fixed by"),
         "{md}"
     );
     let st = fx.must(&["status", "--json"]).json();
@@ -254,7 +254,7 @@ fn the_review_runs_again_on_new_content_within_the_limit_of_rounds() {
         brief_text(&fx);
         assert_eq!(findings(&fx, f.clone()).code, 0, "round {round}");
         if round < 3 {
-            fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+            fx.pass_checkpoint_fix(&format!("changed by the fix {round}\n"));
         }
     }
     // Three reviews with a high finding still open: the checkpoint parks, no fix opens (R-72), the human

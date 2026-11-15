@@ -443,6 +443,17 @@ impl Fx {
         self.root.join(".bf/work").join(id)
     }
 
+    /// The open checkpoint fix of K-1 passes: its builder changes `src/a.txt` to `text`, commits it, and
+    /// its reviewer passes it. The findings it was opened for are then fixed, and no fix is open.
+    pub fn pass_checkpoint_fix(&self, text: &str) {
+        let k = self.work("K-1");
+        fs::write(k.join("src/a.txt"), text).unwrap();
+        git(&k, &["add", "-A"]);
+        git(&k, &["commit", "-q", "-m", "fix"]);
+        self.must_in(&k, &["report", "K-1", "--role", "builder", "--result", "built"]);
+        self.must_in(&k, &["report", "K-1", "--role", "reviewer", "--result", "built"]);
+    }
+
     /// The tiny project used by the end-to-end and attack tests.
     pub fn tiny(&self) {
         let recs: &[(&str, &str)] = &[
