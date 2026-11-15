@@ -29,6 +29,29 @@ pub fn is_open(f: &Value) -> bool {
     !matches!(s(f, "outcome"), "fixed" | "accepted")
 }
 
+/// The plan questions the active run has not answered (R-89): the directive action, the command that
+/// asks it and what it asks. Empty when no run is active.
+pub(crate) fn unanswered_questions(st: &State) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut out = vec![];
+    if let Some(r) = st.active_run() {
+        if r.wave.is_none() {
+            out.push((
+                "answer-wave-checks",
+                "bf checks wave question",
+                "which wave checks this run uses",
+            ));
+        }
+        if r.unit_checks.is_none() {
+            out.push((
+                "answer-unit-checks",
+                "bf checks unit question",
+                "which checks every unit of this run must pass",
+            ));
+        }
+    }
+    out
+}
+
 pub(crate) fn need_run(st: &State) -> R<String> {
     st.active_run().map(|r| r.id.clone()).ok_or_else(|| {
         refuse(
@@ -264,7 +287,20 @@ fn next_raw(p: &Project) -> R<Value> {
         return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
     }
     match st.latest_gate("plan", None) {
-        Some(g) if g.status == "approved" => {}
+        Some(g) if g.status == "approved" => {
+            // A run that has not answered a plan question is asked it now; no unit starts until then.
+            if !pl.units.is_empty() {
+                for (action, command, _) in unanswered_questions(&st) {
+                    let (what, set) = if action == "answer-wave-checks" {
+                        ("which wave checks this run uses (the project default, an override or none)", "bf checks wave")
+                    } else {
+                        ("which checks every unit of this run must pass (the project's list, an override or none)", "bf checks unit")
+                    };
+                    directives.push(json!({"role": "human", "action": action, "command": command,
+                        "note": format!("Ask the human {what}, then record the answer with `{set} propose` and `{set} set --quote`. No unit starts until both questions are answered.")}));
+                }
+            }
+        }
         Some(g) if g.status == "open" => {
             directives.push(json!({"role": "human", "action": "decide-gate", "gate": g.id, "note": "Ask the human to approve or reject the plan in chat."}));
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
@@ -374,6 +410,9 @@ fn next_raw(p: &Project) -> R<Value> {
                 .to_string()
         };
         match state.as_str() {
+            "ready" if !unanswered_questions(&st).is_empty() => {
+                waiting.push(format!("{id}: waiting for the human's answers to the run's plan questions"))
+            }
             "ready" => directives.push(json!({"role": "builder", "action": "start-unit", "unit": id, "tier": tier_for(p, u, "builder"),
                 "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
                 "commands": [format!("bf unit start {id}"), format!("bf brief {id} --role builder")]})),
@@ -1554,6 +1593,16 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     gates::refuse_if_drift(p, &st, &format!("start {unit}"))?;
+    if st.unit_state(unit).is_empty() {
+        if let Some((_, command, what)) = unanswered_questions(&st).first() {
+            return Err(refuse(
+                format!("start {unit}"),
+                format!("the run has not answered the question {what}: no unit starts until both plan questions are answered"),
+                &[&format!("Run `{command}`, ask the human, then `propose` and `set --quote \"<their words>\"`; `bf next` lists both questions."), "Then start the unit again."],
+                "`bf status` shows both plan questions answered.",
+            ));
+        }
+    }
     if let Some(so) = &st.sync_open {
         return Err(refuse(
             format!("start {unit}"),

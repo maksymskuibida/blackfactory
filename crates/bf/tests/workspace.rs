@@ -78,6 +78,7 @@ fn a_workspace_with_one_external_repository_goes_through_the_whole_flow() {
     approve_plan(&fx);
     fx.must(&["plan", "check"]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     // The unit's working copy is a worktree of the code repository, placed in the workspace.
     let o = fx.must(&["unit", "start", "U-1", "--json"]).json();
     let wc = PathBuf::from(o["working_copy"].as_str().unwrap());
@@ -134,6 +135,7 @@ fn a_workspace_with_two_repositories_closes_one_checkpoint_over_both() {
     approve_plan(&fx);
     fx.must(&["plan", "check"]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     build(&fx, "U-1", "src/a.txt", "X-1", &["test", "-f", "src/a.txt"]);
     build(&fx, "U-2", "src/b.txt", "X-2", &["test", "-f", "src/b.txt"]);
     // Each unit changed its own repository; each repository has the checkpoint branch.
@@ -446,6 +448,7 @@ fn a_unit_in_a_nested_repository_goes_through_and_nothing_enters_the_workspace_r
     unit_in_code(&fx);
     approve_plan(&fx);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     build(
         &fx,
         "U-1",

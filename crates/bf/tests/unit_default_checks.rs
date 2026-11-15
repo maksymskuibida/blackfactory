@@ -30,6 +30,14 @@ fn answer_wave_question(fx: &Fx) {
     fx.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
 }
 
+/// Both questions answered after the plan gate: no wave checks, and the project's list for every unit.
+fn answer_after_gate(fx: &Fx) {
+    answer_wave_question(fx);
+    fx.must(&["checks", "unit", "propose", "project"]);
+    fx.human("Use the project's list.");
+    fx.must(&["checks", "unit", "set", "--quote", "Use the project's list"]);
+}
+
 fn approve_plan(fx: &Fx) {
     fx.must(&["gate", "open", "plan"]);
     fx.human("I approve the plan.");
@@ -89,6 +97,7 @@ fn the_engine_demands_a_receipt_of_each_attached_check_before_a_unit_lands() {
     plan_with(&fx, "", "");
     approve_plan(&fx);
     fx.must(&["run", "start"]);
+    answer_after_gate(&fx);
     let wc = built_and_reviewed(&fx);
     // The brief of a builder and of a reviewer lists the check beside the unit's own, with its source.
     for role in ["builder", "reviewer"] {
@@ -146,6 +155,7 @@ fn a_failing_attached_check_holds_the_unit_back() {
     plan_with(&fx, "", "");
     approve_plan(&fx);
     fx.must(&["run", "start"]);
+    answer_after_gate(&fx);
     let wc = built_and_reviewed(&fx);
     // The run fails and its receipt records the failure; a failure is never proof.
     fx.bf_in(
@@ -184,6 +194,7 @@ fn a_unit_overrides_the_list_with_a_reason_and_the_plan_page_marks_it() {
     );
     approve_plan(&fx);
     fx.must(&["run", "start"]);
+    answer_after_gate(&fx);
     built_and_reviewed(&fx);
     // The most specific list wins: this unit has none, so it lands on its own check alone.
     fx.must(&["unit", "land", "U-1"]);
@@ -223,6 +234,7 @@ fn a_checkpoint_overrides_for_its_units_and_a_unit_overrides_the_checkpoint() {
     );
     approve_plan(&fx);
     fx.must(&["run", "start"]);
+    answer_after_gate(&fx);
     built_and_reviewed(&fx);
     let o = fx.refused(&["unit", "land", "U-1"]);
     assert!(

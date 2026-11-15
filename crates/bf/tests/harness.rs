@@ -756,6 +756,7 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
     // Build phase begins: plan check, run start, next offers the first worker.
     w.conductor(&["plan", "check"]);
     w.conductor(&["run", "start"]);
+    fx.answer_plan_questions();
     let n = w.conductor(&["next", "--json"]).json();
     assert_eq!(n["can_start"], true);
     assert_eq!(n["directives"][0]["role"], "builder");

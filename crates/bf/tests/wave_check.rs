@@ -33,11 +33,40 @@ fn plan(fx: &Fx, wave_check: bool) {
     fx.commit_all("records");
 }
 
+/// The run starts and its two questions are answered before the plan gate: the run keeps the wave checks
+/// the plan holds (a change of the plan's wave checks after the gate would be a change of approved
+/// records), and no checks for every unit.
 fn start(fx: &Fx) {
+    fx.must(&["run", "start"]);
+    let held = fx.must(&["checks", "wave", "state", "--json"]).json()["plan_checks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    match held.first() {
+        Some(c) => {
+            let cmd = c["command"].as_str().unwrap().to_string();
+            fx.must(&["checks", "wave", "propose", "override", &cmd]);
+            fx.human("Use that wave check.");
+            fx.must(&["checks", "wave", "set", "--quote", "Use that wave check"]);
+        }
+        None => {
+            fx.must(&["checks", "wave", "propose", "none"]);
+            fx.human("No wave checks for this run.");
+            fx.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
+        }
+    }
+    fx.must(&["checks", "unit", "propose", "none"]);
+    fx.human("No checks for every unit in this run.");
+    fx.must(&[
+        "checks",
+        "unit",
+        "set",
+        "--quote",
+        "No checks for every unit",
+    ]);
     fx.must(&["gate", "open", "plan"]);
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
-    fx.must(&["run", "start"]);
 }
 
 /// Build U-1 with the given content of src/a.txt, review it and land it.
@@ -164,9 +193,14 @@ fn the_step_runs_on_a_copy_and_records_a_receipt_bound_to_that_content() {
     assert!(!fx.work("K-1-wave-1").exists());
     // The receipt: the check, its command, its result and the content it ran on.
     let rc = bf::evidence::load_receipts(&fx.project()).unwrap();
+    // The run's answer wrote its own record for the wave check.
+    let wave_id = fx.must(&["checks", "wave", "state", "--json"]).json()["plan_checks"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let wave = rc
         .iter()
-        .find(|r| r.check() == "X-9")
+        .find(|r| r.check() == wave_id)
         .expect("a wave receipt");
     assert!(wave.passes() && wave.content() == content);
     assert_eq!(wave.v["command"], GOOD);
