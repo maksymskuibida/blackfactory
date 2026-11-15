@@ -2010,6 +2010,26 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             "`bf status` shows no open sync.",
         ));
     }
+    if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == k) {
+        let n = st.ck_fixes.iter().filter(|d| d.checkpoint == k).count() + 1;
+        return Err(refuse(
+            format!("close {k}"),
+            format!(
+                "a fix of it is open ({k}-fix-{n}, opened by {}, now in `{}`)",
+                match f.source.as_str() {
+                    "check" => "a failed check",
+                    "wave" => "a failed wave check",
+                    _ => "findings",
+                },
+                f.phase
+            ),
+            &[
+                "`bf next` gives the directive that settles the fix.",
+                &format!("Or put the checkpoint back as it was: `bf checkpoint fix {k} --abort`."),
+            ],
+            "`bf status` shows no open fix.",
+        ));
+    }
     let after = str_list(kr, "after");
     let unlanded: Vec<&String> = after
         .iter()

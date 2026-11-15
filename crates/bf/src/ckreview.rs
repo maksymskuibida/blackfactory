@@ -104,7 +104,16 @@ pub fn fate(st: &State, k: &str, round: u32, index: usize, f: &Value) -> Option<
     }
     st.ck_fixes
         .iter()
-        .find(|d| d.checkpoint == k && d.origin_findings.contains(f))
+        .find(|d| {
+            d.checkpoint == k
+                && if d.ids.is_empty() {
+                    // Recorded before the pairs were kept: matched by value, but only findings of the
+                    // rounds no later than the one the fix was opened from.
+                    round <= d.from_round && d.origin_findings.contains(f)
+                } else {
+                    d.ids.contains(&(round, index as u32 + 1))
+                }
+        })
         .map(|d| {
             let by = if d.units.is_empty() {
                 d.id.clone()
@@ -152,13 +161,33 @@ fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
     rs.iter().filter(|r| reported(r) && r.round > floor).count() as u32
 }
 
+/// The high and medium findings still open in any review of the checkpoint: (round, number inside the
+/// round, the finding, the content the round judged). A release moves the floor only for counting reviews;
+/// the findings it sent to a fix keep holding the close until that fix passes its review or the human
+/// settles them.
+fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usize, Value, String)> {
+    rs.iter()
+        .filter(|r| reported(r))
+        .flat_map(|r| {
+            open_findings(st, k, r)
+                .into_iter()
+                .filter(|(_, f)| blocking(f))
+                .map(|(i, f)| (r.round, i, f.clone(), r.content.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// Whether the review at exactly this content let the checkpoint go on: it filed no high and no medium
-/// finding, or each such finding has since been fixed, accepted or declined.
+/// finding, or each such finding has since been fixed, accepted or declined, and no high or medium finding
+/// of any review since the human last released the checkpoint is open.
 pub fn passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
-    Ok(rounds(p, k)?
+    let rs = rounds(p, k)?;
+    Ok(rs
         .iter()
         .filter(|r| reported(r) && r.content == content)
-        .any(|r| !open_findings(st, k, r).iter().any(|(_, f)| blocking(f))))
+        .any(|r| !open_findings(st, k, r).iter().any(|(_, f)| blocking(f)))
+        && open_blocking(st, k, &rs).is_empty())
 }
 
 /// Whether the checkpoint still needs its review before it can close.
@@ -166,15 +195,12 @@ pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
     Ok(required(st) && !passed_at(p, st, k, content)?)
 }
 
-/// Whether the checkpoint is parked: it has had the number of reviews the policy allows, and the latest
-/// still has a high or medium finding open. Only the human releases it.
+/// Whether the checkpoint is parked: it has had the number of reviews the policy allows, and a high or
+/// medium finding of a review since the human last released it is still open. Only the human releases it.
 pub fn parked(p: &Project, st: &State, k: &str) -> R<bool> {
     let rs = rounds(p, k)?;
-    let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
-        return Ok(false);
-    };
     Ok(reviews(st, k, &rs) >= p.policy.limits.checkpoint_reviews
-        && open_findings(st, k, last).iter().any(|(_, f)| blocking(f)))
+        && !open_blocking(st, k, &rs).is_empty())
 }
 
 /// The low findings of the latest review that nobody has settled yet, for the human.
@@ -206,6 +232,23 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
             json!({"role": "human", "action": "decide-checkpoint-review", "checkpoint": k,
             "note": format!("{k} is parked: it had {} reviews and a high or medium finding is still open. The human decides: release it in their own words (`bf checkpoint review {k} --release --quote \"<their words>\"`) so the findings go to a fix, accept or decline the findings (`bf checkpoint finding {k} --accept <ids> --quote \"<their words>\"`), or switch the checkpoint review off for the run with a reason (`bf checks propose --scope run {CHECK}=off:<why>`, then `bf checks set --quote \"<their words>\"`).", reviews(st, k, &rs))}),
         );
+    }
+    // A fix that ended without passing its review leaves its findings open. No new review is offered at
+    // the content they were filed on while no fix is open: the human says what becomes of them.
+    if st.ck_fix.is_none() && open_round(&rs).is_none() {
+        let content = cp_content(p, k)?;
+        let open: Vec<Value> = open_blocking(st, k, &rs)
+            .into_iter()
+            .filter(|(_, _, _, c)| *c == content)
+            .map(|(r, i, f, _)| json!({"id": format!("r{r}.{i}"), "severity": s(&f, "severity"), "title": s(&f, "title"), "where": s(&f, "where"), "action": s(&f, "action")}))
+            .collect();
+        if !open.is_empty() {
+            return Ok(
+                json!({"role": "human", "action": "decide-checkpoint-fix", "checkpoint": k, "findings": open,
+                "note": format!("The fix of a high or medium finding of {k} ended without passing its review, so the finding is still open and holds the close. No new review is offered at this content. The human decides: open the fix again (`bf checkpoint finding {k} --fix-findings <ids>`), or accept (`bf checkpoint finding {k} --accept <ids> --quote \"<their words>\"`) or decline (`bf checkpoint finding {k} --decline <ids> --reason \"<why>\" --quote \"<their words>\"`) each finding in their own words."),
+                "commands": [format!("bf checkpoint finding {k} --fix-findings <ids>")]}),
+            );
+        }
     }
     let round = open_round(&rs)
         .map(|r| r.round)
@@ -521,7 +564,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     // Earlier rounds: the findings with their outcomes, and what changed since the round before.
     let earlier: Vec<&Round> = rs.iter().filter(|r| r.round < n && reported(r)).collect();
     if !earlier.is_empty() {
-        md.push_str("## Earlier rounds\n\nThe scope of this round is the whole checkpoint, not only what changed. Work in this order: first confirm that each finding marked fixed below is fixed; then review the code that changed; then take angles the earlier reviews did not take (the areas below tell you which they took). File only new problems: do not file again a finding the human accepted or declined, or one that is open and listed here. Anything a fix broke is new.\n\n");
+        md.push_str("## Earlier rounds\n\nThe scope of this round is the whole checkpoint, not only what changed. Work in this order: first confirm that each finding marked fixed below is fixed; then review the code that changed; then take angles the earlier reviews did not take (the areas below tell you which they took). File only new problems: do not file again a finding the human accepted or declined, or one that is open and listed here. A finding that is listed here as open stays open and holds the close until a fix opened for it passes its review or the human settles it, so it is not filed again; a finding filed again word for word is a new finding of its own and stays open on its own. Anything a fix broke is new.\n\n");
         for r in &earlier {
             md.push_str(&format!(
                 "Round {} judged content {}:\n",
@@ -606,7 +649,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     md.push_str(&format!("\nAnything else you run (a probe test, a build to look at) goes through `bf evidence run --probe {k} -- <command>`. It is recorded and settles nothing. A check that failed and then passed on a deliberate repeat at the same content needs your judgement before it counts: `bf evidence run <check> --judge flaky|failure|other --reason \"<what you saw>\" --token <token>`. A check judged by an agent stays with its own verifier: you do not settle it.\n\n"));
     md.push_str("## Try to get around the rules\n\nFor each new rule this checkpoint adds (the requirements above), try to get around it: find the input, the order of steps, the file or the command that the rule does not hold against, and show it with a probe. A rule you could not get around is worth saying so.\n\n");
     md.push_str(&format!(
-        "## Report\n\nA report says which areas you probed and how, and not only what you found. Each area carries `how`: `read`, `built and run`, or `probed with a test of its own`. A report with no areas is refused. Findings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`. A finding that a probe exposed names it in `probe`. Every probe test you wrote goes in `probes` with `name`, `meant` (what it was meant to show), `showed` (what it showed), `file` (its path inside your copy), `command` (how to run it) and, for a probe that exposed a fault, `expect` (the right answer, which the fix must make the test give; `expect_exit` is the exit code that means so, 0 by default). A probe holds no name of a person or a private project, no home path and no private link.\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n{{\"areas\": [{{\"area\": \"the close rule\", \"how\": \"read\"}}],\n \"probes\": [{{\"name\": \"p1\", \"meant\": \"...\", \"showed\": \"...\", \"file\": \"tests/p1.rs\", \"command\": \"cargo test p1\", \"expect\": \"...\"}}],\n \"findings\": [{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\", \"probe\": \"p1\"}}]}}\nEOF\n```\n\nA high or medium finding opens the checkpoint fix, and the fix adds each probe that exposed it to the suite as a permanent test. Low findings do not hold the checkpoint back: the human accepts them together or picks some to be fixed. With nothing to file, give an empty `findings` list: the report needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
+        "## Report\n\nA report says which areas you probed and how, and not only what you found. Each area carries `how`: `read`, `built and run`, or `probed with a test of its own`. A report with no areas is refused. Findings carry a title, a severity (critical, high, medium or low), `where` (the file and line) and `action`. A finding that a probe exposed names it in `probe`. Every probe test you wrote goes in `probes` with `name`, `meant` (what it was meant to show), `showed` (what it showed), `file` (its path inside your copy), `command` (how to run it: give a command that fails when it runs no test, such as `cargo nextest run` with a filter) and, for a probe that exposed a fault, `expect` (the right answer, which the fix must make the test give; `expect_exit` is the exit code that means so, 0 by default). A probe holds no name of a person or a private project, no home path and no private link.\n\n```\nbf report {k} --result findings --role reviewer --token <token> --findings - <<'EOF'\n{{\"areas\": [{{\"area\": \"the close rule\", \"how\": \"read\"}}],\n \"probes\": [{{\"name\": \"p1\", \"meant\": \"...\", \"showed\": \"...\", \"file\": \"tests/p1.rs\", \"command\": \"cargo test p1\", \"expect\": \"...\"}}],\n \"findings\": [{{\"title\": \"...\", \"severity\": \"medium\", \"where\": \"src/a.rs:10\", \"action\": \"...\", \"probe\": \"p1\"}}]}}\nEOF\n```\n\nA high or medium finding opens the checkpoint fix, and the fix adds each probe that exposed it to the suite as a permanent test. Low findings do not hold the checkpoint back: the human accepts them together or picks some to be fixed. With nothing to file, give an empty `findings` list: the report needs a passing receipt for every command check of the checkpoint at this content.\n\n## Rules\n\n- Never edit anything under `factory/` or `.bf/`, apart from your own copy.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot judge without the human's decision, ask: `bf ask --title \"<the question>\"`.\n"
     ));
     let path = p.briefs_dir().join(format!("{k}-reviewer.md"));
     util::atomic_write(&path, md.as_bytes())?;
@@ -1341,11 +1384,13 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str) -> R<Value> {
         ));
     }
     let content = cp_content(p, k)?;
+    let ids: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
     crate::ckfix::open_chosen(
         p,
         &pl,
         k,
         picked.into_iter().map(|x| x.2).collect(),
+        ids,
         &content,
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
@@ -1376,13 +1421,11 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
         ));
     };
     let pl = plan::load(p)?;
-    let open: Vec<Value> = open_findings(&st, k, &last)
-        .into_iter()
-        .filter(|(_, f)| blocking(f))
-        .map(|(_, f)| f.clone())
-        .collect();
+    let held = open_blocking(&st, k, &rs);
+    let ids: Vec<(u32, u32)> = held.iter().map(|x| (x.0, x.1 as u32)).collect();
+    let open: Vec<Value> = held.into_iter().map(|x| x.2).collect();
     let content = cp_content(p, k)?;
-    crate::ckfix::open_chosen(p, &pl, k, open, &content)?;
+    crate::ckfix::open_chosen(p, &pl, k, open, ids, &content)?;
     events::append(
         p,
         "checkpoint.review.release",
