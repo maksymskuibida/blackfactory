@@ -279,6 +279,91 @@ pub fn command_words(check: &Value) -> Vec<String> {
     }
 }
 
+/// The first word of a command that is a shell operator or redirection (`&&`, `||`, `;`, `|`, `&`, `>`,
+/// `>>`, `<`, `<<`, `2>`, `2>&1`, `&>`, `>|`, a word that ends in `;` or begins with `|`, `<` or `>`).
+/// A command written as one string (`one_string`) is split on spaces, so a quote, a backtick, a backslash
+/// or `$(` in it would reach the program as it is: such a word is found too. The list form keeps an
+/// argument with a space.
+pub fn shell_operator_word(words: &[String], one_string: bool) -> Option<String> {
+    const OPS: [&str; 13] = [
+        "&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>&1", "&>", ">|",
+    ];
+    words
+        .iter()
+        .find(|w| {
+            OPS.contains(&w.as_str())
+                || w.ends_with(';')
+                || w.starts_with(['|', '<', '>'])
+                || (one_string
+                    && (w.contains(['\'', '"', '`', '\\', '&', '|', ';', '<', '>'])
+                        || w.contains("$(")))
+        })
+        .cloned()
+}
+
+/// The first word of an override's text (words as the shell would split them, quotes keeping a word whole)
+/// that holds, outside quotes, an operator or redirection character (`&`, `|`, `;`, `<`, `>`), a backtick
+/// or `$(`, whether it stands alone or is joined to a word (`a&&b`, `2>/dev/null`). A quoted argument
+/// such as `sh -c 'a && b'` is one word and passes.
+pub fn unquoted_operator_word(text: &str) -> Option<String> {
+    let mut cur = String::new();
+    let mut bad = false;
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                cur.push(c);
+                if c == q {
+                    quote = None;
+                } else if q == '"' && c == '\\' {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                    }
+                }
+            }
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            None if c == '\\' => {
+                cur.push(c);
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            None if c.is_whitespace() => {
+                if bad {
+                    return Some(cur);
+                }
+                cur.clear();
+            }
+            None => {
+                if matches!(c, '&' | '|' | ';' | '<' | '>' | '`') || (c == '(' && prev == '$') {
+                    bad = true;
+                }
+                cur.push(c);
+            }
+        }
+        prev = c;
+    }
+    bad.then_some(cur)
+}
+
+/// The operator word of a check record's command, if it holds one.
+pub fn record_operator_word(check: &Value) -> Option<String> {
+    let one = matches!(check.get("command"), Some(Value::String(_)));
+    shell_operator_word(&command_words(check), one)
+}
+
+/// The refusal text for a command with an operator word: the check, the word and the two ways out.
+pub fn operator_message(check: &str, word: &str) -> String {
+    format!(
+        "{check}: the command holds `{word}`, which a check cannot use: a check's command is one program and its arguments, run without a shell. Split it into one check per program, or write the command as a list (`command = [...]`) when an argument holds a space"
+    )
+}
+
 /// `bf evidence run <check> [--unit U] -- <command...>`
 pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> R<Value> {
     run_at(p, check_id, unit, argv, &p.top.clone())
@@ -438,6 +523,17 @@ pub fn run_with(
             ),
             &["Use `bf evidence attach` to store the file that proves it."],
             "`bf evidence verify` lists the receipt.",
+        ));
+    }
+    if let Some(w) = record_operator_word(&chk) {
+        return Err(refuse(
+            format!("run evidence for {check_id}"),
+            operator_message(check_id, &w),
+            &[
+                "Split the check into one check per program, or use the list form (`command = [...]`) for an argument with a space.",
+                "To change what the check runs, change the record (the human's step).",
+            ],
+            "The check's command holds no shell operator, and `bf evidence run` writes a receipt.",
         ));
     }
     let want = command_words(&chk);

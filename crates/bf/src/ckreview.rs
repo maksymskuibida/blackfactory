@@ -798,6 +798,14 @@ fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value])
         let file = s(x, "file").trim().to_string();
         let command = s(x, "command").trim().to_string();
         let expect = s(x, "expect").trim().to_string();
+        let words: Vec<String> = command.split_whitespace().map(|w| w.to_string()).collect();
+        if let Some(w) = crate::evidence::shell_operator_word(&words, true) {
+            return Err(refuse_probe(
+                k,
+                &name,
+                crate::evidence::operator_message("its command", &w),
+            ));
+        }
         if named_by_finding && (file.is_empty() || command.is_empty() || expect.is_empty()) {
             return Err(refuse_probe(k, &name, "a finding names it, so it needs `file`, `command` and `expect` for the fix to keep it as a permanent test".into()));
         }
@@ -840,7 +848,7 @@ fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value])
         }
         out.push(
             json!({"name": name, "meant": s(x, "meant").trim(), "showed": s(x, "showed").trim(),
-            "file": file, "command": command, "expect": expect,
+            "file": file, "command": command, "command_words": words, "expect": expect,
             "expect_exit": x.get("expect_exit").and_then(|e| e.as_i64()).unwrap_or(0),
             "stored": stored}),
         );
@@ -896,6 +904,7 @@ fn prepare_findings(
             };
             f["probe_file"] = pr["file"].clone();
             f["probe_command"] = pr["command"].clone();
+            f["probe_words"] = pr["command_words"].clone();
             f["probe_expect"] = pr["expect"].clone();
             f["probe_expect_exit"] = pr["expect_exit"].clone();
             f["probe_stored"] = pr["stored"].clone();

@@ -239,14 +239,8 @@ pub fn doctor(p: &Project) -> R<Value> {
             wcs.extend(rd.flatten().map(|e| e.path()));
         }
         for wc in wcs.into_iter().filter(|w| w.join(".git").exists()) {
-            let o = crate::gitx::run(&wc, &["status", "--porcelain", "--untracked-files=no"], &[]);
-            if let Ok(o) = o {
-                if o.ok && !o.stdout.is_empty() {
-                    dirty.push(format!(
-                        "{k}: {} change(s) not committed",
-                        o.stdout.lines().count()
-                    ));
-                }
+            if crate::gitx::has_uncommitted(&wc) {
+                dirty.push(format!("{k}: changes not committed"));
             }
         }
     }
