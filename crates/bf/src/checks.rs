@@ -720,7 +720,11 @@ fn unit_settings(
                     "`bf checks unit state` shows the list.",
                 ));
             }
-            crate::wavecheck::refuse_after_plan_gate(&st, "the checks every unit must pass")?;
+            crate::wavecheck::refuse_after_plan_gate(
+                &st,
+                "the checks every unit must pass",
+                "unitchecks",
+            )?;
             let mode = rest.get(1).map(|x| x.as_str()).unwrap_or("");
             let value = match mode {
                 "project" => json!({"mode": "project", "checks": []}),

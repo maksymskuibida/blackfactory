@@ -600,10 +600,24 @@ fn pick_scope(st: &State, scope: Option<&str>) -> R<String> {
     Ok(sc)
 }
 
-/// Settings of a run are decided at its plan stage; once the plan gate has passed they change only by
-/// an amendment.
-pub(crate) fn refuse_after_plan_gate(st: &State, what: &str) -> R<()> {
-    if st.gate_passed("plan", None) {
+/// Whether the active run already has an answer for a setting: `wave` or `unitchecks`.
+pub(crate) fn run_answered(st: &State, topic: &str) -> bool {
+    st.active_run()
+        .map(|r| {
+            if topic == "wave" {
+                r.wave.is_some()
+            } else {
+                r.unit_checks.is_some()
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// Settings of a run are decided at its plan stage; once the plan gate has passed an answer the run
+/// already has changes only by an amendment. A question the run has not answered may still be answered
+/// once (R-89).
+pub(crate) fn refuse_after_plan_gate(st: &State, what: &str, topic: &str) -> R<()> {
+    if st.gate_passed("plan", None) && run_answered(st, topic) {
         return Err(refuse(
             format!("change {what} of the run"),
             "the plan gate has passed, so the run's settings are frozen with the plan",
@@ -670,7 +684,12 @@ pub(crate) fn confirm(
                 "The `state` command shows what is decided.",
             ));
         }
-        refuse_after_plan_gate(&st, "the settings")?;
+        refuse_after_plan_gate(&st, "the settings", topic)?;
+        // A wave proposal made before the plan gate may be set after it: compare with the approved
+        // records before anything is recorded.
+        if topic == "wave" && st.gate_passed("plan", None) {
+            keeps_plan_records(p, &prop.value)?;
+        }
     }
     let q = quote.unwrap_or("");
     let (turn, _) = events::pick_turn(&st, prop.seq, events::Decide::Approve, q)?;
@@ -746,7 +765,7 @@ pub fn settings(
             let st = events::require_chain(p)?;
             let sc = pick_scope(&st, scope)?;
             if sc != "default" {
-                refuse_after_plan_gate(&st, "the wave checks")?;
+                refuse_after_plan_gate(&st, "the wave checks", "wave")?;
             }
             let mode = rest.get(1).map(|x| x.as_str()).unwrap_or("");
             let cmds: Vec<String> = rest.iter().skip(2).cloned().collect();
@@ -787,6 +806,9 @@ pub fn settings(
                     ))
                 }
             };
+            if sc != "default" && st.gate_passed("plan", None) {
+                keeps_plan_records(p, &value)?;
+            }
             propose(p, "wave", &sc, value)
         }
         "set" => {
@@ -795,7 +817,9 @@ pub fn settings(
             if sc != "run" {
                 write_default_mirror(p, &st)?;
             }
-            if sc != "default" {
+            // After the plan gate the approved records stay as they are: the answer was checked at
+            // propose to keep them.
+            if sc != "default" && !st.gate_passed("plan", None) {
                 write_records(p, &value)?;
             }
             let pl = plan::load(p)?;
@@ -816,6 +840,36 @@ fn write_default_mirror(p: &Project, st: &State) -> R<()> {
         &p.factory().join("wave.json"),
         format!("{body}\n").as_bytes(),
     )?;
+    Ok(())
+}
+
+/// After the plan gate the wave check records are approved: an answer may only keep them.
+fn keeps_plan_records(p: &Project, value: &Value) -> R<()> {
+    let pl = plan::load(p)?;
+    let mut held: Vec<Vec<String>> = records(&pl)
+        .iter()
+        .map(|r| evidence::command_words(r))
+        .collect();
+    let mut given: Vec<Vec<String>> = value["checks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(evidence::command_words)
+        .collect();
+    held.sort();
+    given.sort();
+    if held != given {
+        return Err(refuse(
+            "propose wave checks that differ from the approved plan",
+            "the plan gate has passed, so the wave check records of the plan are approved and this answer would change them",
+            &[
+                "Answer with the plan's own wave checks: `bf checks wave state` shows them (`override` with the same commands, or `none` when the plan has none).",
+                "To change them the human opens an amendment: `bf amend open`.",
+            ],
+            "`bf checks wave state` shows what the plan holds.",
+        ));
+    }
     Ok(())
 }
 

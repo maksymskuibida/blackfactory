@@ -2350,8 +2350,9 @@ fn cmd_gate(args: &Args) -> R<()> {
 const HELP: &str = "bf: the Black Factory engine
 
 State:    init | record put|get|list | id new | ledger check|impact | plan check
-Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
+Run:      run start|stop | status | progress | log | next | brief | report | unit start|land|release
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
+Fixes:    checkpoint finding|review|fix|sync | unit scope
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
 Checks:   checks list|state|propose|set | checks wave|unit question|propose|set|state | checkpoint wave-check
 Roles:    roles list|show|token

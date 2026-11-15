@@ -46,6 +46,7 @@ fn start(fx: &Fx) {
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     let wc = PathBuf::from(
         fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
             .as_str()

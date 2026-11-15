@@ -42,6 +42,7 @@ fn real_run(fx: &Fx) {
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
 }
 
 fn land_unit(fx: &Fx) {

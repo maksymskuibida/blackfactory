@@ -29,6 +29,7 @@ fn land_unit(fx: &Fx) {
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     let wc = PathBuf::from(
         fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
             .as_str()
@@ -180,6 +181,7 @@ fn a_units_review_is_cold_first_then_starts_from_the_findings_and_the_changes() 
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     let wc = fx.work("U-1");
     fx.must(&["unit", "start", "U-1"]);
     fs::create_dir_all(wc.join("src")).unwrap();

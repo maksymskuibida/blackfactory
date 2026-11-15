@@ -70,6 +70,7 @@ fn real_run(fx: &Fx) {
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
 }
 
 /// Start unit `n`, write its file, run its check, then let the system write junk, then verify,
