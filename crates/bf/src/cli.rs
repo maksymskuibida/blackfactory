@@ -731,11 +731,23 @@ fn dispatch(args: &Args) -> R<()> {
                     return Err(refuse(
                         "run `bf checkpoint finding`",
                         "it needs --accept, --decline or --fix-findings, with the findings named",
-                        &["Run `bf checkpoint finding <K> --accept low --quote \"...\"`, `--decline r1.2 --reason \"...\" --quote \"...\"` or `--fix-findings r1.2,r1.3`."],
+                        &["Run `bf checkpoint finding <K> --accept low --quote \"<the human's words>\"`, `--decline r1.2 --reason \"<why>\" --quote \"<the human's words>\"` or `--fix-findings r1.2,r1.3 --quote \"<the human's words>\"`. The words are needed for a critical, high or medium finding."],
                         "The command prints the result.",
                     ));
                 };
-                out(args, &v, || format!("{k}: findings settled"));
+                out(args, &v, || {
+                    if v["fix_opened"] == true {
+                        let named: Vec<&str> = v["findings"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|x| x.as_str())
+                            .collect();
+                        format!("{k}: a fix opened for {}", named.join(", "))
+                    } else {
+                        format!("{k}: findings settled")
+                    }
+                });
                 return Ok(());
             }
             if args.pos.get(1).map(|x| x.as_str()) == Some("review") {

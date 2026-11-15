@@ -178,7 +178,8 @@ fn the_areas_are_kept_with_the_review_shown_on_the_page_and_given_to_the_next_re
         body.contains("the close rule") && body.contains("built and run"),
         "{body}"
     );
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The fix passes, so the human is not asked and the next review may start.
+    fx.pass_checkpoint_fix("changed by the fix\n");
     let md = brief_text(&fx);
     assert!(md.contains("Area: the close rule (read)"), "{md}");
     assert!(
@@ -206,8 +207,20 @@ fn the_first_review_is_cold_and_a_repeat_one_gets_the_report_the_fates_and_the_d
         json!({"areas": areas(), "findings": [finding("first problem", "high"), finding("second problem", "high")]}),
     );
     assert_eq!(o.code, 0, "{}", o.all());
-    // The fix: one finding is declined on the human's words, and the human sends the checkpoint back.
+    // The fix is put back, the human has the first finding fixed and it passes, and the second one is
+    // declined on the human's words.
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx.human("Fix the first one please.");
+    fx.must(&[
+        "checkpoint",
+        "finding",
+        "K-1",
+        "--fix-findings",
+        "r1.1",
+        "--quote",
+        "Fix the first one",
+    ]);
+    fx.pass_checkpoint_fix("changed by the fix\n");
     fx.human("Decline the second one: it is how the file is meant to be.");
     fx.must(&[
         "checkpoint",
@@ -227,7 +240,7 @@ fn the_first_review_is_cold_and_a_repeat_one_gets_the_report_the_fates_and_the_d
     );
     assert!(md.contains("whole checkpoint"), "{md}");
     assert!(
-        md.contains("first problem") && md.contains("Outcome: open"),
+        md.contains("first problem") && md.contains("Outcome: fixed by"),
         "{md}"
     );
     assert!(md.contains("Outcome: declined: that is the design"), "{md}");
@@ -335,11 +348,11 @@ fn a_checkpoint_cannot_close_while_a_high_or_medium_finding_of_its_latest_review
     let fx = Fx::new();
     fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 5");
     project(&fx);
-    for severity in ["high", "medium", "critical"] {
+    for (round, severity) in ["high", "medium", "critical"].into_iter().enumerate() {
         brief_text(&fx);
         let o = report(
             &fx,
-            json!({"areas": areas(), "findings": [finding("open one", severity)]}),
+            json!({"areas": areas(), "findings": [finding(&format!("open one {severity}"), severity)]}),
         );
         assert_eq!(o.code, 0, "{}", o.all());
         // The fix opened for the finding is open: the close names it.
@@ -357,6 +370,20 @@ fn a_checkpoint_cannot_close_while_a_high_or_medium_finding_of_its_latest_review
             "{severity}: {}",
             o.stderr
         );
+        // No review starts while the human is asked; the human has the fix opened again, it passes, and the
+        // next review runs.
+        fx.refused(&["brief", "K-1", "--role", "reviewer"]);
+        fx.human("Open the fix again for it.");
+        fx.must(&[
+            "checkpoint",
+            "finding",
+            "K-1",
+            "--fix-findings",
+            &format!("r{}.1", round + 1),
+            "--quote",
+            "Open the fix again",
+        ]);
+        fx.pass_checkpoint_fix(&format!("changed by the fix {round}\n"));
     }
 }
 
@@ -456,7 +483,7 @@ fn a_bare_reviewer_report_opens_no_fix_with_no_round_open_and_never_lifts_a_park
         );
         assert_eq!(o.code, 0, "{}", o.all());
         if title == "one" {
-            fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+            fx.pass_checkpoint_fix("changed by the fix\n");
         }
     }
     assert!(directive(&fx, "decide-checkpoint-review").is_some());
@@ -486,7 +513,7 @@ fn the_checkpoint_parks_after_the_set_number_of_reviews_and_only_the_human_relea
         .code,
         0
     );
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx.pass_checkpoint_fix("changed by the fix\n");
     brief_text(&fx);
     let o = report(
         &fx,
@@ -519,9 +546,10 @@ fn the_checkpoint_parks_after_the_set_number_of_reviews_and_only_the_human_relea
         "Release it",
     ]);
     let d = directive(&fx, "fix-checkpoint").expect("the findings go to a fix");
-    // Every high or medium finding still open since the last release goes to the fix, not only the latest's.
-    assert_eq!(d["findings"][0]["title"], "one", "{d}");
-    assert_eq!(d["findings"][1]["title"], "two", "{d}");
+    // Every high or medium finding still open since the last release goes to the fix. The first review's
+    // finding was fixed before the second review, so only the second review's finding is open.
+    assert_eq!(d["findings"][0]["title"], "two", "{d}");
+    assert_eq!(d["findings"].as_array().unwrap().len(), 1, "{d}");
     assert!(directive(&fx, "decide-checkpoint-review").is_none());
 }
 
@@ -567,8 +595,11 @@ fn a_probe_is_kept_with_what_it_meant_to_show_and_a_finding_names_it() {
     assert!(fs::read_to_string(&stored)
         .unwrap()
         .contains("grep -q fixed"));
-    // The next review is given it.
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The next review is given it. The fix adds the probe to the suite and passes.
+    let k = fx.work("K-1");
+    fs::create_dir_all(k.join("tests")).unwrap();
+    fs::write(k.join("tests/p1.sh"), "grep -q fixed src/a.txt\n").unwrap();
+    fx.pass_checkpoint_fix("fixed\n");
     let md = brief_text(&fx);
     assert!(
         md.contains("Probe p1") && md.contains("show that the file says fixed"),

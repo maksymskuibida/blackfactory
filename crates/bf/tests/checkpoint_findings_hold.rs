@@ -213,14 +213,9 @@ fn a_fix_aborted_leaves_its_finding_open_and_the_human_decides() {
     eprintln!("next: {d:?}");
     assert!(d.contains(&"decide-checkpoint-fix".to_string()), "{d:?}");
     assert!(!d.contains(&"review-checkpoint".to_string()), "{d:?}");
-    // A review at that content that files nothing does not let the checkpoint close.
-    brief(&fx);
-    fx.must_in(
-        &fx.work("K-1-review"),
-        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
-    );
-    let o = report(&fx, json!({"areas": areas(), "findings": []}));
-    assert_eq!(o.code, 0, "{}", o.all());
+    // No review starts while the human is asked, so none can let the checkpoint close.
+    let b = brief(&fx);
+    assert_eq!(b.code, 2, "{}", b.all());
     let c = fx.bf(&["checkpoint", "close", "K-1"]);
     eprintln!("close: {}", c.stderr);
     assert_eq!(c.code, 2, "{}", c.all());
@@ -243,6 +238,10 @@ fn a_fix_aborted_leaves_its_finding_open_and_the_human_decides() {
         "{:?}",
         fates(&fx, 1)
     );
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
     let c = fx.bf(&["checkpoint", "close", "K-1"]);
     assert_eq!(c.code, 0, "{}", c.all());
 }
@@ -254,7 +253,7 @@ fn the_repeat_review_brief_says_an_open_finding_stays_open() {
     start(&fx);
     brief(&fx);
     report(&fx, json!({"areas": areas(), "findings": [high()]}));
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx.pass_checkpoint_fix("changed by the fix\n");
     brief(&fx);
     let text = fs::read_to_string(fx.project().briefs_dir().join("K-1-reviewer.md")).unwrap();
     assert!(
@@ -265,7 +264,7 @@ fn the_repeat_review_brief_says_an_open_finding_stays_open() {
 }
 
 #[test]
-fn a_release_then_an_aborted_fix_keeps_both_findings_open_and_the_human_decides() {
+fn after_a_release_an_aborted_fix_leaves_the_released_finding_open_and_the_human_decides() {
     let fx = Fx::new();
     fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 2");
     plan(&fx);
@@ -273,7 +272,7 @@ fn a_release_then_an_aborted_fix_keeps_both_findings_open_and_the_human_decides(
     brief(&fx);
     let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
     assert_eq!(o.code, 0, "{}", o.all());
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx.pass_checkpoint_fix("changed by the fix\n");
     brief(&fx);
     let mut medium = high();
     medium["title"] = json!("the second answer is wrong");
@@ -294,24 +293,21 @@ fn a_release_then_an_aborted_fix_keeps_both_findings_open_and_the_human_decides(
     let d = directives(&fx);
     assert!(d.contains(&"fix-checkpoint".to_string()), "{d:?}");
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
-    assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
+    // The first finding was fixed before the second review; the second is open again after the abort.
+    assert!(
+        fates(&fx, 1)[0].starts_with("fixed by"),
+        "{:?}",
+        fates(&fx, 1)
+    );
     assert_eq!(fates(&fx, 2), vec!["open".to_string()]);
     let d = directives(&fx);
     eprintln!("next: {d:?}");
     assert!(d.contains(&"decide-checkpoint-fix".to_string()), "{d:?}");
     assert!(!d.contains(&"review-checkpoint".to_string()), "{d:?}");
-    // A review at that content that files nothing does not let the checkpoint close.
-    brief(&fx);
-    fx.must_in(
-        &fx.work("K-1-review"),
-        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
-    );
-    let o = report(&fx, json!({"areas": areas(), "findings": []}));
-    assert_eq!(o.code, 0, "{}", o.all());
+    // No review starts while the human is asked, so none can let the checkpoint close.
+    assert_eq!(brief(&fx).code, 2);
     let c = fx.bf(&["checkpoint", "close", "K-1"]);
     assert_eq!(c.code, 2, "{}", c.all());
-    assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
-    assert_eq!(fates(&fx, 2), vec!["open".to_string()]);
 }
 
 fn next_directive(fx: &Fx, action: &str) -> Option<Value> {
@@ -390,6 +386,7 @@ fn a_high_finding_is_picked_to_be_fixed_only_in_the_humans_words_taken_once() {
     let again = fx.bf(&q);
     eprintln!("same words again: {}", again.stderr);
     assert_eq!(again.code, 2, "{}", again.all());
+    assert!(again.stderr.contains("already used"), "{}", again.stderr);
 }
 
 #[test]
@@ -434,4 +431,155 @@ fn the_reviewers_brief_gives_the_nextest_example_probe_command() {
     assert!(text.contains("cargo nextest run -E test(=p1)"), "{text}");
     assert!(!text.contains("cargo test p1"), "{text}");
     assert!(text.contains("fails when it selects no test"), "{text}");
+}
+
+// R-92, D-66, TH-42: a decision on a finding or on parking takes only a human message written after the
+// event that put it to the human.
+const BEFORE_ONE: &str = "Carry on with the build, thanks.";
+const BEFORE_TWO: &str = "Looks good to me, keep going.";
+
+/// Two sentences written before the plan; round 1 files a high finding and its fix is aborted.
+fn aborted_after_old_words() -> Fx {
+    let fx = Fx::new();
+    fx.human(BEFORE_ONE);
+    fx.human(BEFORE_TWO);
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx
+}
+
+fn pick_args<'a>(how: &'a str, quote: &'a str) -> Vec<&'a str> {
+    let mut v = vec!["checkpoint", "finding", "K-1"];
+    match how {
+        "fix" => v.extend(["--fix-findings", "r1.1"]),
+        "accept" => v.extend(["--accept", "r1.1"]),
+        _ => v.extend(["--decline", "r1.1", "--reason", "it is how it is meant to be"]),
+    }
+    v.extend(["--quote", quote]);
+    v
+}
+
+#[test]
+fn words_written_before_the_finding_was_put_to_the_human_decide_nothing() {
+    for how in ["fix", "accept", "decline"] {
+        let fx = aborted_after_old_words();
+        for old in [BEFORE_ONE, BEFORE_TWO] {
+            let o = fx.bf(&pick_args(how, old));
+            eprintln!("{how} with old words: {}", o.stderr);
+            assert_eq!(o.code, 2, "{how}: {}", o.all());
+            assert!(o.stderr.contains("written before"), "{how}: {}", o.stderr);
+            assert!(o.stderr.contains("new message"), "{how}: {}", o.stderr);
+        }
+        assert!(directives(&fx).contains(&"decide-checkpoint-fix".to_string()));
+        // A message written after the abort decides.
+        fx.human("Yes, that is my decision on it.");
+        let o = fx.bf(&pick_args(how, "that is my decision on it"));
+        assert_eq!(o.code, 0, "{how}: {}", o.all());
+        if how == "fix" {
+            println!("the pick prints: {}", o.stdout.trim());
+            assert!(o.stdout.contains("a fix opened for r1.1"), "{}", o.stdout);
+        }
+    }
+}
+
+#[test]
+fn a_release_takes_only_words_written_after_the_report_that_parked_the_checkpoint() {
+    let fx = Fx::new();
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    fx.human(BEFORE_ONE);
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(directives(&fx).contains(&"decide-checkpoint-review".to_string()));
+    let o = fx.bf(&[
+        "checkpoint",
+        "review",
+        "K-1",
+        "--release",
+        "--quote",
+        BEFORE_ONE,
+    ]);
+    eprintln!("release with old words: {}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("written before"), "{}", o.stderr);
+    assert!(o.stderr.contains("new message"), "{}", o.stderr);
+    fx.human("Release it, go on with the fix.");
+    fx.must(&[
+        "checkpoint",
+        "review",
+        "K-1",
+        "--release",
+        "--quote",
+        "Release it",
+    ]);
+    assert!(directives(&fx).contains(&"fix-checkpoint".to_string()));
+}
+
+#[test]
+fn a_settle_event_that_cites_old_words_is_ignored_on_replay() {
+    let fx = aborted_after_old_words();
+    let p = fx.project();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let old = st.turns.iter().find(|t| t.text == BEFORE_TWO).unwrap().seq;
+    bf::events::append(
+        &p,
+        "checkpoint.finding.settle",
+        json!({"checkpoint": "K-1", "ids": [{"round": 1, "index": 1}], "fate": "accepted",
+               "reason": "", "turn": old, "quote": BEFORE_TWO}),
+    )
+    .unwrap();
+    let s = fx.must(&["status", "--json"]).json();
+    eprintln!("ignored: {}", s["ignored_events"]);
+    assert_eq!(s["ignored_events"].as_array().unwrap().len(), 1, "{s}");
+    fx.must(&["log", "--verify"]);
+    assert!(directives(&fx).contains(&"decide-checkpoint-fix".to_string()));
+    assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
+}
+
+#[test]
+fn no_review_starts_while_the_human_is_asked_what_becomes_of_an_open_finding() {
+    let fx = aborted_after_old_words();
+    let before = directives(&fx);
+    let o = fx.bf(&["brief", "K-1", "--role", "reviewer"]);
+    eprintln!("brief while the human is asked: {}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("decide-checkpoint-fix"), "{}", o.stderr);
+    assert!(o.stderr.contains("--fix-findings"), "{}", o.stderr);
+    assert!(o.stderr.contains("--accept"), "{}", o.stderr);
+    assert!(o.stderr.contains("--decline"), "{}", o.stderr);
+    assert!(o.stderr.contains("bf next"), "{}", o.stderr);
+    assert_eq!(directives(&fx), before);
+    let st = fx.must(&["status", "--json"]).json();
+    assert_eq!(
+        st["checkpoint_reviews"][0]["rounds"].as_array().unwrap().len(),
+        1,
+        "no round opened: {st}"
+    );
+}
+
+#[test]
+fn the_usage_and_the_close_name_the_words_and_the_open_finding() {
+    let fx = aborted_after_old_words();
+    let o = fx.bf(&["checkpoint", "finding", "K-1"]);
+    eprintln!("usage: {}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("--fix-findings r1.2,r1.3 --quote"), "{}", o.stderr);
+    assert!(o.stderr.contains("critical, high or medium"), "{}", o.stderr);
+    let c = fx.bf(&["checkpoint", "close", "K-1"]);
+    eprintln!("close: {}", c.stderr);
+    assert_eq!(c.code, 2, "{}", c.all());
+    let because = c.stderr.lines().find(|l| l.starts_with("because:")).unwrap_or("");
+    assert!(because.contains("r1.1"), "{}", c.stderr);
+    assert!(!because.contains("ID(s) have no proof"), "{}", c.stderr);
+    // With no message after the abort the refusal lists its first step once.
+    let o = fx.bf(&pick_args("fix", "an unwritten sentence"));
+    eprintln!("no such words: {}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert_eq!(o.stderr.matches("Ask the human in chat").count(), 1, "{}", o.stderr);
 }

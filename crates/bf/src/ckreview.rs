@@ -475,6 +475,19 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
             "the checkpoint is parked after the reviews the policy allows; the human decides",
         ));
     }
+    // While the human is asked what becomes of an open finding no review starts: a reviewer who files the
+    // same finding again would open a fix without the human's words.
+    if st.ck_fix.is_none() && open_round(&rs).is_none() && !open_blocking(&st, k, &rs).is_empty() {
+        return Err(refuse(
+            format!("review {k}"),
+            "a high or medium finding is open and no fix is: `bf next` asks the human (decide-checkpoint-fix) what becomes of it, and no review starts while they are asked",
+            &[
+                &format!("Ask the human, then run `bf checkpoint finding {k} --fix-findings <ids> --quote \"<their words>\"`, `--accept <ids> --quote \"<their words>\"` or `--decline <ids> --reason \"<why>\" --quote \"<their words>\"`."),
+                "`bf next` shows the decision (decide-checkpoint-fix) and the findings.",
+            ],
+            "`bf next` gives the reviewer's directive once the findings have an end or a fix has passed.",
+        ));
+    }
     // A round still open on other content is void: the reviewer judged what is no longer there.
     if let Some(o) = open_round(&rs).filter(|o| o.content != content).cloned() {
         events::append(
@@ -1367,7 +1380,9 @@ pub fn settle(
         ));
     }
     let picked = pick_findings(p, &st, k, spec)?;
-    let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
+    let bound = events::put_to_human_seq(&st, k, &pairs);
+    let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let ids: Vec<Value> = picked
         .iter()
         .map(|(r, i, _)| json!({"round": r, "index": i}))
@@ -1407,7 +1422,9 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
                 "The command opens the fix.",
             ));
         }
-        Some(events::pick_turn(&st, 0, events::Decide::Approve, quote)?.0)
+        let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
+        let bound = events::put_to_human_seq(&st, k, &pairs);
+        Some(events::pick_turn(&st, bound, events::Decide::Approve, quote)?.0)
     } else {
         None
     };
@@ -1422,6 +1439,7 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
     }
     let content = cp_content(p, k)?;
     let ids: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
+    let named: Vec<String> = ids.iter().map(|(r, i)| format!("r{r}.{i}")).collect();
     crate::ckfix::open_chosen(
         p,
         &pl,
@@ -1431,7 +1449,7 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         &content,
         human.map(|t| (t, quote)),
     )?;
-    Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
+    Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true, "findings": named}))
 }
 
 /// `bf checkpoint review <K> --release --quote ...`: only the human releases a parked checkpoint, in their
@@ -1448,7 +1466,6 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
             "`bf status` shows the review.",
         ));
     }
-    let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
     let rs = rounds(p, k)?;
     let Some(last) = rs.iter().rev().find(|r| reported(r)).cloned() else {
         return Err(refuse(
@@ -1458,6 +1475,8 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
             "`bf status` shows the review.",
         ));
     };
+    let bound = events::round_report_seq(&st, k, last.round);
+    let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let pl = plan::load(p)?;
     let held = open_blocking(&st, k, &rs);
     let ids: Vec<(u32, u32)> = held.iter().map(|x| (x.0, x.1 as u32)).collect();
