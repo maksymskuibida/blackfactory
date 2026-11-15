@@ -1144,7 +1144,10 @@ pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) ->
                 "`bf status` shows the fix back at work.",
             ));
         }
-        let (turn, _) = events::pick_turn(&st, f.park_seq, events::Decide::Approve, quote)?;
+        let Some(bound) = events::decision_bound(&st, k, f.park_seq, u64::MAX) else {
+            return Err(crate::ckreview::fix_at_work(&st, "release the fix", k));
+        };
+        let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
         events::append(
             p,
             "checkpoint.fix.release",
