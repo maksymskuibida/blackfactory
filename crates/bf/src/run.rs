@@ -1,7 +1,7 @@
 //! Runs: start, status, next directives, reports, briefs, unit working copies,
 //! landing, checkpoint closing, stuck units and cost.
 
-use crate::events::{self, State};
+use crate::events::{self, Hold, State};
 use crate::evidence::{self, Receipt};
 use crate::gates;
 use crate::gitx;
@@ -11,6 +11,7 @@ use crate::schema;
 use crate::store::{s, str_list, Project, Repo};
 use crate::util;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -254,7 +255,83 @@ fn budget_check(p: &Project, st: &State) -> R<()> {
     Ok(())
 }
 
+/// Log the holds the engine can see on each checkpoint whose units have all landed and that is not closed: a
+/// check marked failed or unreachable at its content, an unanswered worker's question whose unit is the
+/// checkpoint, and a wave check that holds its close. Each change against the logged hold (a start, a new
+/// cause or what it names, an end) is one `checkpoint.hold` event. It takes no lock beyond what its caller
+/// holds and appends through `events::append`.
+pub fn observe_holds(p: &Project) -> R<()> {
+    let st = events::replay(p)?;
+    if !st.chain_ok || st.active_run().is_none() {
+        return Ok(());
+    }
+    let pl = plan::load(p)?;
+    let mut want: BTreeMap<String, (&'static str, String)> = BTreeMap::new();
+    let open_questions: Vec<Value> = p
+        .list_records(schema::kind_by_name("question"))?
+        .into_iter()
+        .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
+        .collect();
+    let mut receipts: Option<Vec<Receipt>> = None;
+    for k in &pl.checkpoints {
+        let kid = s(k, "id");
+        let after = str_list(k, "after");
+        if st.closed.contains_key(kid)
+            || after.is_empty()
+            || !after.iter().all(|u| st.unit_state(u) == "landed")
+        {
+            continue;
+        }
+        let wave = crate::wavecheck::close_blockers(&pl, &st, kid);
+        if !wave.is_empty() {
+            want.insert(kid.to_string(), ("wave", wave.join("; ")));
+            continue;
+        }
+        if let Some(q) = open_questions.iter().find(|q| s(q, "unit") == kid) {
+            want.insert(kid.to_string(), ("question", s(q, "id").to_string()));
+            continue;
+        }
+        if receipts.is_none() {
+            receipts = Some(evidence::load_receipts(p)?);
+        }
+        let rs = receipts.as_deref().unwrap_or(&[]);
+        let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+        let marked: Vec<String> = str_list(k, "checks")
+            .into_iter()
+            .filter(|c| evidence::standing_outcome(rs, c, &content).is_some())
+            .collect();
+        if !marked.is_empty() {
+            want.insert(kid.to_string(), ("marked", marked.join(",")));
+        }
+    }
+    let mut ids: Vec<String> = st.ck_holds.keys().cloned().collect();
+    ids.extend(
+        want.keys()
+            .filter(|k| !st.ck_holds.contains_key(*k))
+            .cloned(),
+    );
+    for kid in ids {
+        let logged = st
+            .ck_holds
+            .get(&kid)
+            .map(|h| (h.cause.clone(), h.detail.clone()));
+        let now = want.get(&kid).map(|(c, d)| (c.to_string(), d.clone()));
+        if logged == now {
+            continue;
+        }
+        let (cause, detail) = now.unwrap_or_default();
+        events::append(
+            p,
+            "checkpoint.hold",
+            json!({"checkpoint": kid, "cause": cause, "detail": detail}),
+        )?;
+    }
+    Ok(())
+}
+
 fn next_raw(p: &Project) -> R<Value> {
+    // The holds are logged before the directives are worked out, so the one predicate and the log agree.
+    observe_holds(p)?;
     let st = events::require_chain(p)?;
     let run = need_run(&st)?;
     budget_check(p, &st)?;
@@ -474,30 +551,60 @@ fn next_raw(p: &Project) -> R<Value> {
         }
         // The last wave's check counts for the checkpoint's own checks when it ran on the content the
         // checkpoint closes on, so the checkpoint waits for it.
-        let wave_held = crate::wavecheck::close_blockers(&pl, &st, kid);
-        if !wave_held.is_empty()
-            && !after.is_empty()
-            && after.iter().all(|u| st.unit_state(u) == "landed")
-        {
-            waiting.push(format!("{kid}: {}", wave_held.join("; ")));
-            if st.ck_fix.is_none()
-                && st
-                    .wave_runs
-                    .iter()
-                    .any(|((c, _), r)| c == kid && r.state == "failed")
-            {
-                directives.push(json!({"role": "human", "action": "decide-wave-check", "checkpoint": kid,
-                    "note": format!("A wave check of {kid} failed and its fix was turned down. The human decides: change the plan by amendment, or have the fix tried again.")}));
+        let landed = !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed");
+        // Every withholding of the checkpoint's findings is a case of the one predicate.
+        let hold = if landed {
+            events::hold(&st, kid, u64::MAX)
+        } else {
+            None
+        };
+        match hold {
+            Some(Hold::Wave { reason, .. }) => {
+                waiting.push(format!("{kid}: {reason}"));
+                if st.ck_fix.is_none()
+                    && st
+                        .wave_runs
+                        .iter()
+                        .any(|((c, _), r)| c == kid && r.state == "failed")
+                {
+                    directives.push(json!({"role": "human", "action": "decide-wave-check", "checkpoint": kid,
+                        "note": format!("A wave check of {kid} failed and its fix was turned down. The human decides: change the plan by amendment, or have the fix tried again.")}));
+                }
+                continue;
             }
-            continue;
+            Some(Hold::Question { .. }) => {
+                waiting.push(format!(
+                    "{kid}: waiting for the human's answer to its question"
+                ));
+                continue;
+            }
+            Some(Hold::Marked { checks, .. }) => {
+                let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+                let marked: Vec<Value> = checks
+                    .iter()
+                    .map(|c| match evidence::standing_outcome(&receipts, c, &content) {
+                        Some(r) => json!({"check": c, "outcome": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")}),
+                        None => json!({"check": c, "outcome": "", "reason": ""}),
+                    })
+                    .collect();
+                directives.push(json!({"role": "human", "action": "decide-check", "checkpoint": kid, "checks": marked,
+                    "note": "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, or change the plan."}));
+                continue;
+            }
+            // A sync or a fix is at work: their early returns above end the directives, except for the
+            // fix of a wave check, which lets the next wave's units go on and holds the checkpoint here.
+            Some(h @ (Hold::Sync { .. } | Hold::Fix { .. })) => {
+                let wave_held = crate::wavecheck::close_blockers(&pl, &st, kid);
+                if wave_held.is_empty() {
+                    waiting.push(format!("{kid}: {}", h.because()));
+                } else {
+                    waiting.push(format!("{kid}: {}", wave_held.join("; ")));
+                }
+                continue;
+            }
+            None => {}
         }
-        if held(kid) {
-            waiting.push(format!(
-                "{kid}: waiting for the human's answer to its question"
-            ));
-            continue;
-        }
-        if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
+        if landed {
             let wc = p.work_dir().join(kid).to_string_lossy().to_string();
             let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
             // A check the human switched off is not asked for.
@@ -519,18 +626,7 @@ fn next_raw(p: &Project) -> R<Value> {
             let review_needed = crate::ckreview::needed(p, &st, kid, &content)?;
             let human_needed =
                 crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
-            let marked: Vec<Value> = str_list(k, "checks")
-                .iter()
-                .filter_map(|c| {
-                    evidence::standing_outcome(&receipts, c, &content).map(|r| {
-                        json!({"check": c, "outcome": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")})
-                    })
-                })
-                .collect();
-            if !marked.is_empty() {
-                directives.push(json!({"role": "human", "action": "decide-check", "checkpoint": kid, "checks": marked,
-                    "note": "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, or change the plan."}));
-            } else if !missing.is_empty() {
+            if !missing.is_empty() {
                 directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": missing,
                     "tier": p.policy.tiers.verifier, "working_copy": wc,
                     "brief": p.briefs_dir().join(format!("{kid}-verifier.md")).to_string_lossy(),
@@ -2525,6 +2621,23 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
                 &format!("To go back to how the checkpoint was: `bf checkpoint sync {} --abort`.", so.checkpoint),
             ],
             "`bf status` shows no open sync.",
+        ));
+    }
+    if let Some(f) = st.ck_fix.as_ref() {
+        return Err(refuse(
+            format!("sync {k}"),
+            format!(
+                "a checkpoint fix of {} is open ({}): a sync during it would be dropped by the fix's abort or refused at its report",
+                f.checkpoint, f.phase
+            ),
+            &[
+                "`bf next` shows what the fix waits for; the sync can start when it has ended.",
+                &format!(
+                    "To end the fix now: `bf checkpoint fix {} --abort`, then ask for the sync again.",
+                    f.checkpoint
+                ),
+            ],
+            "`bf status` shows no open fix.",
         ));
     }
     refuse_if_main_moved(p, &st)?;

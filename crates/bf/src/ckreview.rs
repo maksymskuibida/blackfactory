@@ -1360,19 +1360,30 @@ fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, us
 
 /// The refusal of a human decision on a checkpoint finding or of a review release while a checkpoint fix
 /// is at work: the human is not asked until it ends or parks.
-pub(crate) fn fix_at_work(st: &State, what: &str, k: &str) -> crate::refusal::Fail {
-    let fk = st
-        .ck_fix
-        .as_ref()
-        .map_or_else(|| k.to_string(), |f| f.checkpoint.clone());
+pub(crate) fn hold_refusal(what: &str, k: &str, h: &events::Hold) -> crate::refusal::Fail {
+    let hk = h.checkpoint();
+    let ends = match h {
+        events::Hold::Sync { .. } => format!("`bf checkpoint sync {hk} --abort`"),
+        events::Hold::Fix { .. } => format!("`bf checkpoint fix {hk} --abort`"),
+        events::Hold::Question { id, .. } => format!("`bf answer {id}`"),
+        events::Hold::Marked { .. } => {
+            "the verifier's new run of the marked check (a passing run replaces the mark), or the human's decision on it (`bf next` gives `decide-check`)".to_string()
+        }
+        events::Hold::Wave { .. } => {
+            "the wave check passing, or the human's decision on it (`bf next` gives what it waits for)".to_string()
+        }
+    };
     refuse(
         format!("{what} of {k}"),
-        "a checkpoint fix is at work, and the human is not asked about any finding until it ends or parks: words written while it runs decide nothing",
+        format!(
+            "the human is not being asked about the findings of {k} because {}: words written during it decide nothing",
+            h.because()
+        ),
         &[
-            "Wait for the fix: `bf next` shows what it waits for and who works on it.",
-            &format!("Or end the fix with `bf checkpoint fix {fk} --abort`, then ask the human in a new message."),
+            "Wait: `bf next` shows what it waits for and who works on it.",
+            &format!("Or end the hold with {ends}, then ask the human in a new message."),
         ],
-        "`bf next` shows the fix at work.",
+        "`bf next` shows what it waits for.",
     )
 }
 
@@ -1400,16 +1411,21 @@ pub fn settle(
     let picked = pick_findings(p, &st, k, spec)?;
     let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
     let base = events::put_to_human_seq(&st, k, &pairs);
-    let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
-        return Err(fix_at_work(
-            &st,
-            if fate_name == "declined" {
-                "decline findings"
-            } else {
-                "accept findings"
-            },
-            k,
-        ));
+    run::observe_holds(p)?;
+    let st = events::require_chain(p)?;
+    let bound = match events::decision_bound(&st, k, base, u64::MAX) {
+        Ok(b) => b,
+        Err(h) => {
+            return Err(hold_refusal(
+                if fate_name == "declined" {
+                    "decline findings"
+                } else {
+                    "accept findings"
+                },
+                k,
+                &h,
+            ))
+        }
     };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let ids: Vec<Value> = picked
@@ -1453,8 +1469,11 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         }
         let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
         let base = events::put_to_human_seq(&st, k, &pairs);
-        let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
-            return Err(fix_at_work(&st, "fix findings", k));
+        run::observe_holds(p)?;
+        let st = events::require_chain(p)?;
+        let bound = match events::decision_bound(&st, k, base, u64::MAX) {
+            Ok(b) => b,
+            Err(h) => return Err(hold_refusal("fix findings", k, &h)),
         };
         Some(events::pick_turn(&st, bound, events::Decide::Approve, quote)?.0)
     } else {
@@ -1508,8 +1527,11 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
         ));
     };
     let base = events::round_report_seq(&st, k, last.round);
-    let Some(bound) = events::decision_bound(&st, k, base, u64::MAX) else {
-        return Err(fix_at_work(&st, "release the review", k));
+    run::observe_holds(p)?;
+    let st = events::require_chain(p)?;
+    let bound = match events::decision_bound(&st, k, base, u64::MAX) {
+        Ok(b) => b,
+        Err(h) => return Err(hold_refusal("release the review", k, &h)),
     };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let pl = plan::load(p)?;

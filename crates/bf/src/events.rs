@@ -331,6 +331,11 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
         )?;
     }
     let _ = lock.unlock();
+    drop(lock);
+    // After an event that can start or end a hold, the engine logs the change (never after a hold event).
+    if can_change_hold(kind) {
+        let _ = crate::run::observe_holds(p);
+    }
     Ok(Value::Object(m))
 }
 
@@ -615,6 +620,86 @@ pub struct CkFixOpen {
     pub history: Vec<Value>,
     /// The wave a wave fix is for; 0 for every other fix.
     pub wave: u32,
+    /// The opening event cites a human turn of its own (a pick with words).
+    pub own_turn: bool,
+}
+
+/// A hold the engine logged for a checkpoint: `marked`, `question` or `wave`, what it names, and the seq
+/// of the event that started it.
+#[derive(Debug, Clone, Default)]
+pub struct CkHold {
+    pub cause: String,
+    pub detail: String,
+    pub seq: u64,
+}
+
+/// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hold {
+    /// A sync of main into this checkpoint is open (any phase, parked included).
+    Sync { checkpoint: String },
+    /// A checkpoint fix of this checkpoint is at work (open and not parked, the gap phase included).
+    Fix { checkpoint: String },
+    /// These checks of the checkpoint are marked failed or unreachable at its content.
+    Marked {
+        checkpoint: String,
+        checks: Vec<String>,
+    },
+    /// A worker's question on the checkpoint is unanswered.
+    Question { checkpoint: String, id: String },
+    /// A wave check holds the checkpoint's close.
+    Wave { checkpoint: String, reason: String },
+}
+
+impl Hold {
+    /// The checkpoint the hold is of (for a sync or a fix, that of the sync or the fix).
+    pub fn checkpoint(&self) -> &str {
+        match self {
+            Hold::Sync { checkpoint }
+            | Hold::Fix { checkpoint }
+            | Hold::Marked { checkpoint, .. }
+            | Hold::Question { checkpoint, .. }
+            | Hold::Wave { checkpoint, .. } => checkpoint,
+        }
+    }
+    /// The hold in words, for a refusal ("because ...").
+    pub fn because(&self) -> String {
+        match self {
+            Hold::Sync { checkpoint } => {
+                format!("a sync of main into {checkpoint} is open")
+            }
+            Hold::Fix { checkpoint } => {
+                format!("a checkpoint fix is at work on {checkpoint}")
+            }
+            Hold::Marked { checkpoint, checks } => format!(
+                "a check of {checkpoint} is marked failed or unreachable ({})",
+                checks.join(", ")
+            ),
+            Hold::Question { checkpoint, id } => {
+                format!("a worker's question on {checkpoint} ({id}) is unanswered")
+            }
+            Hold::Wave { checkpoint, reason } => {
+                format!("a wave check holds the close of {checkpoint} ({reason})")
+            }
+        }
+    }
+    /// The hold in words of the past, for the note of an ignored event.
+    pub fn during(&self) -> String {
+        match self {
+            Hold::Sync { checkpoint } => format!("a sync of main into {checkpoint} was open"),
+            Hold::Fix { .. } => "a checkpoint fix was at work".to_string(),
+            Hold::Marked { checkpoint, checks } => format!(
+                "a check of {checkpoint} was marked failed or unreachable ({})",
+                checks.join(", ")
+            ),
+            Hold::Question { checkpoint, id } => {
+                format!("a worker's question on {checkpoint} ({id}) was unanswered")
+            }
+            Hold::Wave { checkpoint, reason } => {
+                format!("a wave check held the close of {checkpoint} ({reason})")
+            }
+        }
+    }
 }
 
 /// A finding of a checkpoint review that the human accepted, or declined with a reason.
@@ -723,6 +808,9 @@ pub struct State {
     pub ck_declined: Vec<String>,
     /// The seq of the latest event that ended, aborted or parked a checkpoint fix, of any checkpoint; 0 when none.
     pub ck_end_seq: u64,
+    /// Checkpoint -> the hold the engine logged for it (a marked check, an unanswered question, a wave
+    /// check), with the seq it started at. Kept by `checkpoint.hold`.
+    pub ck_holds: BTreeMap<String, CkHold>,
     /// Findings of checkpoint reviews that the human accepted or declined, in log order.
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
@@ -897,13 +985,85 @@ pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
 /// for and whichever checkpoint it is of: then the human is not asked. Otherwise the later of `base` and the
 /// latest end, abort or park of a checkpoint fix. Commands pass `u64::MAX` as `opened_before`; the replay
 /// passes the seq of the event it judges. One rule for the command and for the replay.
-pub fn decision_bound(st: &State, _k: &str, base: u64, opened_before: u64) -> Option<u64> {
+pub fn decision_bound(st: &State, k: &str, base: u64, opened_before: u64) -> Result<u64, Hold> {
+    match hold(st, k, opened_before) {
+        Some(h) => Err(h),
+        None => Ok(base.max(st.ck_end_seq)),
+    }
+}
+
+/// The one predicate for "the human is not being asked about the findings of checkpoint `k`": a sync of main
+/// into any checkpoint is open (every phase); any checkpoint fix opened before `opened_before` is at work
+/// (open and not parked, the gap phase included); or the engine logged a hold of `k` (a check marked, a
+/// worker's question unanswered, a wave check holding the close). `bf next` and the five decisions share it.
+pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
+    if let Some(so) = st.sync_open.as_ref() {
+        return Some(Hold::Sync {
+            checkpoint: so.checkpoint.clone(),
+        });
+    }
     if let Some(f) = st.ck_fix.as_ref() {
         if f.open_seq < opened_before && f.phase != "parked" {
-            return None;
+            return Some(Hold::Fix {
+                checkpoint: f.checkpoint.clone(),
+            });
         }
     }
-    Some(base.max(st.ck_end_seq))
+    let h = st.ck_holds.get(k)?;
+    let checkpoint = k.to_string();
+    match h.cause.as_str() {
+        "marked" => Some(Hold::Marked {
+            checkpoint,
+            checks: h
+                .detail
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string())
+                .collect(),
+        }),
+        "question" => Some(Hold::Question {
+            checkpoint,
+            id: h.detail.clone(),
+        }),
+        "wave" => Some(Hold::Wave {
+            checkpoint,
+            reason: h.detail.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// The `opened_before` of a review release's replay: the fix the release itself opened is the event just
+/// before it, for the same checkpoint, with source `review` and no human turn of its own; only that fix is
+/// set aside. Any other open fix counts.
+fn release_opened_before(st: &State, k: &str, seq: u64) -> u64 {
+    match st.ck_fix.as_ref() {
+        Some(f)
+            if f.open_seq + 1 == seq
+                && f.checkpoint == k
+                && f.source == "review"
+                && !f.own_turn =>
+        {
+            seq.saturating_sub(1)
+        }
+        _ => seq,
+    }
+}
+
+/// Whether an event of this kind can start or end a hold: the engine looks at the holds after it.
+pub fn can_change_hold(kind: &str) -> bool {
+    matches!(
+        kind,
+        "evidence.run"
+            | "evidence.outcome"
+            | "question.asked"
+            | "question.answered"
+            | "wave.check.run"
+            | "unit.land"
+            | "checkpoint.fix.done"
+            | "checkpoint.sync"
+            | "amend.approve"
+    )
 }
 
 pub fn replay_log_with(log: &Log, words: &Words) -> State {
@@ -1511,7 +1671,30 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.reason.clear();
                 }
             }
-            "checkpoint.sync.abort" => st.sync_open = None,
+            "checkpoint.sync.abort" => {
+                if st.sync_open.take().is_some() {
+                    st.ck_end_seq = seq;
+                }
+            }
+            "checkpoint.hold" => {
+                let k = sv("checkpoint");
+                let cause = sv("cause");
+                if cause.is_empty() {
+                    if st.ck_holds.remove(&k).is_some() {
+                        st.ck_end_seq = seq;
+                    }
+                } else {
+                    let started = st.ck_holds.get(&k).map(|h| h.seq).unwrap_or(seq);
+                    st.ck_holds.insert(
+                        k,
+                        CkHold {
+                            cause,
+                            detail: sv("detail"),
+                            seq: started,
+                        },
+                    );
+                }
+            }
             "checkpoint.sync" => {
                 // A sync that agents resolved was asked for in the human's words when it opened.
                 let via_open = ev["via_open"].as_bool().unwrap_or(false);
@@ -1533,6 +1716,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     .unwrap_or(false)
                 {
                     st.sync_open = None;
+                    st.ck_end_seq = seq;
                 }
                 for r in ev["repos"].as_array().into_iter().flatten() {
                     st.synced.push((
@@ -1553,11 +1737,15 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
                     let ids = id_pairs(&ev["finding_ids"]);
                     let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
-                    let Some(bound) = decision_bound(&st, &sv("checkpoint"), base, seq) else {
-                        st.ignored.push(format!(
-                            "event {seq}: a fix was picked for findings while a checkpoint fix was at work"
-                        ));
-                        continue;
+                    let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                        Ok(b) => b,
+                        Err(h) => {
+                            st.ignored.push(format!(
+                                "event {seq}: a fix was picked for findings while {}",
+                                h.during()
+                            ));
+                            continue;
+                        }
                     };
                     if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
                         st.ignored.push(format!(
@@ -1610,6 +1798,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     content: sv("content"),
                     open_seq: seq,
                     wave: ev["wave"].as_u64().unwrap_or(0) as u32,
+                    own_turn: ev["human"]["turn"].as_u64().is_some(),
                     ..Default::default()
                 });
             }
@@ -1680,11 +1869,15 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ));
                     continue;
                 };
-                let Some(bound) = decision_bound(&st, &sv("checkpoint"), parked_at, seq) else {
-                    st.ignored.push(format!(
-                        "event {seq}: a checkpoint fix release was written while a checkpoint fix was at work"
-                    ));
-                    continue;
+                let bound = match decision_bound(&st, &sv("checkpoint"), parked_at, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint fix release was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
                 };
                 if !decision_turn_ok(
                     &st,
@@ -1714,11 +1907,15 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let fate = sv("fate");
                 let ids = id_pairs(&ev["ids"]);
                 let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
-                let Some(bound) = decision_bound(&st, &sv("checkpoint"), base, seq) else {
-                    st.ignored.push(format!(
-                        "event {seq}: a finding settled while a checkpoint fix was at work"
-                    ));
-                    continue;
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a finding settled while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
                 };
                 if fate == "declined" && sv("reason").trim().is_empty() {
                     st.ignored
@@ -1758,14 +1955,17 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     &sv("checkpoint"),
                     ev["after_round"].as_u64().unwrap_or(0) as u32,
                 );
-                // The fix this release opened is the event just before it: set it aside.
-                let Some(bound) =
-                    decision_bound(&st, &sv("checkpoint"), base, seq.saturating_sub(1))
-                else {
-                    st.ignored.push(format!(
-                        "event {seq}: a checkpoint review release was written while a checkpoint fix was at work"
-                    ));
-                    continue;
+                // Only the fix this release itself opened (the event just before it) is set aside.
+                let before = release_opened_before(&st, &sv("checkpoint"), seq);
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, before) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint review release was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
                 };
                 if !decision_turn_ok(
                     &st,

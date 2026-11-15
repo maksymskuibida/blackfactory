@@ -1144,8 +1144,11 @@ pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) ->
                 "`bf status` shows the fix back at work.",
             ));
         }
-        let Some(bound) = events::decision_bound(&st, k, f.park_seq, u64::MAX) else {
-            return Err(crate::ckreview::fix_at_work(&st, "release the fix", k));
+        run::observe_holds(p)?;
+        let st = events::require_chain(p)?;
+        let bound = match events::decision_bound(&st, k, f.park_seq, u64::MAX) {
+            Ok(b) => b,
+            Err(h) => return Err(crate::ckreview::hold_refusal("release the fix", k, &h)),
         };
         let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
         events::append(
