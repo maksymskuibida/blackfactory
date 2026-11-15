@@ -129,7 +129,7 @@ fn assert_none_landed(repo: &Path) {
     assert_no_junk_on(repo, "bf/K-1");
 }
 
-fn walk(fx: &Fx, repos: &[&str], dirs: &[PathBuf]) {
+fn walk(fx: &Fx, repos: &[&str], dirs: &[PathBuf], repeat_after_sync: bool) {
     real_run(fx);
     for i in 1..=repos.len() {
         build_with_junk(fx, i);
@@ -158,20 +158,24 @@ fn walk(fx: &Fx, repos: &[&str], dirs: &[PathBuf]) {
         "--json",
     ]);
     assert_eq!(o.json()["synced"], true, "{}", o.all());
-    fx.must_in(
-        &k,
-        &[
-            "evidence",
-            "run",
-            &kx,
-            "--attempt",
-            "2",
-            "--reason",
-            "run again after the sync",
-            "--",
-            "true",
-        ],
-    );
+    if repeat_after_sync {
+        fx.must_in(
+            &k,
+            &[
+                "evidence",
+                "run",
+                &kx,
+                "--attempt",
+                "2",
+                "--reason",
+                "run again after the sync",
+                "--",
+                "true",
+            ],
+        );
+    } else {
+        fx.must_in(&k, &["evidence", "run", &kx, "--", "true"]);
+    }
     // Junk after the check: the receipt stays valid and the checkpoint closes.
     junk(&k, "after the checkpoint check\n");
     let out = fx.merge_checkpoint("K-1");
@@ -192,7 +196,7 @@ fn in_a_project_folder_junk_never_counts_and_is_never_landed() {
     fs::write(fx.root.join(".DS_Store"), "tracked\n").unwrap();
     plan(&fx, &[""]);
     assert!(git(&fx.root, &["ls-files"]).contains(".DS_Store"));
-    walk(&fx, &[""], std::slice::from_ref(&fx.root));
+    walk(&fx, &[""], std::slice::from_ref(&fx.root), false);
 }
 
 #[test]
@@ -203,6 +207,7 @@ fn in_a_workspace_with_two_repositories_junk_never_counts_and_is_never_landed() 
         &fx,
         &["app", "lib"],
         &[fx.repo_dir("app"), fx.repo_dir("lib")],
+        true,
     );
 }
 

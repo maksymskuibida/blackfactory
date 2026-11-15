@@ -2590,8 +2590,9 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
             "message": "the main branch conflicts with the checkpoint; the merge is left in progress in the checkpoint's working copy and `bf next` gives the directive that resolves it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
-    // The joined content is proven before the sync counts: the checkpoint's own command checks run on it.
-    let failed = run_k_checks(p, &pl, k)?;
+    // The joined content is proven before the sync counts: the sync's checks (the command checks every
+    // unit of the checkpoint is held to) run on it. The checkpoint's own checks run at verification.
+    let failed = run_sync_checks(p, &pl, &st, k, floor)?;
     let skipped = skipped_k_checks(p, &pl, k)?;
     if !failed.is_empty() {
         events::append(
@@ -2603,7 +2604,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         return Ok(
             json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": [],
             "failed_checks": failed, "skipped_checks": skipped,
-            "message": "the main branch merged without a conflict, but the checkpoint's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
+            "message": "the main branch merged without a conflict, but the sync's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
     let reopen_checks = str_list(kr, "checks");
@@ -2725,6 +2726,85 @@ pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
             ),
             Err(e) => failed.push(
                 json!({"check": cid, "command": argv.join(" "), "exit": null, "tail": format!("{e:?}")}),
+            ),
+        }
+    }
+    Ok(failed)
+}
+
+/// A check a sync runs: the label it is shown under (the unit check's ID, or the name of a check every
+/// unit must pass) and its command.
+#[derive(Clone, Debug)]
+pub(crate) struct SyncCheck {
+    pub label: String,
+    pub argv: Vec<String>,
+}
+
+/// The command checks every unit of the checkpoint is held to, each distinct command once: those of
+/// its unit check records and of the list of checks every unit must pass, that all its units share.
+/// `None` when the units share no command (or there is no unit): the sync then runs the checkpoint's own
+/// command checks, as it always did.
+pub(crate) fn sync_checks(p: &Project, pl: &Plan, st: &State, k: &str) -> Option<Vec<SyncCheck>> {
+    let mut per_unit: Vec<Vec<SyncCheck>> = Vec::new();
+    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
+        let uid = s(u, "id");
+        let mut list: Vec<SyncCheck> = Vec::new();
+        for c in pl.unit_checks(uid) {
+            if s(c, "how") != "command" || crate::enforce::is_off(st, c) {
+                continue;
+            }
+            list.push(SyncCheck {
+                label: s(c, "id").to_string(),
+                argv: evidence::command_words(c),
+            });
+        }
+        for a in crate::checks::attached_for_unit(p, pl, st, uid).0 {
+            list.push(SyncCheck {
+                label: a.name.clone(),
+                argv: a.command.clone(),
+            });
+        }
+        per_unit.push(list);
+    }
+    let first = per_unit.first()?;
+    let mut shared: Vec<SyncCheck> = Vec::new();
+    for c in first {
+        if c.argv.is_empty()
+            || shared.iter().any(|x| x.argv == c.argv)
+            || !per_unit[1..]
+                .iter()
+                .all(|l| l.iter().any(|x| x.argv == c.argv))
+        {
+            continue;
+        }
+        shared.push(c.clone());
+    }
+    (!shared.is_empty()).then_some(shared)
+}
+
+/// Run the sync's checks on the content now in the checkpoint's working copy. Returns the failures:
+/// check, command, exit, output tail. The runs of the units' shared checks are recorded as sync runs, which
+/// settle nothing; a checkpoint whose units share no command runs its own command checks (real receipts).
+pub(crate) fn run_sync_checks(
+    p: &Project,
+    pl: &Plan,
+    st: &State,
+    k: &str,
+    sync: u64,
+) -> R<Vec<Value>> {
+    let Some(list) = sync_checks(p, pl, st, k) else {
+        return run_k_checks(p, pl, k);
+    };
+    let top = p.work_dir().join(k);
+    let mut failed = Vec::new();
+    for c in list {
+        match evidence::sync_run(p, k, &c.label, &c.argv, &top, sync) {
+            Ok(r) if r["exit"].as_i64() == Some(0) => {}
+            Ok(r) => failed.push(
+                json!({"check": c.label, "command": c.argv.join(" "), "exit": r["exit"], "tail": s(&r, "output_tail")}),
+            ),
+            Err(e) => failed.push(
+                json!({"check": c.label, "command": c.argv.join(" "), "exit": null, "tail": format!("{e:?}")}),
             ),
         }
     }
@@ -2954,7 +3034,7 @@ fn sync_hand_resolved(
         ));
     }
     // The joined content must be proven too.
-    let failed = run_k_checks(p, pl, &so.checkpoint)?;
+    let failed = run_sync_checks(p, pl, st, &so.checkpoint, so.floor)?;
     if !failed.is_empty() {
         let mut steps: Vec<String> = failed
             .iter()
@@ -2970,7 +3050,7 @@ fn sync_hand_resolved(
         return Err(refuse_owned(
             format!("sync {}", so.checkpoint),
             format!(
-                "the checkpoint's checks fail on the joined content: {}",
+                "the sync's checks fail on the joined content: {}",
                 failed.len()
             ),
             steps,
@@ -3050,9 +3130,9 @@ pub fn sync_report(
                     "`bf status` shows the sync in review.",
                 ));
             }
-            // The joined content must be proven: the checkpoint's own command checks run on it, through
-            // the engine, so the receipts are real.
-            let failed = run_k_checks(p, &pl, k)?;
+            // The joined content must be proven: the sync's checks run on it, through the engine, and
+            // the runs are recorded as sync runs.
+            let failed = run_sync_checks(p, &pl, &st, k, so.floor)?;
             if !failed.is_empty() {
                 let mut steps: Vec<String> = failed
                     .iter()
@@ -3065,10 +3145,10 @@ pub fn sync_report(
                         )
                     })
                     .collect();
-                steps.push("Repair it (only files either side changed, or new test files beside them), commit, run the failing checks again with `bf evidence run`, then report again.".into());
+                steps.push("Repair it (only files either side changed, or new test files beside them), commit, run only the tests you change, then report again: the engine runs the sync's checks when you report.".into());
                 return Err(refuse_owned(
                     format!("report the resolution of {k}"),
-                    format!("the checkpoint's checks fail on the joined content: {}", failed.len()),
+                    format!("the sync's checks fail on the joined content: {}", failed.len()),
                     steps,
                     "`bf status` shows the sync in review.",
                 ));
@@ -3179,36 +3259,63 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
             }
         }
     }
-    // The checkpoint's own checks on the joined content.
+    // The sync's checks on the joined content: the command checks every unit of the checkpoint is held
+    // to; a checkpoint whose units share no command is checked by its own command checks.
     let pl = plan::load(p)?;
     if let Some(kr) = pl.checkpoint(k) {
         let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
         let receipts = evidence::load_receipts(p)?;
-        let mut shown = false;
         let st = events::require_chain(p)?;
-        for cid in str_list(kr, "checks") {
-            let Some(c) = pl
-                .checks
-                .iter()
-                .find(|c| s(c, "id") == cid && s(c, "how") == "command")
-            else {
-                continue;
+        let shared = sync_checks(p, &pl, &st, k);
+        let mut entries: Vec<(String, String)> = Vec::new();
+        match &shared {
+            Some(list) => {
+                for c in list {
+                    entries.push((c.label.clone(), c.argv.join(" ")));
+                }
+            }
+            None => {
+                for cid in str_list(kr, "checks") {
+                    let Some(c) = pl
+                        .checks
+                        .iter()
+                        .find(|c| s(c, "id") == cid && s(c, "how") == "command")
+                    else {
+                        continue;
+                    };
+                    // A check the human switched off is not run by the sync, so the brief does not ask for it.
+                    if crate::enforce::is_off(&st, c) {
+                        continue;
+                    }
+                    entries.push((cid, evidence::command_words(c).join(" ")));
+                }
+            }
+        }
+        let shown = !entries.is_empty();
+        if shown {
+            md.push_str("## The sync's checks on the joined content\n\n");
+        }
+        for (cid, argv) in &entries {
+            let last = receipts.iter().rev().find(|r| {
+                r.content() == content
+                    && if shared.is_some() {
+                        s(&r.v, "type") == "sync"
+                            && r.check() == k
+                            && s(&r.v, "reason") == cid
+                            && s(&r.v, "command") == argv
+                    } else {
+                        r.check() == cid && r.is_run()
+                    }
+            });
+            let passes = |r: &Receipt| {
+                if shared.is_some() {
+                    r.seal_ok && r.v["exit"].as_i64() == Some(0)
+                } else {
+                    r.passes()
+                }
             };
-            // A check the human switched off is not run by the sync, so the brief does not ask for it.
-            if crate::enforce::is_off(&st, c) {
-                continue;
-            }
-            let argv = evidence::command_words(c).join(" ");
-            let last = receipts
-                .iter()
-                .rev()
-                .find(|r| r.check() == cid && r.is_run() && r.content() == content);
-            if !shown {
-                md.push_str("## The checkpoint's checks on the joined content\n\n");
-                shown = true;
-            }
             match last {
-                Some(r) if r.passes() => {
+                Some(r) if passes(r) => {
                     md.push_str(&format!("- {cid} (`{argv}`): passes on this content.\n"))
                 }
                 Some(r) => {
@@ -3228,7 +3335,7 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
         }
         if shown {
             md.push_str(&format!(
-                "\nRun a check again, from inside `{}`, with `bf evidence run <check> -- <its command>` (the engine records a real receipt).\n\n",
+                "\nThe engine runs these checks when the resolver reports, on the content in `{}`. The checkpoint's own checks run only at verification, never in a sync. Run only the tests you change, selected by name; never the checkpoint's own checks or the extended suite.\n\n",
                 p.work_dir().join(k).display()
             ));
         }

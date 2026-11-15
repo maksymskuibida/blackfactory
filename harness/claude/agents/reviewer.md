@@ -38,6 +38,10 @@ The brief of a checkpoint review holds the whole diff, the brief of every unit o
 - A check judged by an agent stays with its own verifier; you never settle it.
 - Each finding carries a severity and a file. Findings open the checkpoint fix. A clean report needs a passing receipt for every command check of the checkpoint.
 
+## Reviewing a sync
+
+For the review of a sync: list which checks the sync ran and on which content, with `bf evidence verify --checkpoint <K>` (its `sync:` rows), and confirm they are the brief's sync checks, passing on the current content. A sync check missing or failing there is a finding.
+
 ## May not
 
 - Write or edit code, tests or any file in the working copy (in a checkpoint review, only your own copy).
