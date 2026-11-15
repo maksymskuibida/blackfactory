@@ -601,6 +601,8 @@ pub struct CkFixOpen {
     /// The content of the checkpoint when the fix opened.
     pub content: String,
     pub open_seq: u64,
+    /// The seq of the latest event that parked the fix; 0 while it was never parked.
+    pub park_seq: u64,
     /// What set the fix off, as the opening event recorded it: the failed checks, or the findings.
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
@@ -885,6 +887,24 @@ pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
         })
         .max()
         .unwrap_or(0)
+}
+
+/// The seq after which a human message may end these findings (round, number) of a checkpoint, or `None`
+/// when a fix opened for one of them is at work (open and not parked): then the human is not asked about
+/// it. When that fix is parked, the bound is the later of `put_to_human_seq` and the fix's park. One rule
+/// for the command and for the replay.
+pub fn settle_bound(st: &State, k: &str, ids: &[(u32, u32)]) -> Option<u64> {
+    let put = put_to_human_seq(st, k, ids);
+    match st.ck_fix.as_ref() {
+        Some(f) if f.checkpoint == k && ids.iter().any(|i| f.origin_ids.contains(i)) => {
+            if f.phase == "parked" {
+                Some(put.max(f.park_seq))
+            } else {
+                None
+            }
+        }
+        _ => Some(put),
+    }
 }
 
 pub fn replay_log_with(log: &Log, words: &Words) -> State {
@@ -1598,6 +1618,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.attempts += 1;
                     o.phase = sv("to");
+                    if o.phase == "parked" {
+                        o.park_seq = seq;
+                    }
                     o.reason = sv("reason");
                     o.failed = ev["failed"].as_array().cloned().unwrap_or_default();
                     o.findings.clear();
@@ -1612,6 +1635,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     if sv("result") == "findings" {
                         o.rounds += 1;
                         o.phase = sv("to");
+                        if o.phase == "parked" {
+                            o.park_seq = seq;
+                        }
                         o.reason = sv("reason");
                         o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
                         o.history
@@ -1622,6 +1648,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.park" => {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.phase = "parked".into();
+                    o.park_seq = seq;
                     o.reason = sv("reason");
                 }
             }
@@ -1634,7 +1661,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                let bound = st.ck_fix.as_ref().map_or(0, |f| f.park_seq);
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
                         "event {seq}: a checkpoint fix release cites no valid human turn and quote"
                     ));
@@ -1652,16 +1688,18 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.finding.settle" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 let fate = sv("fate");
-                let bound = put_to_human_seq(&st, &sv("checkpoint"), &id_pairs(&ev["ids"]));
-                if !decision_turn_ok(
-                    &st,
-                    &turn_ix,
-                    tseq,
-                    bound,
-                    seq,
-                    &sv("quote"),
-                    Decide::Approve,
-                ) || !matches!(fate.as_str(), "accepted" | "declined")
+                let bound = settle_bound(&st, &sv("checkpoint"), &id_pairs(&ev["ids"]));
+                if bound.is_none()
+                    || !decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        bound.unwrap_or(0),
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    )
+                    || !matches!(fate.as_str(), "accepted" | "declined")
                     || (fate == "declined" && sv("reason").trim().is_empty())
                 {
                     st.ignored.push(format!(
