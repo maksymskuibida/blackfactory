@@ -472,6 +472,42 @@ pub fn apply_changes(off: &mut BTreeMap<String, String>, changes: &[CheckChange]
     }
 }
 
+/// A grant of files beyond a unit's list, as the log has it (R-84).
+#[derive(Clone, Debug, Default)]
+pub struct ScopeGrant {
+    pub n: u32,
+    pub seq: u64,
+    pub at: String,
+    /// `{path, why, patch}` for each file.
+    pub files: Vec<Value>,
+    /// `{path, mark}` for each marked file.
+    pub marks: Vec<Value>,
+    /// The log position of the request this grant answers.
+    pub request: u64,
+    /// The human's words and the time, when the grant was withdrawn.
+    pub withdrawn: Option<(String, String)>,
+    /// Whether the unit was sent back to undo changes the grant allowed.
+    pub undo: bool,
+}
+
+/// An open request of a builder for files beyond its unit's list.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeReq {
+    pub seq: u64,
+    pub at: String,
+    pub from: String,
+    pub files: Vec<Value>,
+}
+
+/// Everything the log says about a unit's files beyond its list.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeSt {
+    pub open: Option<ScopeReq>,
+    pub grants: Vec<ScopeGrant>,
+    /// Requests refused as an extension or by a hard rule: `{seq, at, refusal, files}`.
+    pub refused: Vec<Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct UnitSt {
     pub state: String,
@@ -686,6 +722,8 @@ pub struct State {
     pub setting_proposals: Vec<SettingProposal>,
     /// The latest wave check run of each checkpoint and wave.
     pub wave_runs: BTreeMap<(String, u32), WaveRun>,
+    /// Unit -> its open request, its grants and its refused requests.
+    pub scope: BTreeMap<String, ScopeSt>,
 }
 
 impl State {
@@ -1208,6 +1246,95 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 u.last_seq = seq;
                 u.last_at = at;
+            }
+            "unit.scope.request" => {
+                let u = st.units.entry(sv("unit")).or_default();
+                u.attempts += 1;
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                u.cost += c;
+                u.last_seq = seq;
+                u.last_at = at.clone();
+                st.cost += c;
+                st.scope.entry(sv("unit")).or_default().open = Some(ScopeReq {
+                    seq,
+                    at,
+                    from: sv("from"),
+                    files: ev["files"].as_array().cloned().unwrap_or_default(),
+                });
+            }
+            "unit.scope.grant" => {
+                let sc = st.scope.entry(sv("unit")).or_default();
+                sc.open = None;
+                let n = sc.grants.len() as u32 + 1;
+                sc.grants.push(ScopeGrant {
+                    n,
+                    seq,
+                    at: at.clone(),
+                    files: ev["files"].as_array().cloned().unwrap_or_default(),
+                    marks: ev["marks"].as_array().cloned().unwrap_or_default(),
+                    request: ev["request"].as_u64().unwrap_or(0),
+                    withdrawn: None,
+                    undo: false,
+                });
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                st.cost += c;
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    u.cost += c;
+                    u.last_seq = seq;
+                    u.last_at = at;
+                }
+            }
+            "unit.scope.refused" => {
+                // A hard refusal never opened a request, so it counts here; an extension's request
+                // was counted when it was made.
+                let hard = sv("refusal") == "hard";
+                let sc = st.scope.entry(sv("unit")).or_default();
+                sc.open = None;
+                sc.refused.push(json!({
+                    "seq": seq, "at": at, "refusal": sv("refusal"), "files": ev["files"],
+                }));
+                let u = st.units.entry(sv("unit")).or_default();
+                if u.state != "blocked" {
+                    u.prev_state = u.state.clone();
+                }
+                u.state = "blocked".into();
+                if hard {
+                    u.attempts += 1;
+                    let c = ev["cost"].as_f64().unwrap_or(0.0);
+                    u.cost += c;
+                    st.cost += c;
+                }
+                u.last_seq = seq;
+                u.last_at = at;
+            }
+            "unit.scope.revert" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a withdrawal of a grant cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                let n = ev["n"].as_u64().unwrap_or(0) as u32;
+                let to = sv("to");
+                if let Some(g) = st
+                    .scope
+                    .get_mut(&sv("unit"))
+                    .and_then(|sc| sc.grants.iter_mut().find(|g| g.n == n))
+                {
+                    g.withdrawn = Some((sv("quote"), at.clone()));
+                    g.undo = !to.is_empty();
+                }
+                if !to.is_empty() {
+                    if let Some(u) = st.units.get_mut(&sv("unit")) {
+                        if u.state != "landed" {
+                            u.state = to;
+                            u.last_seq = seq;
+                            u.last_at = at;
+                        }
+                    }
+                }
             }
             "unit.role-report" => {
                 // The cost a role reports counts in the total, and for a unit also in the unit's.

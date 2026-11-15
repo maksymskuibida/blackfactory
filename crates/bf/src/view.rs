@@ -842,6 +842,32 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
     Ok(v)
 }
 
+/// A unit's row names its grants: number, files and whether it was withdrawn.
+fn grants_line(st: &State, unit: &str) -> Option<String> {
+    let sc = st.scope.get(unit).filter(|sc| !sc.grants.is_empty())?;
+    Some(format!(
+        "Files granted beyond the list: {}.",
+        sc.grants
+            .iter()
+            .map(|g| format!(
+                "grant {}{} ({})",
+                g.n,
+                if g.withdrawn.is_some() {
+                    ", withdrawn"
+                } else {
+                    ""
+                },
+                g.files
+                    .iter()
+                    .map(|f| s(f, "path"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
 fn run_view(p: &Project, st: &State) -> R<Value> {
     let pl = plan::load(p)?;
     let rc = evidence::load_receipts(p)?;
@@ -875,6 +901,9 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
                 "Checkpoint fixes attributed: {}.",
                 fx.join(", ")
             )));
+        }
+        if let Some(l) = grants_line(st, id) {
+            body.push(text(&l));
         }
         for c in pl.unit_checks(id) {
             if let Some(r) = rc.iter().rfind(|r| r.check() == s(c, "id") && r.is_run()) {
@@ -931,6 +960,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     };
     let mut secs = vec![
         json!({"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows}),
+        crate::scope::section(st, &pl, None),
         json!({"id": "checks-default", "title": "Checks: project default", "hint": "Each switched-off check shows its reason", "open": false, "blocks": [], "rows": check_rows(&st.checks_default)}),
     ];
     if let Some(r) = run {
@@ -1258,17 +1288,27 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         .map(|u| {
             let id = s(u, "id");
             let fx = crate::ckfix::fixes_of_unit(st, id);
-            json!({"id": id, "title": s(u, "title"),
-            "body": [text(&if fx.is_empty() {
+            let mut body = vec![text(&if fx.is_empty() {
                 "Fixes attributed: none.".to_string()
             } else {
                 format!("Fixes attributed: {}.", fx.join(", "))
-            })]})
+            })];
+            if let Some(l) = grants_line(st, id) {
+                body.push(text(&l));
+            }
+            json!({"id": id, "title": s(u, "title"), "body": body})
         })
+        .collect();
+    let unit_ids: Vec<String> = pl
+        .units
+        .iter()
+        .filter(|u| s(u, "checkpoint") == kid)
+        .map(|u| s(u, "id").to_string())
         .collect();
     v["sections"] = json!([
         {"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows},
         {"id": "fixes", "title": "Fixes", "hint": "What set each fix off, its files, units and review rounds", "open": !fixes.is_empty(), "blocks": [], "rows": fixes},
+        crate::scope::section(st, &pl, Some(&unit_ids)),
         {"id": "units", "title": "Units", "hint": "The fixes attributed to each unit", "open": false, "blocks": [], "rows": unit_rows},
     ]);
     v["answer"] = json!({"how": "chat", "prompt": "Close with `bf checkpoint close` once every row is proven."});

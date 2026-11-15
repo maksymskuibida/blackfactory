@@ -508,7 +508,9 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
             }
         }
     }
-    md.push_str("\n## The brief of every unit on this checkpoint\n\n");
+    md.push('\n');
+    md.push_str(&crate::scope::grants_md_checkpoint(&st, &pl, k));
+    md.push_str("## The brief of every unit on this checkpoint\n\n");
     for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
         let id = s(u, "id");
         md.push_str(&format!(

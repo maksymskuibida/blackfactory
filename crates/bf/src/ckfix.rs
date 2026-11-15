@@ -51,7 +51,8 @@ fn several_repos(p: &Project, pl: &Plan, k: &str) -> bool {
 }
 
 /// The unit's file patterns as they read inside the checkpoint's working copy folder.
-fn unit_patterns(p: &Project, pl: &Plan, k: &str, u: &Value) -> Vec<String> {
+/// The list of the record plus the unit's grants, landed or not (R-84).
+fn unit_patterns(p: &Project, pl: &Plan, st: &State, k: &str, u: &Value) -> Vec<String> {
     let pre = if several_repos(p, pl, k) {
         p.repo_of_unit(u)
             .map(|r| format!("{}/", r.name))
@@ -59,7 +60,7 @@ fn unit_patterns(p: &Project, pl: &Plan, k: &str, u: &Value) -> Vec<String> {
     } else {
         String::new()
     };
-    str_list(u, "files")
+    crate::scope::unit_files(st, u)
         .into_iter()
         .map(|f| format!("{pre}{f}"))
         .collect()
@@ -74,6 +75,7 @@ pub fn file_set(p: &Project, pl: &Plan, k: &str) -> FileSet {
 /// The same, held to some of the checkpoint's units (`only`): a wave fix may change only the files of the
 /// units that landed since the last wave check passed, and new test files beside them.
 pub fn file_set_of(p: &Project, pl: &Plan, k: &str, only: Option<&[String]>) -> FileSet {
+    let st = events::replay(p).unwrap_or_default();
     let mut set = FileSet {
         allowed: vec![],
         test_dirs: vec![],
@@ -89,7 +91,7 @@ pub fn file_set_of(p: &Project, pl: &Plan, k: &str, only: Option<&[String]>) -> 
         })
     {
         set.units.push(s(u, "id").to_string());
-        for f in unit_patterns(p, pl, k, u) {
+        for f in unit_patterns(p, pl, &st, k, u) {
             if let Some(d) = test_folder(&f) {
                 if !set.test_dirs.contains(&d) {
                     set.test_dirs.push(d);
@@ -108,9 +110,10 @@ pub fn file_set_of(p: &Project, pl: &Plan, k: &str, only: Option<&[String]>) -> 
 pub fn units_of_file(p: &Project, pl: &Plan, k: &str, file: &str) -> Vec<String> {
     let mut by_list: Vec<String> = Vec::new();
     let mut by_folder: Vec<String> = Vec::new();
+    let st = events::replay(p).unwrap_or_default();
     for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
         let id = s(u, "id").to_string();
-        let pats = unit_patterns(p, pl, k, u);
+        let pats = unit_patterns(p, pl, &st, k, u);
         if pats.iter().any(|g| util::path_matches(g, file)) {
             by_list.push(id);
         } else if pats
