@@ -551,10 +551,25 @@ fn command_checks(commands: &[String]) -> R<Vec<Value>> {
             "`bf checks wave propose` prints the proposal.",
         ));
     }
-    Ok(commands
-        .iter()
-        .map(|c| json!({"title": format!("Wave check: {}", c.trim()), "command": c.trim()}))
-        .collect())
+    let mut out = Vec::new();
+    for c in commands {
+        let words = crate::checks::shell_words(c);
+        if let Some(w) = evidence::unquoted_operator_word(c)
+            .or_else(|| evidence::shell_operator_word(&words, false))
+        {
+            return Err(refuse(
+                "propose wave checks",
+                evidence::operator_message(&format!("wave check `{}`", c.trim()), &w),
+                &[
+                    "Propose one wave check per program.",
+                    "Or keep an argument with a space whole by quoting it: the engine stores the words as a list.",
+                ],
+                "`bf checks wave propose` prints the proposal.",
+            ));
+        }
+        out.push(json!({"title": format!("Wave check: {}", c.trim()), "command": words}));
+    }
+    Ok(out)
 }
 
 fn pick_scope(st: &State, scope: Option<&str>) -> R<String> {
@@ -820,7 +835,7 @@ fn write_records(p: &Project, value: &Value) -> R<()> {
             "text": format!("Run after each wave of units has landed, on a copy of the checkpoint's content. From the {}.",
                 if source == "default" { "project default" } else { "run's override" }),
             "how": "command",
-            "command": s(&c, "command"),
+            "command": evidence::command_words(&c),
             "proves": [],
             "scope": "wave",
         });
@@ -889,7 +904,7 @@ pub fn plan_section(pl: &Plan, st: &State) -> Value {
                 .as_array()
                 .map(|a| a
                     .iter()
-                    .map(|x| s(x, "command").to_string())
+                    .map(|x| evidence::command_words(x).join(" "))
                     .collect::<Vec<_>>()
                     .join("; "))
                 .unwrap_or_default()

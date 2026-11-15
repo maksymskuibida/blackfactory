@@ -749,6 +749,21 @@ fn unit_settings(
                                 "The command prints the proposal.",
                             ));
                         }
+                        if let Some(w) =
+                            crate::evidence::unquoted_operator_word(c.trim()).or_else(|| {
+                                crate::evidence::shell_operator_word(&shell_words(c.trim()), false)
+                            })
+                        {
+                            return Err(refuse(
+                                "propose the checks every unit must pass",
+                                crate::evidence::operator_message(&format!("check `{}`", n.trim()), &w),
+                                &[
+                                    "Propose one check per program.",
+                                    "Or keep an argument with a space whole by quoting it: the engine passes the quoted words as they are.",
+                                ],
+                                "The command prints the proposal.",
+                            ));
+                        }
                         checks.push(json!({"name": n.trim(), "command": c.trim()}));
                     }
                     if checks.is_empty() {

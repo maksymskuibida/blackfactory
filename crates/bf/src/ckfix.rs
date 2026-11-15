@@ -371,10 +371,16 @@ fn probe_tests_missing(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<String>> 
             }
             Some(_) => {}
         }
-        let argv: Vec<String> = s(x, "probe_command")
-            .split_whitespace()
-            .map(|w| w.to_string())
-            .collect();
+        let argv: Vec<String> = match x.get("probe_words").and_then(|w| w.as_array()) {
+            Some(a) => a
+                .iter()
+                .filter_map(|w| w.as_str().map(|w| w.to_string()))
+                .collect(),
+            None => s(x, "probe_command")
+                .split_whitespace()
+                .map(|w| w.to_string())
+                .collect(),
+        };
         if argv.is_empty() {
             missing.push(format!("probe `{name}`: it has no command to run"));
             continue;

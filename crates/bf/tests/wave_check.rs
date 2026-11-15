@@ -499,7 +499,11 @@ fn the_default_changes_only_on_a_yes_and_a_later_run_can_use_it() {
         ])
         .json();
     assert_eq!(s["default"]["enabled"], true, "{s}");
-    assert_eq!(s["default"]["checks"][0]["command"], GOOD, "{s}");
+    assert_eq!(
+        s["default"]["checks"][0]["command"],
+        serde_json::json!(["grep", "-q", "good", "src/a.txt"]),
+        "{s}"
+    );
     // The pages show it.
     assert!(fx.root.join("factory/wave.json").exists());
     let page = fx.must(&["view", "plan", "--json"]).stdout;

@@ -245,6 +245,11 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
         if !u.is_empty() && !unit_ids.contains(u) {
             bad.push(format!("{id} belongs to {u}, which is not a unit"));
         }
+        if s(c, "how") == "command" {
+            if let Some(w) = crate::evidence::record_operator_word(c) {
+                bad.push(crate::evidence::operator_message(id, &w));
+            }
+        }
     }
     // Checkpoints.
     let check_proves: HashMap<String, HashSet<String>> = pl
