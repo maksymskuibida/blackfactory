@@ -678,3 +678,68 @@ fn a_fix_may_not_overwrite_a_test_file_that_was_already_there() {
     // A test file a unit lists stays writable.
     assert_ne!(w("tests/a_test.txt"), "deny");
 }
+
+/// A fix opened by a high finding of the review, whose builder reports blocked: it is parked. The human wrote
+/// a neutral sentence before the plan.
+fn parked_fix_after_old_words(old: &str) -> Fx {
+    let fx = Fx::new();
+    fx.human(old);
+    plan(&fx);
+    land_unit(&fx);
+    let k = fx.work("K-1");
+    let findings = json!([{"title": "the answer is wrong", "severity": "high", "where": "src/a.txt", "action": "fix it"}]);
+    let o = fx.bf_stdin(
+        &k,
+        &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"],
+        &findings.to_string(),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = builder_report_note(&fx, &k);
+    assert_eq!(o.code, 0, "{}", o.all());
+    one_directive(&fx, "decide-checkpoint-fix");
+    fx
+}
+
+fn builder_report_note(fx: &Fx, k: &Path) -> Out {
+    fx.bf_in(
+        k,
+        &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck"],
+    )
+}
+
+// R-96, D-70: a parked checkpoint fix is released only on words written after it parked.
+#[test]
+fn a_parked_fix_is_released_only_on_words_written_after_it_parked() {
+    const OLD: &str = "Carry on with the build, thanks.";
+    let fx = parked_fix_after_old_words(OLD);
+    let o = fx.bf(&["checkpoint", "fix", "K-1", "--release", "--quote", OLD]);
+    eprintln!("release on words written before the park: {}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("written before"), "{}", o.stderr);
+    one_directive(&fx, "decide-checkpoint-fix");
+    // A message written after the park releases it.
+    fx.human("Yes, try the fix once more.");
+    let o = fx.bf(&["checkpoint", "fix", "K-1", "--release", "--quote", "try the fix once more"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    one_directive(&fx, "fix-checkpoint");
+}
+
+#[test]
+fn a_fix_release_that_cites_words_written_before_the_park_is_ignored_on_replay() {
+    const OLD: &str = "Carry on with the build, thanks.";
+    let fx = parked_fix_after_old_words(OLD);
+    let p = fx.project();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let old = st.turns.iter().find(|t| t.text == OLD).unwrap().seq;
+    bf::events::append(
+        &p,
+        "checkpoint.fix.release",
+        json!({"checkpoint": "K-1", "turn": old, "quote": OLD}),
+    )
+    .unwrap();
+    let s = fx.must(&["status", "--json"]).json();
+    eprintln!("ignored: {}", s["ignored_events"]);
+    assert_eq!(s["ignored_events"].as_array().unwrap().len(), 1, "{s}");
+    fx.must(&["log", "--verify"]);
+    one_directive(&fx, "decide-checkpoint-fix");
+}

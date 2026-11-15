@@ -247,7 +247,7 @@ fn a_fix_aborted_leaves_its_finding_open_and_the_human_decides() {
 }
 
 #[test]
-fn the_repeat_review_brief_says_an_open_finding_stays_open() {
+fn the_repeat_review_brief_after_a_passed_fix_carries_the_fixed_sentence_on_open_findings() {
     let fx = Fx::new();
     plan(&fx);
     start(&fx);
@@ -582,4 +582,248 @@ fn the_usage_and_the_close_name_the_words_and_the_open_finding() {
     eprintln!("no such words: {}", o.stderr);
     assert_eq!(o.code, 2, "{}", o.all());
     assert_eq!(o.stderr.matches("Ask the human in chat").count(), 1, "{}", o.stderr);
+}
+
+// R-96, D-70, TH-46: while a fix opened for a finding is at work the human is not asked about it, so words
+// written during the fix end nothing; a parked fix bounds the words by its park.
+const DURING: &str = "Looks fine so far, keep going.";
+
+fn fix_at_work() -> Fx {
+    let fx = Fx::new();
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(directives(&fx).contains(&"fix-checkpoint".to_string()));
+    fx
+}
+
+fn settle_args<'a>(how: &'a str, quote: &'a str) -> Vec<&'a str> {
+    let mut v = vec!["checkpoint", "finding", "K-1"];
+    if how == "accept" {
+        v.extend(["--accept", "r1.1"]);
+    } else {
+        v.extend(["--decline", "r1.1", "--reason", "it is how it is meant to be"]);
+    }
+    v.extend(["--quote", quote]);
+    v
+}
+
+#[test]
+fn words_written_while_the_fix_runs_neither_accept_nor_decline_its_finding() {
+    for how in ["accept", "decline"] {
+        let fx = fix_at_work();
+        fx.human(DURING);
+        let o = fx.bf(&settle_args(how, DURING));
+        eprintln!("{how} while the fix runs: {}", o.stderr);
+        assert_eq!(o.code, 2, "{how}: {}", o.all());
+        assert!(o.stderr.contains("bf checkpoint fix K-1 --abort"), "{how}: {}", o.stderr);
+        assert!(o.stderr.contains("bf next"), "{how}: {}", o.stderr);
+        assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
+        // The abort needs no words; the words written during the fix still decide nothing after it.
+        fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+        let o = fx.bf(&settle_args(how, DURING));
+        eprintln!("{how} on the same words after the abort: {}", o.stderr);
+        assert_eq!(o.code, 2, "{how}: {}", o.all());
+        assert!(o.stderr.contains("written before"), "{how}: {}", o.stderr);
+        // A message written after the abort decides.
+        fx.human("Yes, that is my decision on it.");
+        let o = fx.bf(&settle_args(how, "that is my decision on it"));
+        println!("{how} after the abort: {}", o.stdout.trim());
+        assert_eq!(o.code, 0, "{how}: {}", o.all());
+        assert!(fates(&fx, 1)[0].starts_with(if how == "accept" { "accepted" } else { "declined" }));
+    }
+}
+
+#[test]
+fn a_parked_fix_takes_only_words_written_after_it_parked_for_its_findings() {
+    for how in ["accept", "decline"] {
+        let fx = fix_at_work();
+        fx.human(DURING);
+        let o = fx.bf_in(
+            &fx.work("K-1"),
+            &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck"],
+        );
+        assert_eq!(o.code, 0, "{}", o.all());
+        assert!(directives(&fx).contains(&"decide-checkpoint-fix".to_string()));
+        let o = fx.bf(&settle_args(how, DURING));
+        eprintln!("{how} on words written before the park: {}", o.stderr);
+        assert_eq!(o.code, 2, "{how}: {}", o.all());
+        assert!(o.stderr.contains("written before"), "{how}: {}", o.stderr);
+        fx.human("Yes, that is my decision on it.");
+        let o = fx.bf(&settle_args(how, "that is my decision on it"));
+        println!("{how} after the park: {}", o.stdout.trim());
+        assert_eq!(o.code, 0, "{how}: {}", o.all());
+    }
+}
+
+#[test]
+fn a_settle_event_appended_while_the_fix_runs_is_ignored_on_replay() {
+    let fx = fix_at_work();
+    fx.human(DURING);
+    let p = fx.project();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let t = st.turns.iter().find(|t| t.text == DURING).unwrap().seq;
+    bf::events::append(
+        &p,
+        "checkpoint.finding.settle",
+        json!({"checkpoint": "K-1", "ids": [{"round": 1, "index": 1}], "fate": "accepted",
+               "reason": "", "turn": t, "quote": DURING}),
+    )
+    .unwrap();
+    let s = fx.must(&["status", "--json"]).json();
+    eprintln!("ignored: {}", s["ignored_events"]);
+    assert_eq!(s["ignored_events"].as_array().unwrap().len(), 1, "{s}");
+    fx.must(&["log", "--verify"]);
+    assert_eq!(fates(&fx, 1), vec!["open".to_string()]);
+    assert!(directives(&fx).contains(&"fix-checkpoint".to_string()));
+}
+
+fn low() -> Value {
+    json!({"title": "a small thing", "severity": "low", "where": "src/a.txt:1", "action": "tidy"})
+}
+
+fn round_events(fx: &Fx, round: u32, content: &str, findings: Vec<Value>) {
+    let p = fx.project();
+    bf::events::append(
+        &p,
+        "checkpoint.review.open",
+        json!({"checkpoint": "K-1", "round": round, "content": content, "heads": [], "covered": "the whole checkpoint, cold"}),
+    )
+    .unwrap();
+    bf::events::append(
+        &p,
+        "checkpoint.review.done",
+        json!({"checkpoint": "K-1", "round": round, "content": content,
+               "result": if findings.is_empty() { "clean" } else { "findings" },
+               "findings": findings, "areas": areas(), "probes": [], "note": ""}),
+    )
+    .unwrap();
+}
+
+fn content_of_round_one(fx: &Fx) -> String {
+    bf::ckreview::rounds(&fx.project(), "K-1").unwrap()[0].content.clone()
+}
+
+#[test]
+fn an_older_open_high_finding_holds_a_later_clean_review_of_the_same_content() {
+    let fx = aborted_after_old_words();
+    let content = content_of_round_one(&fx);
+    round_events(&fx, 2, &content, vec![]);
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
+    let d = directives(&fx);
+    eprintln!("next: {d:?}");
+    assert!(d.contains(&"decide-checkpoint-fix".to_string()), "{d:?}");
+    let c = fx.bf(&["checkpoint", "close", "K-1"]);
+    eprintln!("close: {}", c.stderr);
+    assert_eq!(c.code, 2, "{}", c.all());
+    let because = c.stderr.lines().find(|l| l.starts_with("because:")).unwrap_or("");
+    assert!(because.contains("r1.1"), "{}", c.stderr);
+}
+
+#[test]
+fn a_release_sends_the_open_findings_of_every_round_to_the_fix() {
+    let fx = Fx::new();
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 2");
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    let content = content_of_round_one(&fx);
+    let mut second = high();
+    second["title"] = json!("the second answer is wrong");
+    round_events(&fx, 2, &content, vec![second]);
+    assert!(directives(&fx).contains(&"decide-checkpoint-review".to_string()));
+    fx.human("Release it, go on with the fix.");
+    let o = fx.bf(&["checkpoint", "review", "K-1", "--release", "--quote", "Release it"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let d = next_directive(&fx, "fix-checkpoint").expect("the findings go to a fix");
+    let titles: Vec<String> = d["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["title"].as_str().unwrap().to_string())
+        .collect();
+    eprintln!("the fix holds: {titles:?}");
+    assert_eq!(titles.len(), 2, "{d}");
+    assert!(titles.contains(&"the answer is wrong".to_string()), "{d}");
+    assert!(titles.contains(&"the second answer is wrong".to_string()), "{d}");
+}
+
+#[test]
+fn a_fix_open_event_that_cites_words_written_before_its_bound_is_ignored_on_replay() {
+    let fx = aborted_after_old_words();
+    let p = fx.project();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let old = st.turns.iter().find(|t| t.text == BEFORE_TWO).unwrap().seq;
+    bf::events::append(
+        &p,
+        "checkpoint.fix.open",
+        json!({"checkpoint": "K-1", "source": "review", "findings": [high()],
+               "finding_ids": [{"round": 1, "index": 1}], "before": [],
+               "human": {"turn": old, "quote": BEFORE_TWO}}),
+    )
+    .unwrap();
+    let s = fx.must(&["status", "--json"]).json();
+    eprintln!("ignored: {}", s["ignored_events"]);
+    assert_eq!(s["ignored_events"].as_array().unwrap().len(), 1, "{s}");
+    fx.must(&["log", "--verify"]);
+    assert!(directives(&fx).contains(&"decide-checkpoint-fix".to_string()));
+}
+
+#[test]
+fn a_review_release_event_that_cites_words_written_before_the_report_is_ignored_on_replay() {
+    let fx = Fx::new();
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    fx.human(BEFORE_ONE);
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    let p = fx.project();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let old = st.turns.iter().find(|t| t.text == BEFORE_ONE).unwrap().seq;
+    bf::events::append(
+        &p,
+        "checkpoint.review.release",
+        json!({"checkpoint": "K-1", "after_round": 1, "turn": old, "quote": BEFORE_ONE}),
+    )
+    .unwrap();
+    let s = fx.must(&["status", "--json"]).json();
+    eprintln!("ignored: {}", s["ignored_events"]);
+    assert_eq!(s["ignored_events"].as_array().unwrap().len(), 1, "{s}");
+    fx.must(&["log", "--verify"]);
+    assert!(directives(&fx).contains(&"decide-checkpoint-review".to_string()));
+}
+
+#[test]
+fn a_repeat_review_brief_gives_the_outcome_open_for_a_low_finding_left_open() {
+    let fx = Fx::new();
+    plan(&fx);
+    start(&fx);
+    brief(&fx);
+    fx.must_in(
+        &fx.work("K-1-review"),
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
+    let o = report(&fx, json!({"areas": areas(), "findings": [low()]}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    // The content changes, so a repeat review starts while the low finding is still open.
+    let k = fx.work("K-1");
+    fs::write(k.join("src/a.txt"), "changed after the first review\n").unwrap();
+    git(&k, &["add", "-A"]);
+    git(&k, &["commit", "-q", "-m", "change"]);
+    let o = brief(&fx);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let text = fs::read_to_string(fx.project().briefs_dir().join("K-1-reviewer.md")).unwrap();
+    let line = text.lines().find(|l| l.contains("a small thing")).unwrap_or("");
+    eprintln!("brief line: {line}");
+    assert!(line.contains("Outcome: open"), "{text}");
 }

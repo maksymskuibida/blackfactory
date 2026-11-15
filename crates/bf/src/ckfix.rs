@@ -1144,7 +1144,7 @@ pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) ->
                 "`bf status` shows the fix back at work.",
             ));
         }
-        let (turn, _) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+        let (turn, _) = events::pick_turn(&st, f.park_seq, events::Decide::Approve, quote)?;
         events::append(
             p,
             "checkpoint.fix.release",

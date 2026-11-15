@@ -1381,7 +1381,17 @@ pub fn settle(
     }
     let picked = pick_findings(p, &st, k, spec)?;
     let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
-    let bound = events::put_to_human_seq(&st, k, &pairs);
+    let Some(bound) = events::settle_bound(&st, k, &pairs) else {
+        return Err(refuse(
+            format!("{} findings of {k}", if fate_name == "declined" { "decline" } else { "accept" }),
+            "a fix opened for that finding is at work, and the human is not asked about the finding until the fix ends or parks: words written while it runs cannot end it",
+            &[
+                "Wait for the fix: `bf next` shows what it waits for and who works on it.",
+                &format!("Or end the fix with `bf checkpoint fix {k} --abort`, then ask the human in a new message."),
+            ],
+            "`bf next` shows the fix at work.",
+        ));
+    };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let ids: Vec<Value> = picked
         .iter()
