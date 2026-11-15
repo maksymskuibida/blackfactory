@@ -240,7 +240,17 @@ pub fn maybe_open(p: &Project) -> R<()> {
         if st2.ck_fix.is_some() || st2.sync_open.is_some() {
             return Ok(());
         }
-        if open_locked(p, &pl, kid, "check", failed, vec![], &content, false, None)? {
+        if open_locked(
+            p,
+            &pl,
+            kid,
+            "check",
+            failed,
+            (vec![], vec![]),
+            &content,
+            false,
+            None,
+        )? {
             return Ok(());
         }
     }
@@ -264,7 +274,7 @@ pub(crate) fn open_wave(
         k,
         "wave",
         failed,
-        vec![],
+        (vec![], vec![]),
         content,
         false,
         Some((wave, units)),
@@ -280,7 +290,7 @@ fn open_locked(
     k: &str,
     source: &str,
     failed: Vec<Value>,
-    findings: Vec<Value>,
+    (findings, finding_ids): (Vec<Value>, Vec<(u32, u32)>),
     content: &str,
     strict: bool,
     wave: Option<(u32, &[String])>,
@@ -303,6 +313,7 @@ fn open_locked(
         p,
         "checkpoint.fix.open",
         json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings,
+               "finding_ids": finding_ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
                "allowed": set.allowed, "test_dirs": set.test_dirs, "units": set.units,
                "before": heads(p, pl, k)?, "content": content,
                "wave": wave.map(|(w, _)| w).unwrap_or(0)}),
@@ -318,9 +329,20 @@ pub(crate) fn open_chosen(
     pl: &Plan,
     k: &str,
     findings: Vec<Value>,
+    ids: Vec<(u32, u32)>,
     content: &str,
 ) -> R<()> {
-    open_locked(p, pl, k, "review", vec![], findings, content, true, None)?;
+    open_locked(
+        p,
+        pl,
+        k,
+        "review",
+        vec![],
+        (findings, ids),
+        content,
+        true,
+        None,
+    )?;
     Ok(())
 }
 
@@ -964,7 +986,28 @@ fn open_from_review(
         ));
     }
     let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
-    open_locked(p, pl, k, "review", vec![], listed, &content, true, None)?;
+    // The findings of a review round carry the round they were filed in, and their numbers inside it.
+    let ids: Vec<(u32, u32)> = if via_round {
+        crate::ckreview::rounds(p, k)?
+            .iter()
+            .rev()
+            .find(|r| r.result.as_deref() == Some("findings"))
+            .map(|r| (1..=listed.len() as u32).map(|i| (r.round, i)).collect())
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    open_locked(
+        p,
+        pl,
+        k,
+        "review",
+        vec![],
+        (listed, ids),
+        &content,
+        true,
+        None,
+    )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
 }
 
@@ -1256,7 +1299,7 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
             ));
         }
         md.push_str(&format!(
-            "## What to judge\n\nDoes the fix solve the failure without weakening a test? Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
+            "## What to judge\n\nDoes the fix solve the failure without weakening a test? Look at how each probe test was added to the suite: it must be in the suite and run, not compiled out, skipped or emptied, and its command must run at least one test. Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
         ));
     }
     let path = p.briefs_dir().join(format!("{k}-{role}.md"));

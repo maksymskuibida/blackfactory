@@ -595,6 +595,9 @@ pub struct CkFixOpen {
     /// What set the fix off, as the opening event recorded it: the failed checks, or the findings.
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
+    /// The round and the number inside the round (from 1) of each finding the fix was opened for. Empty for
+    /// a fix opened before the pairs were recorded, and for a fix that no review finding opened.
+    pub origin_ids: Vec<(u32, u32)>,
     /// Every review round: number, the content it judged, the commits, what it covered, its outcome.
     pub rounds_log: Vec<Value>,
     /// The findings of every earlier round, with the round they were filed in.
@@ -628,6 +631,10 @@ pub struct CkFixDone {
     pub rounds_log: Vec<Value>,
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
+    /// The (round, number) pairs the fix was opened for; empty for a fix recorded before they were kept.
+    pub ids: Vec<(u32, u32)>,
+    /// The latest review round of the checkpoint that had reported when the fix opened.
+    pub from_round: u32,
     pub seq: u64,
 }
 
@@ -705,7 +712,9 @@ pub struct State {
     pub ck_declined: Vec<String>,
     /// Findings of checkpoint reviews that the human accepted or declined, in log order.
     pub ck_settled: Vec<CkSettled>,
-    /// Checkpoint -> the review round the human released it at: reviews before it no longer count towards
+    /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
+    pub ck_round_done: Vec<(String, u32, u64)>,
+    /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
@@ -1488,6 +1497,17 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         vec![json!({"round": 0, "findings": findings})]
                     },
                     origin_findings: findings.clone(),
+                    origin_ids: ev["finding_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|x| {
+                            (
+                                x["round"].as_u64().unwrap_or(0) as u32,
+                                x["index"].as_u64().unwrap_or(0) as u32,
+                            )
+                        })
+                        .collect(),
                     origin_failed: ev["failed"].as_array().cloned().unwrap_or_default(),
                     findings,
                     failed: ev["failed"].as_array().cloned().unwrap_or_default(),
@@ -1599,6 +1619,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ev["after_round"].as_u64().unwrap_or(0) as u32,
                 );
             }
+            "checkpoint.review.done" => {
+                st.ck_round_done.push((
+                    sv("checkpoint"),
+                    ev["round"].as_u64().unwrap_or(0) as u32,
+                    seq,
+                ));
+            }
             "checkpoint.fix.abort" => {
                 if let Some(o) = st.ck_fix.take() {
                     st.ck_declined
@@ -1623,6 +1650,14 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         rounds_log: o.rounds_log.clone(),
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
+                        ids: o.origin_ids.clone(),
+                        from_round: st
+                            .ck_round_done
+                            .iter()
+                            .filter(|(c, _, q)| *c == o.checkpoint && *q < o.open_seq)
+                            .map(|(_, r, _)| *r)
+                            .max()
+                            .unwrap_or(0),
                         seq,
                     });
                 }

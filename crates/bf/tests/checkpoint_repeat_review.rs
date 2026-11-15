@@ -341,13 +341,21 @@ fn a_checkpoint_cannot_close_while_a_high_or_medium_finding_of_its_latest_review
             json!({"areas": areas(), "findings": [finding("open one", severity)]}),
         );
         assert_eq!(o.code, 0, "{}", o.all());
+        // The fix opened for the finding is open: the close names it.
+        let o = fx.refused(&["checkpoint", "close", "K-1"]);
+        assert!(
+            o.stderr.contains("a fix of it is open"),
+            "{severity}: {}",
+            o.stderr
+        );
+        fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+        // The fix ended without passing its review: the finding stays open and holds the close.
         let o = fx.refused(&["checkpoint", "close", "K-1"]);
         assert!(
             o.stderr.contains("checkpoint review"),
             "{severity}: {}",
             o.stderr
         );
-        fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
     }
 }
 
@@ -510,7 +518,9 @@ fn the_checkpoint_parks_after_the_set_number_of_reviews_and_only_the_human_relea
         "Release it",
     ]);
     let d = directive(&fx, "fix-checkpoint").expect("the findings go to a fix");
-    assert_eq!(d["findings"][0]["title"], "two", "{d}");
+    // Every high or medium finding still open since the last release goes to the fix, not only the latest's.
+    assert_eq!(d["findings"][0]["title"], "one", "{d}");
+    assert_eq!(d["findings"][1]["title"], "two", "{d}");
     assert!(directive(&fx, "decide-checkpoint-review").is_none());
 }
 
