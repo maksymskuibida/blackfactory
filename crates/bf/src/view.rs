@@ -329,6 +329,10 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             let cov = ledger::rows(&pl, &[], false, st);
             sec["blocks"] = json!([wave_block(&pl, &states), coverage_block(&cov)]);
         }
+        // R-61 and R-76: the wave checks the run uses (or the plain statement that there are none) and the
+        // checks every unit must pass, with each override and its reason, are approved with the plan.
+        sections.push(crate::wavecheck::plan_section(&pl, st));
+        sections.push(crate::wavecheck::unit_checks_section(p, &pl, st));
         if !pl.problems.is_empty() {
             sections.insert(0, json!({"id": "problems", "title": "Plan problems", "hint": "Fix these before the gate opens", "open": true, "blocks": [],
                 "rows": pl.problems.iter().enumerate().map(|(i, x)| json!({"id": format!("P-{}", i + 1), "title": x, "needs_you": false, "label": "high", "body": []})).collect::<Vec<_>>()}));
@@ -561,8 +565,7 @@ fn proof_row(p: &Project, pl: &Plan, rc: &[Receipt], id: &str, content: Option<&
                 body.push(text(&t));
                 continue;
             }
-            body.push(json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
-                "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")}));
+            body.push(evidence_row(r));
         }
     }
     // A verifier's standing outcome (failed or unreachable) means the human has to decide.
@@ -654,6 +657,21 @@ fn coverage_state(r: &ledger::Row) -> &'static str {
     } else {
         "proven"
     }
+}
+
+/// An evidence row of a page. A deliberate repeat (R-57) shows its attempt number and its reason.
+pub fn evidence_row(r: &evidence::Receipt) -> Value {
+    let mut row = json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
+        "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")});
+    if let Some(a) = r.v["attempt"].as_u64() {
+        let why = s(&r.v, "reason").trim();
+        row["reason"] = json!(if why.is_empty() {
+            format!("attempt {a}")
+        } else {
+            format!("attempt {a}, {why}")
+        });
+    }
+    row
 }
 
 /// What a check judged by an agent says: the outcome, the sentence about what was looked at, and the
@@ -793,6 +811,8 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
         "rows": pl.handoffs.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
     sections.push(json!({"id": "checkpoints", "title": "Checkpoints", "hint": "What each one proves", "open": false, "blocks": [],
         "rows": pl.checkpoints.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
+    sections.push(crate::wavecheck::plan_section(&pl, st));
+    sections.push(crate::wavecheck::unit_checks_section(p, &pl, st));
     if !pl.problems.is_empty() {
         sections.insert(0, json!({"id": "problems", "title": "Plan problems", "hint": "`bf plan check` refuses until these are fixed", "open": true, "blocks": [],
             "rows": pl.problems.iter().enumerate().map(|(i, x)| json!({"id": format!("P-{}", i + 1), "title": x, "needs_you": false, "label": "high", "body": []})).collect::<Vec<_>>()}));
@@ -822,6 +842,32 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
     Ok(v)
 }
 
+/// A unit's row names its grants: number, files and whether it was withdrawn.
+fn grants_line(st: &State, unit: &str) -> Option<String> {
+    let sc = st.scope.get(unit).filter(|sc| !sc.grants.is_empty())?;
+    Some(format!(
+        "Files granted beyond the list: {}.",
+        sc.grants
+            .iter()
+            .map(|g| format!(
+                "grant {}{} ({})",
+                g.n,
+                if g.withdrawn.is_some() {
+                    ", withdrawn"
+                } else {
+                    ""
+                },
+                g.files
+                    .iter()
+                    .map(|f| s(f, "path"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
 fn run_view(p: &Project, st: &State) -> R<Value> {
     let pl = plan::load(p)?;
     let rc = evidence::load_receipts(p)?;
@@ -847,11 +893,21 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             for n in &us.notes {
                 body.push(text(n));
             }
+            body.extend(round_lines(&us.review_rounds));
+        }
+        let fx = crate::ckfix::fixes_of_unit(st, id);
+        if !fx.is_empty() {
+            body.push(text(&format!(
+                "Checkpoint fixes attributed: {}.",
+                fx.join(", ")
+            )));
+        }
+        if let Some(l) = grants_line(st, id) {
+            body.push(text(&l));
         }
         for c in pl.unit_checks(id) {
             if let Some(r) = rc.iter().rfind(|r| r.check() == s(c, "id") && r.is_run()) {
-                body.push(json!({"type": "evidence", "check": r.check(), "command": s(&r.v, "command"), "exit": r.v["exit"].as_i64().unwrap_or(0),
-                    "commit": &r.content()[..r.content().len().min(12)], "at": s(&r.v, "at"), "output_tail": s(&r.v, "output_tail")}));
+                body.push(evidence_row(r));
             }
         }
         rows.push(json!({"id": id, "title": s(u, "title"), "needs_you": matches!(state.as_str(), "blocked" | "parked"),
@@ -904,6 +960,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     };
     let mut secs = vec![
         json!({"id": "units", "title": "Units", "hint": "State of each", "open": true, "blocks": blocks, "rows": rows}),
+        crate::scope::section(st, &pl, None),
         json!({"id": "checks-default", "title": "Checks: project default", "hint": "Each switched-off check shows its reason", "open": false, "blocks": [], "rows": check_rows(&st.checks_default)}),
     ];
     if let Some(r) = run {
@@ -929,6 +986,188 @@ fn strip_event(e: &Value) -> Value {
         }
     }
     m
+}
+
+/// One line per review round: its number, the content it judged, what it covered and its result.
+fn round_lines(rounds: &[Value]) -> Vec<Value> {
+    rounds
+        .iter()
+        .map(|r| {
+            let content = r["content"].as_str().unwrap_or("");
+            let result = r["result"].as_str().unwrap_or("");
+            text(&format!(
+                "Review round {} judged content {}; covered: {}.{}",
+                r["round"],
+                &content[..content.len().min(12)],
+                r["covered"].as_str().unwrap_or(""),
+                if result.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Result: {result}.")
+                }
+            ))
+        })
+        .collect()
+}
+
+fn failed_line(x: &Value) -> String {
+    let tail = x["tail"]
+        .as_str()
+        .unwrap_or("")
+        .lines()
+        .last()
+        .unwrap_or("");
+    format!(
+        "failed check {} (`{}`), exit {}, output ends: {}",
+        x["check"].as_str().unwrap_or(""),
+        x["command"].as_str().unwrap_or(""),
+        if x["exit"].is_null() {
+            "none".to_string()
+        } else {
+            x["exit"].to_string()
+        },
+        tail
+    )
+}
+
+fn finding_line(x: &Value) -> String {
+    format!(
+        "[{}] {} at {}",
+        x["severity"].as_str().unwrap_or(""),
+        x["title"].as_str().unwrap_or(""),
+        x["where"].as_str().unwrap_or("")
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fix_row(
+    id: &str,
+    checkpoint: &str,
+    source: &str,
+    phase: &str,
+    note: &str,
+    failed: &[Value],
+    findings: &[Value],
+    files: Option<&[String]>,
+    units: &[String],
+    by_file: &Value,
+    rounds: &[Value],
+) -> Value {
+    let mut body = vec![text(&format!(
+        "Set off by: {}.",
+        if source == "check" {
+            "a failed checkpoint check"
+        } else {
+            "findings of the checkpoint review"
+        }
+    ))];
+    for x in failed {
+        body.push(text(&format!("- {}", failed_line(x))));
+    }
+    for x in findings {
+        body.push(text(&format!("- finding {}", finding_line(x))));
+    }
+    body.push(text(&format!(
+        "Phase: {phase}.{}",
+        if note.is_empty() {
+            String::new()
+        } else {
+            format!(" {note}")
+        }
+    )));
+    body.push(text(&match files {
+        Some(f) if !f.is_empty() => format!("Files changed: {}.", f.join(", ")),
+        Some(_) => "Files changed: none.".to_string(),
+        None => "Files changed: recorded when the fix finishes.".to_string(),
+    }));
+    if units.is_empty() {
+        body.push(text("Units: none attributed yet."));
+    } else {
+        let per: Vec<String> = by_file
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(f, us)| {
+                        let us: Vec<&str> = us
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|u| u.as_str())
+                            .collect();
+                        format!("{f} -> {}", us.join(", "))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        body.push(text(&format!(
+            "Units: {}.{}",
+            units.join(", "),
+            if per.is_empty() {
+                String::new()
+            } else {
+                format!(" By file: {}.", per.join("; "))
+            }
+        )));
+    }
+    if rounds.is_empty() {
+        body.push(text("Review rounds: none yet."));
+    }
+    body.extend(round_lines(rounds));
+    json!({"id": id, "title": format!("Fix of {checkpoint} ({})", if source == "check" { "check failed" } else { "review findings" }),
+        "needs_you": matches!(phase, "parked" | "gap"),
+        "handled": {"tone": if phase == "done" { "ok" } else { "open" }, "text": phase},
+        "body": body})
+}
+
+/// The fixes of a checkpoint: every finished one in order, then the open one.
+fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
+    let mut rows: Vec<Value> = st
+        .ck_fixes
+        .iter()
+        .filter(|d| d.checkpoint == kid)
+        .map(|d| {
+            fix_row(
+                &d.id,
+                kid,
+                &d.source,
+                "done",
+                "Reviewed clean and the checkpoint's checks passed again.",
+                &d.origin_failed,
+                &d.origin_findings,
+                Some(&d.files),
+                &d.units,
+                &d.by_file,
+                &d.rounds_log,
+            )
+        })
+        .collect();
+    if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == kid) {
+        let n = rows.len() + 1;
+        let mut note = String::new();
+        if !f.reason.is_empty() {
+            note.push_str(&format!("Reason: {}.", f.reason.trim_end_matches('.')));
+        }
+        if !f.missing.is_empty() {
+            if !note.is_empty() {
+                note.push(' ');
+            }
+            note.push_str(&format!("Missing: {}.", f.missing.join("; ")));
+        }
+        rows.push(fix_row(
+            &format!("{kid}-fix-{n}"),
+            kid,
+            &f.source,
+            &f.phase,
+            &note,
+            &f.origin_failed,
+            &f.origin_findings,
+            None,
+            &[],
+            &Value::Null,
+            &f.rounds_log,
+        ));
+    }
+    rows
 }
 
 fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
@@ -990,7 +1229,88 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             fact("Units", str_list(k, "after").len(), "before it"),
         ],
     );
-    v["sections"] = json!([{"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows}]);
+    let fixes = fix_rows(st, &kid);
+    let mut rows = rows;
+    let mut rbody = vec![];
+    let review_rounds = crate::ckreview::rounds(p, &kid)?;
+    if review_rounds.is_empty() {
+        rbody.push(text("Review rounds: none yet."));
+    }
+    for r in &review_rounds {
+        rbody.push(text(&format!(
+            "Review round {} judged content {}; covered: {}.{}",
+            r.round,
+            &r.content[..r.content.len().min(12)],
+            r.covered,
+            match r.result.as_deref() {
+                Some(x) if !x.is_empty() => format!(" Result: {x}."),
+                _ => String::new(),
+            }
+        )));
+        for a in &r.areas {
+            rbody.push(text(&format!(
+                "Round {} probed: {} ({}).",
+                r.round,
+                a["area"].as_str().unwrap_or(""),
+                a["how"].as_str().unwrap_or("")
+            )));
+        }
+        for x in &r.probes {
+            rbody.push(text(&format!(
+                "Round {} probe {}: meant to show {}; showed {}.",
+                r.round,
+                x["name"].as_str().unwrap_or(""),
+                x["meant"].as_str().unwrap_or(""),
+                x["showed"].as_str().unwrap_or("")
+            )));
+        }
+    }
+    let flaky: Vec<String> = rc
+        .iter()
+        .filter(|r| {
+            r.v["flag"].as_str() == Some("flaky") && Some(r.content()) == content.as_deref()
+        })
+        .map(|r| r.check().to_string())
+        .collect();
+    rbody.push(text(&if flaky.is_empty() {
+        "Flaky: none flagged.".to_string()
+    } else {
+        format!(
+            "Flaky: {} passed on a repeat and was judged acceptable flakiness.",
+            flaky.join(", ")
+        )
+    }));
+    rows.push(json!({"id": format!("{kid}-review"), "title": "Checkpoint review", "needs_you": false, "body": rbody}));
+    let unit_rows: Vec<Value> = pl
+        .units
+        .iter()
+        .filter(|u| s(u, "checkpoint") == kid)
+        .map(|u| {
+            let id = s(u, "id");
+            let fx = crate::ckfix::fixes_of_unit(st, id);
+            let mut body = vec![text(&if fx.is_empty() {
+                "Fixes attributed: none.".to_string()
+            } else {
+                format!("Fixes attributed: {}.", fx.join(", "))
+            })];
+            if let Some(l) = grants_line(st, id) {
+                body.push(text(&l));
+            }
+            json!({"id": id, "title": s(u, "title"), "body": body})
+        })
+        .collect();
+    let unit_ids: Vec<String> = pl
+        .units
+        .iter()
+        .filter(|u| s(u, "checkpoint") == kid)
+        .map(|u| s(u, "id").to_string())
+        .collect();
+    v["sections"] = json!([
+        {"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows},
+        {"id": "fixes", "title": "Fixes", "hint": "What set each fix off, its files, units and review rounds", "open": !fixes.is_empty(), "blocks": [], "rows": fixes},
+        crate::scope::section(st, &pl, Some(&unit_ids)),
+        {"id": "units", "title": "Units", "hint": "The fixes attributed to each unit", "open": false, "blocks": [], "rows": unit_rows},
+    ]);
     v["answer"] = json!({"how": "chat", "prompt": "Close with `bf checkpoint close` once every row is proven."});
     Ok(v)
 }

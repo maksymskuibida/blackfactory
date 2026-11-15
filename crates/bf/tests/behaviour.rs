@@ -225,6 +225,7 @@ fn a_grant_before_the_run_covers_the_design_gates_in_order() {
     }
     // Starting the run consumes the grant, and the run is a test run.
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     assert_eq!(
         fx.must(&["status", "--json"]).json()["test_mode"],
         "granted"
@@ -439,6 +440,7 @@ fn close_then_close_with_merge_merges_once_in_a_real_run() {
     let fx = Fx::new();
     fx.tiny();
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("approved");
     fx.must(&["gate", "approve", "plan", "--quote", "approved"]);

@@ -94,6 +94,37 @@ pub fn check_profile(
     p
 }
 
+/// What a command in the checkpoint reviewer's copy may not do beyond a check (TH-16): move a branch or
+/// a tag of the repository the copy came from. The copy is a worktree, so its git data lives in the
+/// repository's own `.git`; the refs and the main checkout's HEAD are out of reach, the copy's own index
+/// and objects are not.
+pub fn review_profile(base: &str, repos: &[String]) -> String {
+    let mut p = String::from(base);
+    for r in repos {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            q(&format!("{r}/.git/refs"))
+        ));
+        for f in ["packed-refs", "HEAD", "ORIG_HEAD"] {
+            p.push_str(&format!(
+                "(deny file-write* (literal {}))\n",
+                q(&format!("{r}/.git/{f}"))
+            ));
+        }
+    }
+    p
+}
+
+/// Whether `dir` is a checkpoint reviewer's copy: a folder `<K>-review` directly under the work folder.
+pub fn is_review_copy(work_dir: &Path, dir: &Path) -> bool {
+    dir.strip_prefix(work_dir)
+        .ok()
+        .and_then(|rel| rel.components().next())
+        .and_then(|c| c.as_os_str().to_str())
+        .map(|n| n.starts_with("K-") && n.ends_with("-review"))
+        .unwrap_or(false)
+}
+
 /// The profile for git calls: the state folder and the network are out of reach, and `factory/` is
 /// not written.
 pub fn git_profile(state_dir: &str, root: &str) -> String {

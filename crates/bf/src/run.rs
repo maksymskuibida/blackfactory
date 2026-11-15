@@ -1,7 +1,7 @@
 //! Runs: start, status, next directives, reports, briefs, unit working copies,
 //! landing, checkpoint closing, stuck units and cost.
 
-use crate::events::{self, State};
+use crate::events::{self, Hold, State};
 use crate::evidence::{self, Receipt};
 use crate::gates;
 use crate::gitx;
@@ -11,6 +11,7 @@ use crate::schema;
 use crate::store::{s, str_list, Project, Repo};
 use crate::util;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,7 +30,30 @@ pub fn is_open(f: &Value) -> bool {
     !matches!(s(f, "outcome"), "fixed" | "accepted")
 }
 
-fn need_run(st: &State) -> R<String> {
+/// The plan questions the active run has not answered (R-89): the directive action, the command that
+/// asks it and what it asks. Empty when no run is active.
+pub(crate) fn unanswered_questions(st: &State) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut out = vec![];
+    if let Some(r) = st.active_run() {
+        if r.wave.is_none() {
+            out.push((
+                "answer-wave-checks",
+                "bf checks wave question",
+                "which wave checks this run uses",
+            ));
+        }
+        if r.unit_checks.is_none() {
+            out.push((
+                "answer-unit-checks",
+                "bf checks unit question",
+                "which checks every unit of this run must pass",
+            ));
+        }
+    }
+    out
+}
+
+pub(crate) fn need_run(st: &State) -> R<String> {
     st.active_run().map(|r| r.id.clone()).ok_or_else(|| {
         refuse(
             "continue without a run",
@@ -164,7 +188,19 @@ pub fn status(p: &Project) -> R<Value> {
         "test_mode": test,
         "chain_ok": st.chain_ok,
         "events": st.event_count,
-        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_, "waiting_for": why})).collect::<Vec<_>>(),
+        "units": states.iter().map(|(i, s_, why)| json!({"id": i, "state": s_,
+            "waiting_for": match crate::scope::open_request(&st, i) {
+                Some(r) => json!(format!("a scope review of {} requested file(s)", r.files.len())),
+                None => json!(why),
+            },
+            "scope_request": crate::scope::request_json(&st, i),
+            "scope_grants": crate::scope::grants_json(&st, i),
+            "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
+            "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
+        "checkpoint_fix": crate::ckfix::status_json(&st),
+        "wave_checks": crate::wavecheck::status_json(&st),
+        "plan_questions": crate::wavecheck::plan_questions(&st),
+        "checkpoint_reviews": crate::ckreview::status_json(p, &st),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
@@ -219,7 +255,83 @@ fn budget_check(p: &Project, st: &State) -> R<()> {
     Ok(())
 }
 
+/// Log the holds the engine can see on each checkpoint whose units have all landed and that is not closed: a
+/// check marked failed or unreachable at its content, an unanswered worker's question whose unit is the
+/// checkpoint, and a wave check that holds its close. Each change against the logged hold (a start, a new
+/// cause or what it names, an end) is one `checkpoint.hold` event. It takes no lock beyond what its caller
+/// holds and appends through `events::append`.
+pub fn observe_holds(p: &Project) -> R<()> {
+    let st = events::replay(p)?;
+    if !st.chain_ok || st.active_run().is_none() {
+        return Ok(());
+    }
+    let pl = plan::load(p)?;
+    let mut want: BTreeMap<String, (&'static str, String)> = BTreeMap::new();
+    let open_questions: Vec<Value> = p
+        .list_records(schema::kind_by_name("question"))?
+        .into_iter()
+        .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
+        .collect();
+    let mut receipts: Option<Vec<Receipt>> = None;
+    for k in &pl.checkpoints {
+        let kid = s(k, "id");
+        let after = str_list(k, "after");
+        if st.closed.contains_key(kid)
+            || after.is_empty()
+            || !after.iter().all(|u| st.unit_state(u) == "landed")
+        {
+            continue;
+        }
+        let wave = crate::wavecheck::close_blockers(&pl, &st, kid);
+        if !wave.is_empty() {
+            want.insert(kid.to_string(), ("wave", wave.join("; ")));
+            continue;
+        }
+        if let Some(q) = open_questions.iter().find(|q| s(q, "unit") == kid) {
+            want.insert(kid.to_string(), ("question", s(q, "id").to_string()));
+            continue;
+        }
+        if receipts.is_none() {
+            receipts = Some(evidence::load_receipts(p)?);
+        }
+        let rs = receipts.as_deref().unwrap_or(&[]);
+        let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+        let marked: Vec<String> = str_list(k, "checks")
+            .into_iter()
+            .filter(|c| evidence::standing_outcome(rs, c, &content).is_some())
+            .collect();
+        if !marked.is_empty() {
+            want.insert(kid.to_string(), ("marked", marked.join(",")));
+        }
+    }
+    let mut ids: Vec<String> = st.ck_holds.keys().cloned().collect();
+    ids.extend(
+        want.keys()
+            .filter(|k| !st.ck_holds.contains_key(*k))
+            .cloned(),
+    );
+    for kid in ids {
+        let logged = st
+            .ck_holds
+            .get(&kid)
+            .map(|h| (h.cause.clone(), h.detail.clone()));
+        let now = want.get(&kid).map(|(c, d)| (c.to_string(), d.clone()));
+        if logged == now {
+            continue;
+        }
+        let (cause, detail) = now.unwrap_or_default();
+        events::append(
+            p,
+            "checkpoint.hold",
+            json!({"checkpoint": kid, "cause": cause, "detail": detail}),
+        )?;
+    }
+    Ok(())
+}
+
 fn next_raw(p: &Project) -> R<Value> {
+    // The holds are logged before the directives are worked out, so the one predicate and the log agree.
+    observe_holds(p)?;
     let st = events::require_chain(p)?;
     let run = need_run(&st)?;
     budget_check(p, &st)?;
@@ -252,12 +364,36 @@ fn next_raw(p: &Project) -> R<Value> {
         return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
     }
     match st.latest_gate("plan", None) {
-        Some(g) if g.status == "approved" => {}
+        Some(g) if g.status == "approved" => {
+            // A run that has not answered a plan question is asked it now; no unit starts until then.
+            if !pl.units.is_empty() {
+                for (action, command, _) in unanswered_questions(&st) {
+                    let (what, set) = if action == "answer-wave-checks" {
+                        ("which wave checks this run uses (the project default, an override or none)", "bf checks wave")
+                    } else {
+                        ("which checks every unit of this run must pass (the project's list, an override or none)", "bf checks unit")
+                    };
+                    directives.push(json!({"role": "human", "action": action, "command": command,
+                        "note": format!("Ask the human {what}, then record the answer with `{set} propose` and `{set} set --quote`. No unit starts until both questions are answered.")}));
+                }
+            }
+        }
         Some(g) if g.status == "open" => {
             directives.push(json!({"role": "human", "action": "decide-gate", "gate": g.id, "note": "Ask the human to approve or reject the plan in chat."}));
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
         _ => {
+            // The run's two plan questions come first: the plan gate does not open until both are answered.
+            if let Some(r) = st.active_run().filter(|_| !pl.units.is_empty()) {
+                if r.wave.is_none() {
+                    directives.push(json!({"role": "human", "action": "answer-wave-checks", "command": "bf checks wave question",
+                        "note": "Ask the human which wave checks this run uses (the project default, an override or none), then record the answer with `bf checks wave propose` and `bf checks wave set --quote`."}));
+                }
+                if r.unit_checks.is_none() {
+                    directives.push(json!({"role": "human", "action": "answer-unit-checks", "command": "bf checks unit question",
+                        "note": "Ask the human which checks every unit of this run must pass (the project's list, an override or none), then record the answer with `bf checks unit propose` and `bf checks unit set --quote`."}));
+                }
+            }
             directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": "plan", "command": "bf gate open plan"}));
             return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
@@ -298,6 +434,26 @@ fn next_raw(p: &Project) -> R<Value> {
         directives.push(d);
         return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
     }
+    // An open fix of a checkpoint: it is settled before anything else starts.
+    if let Some(f) = &st.ck_fix {
+        let mut d = crate::ckfix::directive(p, &st, f);
+        if f.source == "wave" {
+            // A fix of a wave check does not hold the next wave back: its units are built without
+            // waiting, and only their landing waits for the wave check to pass.
+            d["note_fix"] = json!(format!(
+                "A fix of the wave check of wave {} of {} is open. The units of the next wave are offered below and are built without waiting; none of them lands until the wave check has passed.",
+                f.wave, f.checkpoint
+            ));
+            directives.push(d);
+        } else {
+            d["note_fix"] = json!(format!(
+                "A fix of {} is open; nothing else starts until it is settled.",
+                f.checkpoint
+            ));
+            directives.push(d);
+            return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
+        }
+    }
     let limits = |us_rounds: u32| {
         json!({"max_rounds": p.policy.limits.max_rounds, "round": us_rounds, "idle_minutes": p.policy.limits.idle_minutes,
                "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }})
@@ -331,9 +487,17 @@ fn next_raw(p: &Project) -> R<Value> {
                 .to_string()
         };
         match state.as_str() {
+            "ready" if !unanswered_questions(&st).is_empty() => {
+                waiting.push(format!("{id}: waiting for the human's answers to the run's plan questions"))
+            }
             "ready" => directives.push(json!({"role": "builder", "action": "start-unit", "unit": id, "tier": tier_for(p, u, "builder"),
                 "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
                 "commands": [format!("bf unit start {id}"), format!("bf brief {id} --role builder")]})),
+            "running" | "fixing" if crate::scope::open_request(&st, &id).is_some() => {
+                // A builder's request for files is with a cold reviewer: its directive replaces the
+                // builder's until the verdict is in.
+                directives.push(crate::scope::directive(p, &st, &id, limits(rounds)));
+            }
             "running" | "fixing" => {
                 let mut d = json!({"role": "builder", "action": if state == "fixing" { "fix" } else { "build" }, "unit": id,
                     "tier": tier_for(p, u, "builder"), "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
@@ -347,11 +511,36 @@ fn next_raw(p: &Project) -> R<Value> {
                 "working_copy": wc, "brief": brief("reviewer"), "limits": limits(rounds),
                 "commands": [format!("bf brief {id} --role reviewer")]})),
             "reviewed" => directives.push(json!({"role": "engine", "action": "land", "unit": id, "command": format!("bf unit land {id}")})),
-            "blocked" | "parked" => directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state,
-                "note": format!("{id} is {state}; the human decides whether to re-plan or release it.")})),
+            "blocked" | "parked" => {
+                let mut note = format!("{id} is {state}; the human decides whether to re-plan or release it.");
+                if let Some(r) = st.scope.get(&id).and_then(|sc| sc.refused.last()).filter(|_| state == "blocked") {
+                    let files: Vec<String> = r["files"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|f| {
+                            format!(
+                                "{}: {}",
+                                s(f, "path"),
+                                if s(f, "rule").is_empty() { s(f, "why") } else { s(f, "rule") }
+                            )
+                        })
+                        .collect();
+                    note.push_str(&format!(" A request for files was refused ({}): {}. The plan repair is the human's.", s(r, "refusal"), files.join("; ")));
+                }
+                directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state, "note": note}))
+            }
             "planned" => waiting.push(format!("{id}: {}", why.unwrap_or_default())),
             _ => {}
         }
+    }
+    // The step after a wave has landed: each wave check runs on a copy of the content, beside the units of
+    // the next wave. The engine runs it; it needs no worker's token.
+    for (k, w) in crate::wavecheck::due(p, &pl, &st) {
+        directives.push(crate::wavecheck::directive(&k, w, &pl));
+    }
+    for (k, w) in crate::wavecheck::running(p, &pl, &st) {
+        waiting.push(format!("{k}: the wave check of wave {w} is running"));
     }
     // Checkpoints whose units have all landed.
     for k in &pl.checkpoints {
@@ -360,13 +549,62 @@ fn next_raw(p: &Project) -> R<Value> {
         if st.closed.contains_key(kid) {
             continue;
         }
-        if held(kid) {
-            waiting.push(format!(
-                "{kid}: waiting for the human's answer to its question"
-            ));
-            continue;
+        // The last wave's check counts for the checkpoint's own checks when it ran on the content the
+        // checkpoint closes on, so the checkpoint waits for it.
+        let landed = !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed");
+        // Every withholding of the checkpoint's findings is a case of the one predicate.
+        let hold = if landed {
+            events::hold(&st, kid, u64::MAX)
+        } else {
+            None
+        };
+        match hold {
+            Some(Hold::Wave { reason, .. }) => {
+                waiting.push(format!("{kid}: {reason}"));
+                if st.ck_fix.is_none()
+                    && st
+                        .wave_runs
+                        .iter()
+                        .any(|((c, _), r)| c == kid && r.state == "failed")
+                {
+                    directives.push(json!({"role": "human", "action": "decide-wave-check", "checkpoint": kid,
+                        "note": format!("A wave check of {kid} failed and its fix was turned down. The human decides: change the plan by amendment, or have the fix tried again.")}));
+                }
+                continue;
+            }
+            Some(Hold::Question { .. }) => {
+                waiting.push(format!(
+                    "{kid}: waiting for the human's answer to its question"
+                ));
+                continue;
+            }
+            Some(Hold::Marked { checks, .. }) => {
+                let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+                let marked: Vec<Value> = checks
+                    .iter()
+                    .map(|c| match evidence::standing_outcome(&receipts, c, &content) {
+                        Some(r) => json!({"check": c, "outcome": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")}),
+                        None => json!({"check": c, "outcome": "", "reason": ""}),
+                    })
+                    .collect();
+                directives.push(json!({"role": "human", "action": "decide-check", "checkpoint": kid, "checks": marked,
+                    "note": "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, or change the plan."}));
+                continue;
+            }
+            // A sync or a fix is at work: their early returns above end the directives, except for the
+            // fix of a wave check, which lets the next wave's units go on and holds the checkpoint here.
+            Some(h @ (Hold::Sync { .. } | Hold::Fix { .. })) => {
+                let wave_held = crate::wavecheck::close_blockers(&pl, &st, kid);
+                if wave_held.is_empty() {
+                    waiting.push(format!("{kid}: {}", h.because()));
+                } else {
+                    waiting.push(format!("{kid}: {}", wave_held.join("; ")));
+                }
+                continue;
+            }
+            None => {}
         }
-        if !after.is_empty() && after.iter().all(|u| st.unit_state(u) == "landed") {
+        if landed {
             let wc = p.work_dir().join(kid).to_string_lossy().to_string();
             let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
             // A check the human switched off is not asked for.
@@ -378,27 +616,28 @@ fn next_raw(p: &Project) -> R<Value> {
                         .any(|r| s(r, "id") == c && crate::enforce::is_off(&st, r))
                 })
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
-                .collect();
-            let human_needed =
-                crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
-            let marked: Vec<Value> = str_list(k, "checks")
-                .iter()
-                .filter_map(|c| {
-                    evidence::standing_outcome(&receipts, c, &content).map(|r| {
-                        json!({"check": c, "outcome": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")})
+                // The checkpoint review is settled by its reviewer, never by the verifier.
+                .filter(|c| {
+                    !pl.checks.iter().any(|r| {
+                        s(r, "id") == c && s(r, "named") == crate::checks::CHECKPOINT_REVIEW
                     })
                 })
                 .collect();
-            if !marked.is_empty() {
-                directives.push(json!({"role": "human", "action": "decide-check", "checkpoint": kid, "checks": marked,
-                    "note": "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, or change the plan."}));
-            } else if !missing.is_empty() {
+            let review_needed = crate::ckreview::needed(p, &st, kid, &content)?;
+            let human_needed =
+                crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
+            if !missing.is_empty() {
                 directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": missing,
                     "tier": p.policy.tiers.verifier, "working_copy": wc,
                     "brief": p.briefs_dir().join(format!("{kid}-verifier.md")).to_string_lossy(),
                     "limits": {"max_rounds": p.policy.limits.max_rounds, "idle_minutes": p.policy.limits.idle_minutes,
                                "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
                     "commands": [format!("bf brief {kid} --role verifier")]}));
+                if review_needed {
+                    directives.push(crate::ckreview::directive(p, &st, kid)?);
+                }
+            } else if review_needed {
+                directives.push(crate::ckreview::directive(p, &st, kid)?);
             } else if human_needed {
                 let open = st
                     .latest_gate("checkpoint-step", Some(kid))
@@ -442,6 +681,11 @@ fn next_raw(p: &Project) -> R<Value> {
                         "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
                 }
             }
+            if !review_needed {
+                if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
+                    directives.push(d);
+                }
+            }
         } else {
             waiting.push(format!("{kid}: waiting for its units to land"));
         }
@@ -460,6 +704,7 @@ pub fn holds_token(p: &Project, key: &str, token: Option<&str>) -> bool {
 /// The one-use token for `key` (`<unit>:<role>`): the one already handed out, or a new one kept in
 /// the state folder like the tokens of the existing roles.
 pub fn issue_token(p: &Project, key: &str) -> R<String> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(t) = v.get(key).and_then(|t| t.as_str()) {
         return Ok(t.to_string());
@@ -483,6 +728,7 @@ fn read_tokens(p: &Project) -> Value {
 /// out. A token is spent by one successful report, and tokens of directives that no longer exist are
 /// dropped.
 fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut tokens = read_tokens(p);
     // Old format (hash -> {unit, role}) is dropped.
     if tokens
@@ -562,7 +808,7 @@ fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
     Ok(())
 }
 
-fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
+pub(crate) fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
     let key = format!("{unit}:{role}");
     let have = read_tokens(p)
         .get(&key)
@@ -584,7 +830,8 @@ fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<St
     ))
 }
 
-fn spend_token(p: &Project, key: &str) -> R<()> {
+pub(crate) fn spend_token(p: &Project, key: &str) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
         o.remove(key);
@@ -598,6 +845,12 @@ pub fn next(p: &Project) -> R<Value> {
     // The idle check runs here, so nobody has to remember `bf stuck`.
     if events::replay(p)?.active_run().is_some() {
         stuck(p, false)?;
+    }
+    // A checkpoint whose check failed gets a fix for a builder, not a question to the human.
+    if events::replay(p)?.active_run().is_some() {
+        crate::ckfix::maybe_open(p)?;
+        // A wave check that failed gets a fix too, held to the units that landed since the last pass.
+        crate::wavecheck::maybe_open(p)?;
     }
     let mut v = next_raw(p)?;
     if p.policy.roles.tokens {
@@ -730,6 +983,7 @@ fn role_report(
 /// A role's token ends with the run it was issued in: starting or stopping a run drops every token
 /// of the new roles (a design-stage token is dropped when the first run starts).
 fn drop_role_tokens(p: &Project) -> R<()> {
+    let _tl = crate::lock::tokens(p)?;
     let mut v = read_tokens(p);
     if let Some(o) = v.as_object_mut() {
         o.retain(|k, _| {
@@ -756,7 +1010,17 @@ pub fn report(
     if let Some(r) = role.filter(|r| crate::roles::is_new_role(r)) {
         return role_report(p, unit, result, r, note, cost, token);
     }
+    if result == "scope" && !unit.starts_with("K-") {
+        return crate::scope::verdict(p, unit, role, note, findings, cost, token);
+    }
     if unit.starts_with("K-") {
+        let st = events::require_chain(p)?;
+        if crate::ckreview::wants(p, &st, unit, role) {
+            return crate::ckreview::report(p, unit, result, note, findings, token);
+        }
+        if crate::ckfix::wants(&st, unit, result, role) {
+            return crate::ckfix::report(p, unit, result, role, note, findings, token);
+        }
         return sync_report(p, unit, result, role, note, findings, token);
     }
     let st = events::require_chain(p)?;
@@ -779,6 +1043,14 @@ pub fn report(
         ));
     }
     let cur = st.unit_state(unit).to_string();
+    if crate::scope::open_request(&st, unit).is_some() {
+        return Err(refuse(
+            format!("report {result} on {unit}"),
+            "a request of this unit for files is with the scope reviewer; the unit goes on when the verdict is in",
+            &["`bf next` shows the review-scope directive; its reviewer reports the verdict."],
+            "`bf status` shows the unit without an open request.",
+        ));
+    }
     let expected_role = if cur == "review" {
         "reviewer"
     } else {
@@ -878,7 +1150,7 @@ pub fn report(
                 }
             }
             schema::validate_or_refuse(kind, &rec)?;
-            p.write_record(&rec)?;
+            let id = p.write_numbered(kind, &mut rec)?;
             finding_ids.push(id);
         }
     }
@@ -918,11 +1190,26 @@ pub fn report(
     }
     let ev_kind = "unit.report";
     let _ = event_kind;
-    events::append(
-        p,
-        ev_kind,
-        json!({"unit": unit, "result": result, "role": expected_role, "from": cur, "to": to, "note": note, "cost": cost_total, "findings": finding_ids}),
-    )?;
+    let mut ev = json!({"unit": unit, "result": result, "role": expected_role, "from": cur, "to": to, "note": note, "cost": cost_total, "findings": finding_ids});
+    if cur == "review" {
+        // The round this report closes: its number, the content it judged and what it covered.
+        let round = st.units.get(unit).map(|u| u.rounds).unwrap_or(0) + 1;
+        let wc = p.work_dir().join(unit);
+        ev["round"] = json!(round);
+        ev["content"] = json!(p.content_hash(&wc).unwrap_or_default());
+        ev["head"] = json!(gitx::must(&wc, &["rev-parse", "HEAD"]).unwrap_or_default());
+        ev["covered"] = json!(if st
+            .units
+            .get(unit)
+            .map(|u| u.review_rounds.is_empty())
+            .unwrap_or(true)
+        {
+            "everything in its scope".to_string()
+        } else {
+            "the earlier findings and what changed since the round before".to_string()
+        });
+    }
+    events::append(p, ev_kind, ev)?;
     if to == "parked" {
         events::append(
             p,
@@ -939,6 +1226,12 @@ fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
         if let Some(so) = events::replay(p)?.sync_open.filter(|o| o.checkpoint == k) {
             return brief_sync(p, &so, role);
         }
+        if let Some(f) = events::replay(p)?.ck_fix.filter(|f| f.checkpoint == k) {
+            return crate::ckfix::brief(p, &f, role);
+        }
+    }
+    if role == "reviewer" {
+        return crate::ckreview::brief(p, k);
     }
     if role != "verifier" {
         return Err(refuse(
@@ -1040,6 +1333,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         ));
     };
     let st = events::replay(p)?;
+    if role == "reviewer" && crate::scope::open_request(&st, unit).is_some() {
+        return crate::scope::brief_review(p, unit);
+    }
     let mut md = String::new();
     md.push_str(&format!("# Brief: {} as {}\n\n", unit, role));
     md.push_str(&format!("Unit: {}\n\n", s(u, "title")));
@@ -1112,6 +1408,18 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             cmd
         ));
     }
+    // The checks every unit must pass: the engine attaches them, and the unit cannot land without them.
+    let (attached, _, _) = crate::checks::attached_for_unit(p, &pl, &st, unit);
+    for (a, line) in attached
+        .iter()
+        .zip(crate::checks::attached_lines(p, &pl, &st, unit))
+    {
+        md.push_str(&format!(
+            "- {line}. Run it with `bf evidence run {} --unit {unit} -- {}`\n",
+            a.id(),
+            a.command_line()
+        ));
+    }
     md.push('\n');
     if role != "verifier" {
         md.push_str("## Where you work\n\n");
@@ -1129,10 +1437,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push_str("Files you may change:\n");
-        for f in str_list(u, "files") {
+        for f in crate::scope::unit_files(&st, u) {
             md.push_str(&format!("- `{f}`\n"));
         }
         md.push('\n');
+        md.push_str(&crate::scope::undo_md(&st, unit));
+        if role == "reviewer" {
+            md.push_str(&crate::scope::grants_md_unit(&st, unit));
+        }
     } else {
         md.push_str("## Where you work\n\nYou are a blind verifier: judge the built result against the contract above. Do not read the source.\n\n");
     }
@@ -1185,7 +1497,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if role == "reviewer" {
         md.push_str("## Receipts\n\nVerify these instead of re-running the checks:\n\n");
         for r in evidence::load_receipts(p)? {
-            if pl.unit_checks(unit).iter().any(|c| s(c, "id") == r.check()) {
+            if pl.unit_checks(unit).iter().any(|c| s(c, "id") == r.check())
+                || (r.check().starts_with(crate::checks::ATTACHED_PREFIX)
+                    && s(&r.v, "unit") == unit)
+            {
                 md.push_str(&format!(
                     "- {} for {}: sealed={}, exit={}, content {}\n",
                     r.id(),
@@ -1197,6 +1512,32 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push('\n');
+    }
+    if role == "reviewer" {
+        let wc = p.work_dir().join(unit);
+        let prior: Vec<Value> = st
+            .units
+            .get(unit)
+            .map(|x| x.review_rounds.clone())
+            .unwrap_or_default();
+        md.push_str(&format!("## Review round {}\n\n", prior.len() + 1));
+        match prior.last() {
+            None => md.push_str("This is the first round and it is cold: no earlier report is given. Read everything in the unit's scope.\n\n"),
+            Some(l) => {
+                md.push_str("This is a later round. The findings above are every earlier finding with its outcome: check that each open one is fixed, and start from the changes made since the content the round before judged. Do not review the whole scope again when nothing points there. You may file a new finding on what changed, on something a fix broke, or on anything you came across while following a change.\n\n");
+                let head = l["head"].as_str().unwrap_or("");
+                if !head.is_empty() {
+                    let d = gitx::must(&wc, &["diff", head]).unwrap_or_default();
+                    let lines: Vec<&str> = d.lines().collect();
+                    md.push_str(&format!(
+                        "### Changes since round {}\n\n```diff\n{}\n```\n\n",
+                        l["round"],
+                        if lines.len() > 400 { format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400) } else { d.clone() }
+                    ));
+                }
+            }
+        }
+        md.push_str("In any round you may read outside the changes, anywhere in the working copy, when you need to in order to judge them: what a change touches, calls or could break, and the code it relies on.\n\n");
     }
     md.push_str("## Limits\n\n");
     md.push_str(&format!(
@@ -1348,6 +1689,16 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     gates::refuse_if_drift(p, &st, &format!("start {unit}"))?;
+    if st.unit_state(unit).is_empty() {
+        if let Some((_, command, what)) = unanswered_questions(&st).first() {
+            return Err(refuse(
+                format!("start {unit}"),
+                format!("the run has not answered the question {what}: no unit starts until both plan questions are answered"),
+                &[&format!("Run `{command}`, ask the human, then `propose` and `set --quote \"<their words>\"`; `bf next` lists both questions."), "Then start the unit again."],
+                "`bf status` shows both plan questions answered.",
+            ));
+        }
+    }
     if let Some(so) = &st.sync_open {
         return Err(refuse(
             format!("start {unit}"),
@@ -1458,6 +1809,17 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "No open findings remain.",
         ));
     }
+    if let Some(why) = crate::wavecheck::land_blocker(&pl, &st, unit) {
+        return Err(refuse(
+            format!("land {unit}"),
+            why,
+            &[
+                "`bf next` offers the wave check step, or the fix of a failed one.",
+                "The unit may be built and reviewed meanwhile; only its landing waits.",
+            ],
+            "`bf status` shows the wave check passed.",
+        ));
+    }
     let k = s(u, "checkpoint").to_string();
     let repo = p.repo_of_unit(u)?.clone();
     let cpb = p.checkpoint_branch(&k);
@@ -1485,7 +1847,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     let mut missing: Vec<String> = Vec::new();
     for c in &checks {
         let cid = s(c, "id");
-        if evidence::satisfied_at(&receipts, cid, &content).is_none() {
+        if evidence::satisfied_unit_at(&receipts, cid, &content).is_none() {
             let stale = receipts.iter().any(|r| r.check() == cid && r.passes());
             missing.push(format!(
                 "{cid}: {} - run `bf evidence run {cid} --unit {unit} -- <its command>` inside {}",
@@ -1498,6 +1860,10 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             ));
         }
     }
+    // R-76: the checks every unit must pass apply beside the unit's own, and no plan repeats them.
+    missing.extend(crate::checks::attached_missing(
+        p, &pl, &st, &receipts, unit, &content, &wt,
+    ));
     if !missing.is_empty() {
         let mut steps = missing;
         steps.push(format!("Run `bf unit land {unit}` again."));
@@ -1512,7 +1878,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     if gitx::has_uncommitted(&wt) {
-        gitx::must(&wt, &["add", "-A"])?;
+        gitx::add_all_without_junk(&wt)?;
         gitx::must(
             &wt,
             &["commit", "-q", "-m", &format!("{unit}: {}", s(u, "title"))],
@@ -1523,7 +1889,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         &repo.path,
         &["diff", "--name-only", &format!("{cpb}...{ub}")],
     )?;
-    let scope = str_list(u, "files");
+    let scope = crate::scope::unit_files(&st, u);
     let outside: Vec<&str> = diff
         .lines()
         .filter(|f| !scope.iter().any(|g| util::path_matches(g, f)))
@@ -1536,6 +1902,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             "`git diff --name-only` lists only files inside the scope.",
         ));
     }
+    crate::scope::landing_check(&st, unit, &repo.path, &format!("{cpb}...{ub}"))?;
     let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
     if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
         let before = gitx::must(&cpwt, &["rev-parse", "HEAD"])?;
@@ -1759,6 +2126,10 @@ pub fn refuse_if_main_moved(p: &Project, st: &State) -> R<()> {
     ))
 }
 
+fn was_closed_already(st: &events::State, k: &str) -> bool {
+    st.closed.contains_key(k)
+}
+
 pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("close {k}"))?;
     let st = events::require_chain(p)?;
@@ -1784,6 +2155,26 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             "`bf status` shows no open sync.",
         ));
     }
+    if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == k) {
+        let n = st.ck_fixes.iter().filter(|d| d.checkpoint == k).count() + 1;
+        return Err(refuse(
+            format!("close {k}"),
+            format!(
+                "a fix of it is open ({k}-fix-{n}, opened by {}, now in `{}`)",
+                match f.source.as_str() {
+                    "check" => "a failed check",
+                    "wave" => "a failed wave check",
+                    _ => "findings",
+                },
+                f.phase
+            ),
+            &[
+                "`bf next` gives the directive that settles the fix.",
+                &format!("Or put the checkpoint back as it was: `bf checkpoint fix {k} --abort`."),
+            ],
+            "`bf status` shows no open fix.",
+        ));
+    }
     let after = str_list(kr, "after");
     let unlanded: Vec<&String> = after
         .iter()
@@ -1802,6 +2193,20 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ),
             &["Land them with `bf unit land`; `bf next` shows where each one is."],
             "`bf status` shows them landed.",
+        ));
+    }
+    let held = crate::wavecheck::close_blockers(&pl, &st, k);
+    if !held.is_empty() {
+        return Err(refuse_owned(
+            format!("close {k}"),
+            "a wave check has not passed",
+            held.iter()
+                .map(|h| format!("{h}."))
+                .chain([
+                    "`bf next` offers the wave check step, or the fix of a failed one.".to_string(),
+                ])
+                .collect(),
+            "`bf status` shows every wave check of the checkpoint passed.",
         ));
     }
     // The checkpoint's working copy: its folder, which holds one working copy per repository when its
@@ -1882,8 +2287,27 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     if crate::enforce::stops(kr) && !st.gate_passed("checkpoint-step", Some(k)) {
         gaps.push(format!("the stop `{}` has no approved checkpoint-step gate: run `bf gate open checkpoint-step --ref {k}`", if s(kr, "human_step").is_empty() { s(kr, "stop_why") } else { s(kr, "human_step") }));
     }
-    let (check_gaps, unproven_names) =
+    let (mut check_gaps, mut unproven_names) =
         crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
+    // R-49: no checkpoint closes before its review ran on the content being closed.
+    let held_by = if crate::ckreview::required(&st) {
+        crate::ckreview::open_blocking_named(p, &st, k)?
+    } else {
+        vec![]
+    };
+    if !was_closed_already(&st, k) && !held_by.is_empty() {
+        let (id, sev, title) = &held_by[0];
+        check_gaps.push(format!(
+            "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
+        ));
+        unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
+    } else if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
+        check_gaps.push(format!(
+            "the checkpoint review has not run on this content (hash {}): `bf next` gives the reviewer's directive",
+            &content[..12.min(content.len())]
+        ));
+        unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
+    }
     let has_check_gaps = !check_gaps.is_empty();
     gaps.extend(check_gaps);
     if !gaps.is_empty() {
@@ -1892,9 +2316,22 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             steps.extend(crate::enforce::way_out_steps(&st, &unproven_names));
         }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
+        let because = match held_by.first() {
+            Some((id, sev, title)) if !was_closed_already(&st, k) => {
+                let head = format!(
+                    "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
+                );
+                if gaps.len() > 1 {
+                    format!("{head}, and {} other gap(s) have no proof", gaps.len() - 1)
+                } else {
+                    head
+                }
+            }
+            _ => format!("{} ID(s) have no proof", gaps.len()),
+        };
         return Err(refuse_owned(
             format!("close {k}"),
-            format!("{} ID(s) have no proof", gaps.len()),
+            because,
             steps,
             "`bf checkpoint close` prints the closure.",
         ));
@@ -2026,9 +2463,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             merged = true;
             // Remember the commit the engine put on the main branch.
             if let Ok(tip) = gitx::must(&r.path, &["rev-parse", &main]) {
-                let mut h = events::read_head(p).unwrap_or_default();
-                h.set_commit(&r.name, Some(tip));
-                events::write_head(p, &h)?;
+                events::set_commits(p, &[(r.name.clone(), tip)])?;
             }
         }
     }
@@ -2186,6 +2621,23 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
                 &format!("To go back to how the checkpoint was: `bf checkpoint sync {} --abort`.", so.checkpoint),
             ],
             "`bf status` shows no open sync.",
+        ));
+    }
+    if let Some(f) = st.ck_fix.as_ref() {
+        return Err(refuse(
+            format!("sync {k}"),
+            format!(
+                "a checkpoint fix of {} is open ({}): a sync during it would be dropped by the fix's abort or refused at its report",
+                f.checkpoint, f.phase
+            ),
+            &[
+                "`bf next` shows what the fix waits for; the sync can start when it has ended.",
+                &format!(
+                    "To end the fix now: `bf checkpoint fix {} --abort`, then ask for the sync again.",
+                    f.checkpoint
+                ),
+            ],
+            "`bf status` shows no open fix.",
         ));
     }
     refuse_if_main_moved(p, &st)?;
@@ -2391,8 +2843,9 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
             "message": "the main branch conflicts with the checkpoint; the merge is left in progress in the checkpoint's working copy and `bf next` gives the directive that resolves it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
-    // The joined content is proven before the sync counts: the checkpoint's own command checks run on it.
-    let failed = run_k_checks(p, &pl, k)?;
+    // The joined content is proven before the sync counts: the sync's checks (the command checks every
+    // unit of the checkpoint is held to) run on it. The checkpoint's own checks run at verification.
+    let failed = run_sync_checks(p, &pl, &st, k, floor)?;
     let skipped = skipped_k_checks(p, &pl, k)?;
     if !failed.is_empty() {
         events::append(
@@ -2404,7 +2857,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         return Ok(
             json!({"checkpoint": k, "synced": false, "sync_open": true, "conflicted": [],
             "failed_checks": failed, "skipped_checks": skipped,
-            "message": "the main branch merged without a conflict, but the checkpoint's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
+            "message": "the main branch merged without a conflict, but the sync's checks fail on the joined content; the merge is kept and `bf next` gives the directive that repairs it (`bf checkpoint sync <K> --abort` puts everything back)"}),
         );
     }
     let reopen_checks = str_list(kr, "checks");
@@ -2419,11 +2872,11 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
         }),
     )?;
     // The repository's main branch is where the engine now counts from: the stack holds it.
-    let mut h = events::read_head(p).unwrap_or_default();
-    for (name, main, _) in &done {
-        h.set_commit(name, Some(main.clone()));
-    }
-    events::write_head(p, &h)?;
+    let moved: Vec<(String, String)> = done
+        .iter()
+        .map(|(name, main, _)| (name.clone(), main.clone()))
+        .collect();
+    events::set_commits(p, &moved)?;
     p.write_guard()?;
     Ok(
         json!({"checkpoint": k, "synced": true, "skipped_checks": skipped,
@@ -2479,7 +2932,7 @@ fn allowed_set(wt: &Path, before: &str, main: &str) -> Vec<String> {
 }
 
 /// The command checks of a checkpoint that the human switched off: a sync leaves them out, as the close does.
-fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+pub(crate) fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };
@@ -2497,7 +2950,7 @@ fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
 /// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
 /// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
-fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
+pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
     let Some(kr) = pl.checkpoint(k) else {
         return Ok(vec![]);
     };
@@ -2512,13 +2965,99 @@ fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
             continue;
         }
         let argv = evidence::command_words(c);
-        match evidence::run_at(p, &cid, None, &argv, &top) {
+        // The engine runs the checks again on content they may already have run on: that is a deliberate
+        // repeat, stated as one.
+        let attempt = evidence::next_attempt(p, &cid, &argv, &top)?;
+        let repeat = (attempt > 1).then_some((
+            attempt,
+            "the engine runs the checkpoint's checks again after a fix or a sync",
+        ));
+        match evidence::run_with(p, &cid, None, &argv, &top, repeat) {
             Ok(r) if r["exit"].as_i64() == Some(0) => {}
             Ok(r) => failed.push(
                 json!({"check": cid, "command": argv.join(" "), "exit": r["exit"], "tail": s(&r, "output_tail")}),
             ),
             Err(e) => failed.push(
                 json!({"check": cid, "command": argv.join(" "), "exit": null, "tail": format!("{e:?}")}),
+            ),
+        }
+    }
+    Ok(failed)
+}
+
+/// A check a sync runs: the label it is shown under (the unit check's ID, or the name of a check every
+/// unit must pass) and its command.
+#[derive(Clone, Debug)]
+pub(crate) struct SyncCheck {
+    pub label: String,
+    pub argv: Vec<String>,
+}
+
+/// The command checks every unit of the checkpoint is held to, each distinct command once: those of
+/// its unit check records and of the list of checks every unit must pass, that all its units share.
+/// `None` when the units share no command (or there is no unit): the sync then runs the checkpoint's own
+/// command checks, as it always did.
+pub(crate) fn sync_checks(p: &Project, pl: &Plan, st: &State, k: &str) -> Option<Vec<SyncCheck>> {
+    let mut per_unit: Vec<Vec<SyncCheck>> = Vec::new();
+    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
+        let uid = s(u, "id");
+        let mut list: Vec<SyncCheck> = Vec::new();
+        for c in pl.unit_checks(uid) {
+            if s(c, "how") != "command" || crate::enforce::is_off(st, c) {
+                continue;
+            }
+            list.push(SyncCheck {
+                label: s(c, "id").to_string(),
+                argv: evidence::command_words(c),
+            });
+        }
+        for a in crate::checks::attached_for_unit(p, pl, st, uid).0 {
+            list.push(SyncCheck {
+                label: a.name.clone(),
+                argv: a.command.clone(),
+            });
+        }
+        per_unit.push(list);
+    }
+    let first = per_unit.first()?;
+    let mut shared: Vec<SyncCheck> = Vec::new();
+    for c in first {
+        if c.argv.is_empty()
+            || shared.iter().any(|x| x.argv == c.argv)
+            || !per_unit[1..]
+                .iter()
+                .all(|l| l.iter().any(|x| x.argv == c.argv))
+        {
+            continue;
+        }
+        shared.push(c.clone());
+    }
+    (!shared.is_empty()).then_some(shared)
+}
+
+/// Run the sync's checks on the content now in the checkpoint's working copy. Returns the failures:
+/// check, command, exit, output tail. The runs of the units' shared checks are recorded as sync runs, which
+/// settle nothing; a checkpoint whose units share no command runs its own command checks (real receipts).
+pub(crate) fn run_sync_checks(
+    p: &Project,
+    pl: &Plan,
+    st: &State,
+    k: &str,
+    sync: u64,
+) -> R<Vec<Value>> {
+    let Some(list) = sync_checks(p, pl, st, k) else {
+        return run_k_checks(p, pl, k);
+    };
+    let top = p.work_dir().join(k);
+    let mut failed = Vec::new();
+    for c in list {
+        match evidence::sync_run(p, k, &c.label, &c.argv, &top, sync) {
+            Ok(r) if r["exit"].as_i64() == Some(0) => {}
+            Ok(r) => failed.push(
+                json!({"check": c.label, "command": c.argv.join(" "), "exit": r["exit"], "tail": s(&r, "output_tail")}),
+            ),
+            Err(e) => failed.push(
+                json!({"check": c.label, "command": c.argv.join(" "), "exit": null, "tail": format!("{e:?}")}),
             ),
         }
     }
@@ -2586,11 +3125,12 @@ fn finish_sync(
         None => ev["via_open"] = json!(true),
     }
     events::append(p, "checkpoint.sync", ev)?;
-    let mut h = events::read_head(p).unwrap_or_default();
-    for r in &so.repos {
-        h.set_commit(&r.repo, Some(r.main.clone()));
-    }
-    events::write_head(p, &h)?;
+    let moved: Vec<(String, String)> = so
+        .repos
+        .iter()
+        .map(|r| (r.repo.clone(), r.main.clone()))
+        .collect();
+    events::set_commits(p, &moved)?;
     p.write_guard()?;
     let skipped = skipped_k_checks(p, pl, &so.checkpoint)?;
     Ok(
@@ -2747,7 +3287,7 @@ fn sync_hand_resolved(
         ));
     }
     // The joined content must be proven too.
-    let failed = run_k_checks(p, pl, &so.checkpoint)?;
+    let failed = run_sync_checks(p, pl, st, &so.checkpoint, so.floor)?;
     if !failed.is_empty() {
         let mut steps: Vec<String> = failed
             .iter()
@@ -2763,7 +3303,7 @@ fn sync_hand_resolved(
         return Err(refuse_owned(
             format!("sync {}", so.checkpoint),
             format!(
-                "the checkpoint's checks fail on the joined content: {}",
+                "the sync's checks fail on the joined content: {}",
                 failed.len()
             ),
             steps,
@@ -2843,9 +3383,9 @@ pub fn sync_report(
                     "`bf status` shows the sync in review.",
                 ));
             }
-            // The joined content must be proven: the checkpoint's own command checks run on it, through
-            // the engine, so the receipts are real.
-            let failed = run_k_checks(p, &pl, k)?;
+            // The joined content must be proven: the sync's checks run on it, through the engine, and
+            // the runs are recorded as sync runs.
+            let failed = run_sync_checks(p, &pl, &st, k, so.floor)?;
             if !failed.is_empty() {
                 let mut steps: Vec<String> = failed
                     .iter()
@@ -2858,10 +3398,10 @@ pub fn sync_report(
                         )
                     })
                     .collect();
-                steps.push("Repair it (only files either side changed, or new test files beside them), commit, run the failing checks again with `bf evidence run`, then report again.".into());
+                steps.push("Repair it (only files either side changed, or new test files beside them), commit, run only the tests you change, then report again: the engine runs the sync's checks when you report.".into());
                 return Err(refuse_owned(
                     format!("report the resolution of {k}"),
-                    format!("the checkpoint's checks fail on the joined content: {}", failed.len()),
+                    format!("the sync's checks fail on the joined content: {}", failed.len()),
                     steps,
                     "`bf status` shows the sync in review.",
                 ));
@@ -2972,31 +3512,63 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
             }
         }
     }
-    // The checkpoint's own checks on the joined content.
+    // The sync's checks on the joined content: the command checks every unit of the checkpoint is held
+    // to; a checkpoint whose units share no command is checked by its own command checks.
     let pl = plan::load(p)?;
     if let Some(kr) = pl.checkpoint(k) {
         let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
         let receipts = evidence::load_receipts(p)?;
-        let mut shown = false;
-        for cid in str_list(kr, "checks") {
-            let Some(c) = pl
-                .checks
-                .iter()
-                .find(|c| s(c, "id") == cid && s(c, "how") == "command")
-            else {
-                continue;
-            };
-            let argv = evidence::command_words(c).join(" ");
-            let last = receipts
-                .iter()
-                .rev()
-                .find(|r| r.check() == cid && r.is_run() && r.content() == content);
-            if !shown {
-                md.push_str("## The checkpoint's checks on the joined content\n\n");
-                shown = true;
+        let st = events::require_chain(p)?;
+        let shared = sync_checks(p, &pl, &st, k);
+        let mut entries: Vec<(String, String)> = Vec::new();
+        match &shared {
+            Some(list) => {
+                for c in list {
+                    entries.push((c.label.clone(), c.argv.join(" ")));
+                }
             }
+            None => {
+                for cid in str_list(kr, "checks") {
+                    let Some(c) = pl
+                        .checks
+                        .iter()
+                        .find(|c| s(c, "id") == cid && s(c, "how") == "command")
+                    else {
+                        continue;
+                    };
+                    // A check the human switched off is not run by the sync, so the brief does not ask for it.
+                    if crate::enforce::is_off(&st, c) {
+                        continue;
+                    }
+                    entries.push((cid, evidence::command_words(c).join(" ")));
+                }
+            }
+        }
+        let shown = !entries.is_empty();
+        if shown {
+            md.push_str("## The sync's checks on the joined content\n\n");
+        }
+        for (cid, argv) in &entries {
+            let last = receipts.iter().rev().find(|r| {
+                r.content() == content
+                    && if shared.is_some() {
+                        s(&r.v, "type") == "sync"
+                            && r.check() == k
+                            && s(&r.v, "reason") == cid
+                            && s(&r.v, "command") == argv
+                    } else {
+                        r.check() == cid && r.is_run()
+                    }
+            });
+            let passes = |r: &Receipt| {
+                if shared.is_some() {
+                    r.seal_ok && r.v["exit"].as_i64() == Some(0)
+                } else {
+                    r.passes()
+                }
+            };
             match last {
-                Some(r) if r.passes() => {
+                Some(r) if passes(r) => {
                     md.push_str(&format!("- {cid} (`{argv}`): passes on this content.\n"))
                 }
                 Some(r) => {
@@ -3016,7 +3588,7 @@ fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<PathBuf> {
         }
         if shown {
             md.push_str(&format!(
-                "\nRun a check again, from inside `{}`, with `bf evidence run <check> -- <its command>` (the engine records a real receipt).\n\n",
+                "\nThe engine runs these checks when the resolver reports, on the content in `{}`. The checkpoint's own checks run only at verification, never in a sync. Run only the tests you change, selected by name; never the checkpoint's own checks or the extended suite.\n\n",
                 p.work_dir().join(k).display()
             ));
         }

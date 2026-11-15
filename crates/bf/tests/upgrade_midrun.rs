@@ -44,6 +44,7 @@ fn stopping_the_run_names_the_way_out_and_the_human_choice_unblocks_it() {
     names_the_way_out(&o.stderr);
     // The human switches every check off for the run, in chat, and the run can be stopped.
     fx.run_checks_all_off();
+    fx.answer_plan_questions();
     fx.must(&["plan", "check"]);
     fx.must(&["run", "stop"]);
 }

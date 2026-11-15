@@ -16,6 +16,7 @@ pub fn default_policy_text(exec_path: &str, git: &str) -> String {
 max_rounds = 3        # review rounds before a unit is parked
 idle_minutes = 60     # a running unit with no event for this long is stuck
 max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
+checkpoint_reviews = 3 # reviews a checkpoint may have before it parks with a high or medium finding open
 
 [tiers]               # model tier by role: cheap, standard or strong
 builder = "standard"
@@ -28,6 +29,15 @@ unit = "USD"
 
 [review]
 required = true       # a unit needs a clean review before it can land
+# A builder that needs a file beyond its unit's list asks for it, and a cold reviewer says whether the
+# unit's original scope needs it. true: a needed file is granted at once, with no step of the human.
+# false: every request goes to the human as a plan repair, as before.
+scope_review = true
+
+[unit_checks]
+# Checks every unit must pass, each with its exact command, for example the lint step and the whole
+# test suite: list = [{{ name = "lint", command = "cargo clippy -- -D warnings" }}]. Empty as shipped.
+list = []
 
 [ledger]
 kinds = ["requirement", "component", "screen", "journey", "target", "threat", "decision"]
@@ -91,6 +101,8 @@ pub struct Limits {
     pub max_rounds: u32,
     pub idle_minutes: u64,
     pub max_attempts: u32,
+    /// Reviews a checkpoint may have before it parks with a high or medium finding still open.
+    pub checkpoint_reviews: u32,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -98,6 +110,7 @@ impl Default for Limits {
             max_rounds: 3,
             idle_minutes: 60,
             max_attempts: 10,
+            checkpoint_reviews: 3,
         }
     }
 }
@@ -135,12 +148,31 @@ impl Default for Budget {
 #[serde(default)]
 pub struct Review {
     pub required: bool,
+    /// Whether a cold reviewer judges a builder's request for files beyond its unit's list.
+    pub scope_review: bool,
 }
 impl Default for Review {
     fn default() -> Self {
-        Review { required: true }
+        Review {
+            required: true,
+            scope_review: true,
+        }
     }
 }
+/// One check every unit must pass: a name and the exact command.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct UnitCheckDef {
+    pub name: String,
+    pub command: String,
+}
+
+/// The checks every unit must pass (R-76). Empty as shipped; only the human edits it.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct UnitChecksPol {
+    pub list: Vec<UnitCheckDef>,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct LedgerPol {
@@ -373,6 +405,7 @@ pub struct Policy {
     pub ledger: LedgerPol,
     pub evidence: EvidencePol,
     pub guard: GuardPol,
+    pub unit_checks: UnitChecksPol,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -684,11 +717,11 @@ impl Project {
         let disk = fs::read(self.root.join("factory/policy.toml"))?;
         util::atomic_write(&self.accepted_policy_path(), &disk)?;
         crate::events::ensure_head(self)?;
-        let mut h = crate::events::read_head(self).unwrap_or_default();
-        h.policy_hash = Some(util::sha256_hex(&disk));
-        h.policy_at = Some(util::now_secs());
-        crate::events::write_head(self, &h)?;
-        Ok(())
+        crate::events::update_head(self, |h| {
+            h.policy_hash = Some(util::sha256_hex(&disk));
+            h.policy_at = Some(util::now_secs());
+            true
+        })
     }
 
     /// The harness's transcript root from the accepted policy, as an absolute path.
@@ -1188,6 +1221,19 @@ impl Project {
         Ok(format!("{}-{}", kind.prefix, max + 1))
     }
 
+    /// Number a new record and write it, taking the next number again when another command took
+    /// the one chosen. The record's `id` is set to the number that was kept, and returned.
+    pub fn write_numbered(&self, kind: &Kind, rec: &mut Value) -> R<String> {
+        for _ in 0..1000 {
+            let id = self.next_id(kind)?;
+            rec["id"] = json!(id);
+            if self.write_record_new(rec)? {
+                return Ok(id);
+            }
+        }
+        Err(err("cannot find a free record number"))
+    }
+
     /// The highest number handed out by `bf id new` for this kind (derived, in `.bf/reserved.json`).
     fn reserved_max(&self, kind: &Kind) -> u32 {
         fs::read_to_string(self.dot_bf().join("reserved.json"))
@@ -1248,7 +1294,11 @@ impl Project {
                 "kind": "unit",
                 "id": id,
                 "path": self.work_dir().join(id).to_string_lossy(),
-                "files": u["files"],
+                // The record's list plus the grants of the run log (R-84).
+                "files": match state.as_ref() {
+                    Some(s) => json!(crate::scope::unit_files(s, u)),
+                    None => u["files"].clone(),
+                },
             }));
         }
         for k in &cps {

@@ -37,6 +37,15 @@ const VALUE_FLAGS: &[&str] = &[
     "scope",
     "quote",
     "token",
+    "attempt",
+    "judge",
+    "accept",
+    "decline",
+    "fix-findings",
+    "need-files",
+    "verdict",
+    "revert",
+    "wave",
     "root",
     "C",
 ];
@@ -462,7 +471,34 @@ fn dispatch(args: &Args) -> R<()> {
             let p = project(args)?;
             let unit = args.pos_at(1, "a unit ID")?;
             let result = args.need("result", "a result: built, findings, fixed or blocked")?;
-            let findings = match args.flag("findings") {
+            let need_files = match args.flag("need-files") {
+                Some(f) => {
+                    let raw = if f == "-" {
+                        read_stdin()
+                    } else {
+                        let safe = p.safe_input(Path::new(f))?;
+                        fs::read_to_string(safe).map_err(|e| {
+                            refuse(
+                                "read the request for files",
+                                format!("{f} cannot be read: {e}"),
+                                &["Pipe the JSON list into the command with `--need-files -`."],
+                                "The command prints the new state of the unit.",
+                            )
+                        })?
+                    };
+                    Some(serde_json::from_str::<Value>(&raw).map_err(|e| {
+                        refuse(
+                            "read the request for files",
+                            format!("the input is not valid JSON: {e}"),
+                            &["Pipe a JSON list such as [{\"path\": \"tests/a.rs\", \"why\": \"...\", \"patch\": \"...\"}] into the command."],
+                            "The command prints the new state of the unit.",
+                        )
+                    })?)
+                }
+                None => None,
+            };
+            let findings_flag = args.flag("findings").or(args.flag("verdict"));
+            let findings = match findings_flag {
                 Some("-") => Some(serde_json::from_str::<Value>(&read_stdin()).map_err(|e| {
                     refuse(
                         "read findings from stdin",
@@ -495,6 +531,51 @@ fn dispatch(args: &Args) -> R<()> {
                 }
                 None => 0.0,
             };
+            if let Some(list) = &need_files {
+                if result != "blocked" {
+                    return Err(refuse(
+                        "ask for files",
+                        "a request for files comes with `--result blocked`",
+                        &["Report `bf report <unit> --result blocked --token <token> --need-files -` with the list on stdin."],
+                        "The command prints the new state of the unit.",
+                    ));
+                }
+                let v = crate::scope::request(
+                    &p,
+                    unit,
+                    args.flag("note").unwrap_or(""),
+                    cost,
+                    args.flag("token"),
+                    list,
+                )?;
+                out(args, &v, || {
+                    let refused: Vec<String> = v["refused"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|r| {
+                            format!(
+                                "{}: {}",
+                                r["path"].as_str().unwrap_or(""),
+                                r["rule"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect();
+                    if refused.is_empty() {
+                        format!(
+                            "{unit} asked for files; a reviewer judges the request ({})",
+                            v["state"].as_str().unwrap_or("")
+                        )
+                    } else {
+                        format!(
+                            "{unit} is now {}; refused: {}",
+                            v["state"].as_str().unwrap_or(""),
+                            refused.join("; ")
+                        )
+                    }
+                });
+                return Ok(());
+            }
             let v = run::report(
                 &p,
                 unit,
@@ -528,6 +609,21 @@ fn dispatch(args: &Args) -> R<()> {
                 "start" => run::unit_start(&p, unit)?,
                 "land" => run::unit_land(&p, unit)?,
                 "release" => run::unit_release(&p, unit, args.flag("quote").unwrap_or(""))?,
+                "scope" => {
+                    let n = args
+                        .need("revert", "the number of the grant to withdraw")?
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| {
+                            refuse(
+                                "withdraw a grant",
+                                "`--revert` takes the number of a grant",
+                                &["`bf status --json` lists each unit's scope_grants with their numbers."],
+                                "The command prints the withdrawal.",
+                            )
+                        })?;
+                    crate::scope::revert(&p, unit, n, args.flag("quote").unwrap_or(""))?
+                }
                 _ => {
                     return Err(refuse(
                         "run `bf unit`",
@@ -544,6 +640,11 @@ fn dispatch(args: &Args) -> R<()> {
                 ),
                 "release" => format!(
                     "{unit} is back at work ({})",
+                    v["state"].as_str().unwrap_or("")
+                ),
+                "scope" => format!(
+                    "grant {} of {unit} is withdrawn ({})",
+                    v["withdrawn"],
                     v["state"].as_str().unwrap_or("")
                 ),
                 _ => format!(
@@ -589,11 +690,87 @@ fn dispatch(args: &Args) -> R<()> {
                 });
                 return Ok(());
             }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("fix") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let v = crate::ckfix::command(
+                    &p,
+                    k,
+                    args.flag("quote").unwrap_or(""),
+                    args.has("abort"),
+                    args.has("release"),
+                )?;
+                out(args, &v, || {
+                    if v["aborted"] == true {
+                        format!("{k} is as it was before the fix")
+                    } else {
+                        format!("the fix of {k} is back with its builder")
+                    }
+                });
+                return Ok(());
+            }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("wave-check") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let wave = crate::wavecheck::parse_wave(args.flag("wave"))?;
+                let v = crate::wavecheck::run_step(&p, k, wave)?;
+                out(args, &v, || {
+                    format!("wave {wave} of {k}: wave check {}", s(&v, "state"))
+                });
+                return Ok(());
+            }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("finding") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                let quote = args.flag("quote").unwrap_or("");
+                let reason = args.flag("reason").unwrap_or("");
+                let v = if let Some(ids) = args.flag("fix-findings") {
+                    crate::ckreview::fix_chosen(&p, k, ids, quote)?
+                } else if let Some(ids) = args.flag("accept") {
+                    crate::ckreview::settle(&p, k, ids, "accepted", reason, quote)?
+                } else if let Some(ids) = args.flag("decline") {
+                    crate::ckreview::settle(&p, k, ids, "declined", reason, quote)?
+                } else {
+                    return Err(refuse(
+                        "run `bf checkpoint finding`",
+                        "it needs --accept, --decline or --fix-findings, with the findings named",
+                        &["Run `bf checkpoint finding <K> --accept low --quote \"<the human's words>\"`, `--decline r1.2 --reason \"<why>\" --quote \"<the human's words>\"` or `--fix-findings r1.2,r1.3 --quote \"<the human's words>\"`. The words are needed for a critical, high or medium finding."],
+                        "The command prints the result.",
+                    ));
+                };
+                out(args, &v, || {
+                    if v["fix_opened"] == true {
+                        let named: Vec<&str> = v["findings"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|x| x.as_str())
+                            .collect();
+                        format!("{k}: a fix opened for {}", named.join(", "))
+                    } else {
+                        format!("{k}: findings settled")
+                    }
+                });
+                return Ok(());
+            }
+            if args.pos.get(1).map(|x| x.as_str()) == Some("review") {
+                let k = args.pos_at(2, "a checkpoint ID")?;
+                if !args.has("release") {
+                    return Err(refuse(
+                        "run `bf checkpoint review`",
+                        "it needs --release",
+                        &["Run `bf checkpoint review <K> --release --quote \"<the human's words>\"`."],
+                        "The command prints the result.",
+                    ));
+                }
+                let v = crate::ckreview::release(&p, k, args.flag("quote").unwrap_or(""))?;
+                out(args, &v, || {
+                    format!("{k} is released; its findings go to a fix")
+                });
+                return Ok(());
+            }
             if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
                 return Err(refuse(
                     "run `bf checkpoint`",
-                    "only `bf checkpoint close` and `bf checkpoint sync` exist",
-                    &["Run `bf checkpoint close <K>` or `bf checkpoint sync <K> --quote \"...\"`."],
+                    "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint finding` and `bf checkpoint review` exist",
+                    &["Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`."],
                     "The command prints the result.",
                 ));
             }
@@ -1303,12 +1480,13 @@ fn cmd_repo(args: &Args) -> R<()> {
             ));
             util::atomic_write(&file, text.as_bytes())?;
             let mut p2 = Project::discover(&p.root)?;
-            let mut h = events::read_head(&p2).unwrap_or_default();
             let tip = gitx::must(&abs, &["rev-parse", &branch]).ok();
-            let e = h.repos.entry(name.to_string()).or_default();
-            e.branch = Some(branch.clone());
-            e.commit = tip;
-            events::write_head(&p2, &h)?;
+            events::update_head(&p2, |h| {
+                let e = h.repos.entry(name.to_string()).or_default();
+                e.branch = Some(branch.clone());
+                e.commit = tip;
+                true
+            })?;
             p2.reload_policy()?;
             p2.write_guard()?;
             let added = p2.ensure_excludes()?;
@@ -1531,12 +1709,7 @@ fn cmd_init(args: &Args) -> R<()> {
     // The first policy of a project on this machine is accepted by `bf init`; a later change on disk is
     // the human's to accept with `bf policy accept`.
     // The main branch as it stands now is where the engine starts counting.
-    {
-        let mut h = events::read_head(&p).unwrap_or_default();
-        if record_repo_heads(&p, &mut h) {
-            events::write_head(&p, &h)?;
-        }
-    }
+    events::update_head(&p, |h| record_repo_heads(&p, h))?;
     let mut p = p;
     if p.policy_state == crate::store::PolicyState::NeverAccepted {
         p.store_accepted_policy()?;
@@ -1686,7 +1859,7 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
         assigned = true;
     }
     schema::validate_or_refuse(kind, &rec)?;
-    let id = s(&rec, "id").to_string();
+    let mut id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
     let mut accepted_by: Option<(u64, String)> = None;
@@ -1792,7 +1965,13 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             }
         }
     }
-    p.write_record(&rec)?;
+    if assigned {
+        // A number the engine chose is taken with `create_new` and a retry, so records put at the
+        // same moment each keep their own file.
+        id = p.write_numbered(kind, &mut rec)?;
+    } else {
+        p.write_record(&rec)?;
+    }
     p.write_guard()?;
     if let Some((turn, message)) = accepted_by {
         // The acceptance leaves a trace: the record, the human's message and the words taken from it.
@@ -1973,7 +2152,48 @@ fn cmd_evidence(args: &Args) -> R<()> {
     match args.pos_at(1, "`run`, `attach` or `verify`")? {
         "run" => {
             let check = args.pos_at(2, "a check ID")?;
-            let v = evidence::run(&p, check, args.flag("unit"), &args.rest)?;
+            // The checkpoint reviewer's two other acts go through the same command, which every
+            // working copy may run: a probe run, and the judgement of a check that failed, then passed.
+            if args.has("probe") {
+                let v = crate::ckreview::probe(&p, check, &args.rest)?;
+                out(args, &v, || {
+                    format!("{} probe: exit {}", s(&v, "id"), v["exit"])
+                });
+                return Ok(());
+            }
+            if let Some(j) = args.flag("judge") {
+                let v = crate::ckreview::judge(
+                    &p,
+                    check,
+                    j,
+                    args.flag("reason").unwrap_or(""),
+                    args.flag("token"),
+                )?;
+                out(args, &v, || format!("{} judged {check}: {j}", s(&v, "id")));
+                return Ok(());
+            }
+            let repeat = match args.flag("attempt") {
+                Some(a) => Some((
+                    a.trim().parse::<u64>().map_err(|_| {
+                        refuse(
+                            "repeat a run",
+                            format!("`{a}` is not a number of attempt"),
+                            &["Give the number of the attempt: one more than the runs already recorded."],
+                            "The command prints a receipt.",
+                        )
+                    })?,
+                    args.flag("reason").unwrap_or(""),
+                )),
+                None => None,
+            };
+            let v = evidence::run_with(
+                &p,
+                check,
+                args.flag("unit"),
+                &args.rest,
+                &p.top.clone(),
+                repeat,
+            )?;
             let ok = v["exit"].as_i64() == Some(0);
             out(args, &v, || {
                 format!(
@@ -2142,10 +2362,11 @@ fn cmd_gate(args: &Args) -> R<()> {
 const HELP: &str = "bf: the Black Factory engine
 
 State:    init | record put|get|list | id new | ledger check|impact | plan check
-Run:      run start|stop | status | progress | log | next | brief | report | unit start|land
+Run:      run start|stop | status | progress | log | next | brief | report | unit start|land|release
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
+Fixes:    checkpoint finding|review|fix|sync | unit scope
 Humans:   gate open|approve|reject|status | human-turn | test-mode grant
-Checks:   checks list|state|propose|set
+Checks:   checks list|state|propose|set | checks wave|unit question|propose|set|state | checkpoint wave-check
 Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>
 More:     ask | answer | questions | amend open|revise|narrow|approve|withdraw | cost | stuck | doctor [--perf] | guard

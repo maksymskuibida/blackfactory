@@ -160,20 +160,13 @@ fn a_builder_that_keeps_failing_its_check_is_parked_and_a_blocked_unit_can_be_re
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     for i in 1..=3 {
-        let o = fx.bf_in(
-            &wc,
-            &[
-                "evidence",
-                "run",
-                "X-1",
-                "--unit",
-                "U-1",
-                "--",
-                "test",
-                "-f",
-                "src/hello.txt",
-            ],
-        );
+        let n = i.to_string();
+        let mut args = vec!["evidence", "run", "X-1", "--unit", "U-1"];
+        if i > 1 {
+            args.extend(["--attempt", &n, "--reason", "try again"]);
+        }
+        args.extend(["--", "test", "-f", "src/hello.txt"]);
+        let o = fx.bf_in(&wc, &args);
         assert_eq!(o.code, 1, "try {i}: {}", o.all());
     }
     let st = fx.must(&["status", "--json"]).json();

@@ -285,7 +285,7 @@ fn a_checkpoint_closes_only_with_a_passing_receipt_for_each_required_check_it_li
     fx.must_in(&wc, &["evidence", "run", "X-5", "--", "true"]);
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true);
-    assert_eq!(c["checks_off"].as_array().unwrap().len(), 7, "{c}");
+    assert_eq!(c["checks_off"].as_array().unwrap().len(), 8, "{c}");
 }
 
 #[test]

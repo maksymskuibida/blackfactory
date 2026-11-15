@@ -16,6 +16,7 @@ fn next_says_plainly_when_nothing_can_start_and_why() {
     assert_eq!(n["can_start"], false);
     assert_eq!(n["human_needed"], true);
     assert!(n["idle_reason"].as_str().unwrap().contains("human"), "{n}");
+    fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);
     fx.human("approved");
     fx.must(&["gate", "approve", "plan", "--quote", "approved"]);

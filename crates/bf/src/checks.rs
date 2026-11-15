@@ -13,6 +13,8 @@ pub enum Family {
     Uiux,
     Security,
     Legal,
+    /// The cold review of a whole checkpoint, settled by the checkpoint reviewer.
+    Review,
 }
 
 impl Family {
@@ -21,6 +23,7 @@ impl Family {
             Family::Uiux => "uiux",
             Family::Security => "security",
             Family::Legal => "legal",
+            Family::Review => "review",
         }
     }
 }
@@ -122,7 +125,16 @@ pub static CATALOGUE: &[NamedCheck] = &[
         Proof::Human,
     ),
     c(Family::Legal, "legal-audit", Stage::Built, Proof::Agent),
+    c(
+        Family::Review,
+        CHECKPOINT_REVIEW,
+        Stage::Built,
+        Proof::Agent,
+    ),
 ];
+
+/// The named check of the cold review of a whole checkpoint (D-29).
+pub const CHECKPOINT_REVIEW: &str = "checkpoint-review";
 
 /// Handoff H-1: every named check with its family, stage and default.
 pub fn all() -> &'static [NamedCheck] {
@@ -150,6 +162,247 @@ pub fn to_json(x: &NamedCheck) -> Value {
         "how": x.proof.name(),
         "required": x.required,
     })
+}
+
+/// A check every unit must pass, as it applies to one unit (R-76).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attached {
+    pub name: String,
+    pub command: Vec<String>,
+    /// Where it comes from: `unit`, `checkpoint`, `run` or `project`.
+    pub source: &'static str,
+    /// The reason of the override that set the list; empty for the project's own list.
+    pub reason: String,
+}
+
+impl Attached {
+    /// The check ID receipts are written under.
+    pub fn id(&self) -> String {
+        format!("{ATTACHED_PREFIX}{}", self.name)
+    }
+    pub fn command_line(&self) -> String {
+        self.command.join(" ")
+    }
+}
+
+/// The ID of a check that the engine attached to a unit starts with this.
+pub const ATTACHED_PREFIX: &str = "attached:";
+
+/// Split a command line into words the way a shell does: single quotes, double quotes and a backslash
+/// keep a word together, so `sh -c "a && b"` is three words.
+pub fn shell_words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => match chars.next() {
+                Some(n @ ('"' | '\\' | '$' | '`')) => cur.push(n),
+                Some(n) => {
+                    cur.push('\\');
+                    cur.push(n);
+                }
+                None => cur.push('\\'),
+            },
+            (Some(_), c) => cur.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, '\\') => {
+                started = true;
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+fn defs_from_value(v: Option<&Value>) -> Vec<(String, Vec<String>)> {
+    v.and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|x| {
+                    (
+                        x["name"].as_str().unwrap_or("").trim().to_string(),
+                        shell_words(x["command"].as_str().unwrap_or("")),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn attach_list(
+    list: Vec<(String, Vec<String>)>,
+    source: &'static str,
+    reason: &str,
+) -> Vec<Attached> {
+    list.into_iter()
+        .map(|(name, command)| Attached {
+            name,
+            command,
+            source,
+            reason: reason.to_string(),
+        })
+        .collect()
+}
+
+/// The checks that apply to a unit and where the list comes from. The most specific wins: the unit's own
+/// list, then its checkpoint's, then the run's, then the project's. Returns the list, its source and the
+/// reason of the override (empty for the project's list).
+pub fn attached_for_unit(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    unit: &str,
+) -> (Vec<Attached>, &'static str, String) {
+    let Some(u) = pl.unit(unit) else {
+        return (vec![], "project", String::new());
+    };
+    if u.get("own_checks").is_some() {
+        let reason = crate::store::s(u, "own_checks_reason").to_string();
+        return (
+            attach_list(defs_from_value(u.get("own_checks")), "unit", &reason),
+            "unit",
+            reason,
+        );
+    }
+    if let Some(k) = pl.checkpoint(crate::store::s(u, "checkpoint")) {
+        if k.get("unit_checks").is_some() {
+            let reason = crate::store::s(k, "unit_checks_reason").to_string();
+            return (
+                attach_list(defs_from_value(k.get("unit_checks")), "checkpoint", &reason),
+                "checkpoint",
+                reason,
+            );
+        }
+    }
+    if let Some(c) = st.runs.last().and_then(|r| r.unit_checks.as_ref()) {
+        match c["mode"].as_str().unwrap_or("") {
+            "override" => {
+                return (
+                    attach_list(defs_from_value(c.get("checks")), "run", ""),
+                    "run",
+                    String::new(),
+                )
+            }
+            "none" => return (vec![], "run", String::new()),
+            _ => {}
+        }
+    }
+    let list: Vec<(String, Vec<String>)> = p
+        .policy
+        .unit_checks
+        .list
+        .iter()
+        .map(|d| (d.name.trim().to_string(), shell_words(&d.command)))
+        .collect();
+    (attach_list(list, "project", ""), "project", String::new())
+}
+
+/// The passing receipt of an attached check at `content`: sealed, for the same command, on that content.
+pub fn attached_receipt<'a>(
+    receipts: &'a [crate::evidence::Receipt],
+    a: &Attached,
+    content: &str,
+) -> Option<&'a crate::evidence::Receipt> {
+    let id = a.id();
+    receipts.iter().rev().find(|r| {
+        r.check() == id
+            && r.content() == content
+            && r.passes()
+            && crate::store::s(&r.v, "command") == a.command_line()
+    })
+}
+
+/// What a unit still lacks of the attached checks: one line each, with the command that supplies it.
+pub fn attached_missing(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    receipts: &[crate::evidence::Receipt],
+    unit: &str,
+    content: &str,
+    wt: &std::path::Path,
+) -> Vec<String> {
+    attached_for_unit(p, pl, st, unit)
+        .0
+        .iter()
+        .filter(|a| attached_receipt(receipts, a, content).is_none())
+        .map(|a| {
+            format!(
+                "{}: {} - run `bf evidence run {} --unit {unit} -- {}` inside {}",
+                a.id(),
+                if receipts.iter().any(|r| r.check() == a.id() && r.passes()) {
+                    "the receipts on file are for other content or another command"
+                } else {
+                    "no passing sealed receipt"
+                },
+                a.id(),
+                a.command_line(),
+                wt.display()
+            )
+        })
+        .collect()
+}
+
+/// Resolve an attached check by its ID for a unit: the command the receipt must carry.
+pub fn attached_by_id(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    unit: &str,
+    id: &str,
+) -> Option<Attached> {
+    attached_for_unit(p, pl, st, unit)
+        .0
+        .into_iter()
+        .find(|a| a.id() == id)
+}
+
+/// Lines for a brief or a page: each attached check with its source.
+pub fn attached_lines(p: &Project, pl: &crate::plan::Plan, st: &State, unit: &str) -> Vec<String> {
+    let (list, source, reason) = attached_for_unit(p, pl, st, unit);
+    list.iter()
+        .map(|a| {
+            format!(
+                "{} ({}): `{}`, from {}{}",
+                a.id(),
+                a.name,
+                a.command_line(),
+                match source {
+                    "unit" => "the unit's own list",
+                    "checkpoint" => "the checkpoint's list",
+                    "run" => "the run's list",
+                    _ => "the project's list",
+                },
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (override: {reason})")
+                }
+            )
+        })
+        .collect()
 }
 
 /// Entry point of the list command, which needs no project.
@@ -308,6 +561,9 @@ pub fn run_in(
     match sub {
         "" | "list" => run(sub, rest),
         "state" => Ok(state_value(&events::replay(p)?)),
+        // The wave checks and the checks every unit must pass: decided with the human at the plan stage.
+        "wave" => crate::wavecheck::settings(p, rest, scope, quote),
+        "unit" => unit_settings(p, rest, scope, quote),
         // The mirror file holds the project default as the log has it; this writes it again from the
         // log, for a file that is missing or was changed by hand. It records nothing and decides nothing.
         "mirror" => {
@@ -413,6 +669,138 @@ pub fn run_in(
             Ok(state_value(&st))
         }
         _ => Err(unknown(sub, rest)),
+    }
+}
+
+/// `bf checks unit <state|question|propose|set>`: the run's choice about the checks every unit must pass
+/// (R-76). The project's own list lives in the policy file, which only the human edits.
+fn unit_settings(
+    p: &Project,
+    rest: &[String],
+    scope: Option<&str>,
+    quote: Option<&str>,
+) -> R<Value> {
+    let sub = rest.first().map(|x| x.as_str()).unwrap_or("state");
+    match sub {
+        "state" | "question" => {
+            let st = events::replay(p)?;
+            let mut v = json!({
+                "project_list": p.policy.unit_checks.list.iter().map(|d| json!({"name": d.name, "command": d.command})).collect::<Vec<_>>(),
+                "run": st.runs.last().map(|r| r.id.clone()),
+                "run_choice": st.runs.last().and_then(|r| r.unit_checks.clone()),
+            });
+            if sub == "question" {
+                v["question"] = json!({
+                    "ask": "Which checks must every unit of this run pass?",
+                    "options": [
+                        {"choice": "project", "text": "Use the project's list", "shows": v["project_list"]},
+                        {"choice": "override", "text": "Override it for this run: give each check as name=command"},
+                        {"choice": "none", "text": "No checks for every unit in this run"},
+                    ],
+                    "note": "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override.",
+                });
+            }
+            Ok(v)
+        }
+        "propose" => {
+            let st = events::require_chain(p)?;
+            if scope.map(|s| s != "run").unwrap_or(false) {
+                return Err(refuse(
+                    "propose the checks every unit must pass for another scope",
+                    "only the run's choice is made here: the project's list is in factory/policy.toml, which only the human edits",
+                    &["Use `--scope run`, or leave the scope out."],
+                    "`bf checks unit state` shows the list.",
+                ));
+            }
+            if st.active_run().is_none() {
+                return Err(refuse(
+                    "propose the checks every unit must pass",
+                    "no run is active",
+                    &["Start a run with `bf run start`."],
+                    "`bf checks unit state` shows the list.",
+                ));
+            }
+            crate::wavecheck::refuse_after_plan_gate(
+                &st,
+                "the checks every unit must pass",
+                "unitchecks",
+            )?;
+            let mode = rest.get(1).map(|x| x.as_str()).unwrap_or("");
+            let value = match mode {
+                "project" => json!({"mode": "project", "checks": []}),
+                "none" => json!({"mode": "none", "checks": []}),
+                "override" => {
+                    let mut checks = Vec::new();
+                    for a in rest.iter().skip(2) {
+                        let Some((n, c)) = a.split_once('=') else {
+                            return Err(refuse(
+                                "propose the checks every unit must pass",
+                                format!("`{a}` is not `<name>=<command>`"),
+                                &["Write each check as `lint=cargo clippy -- -D warnings`."],
+                                "The command prints the proposal.",
+                            ));
+                        };
+                        if n.trim().is_empty()
+                            || c.trim().is_empty()
+                            || !n.trim().chars().all(|ch| {
+                                ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+                            })
+                        {
+                            return Err(refuse(
+                                "propose the checks every unit must pass",
+                                format!("`{a}` needs a name of letters, digits, `-`, `_` or `.` and a command"),
+                                &["Write each check as `lint=cargo clippy -- -D warnings`."],
+                                "The command prints the proposal.",
+                            ));
+                        }
+                        if let Some(w) =
+                            crate::evidence::unquoted_operator_word(c.trim()).or_else(|| {
+                                crate::evidence::shell_operator_word(&shell_words(c.trim()), false)
+                            })
+                        {
+                            return Err(refuse(
+                                "propose the checks every unit must pass",
+                                crate::evidence::operator_message(&format!("check `{}`", n.trim()), &w),
+                                &[
+                                    "Propose one check per program.",
+                                    "Or keep an argument with a space whole by quoting it: the engine passes the quoted words as they are.",
+                                ],
+                                "The command prints the proposal.",
+                            ));
+                        }
+                        checks.push(json!({"name": n.trim(), "command": c.trim()}));
+                    }
+                    if checks.is_empty() {
+                        return Err(refuse(
+                            "propose the checks every unit must pass",
+                            "an override needs at least one check; use `none` for no checks",
+                            &["Write each check as `<name>=<command>`."],
+                            "The command prints the proposal.",
+                        ));
+                    }
+                    json!({"mode": "override", "checks": checks})
+                }
+                _ => {
+                    return Err(refuse(
+                        "propose the checks every unit must pass",
+                        format!("`{mode}` is not `project`, `override` or `none`"),
+                        &["Run `bf checks unit question` for the question to ask the human."],
+                        "The command prints the proposal.",
+                    ))
+                }
+            };
+            crate::wavecheck::propose(p, "unitchecks", "run", value)
+        }
+        "set" => {
+            let _ = crate::wavecheck::confirm(p, "unitchecks", scope, quote)?;
+            unit_settings(p, &["state".to_string()], None, None)
+        }
+        other => Err(refuse(
+            "run `bf checks unit`",
+            format!("unknown subcommand `{other}`"),
+            &["Run `bf checks unit question`, `propose`, `set` or `state`."],
+            "The command prints the state.",
+        )),
     }
 }
 
@@ -526,6 +914,17 @@ fn rows_text(rows: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quoted_argument_stays_one_word() {
+        assert_eq!(shell_words("sh -c \"a && b\""), vec!["sh", "-c", "a && b"]);
+        assert_eq!(
+            shell_words("echo 'x  y' z\\ w"),
+            vec!["echo", "x  y", "z w"]
+        );
+        assert_eq!(shell_words("  cargo   test "), vec!["cargo", "test"]);
+        assert_eq!(shell_words("a \"\" b"), vec!["a", "", "b"]);
+    }
 
     #[test]
     fn names_are_unique() {

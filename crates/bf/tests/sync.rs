@@ -8,11 +8,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn plan(fx: &Fx, repo: &str) {
-    plan_with(fx, repo, "ls src/a.txt");
+    plan_with(fx, repo, "test -f src/a.txt");
 }
 
-/// The plan, with the command of the checkpoint's own check.
+/// The plan, with one command for the unit's check and the checkpoint's own check: the sync runs the
+/// unit's check (the one every unit of the checkpoint is held to), the close needs the checkpoint's own.
 fn plan_with(fx: &Fx, repo: &str, k_check: &str) {
+    plan_two(fx, repo, k_check, k_check);
+}
+
+/// The plan, with the command of the unit's check and the command of the checkpoint's own check.
+fn plan_two(fx: &Fx, repo: &str, unit_check: &str, k_check: &str) {
     let r = if repo.is_empty() {
         String::new()
     } else {
@@ -21,7 +27,7 @@ fn plan_with(fx: &Fx, repo: &str, k_check: &str) {
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n".to_string()),
         ("unit", format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\n{r}checkpoint=\"K-1\"\n")),
-        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n".to_string()),
+        ("check", format!("id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"{unit_check}\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n")),
         ("check", format!("id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"{k_check}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n")),
         ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n".to_string()),
     ] {
@@ -36,9 +42,15 @@ fn real_run(fx: &Fx) {
     fx.human("I approve the plan.");
     fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
     fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
 }
 
 fn land_unit(fx: &Fx) {
+    land_unit_with(fx, &["test", "-f", "src/a.txt"]);
+}
+
+/// Land the unit, running its check with the command the plan gave it.
+fn land_unit_with(fx: &Fx, cmd: &[&str]) {
     let wc = PathBuf::from(
         fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
             .as_str()
@@ -46,20 +58,9 @@ fn land_unit(fx: &Fx) {
     );
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/a.txt"), "from the unit\n").unwrap();
-    fx.must_in(
-        &wc,
-        &[
-            "evidence",
-            "run",
-            "X-1",
-            "--unit",
-            "U-1",
-            "--",
-            "test",
-            "-f",
-            "src/a.txt",
-        ],
-    );
+    let mut args = vec!["evidence", "run", "X-1", "--unit", "U-1", "--"];
+    args.extend_from_slice(cmd);
+    fx.must_in(&wc, &args);
     fx.must(&["report", "U-1", "--result", "built"]);
     fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
     fx.must(&["unit", "land", "U-1"]);
@@ -149,7 +150,7 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
     // A checkpoint receipt from before the sync exists; the sync makes it stop counting.
     fx.must_in(
         &fx.work("K-1"),
-        &["evidence", "run", "X-2", "--", "ls", "src/a.txt"],
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
     );
     // The words are needed: a human turn with the quote in it.
     let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "nobody said this"]);
@@ -190,6 +191,17 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
     assert_eq!(o["nothing_to_take_in"], true);
     // The checkpoint's own check is open again; the landed unit's receipts still count.
     assert_eq!(fx.bf(&["evidence", "verify", "--unit", "U-1"]).code, 0);
+    // The sync ran the unit's check on the joined content, as a run that settles nothing: the
+    // verification lists it apart, and the close is refused until the checkpoint's own check ran.
+    let v = fx
+        .bf(&["evidence", "verify", "--checkpoint", "K-1", "--json"])
+        .stdout;
+    assert!(v.contains("sync:X-1"), "{v}");
+    assert_eq!(fx.bf(&["checkpoint", "close", "K-1"]).code, 2);
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
     let out = fx.merge_checkpoint("K-1");
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(code.join("docs/extra.txt").exists() && code.join("src/a.txt").exists());
@@ -228,7 +240,7 @@ fn a_hand_merge_without_the_command_is_not_refused_and_its_receipts_go_stale() {
     let root = fx.root.clone();
     fx.must_in(
         &fx.work("K-1"),
-        &["evidence", "run", "X-2", "--", "ls", "src/a.txt"],
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
     );
     human_commit(&root, "docs/extra.txt", "main\n");
     let wt = fx.work("K-1");
@@ -237,7 +249,10 @@ fn a_hand_merge_without_the_command_is_not_refused_and_its_receipts_go_stale() {
         .must(&["log", "--json"])
         .stdout
         .contains("checkpoint.sync"));
-    fx.must_in(&wt, &["evidence", "run", "X-2", "--", "ls", "src/a.txt"]);
+    fx.must_in(
+        &wt,
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
     assert_eq!(fx.merge_checkpoint("K-1").code, 0);
 }
 
@@ -549,7 +564,11 @@ fn walk_resolve(fx: &Fx, code: &Path) {
         "{st}"
     );
     assert_ne!(tip(code, "bf/K-1"), before);
-    // The checks ran on the joined content during the sync: the close needs nothing more.
+    // The sync's runs settle nothing: the checkpoint's own check runs at verification, then it closes.
+    fx.must_in(
+        &k,
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
     assert_eq!(fx.merge_checkpoint("K-1").code, 0);
     assert_eq!(
         fs::read_to_string(code.join("src/a.txt")).unwrap(),
@@ -649,9 +668,11 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
     // A report on the open sync is refused cleanly while another engine command holds the lock.
     {
         let held = bf::lock::engine(&fx.project(), "hold").unwrap();
-        let o = fx.bf_in(
+        let o = fx.bf_env(
             &k,
             &["report", "K-1", "--role", "builder", "--result", "built"],
+            "",
+            &[("BF_LOCK_WAIT_MS", "300")],
         );
         assert_ne!(o.code, 0, "{}", o.all());
         assert!(
@@ -681,7 +702,7 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
 /// The main branch adds a file that breaks the checkpoint's check once joined: no textual conflict.
 fn walk_repair(fx: &Fx, code: &Path) {
     real_run(fx);
-    land_unit(fx);
+    land_unit_with(fx, &["test", "!", "-f", "src/banned.txt"]);
     human_commit(
         code,
         "src/banned.txt",
@@ -708,11 +729,14 @@ fn walk_repair(fx: &Fx, code: &Path) {
     assert_eq!(o["synced"], false, "{o}");
     assert_eq!(o["sync_open"], true, "{o}");
     assert!(o["conflicted"].as_array().unwrap().is_empty(), "{o}");
-    assert_eq!(o["failed_checks"][0]["check"], "X-2", "{o}");
+    // The failing check is the unit's, which every unit of the checkpoint is held to; the checkpoint's
+    // own X-2 was not run.
+    assert_eq!(o["failed_checks"][0]["check"], "X-1", "{o}");
+    assert_eq!(o["failed_checks"].as_array().unwrap().len(), 1, "{o}");
     let k = fx.work("K-1");
     assert!(k.join("src/banned.txt").exists(), "the merge is kept");
     let d = directive(fx, "resolve-sync");
-    assert_eq!(d["failing_checks"][0], "X-2", "{d}");
+    assert_eq!(d["failing_checks"][0], "X-1", "{d}");
     assert!(
         d["files"].as_array().unwrap().is_empty(),
         "no conflicted file: {d}"
@@ -730,7 +754,9 @@ fn walk_repair(fx: &Fx, code: &Path) {
     )
     .unwrap();
     assert!(
-        brief.contains("X-2")
+        brief.contains("X-1")
+            && !brief.contains("X-2")
+            && brief.contains("checkpoint's own checks run only at verification")
             && brief.contains("FAILS")
             && brief.contains("test ! -f src/banned.txt")
             && brief.contains("What you may change"),
@@ -803,13 +829,27 @@ fn walk_repair(fx: &Fx, code: &Path) {
         &k,
         &["report", "K-1", "--role", "reviewer", "--result", "built"],
     );
-    // Recorded; the receipts of the checks on the joined content count at the close, nothing to run again.
+    // Recorded; the sync's runs settle nothing, so the checkpoint's own check runs at verification.
     assert!(fx.must(&["status", "--json"]).json()["sync_open"].is_null());
     assert!(fx
         .must(&["log", "--json"])
         .stdout
         .contains("\"checkpoint.sync\""));
     assert_ne!(tip(code, "bf/K-1"), before);
+    assert_eq!(fx.bf(&["checkpoint", "close", "K-1"]).code, 2);
+    fx.must_in(
+        &k,
+        &[
+            "evidence",
+            "run",
+            "X-2",
+            "--",
+            "test",
+            "!",
+            "-f",
+            "src/banned.txt",
+        ],
+    );
     assert_eq!(fx.merge_checkpoint("K-1").code, 0);
     assert!(!code.join("src/banned.txt").exists());
 }
@@ -842,7 +882,7 @@ fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_
     plan_with(&fx, "", "test ! -f src/banned.txt");
     let root = fx.root.clone();
     real_run(&fx);
-    land_unit(&fx);
+    land_unit_with(&fx, &["test", "!", "-f", "src/banned.txt"]);
     human_commit(&root, "src/banned.txt", "added on main\n");
     let before = tip(&root, "bf/K-1");
     fx.human("Yes, bring main into the first checkpoint.");
@@ -926,4 +966,168 @@ fn a_sync_leaves_out_a_switched_off_check_and_says_so() {
     assert_eq!(o["synced"], true, "{o}");
     assert_eq!(o["skipped_checks"], json!(["X-3"]), "{o}");
     assert!(o["sync_open"].is_null(), "{o}");
+}
+
+/// The resolver's brief lists only the checks the sync will run.
+#[test]
+fn the_resolvers_brief_leaves_out_a_switched_off_check() {
+    let fx = Fx::new();
+    fx.tiny();
+    let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
+    let f = fx.root.join("x3.toml");
+    fs::write(&f, x3).unwrap();
+    let o = fx.bf(&[
+        "record",
+        "put",
+        "check",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let _ = fs::remove_file(&f);
+    fx.commit_all("x3");
+    fx.start_test_run();
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    // The same file changes on main: the sync conflicts and a resolver is briefed.
+    fs::create_dir_all(fx.root.join("src")).unwrap();
+    fs::write(fx.root.join("src/hello.txt"), "main says hi\n").unwrap();
+    git(&fx.root, &["add", "src/hello.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+    fx.human("Yes, take main into the checkpoint.");
+    let o = fx.bf(&[
+        "checkpoint",
+        "sync",
+        "K-1",
+        "--quote",
+        "take main into the checkpoint",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = fx.must(&["brief", "K-1", "--role", "builder"]);
+    let path = o.stdout.trim().lines().last().unwrap().trim().to_string();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("src/hello.txt"), "{text}");
+    assert!(!text.contains("X-3"), "{text}");
+}
+
+/// The checks of the verification of a checkpoint, as the rows it prints.
+fn verified_checks(fx: &Fx, k: &str) -> Vec<String> {
+    let o = fx.bf(&["evidence", "verify", "--checkpoint", k, "--json"]);
+    o.json()["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["check"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn sync_k1(fx: &Fx, words: &str) -> Value {
+    fx.human(&format!("Yes, {words}."));
+    fx.must(&["checkpoint", "sync", "K-1", "--quote", words, "--json"])
+        .json()
+}
+
+/// A checkpoint whose own check differs from the check its unit is held to: the sync runs the unit's
+/// check, never the checkpoint's own, and its runs let nothing close.
+#[test]
+fn a_sync_runs_the_checks_every_unit_is_held_to_and_not_the_checkpoints_own() {
+    let fx = Fx::new();
+    plan_two(&fx, "", "test -f src/a.txt", "test -e src/a.txt");
+    let root = fx.root.clone();
+    real_run(&fx);
+    land_unit(&fx);
+    human_commit(&root, "docs/extra.txt", "written on main\n");
+    let o = sync_k1(&fx, "bring main in");
+    assert_eq!(o["synced"], true, "{o}");
+    // The list of checks the sync ran, as the verification shows them.
+    let ran = verified_checks(&fx, "K-1");
+    println!("the checks the sync ran: {ran:?}");
+    assert!(ran.contains(&"sync:X-1".to_string()), "{ran:?}");
+    assert!(
+        !ran.iter().any(|c| c.contains("X-2")),
+        "the checkpoint's own check is not run by the sync: {ran:?}"
+    );
+    // The sync's runs settle nothing: the checkpoint does not close on them.
+    let o = fx.bf(&["checkpoint", "close", "K-1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert_eq!(
+        fx.bf(&["evidence", "verify", "--checkpoint", "K-1"]).code,
+        2
+    );
+    // At verification the checkpoint's own check runs on the content being closed, and it closes.
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-2", "--", "test", "-e", "src/a.txt"],
+    );
+    assert_eq!(
+        fx.bf(&["evidence", "verify", "--checkpoint", "K-1"]).code,
+        0
+    );
+    assert_eq!(fx.merge_checkpoint("K-1").code, 0);
+}
+
+/// A failing check of the units opens the repair, and the refusal names the sync check and its command.
+#[test]
+fn a_failing_check_every_unit_is_held_to_opens_the_repair_and_the_refusal_names_it() {
+    let fx = Fx::new();
+    plan_two(&fx, "", "test ! -f src/banned.txt", "test -e src/a.txt");
+    let root = fx.root.clone();
+    real_run(&fx);
+    land_unit_with(&fx, &["test", "!", "-f", "src/banned.txt"]);
+    human_commit(&root, "src/banned.txt", "added on main\n");
+    let o = sync_k1(&fx, "bring main in");
+    assert_eq!(o["sync_open"], true, "{o}");
+    assert_eq!(o["failed_checks"][0]["check"], "X-1", "{o}");
+    assert_eq!(
+        o["failed_checks"][0]["command"], "test ! -f src/banned.txt",
+        "{o}"
+    );
+    println!("the checks the sync ran: {:?}", verified_checks(&fx, "K-1"));
+    assert!(!verified_checks(&fx, "K-1")
+        .iter()
+        .any(|c| c.contains("X-2")));
+    // Reporting the resolution while the check still fails is refused, naming the check and command.
+    let k = fx.work("K-1");
+    let o = fx.bf_in(
+        &k,
+        &["report", "K-1", "--role", "builder", "--result", "built"],
+    );
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(
+        o.stderr.contains("X-1") && o.stderr.contains("test ! -f src/banned.txt"),
+        "{}",
+        o.stderr
+    );
+}
+
+/// Units that share no command: the sync runs the checkpoint's own command checks, as before.
+#[test]
+fn a_checkpoint_whose_units_share_no_command_is_synced_with_its_own_checks() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    fs::create_dir_all(fx.root.join("docs")).unwrap();
+    fs::write(fx.root.join("docs/extra.txt"), "main\n").unwrap();
+    git(&fx.root, &["add", "docs/extra.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+    let o = sync_k1(&fx, "take main into the checkpoint");
+    assert_eq!(o["synced"], true, "{o}");
+    let ran = verified_checks(&fx, "K-1");
+    println!("the checks the sync ran: {ran:?}");
+    assert!(ran.contains(&"X-3".to_string()), "{ran:?}");
+    assert!(!ran.iter().any(|c| c.starts_with("sync:")), "{ran:?}");
 }

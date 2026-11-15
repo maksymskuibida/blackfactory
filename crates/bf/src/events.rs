@@ -114,6 +114,35 @@ pub fn write_head(p: &Project, h: &Head) -> R<()> {
     Ok(())
 }
 
+/// Record where repositories' main branches stand in the head, under the log's lock, so an append
+/// at the same moment cannot write an old value back. Each pair is a repository name and a commit.
+pub fn set_commits(p: &Project, commits: &[(String, String)]) -> R<()> {
+    update_head(p, |h| {
+        for (repo, commit) in commits {
+            h.set_commit(repo, Some(commit.clone()));
+        }
+        true
+    })
+}
+
+/// Change the head under the log's lock: read it, let `f` change it, and write it back when `f`
+/// answers true. Any head change that is not an append goes through here, so an append at the same
+/// moment cannot put an old value back.
+pub fn update_head(p: &Project, f: impl FnOnce(&mut Head) -> bool) -> R<()> {
+    fs::create_dir_all(p.dot_bf())?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(p.dot_bf().join("log.lock"))?;
+    lock.lock()
+        .map_err(|e| err(format!("cannot lock the log: {e}")))?;
+    let mut h = read_head(p).unwrap_or_default();
+    let r = if f(&mut h) { write_head(p, &h) } else { Ok(()) };
+    let _ = lock.unlock();
+    r
+}
+
 /// Read the log and compare it with the head. A shared hold on the log lock keeps an append from
 /// finishing between the two reads, so a reader never sees a head one event ahead of the log it read.
 pub fn load_log(p: &Project) -> R<Log> {
@@ -302,6 +331,11 @@ pub fn append(p: &Project, kind: &str, data: Value) -> R<Value> {
         )?;
     }
     let _ = lock.unlock();
+    drop(lock);
+    // After an event that can start or end a hold, the engine logs the change (never after a hold event).
+    if can_change_hold(kind) {
+        let _ = crate::run::observe_holds(p);
+    }
     Ok(Value::Object(m))
 }
 
@@ -351,6 +385,39 @@ pub struct Run {
     /// The checks switched off for this run, with the reason for each: the project default when the
     /// run started, then what the human confirmed for this run.
     pub checks_off: BTreeMap<String, String>,
+    /// The wave checks this run uses, as the human confirmed them: `{source, checks}` where `source` is
+    /// `default`, `override` or `none`. None until the human decides at the plan stage.
+    pub wave: Option<Value>,
+    /// The checks every unit must pass in this run: `{mode, checks}` where `mode` is `project`,
+    /// `override` or `none`. None until the human decides at the plan stage.
+    pub unit_checks: Option<Value>,
+}
+
+/// A proposal about the wave checks or the checks every unit must pass, shown to the human before they
+/// are asked. `topic` is `wave` or `unitchecks`.
+#[derive(Clone, Debug)]
+pub struct SettingProposal {
+    pub seq: u64,
+    pub topic: String,
+    /// `run`, `default` (wave checks only) or `both`.
+    pub scope: String,
+    pub value: Value,
+    pub run: String,
+    pub used: bool,
+}
+
+/// A wave check run: for a checkpoint and a wave, the content it ran on and how it ended.
+#[derive(Clone, Debug, Default)]
+pub struct WaveRun {
+    pub checkpoint: String,
+    pub wave: u32,
+    pub content: String,
+    /// `running`, `passed`, `failed` or `stale` (units landed while it ran, so it counts for nothing).
+    pub state: String,
+    pub failed: Vec<Value>,
+    pub start_seq: u64,
+    pub start_at: String,
+    pub receipts: Vec<String>,
 }
 
 /// One change of the check settings: a check name and, when it is switched off, the reason.
@@ -410,6 +477,42 @@ pub fn apply_changes(off: &mut BTreeMap<String, String>, changes: &[CheckChange]
     }
 }
 
+/// A grant of files beyond a unit's list, as the log has it (R-84).
+#[derive(Clone, Debug, Default)]
+pub struct ScopeGrant {
+    pub n: u32,
+    pub seq: u64,
+    pub at: String,
+    /// `{path, why, patch}` for each file.
+    pub files: Vec<Value>,
+    /// `{path, mark}` for each marked file.
+    pub marks: Vec<Value>,
+    /// The log position of the request this grant answers.
+    pub request: u64,
+    /// The human's words and the time, when the grant was withdrawn.
+    pub withdrawn: Option<(String, String)>,
+    /// Whether the unit was sent back to undo changes the grant allowed.
+    pub undo: bool,
+}
+
+/// An open request of a builder for files beyond its unit's list.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeReq {
+    pub seq: u64,
+    pub at: String,
+    pub from: String,
+    pub files: Vec<Value>,
+}
+
+/// Everything the log says about a unit's files beyond its list.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeSt {
+    pub open: Option<ScopeReq>,
+    pub grants: Vec<ScopeGrant>,
+    /// Requests refused as an extension or by a hard rule: `{seq, at, refusal, files}`.
+    pub refused: Vec<Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct UnitSt {
     pub state: String,
@@ -430,6 +533,8 @@ pub struct UnitSt {
     /// The commit of the checkpoint branch the unit's branch was cut from.
     pub base_commit: String,
     pub notes: Vec<String>,
+    /// Every review round: number, the content it judged, its commit and what it covered.
+    pub review_rounds: Vec<Value>,
 }
 
 /// One repository of an open sync: where the checkpoint branch stood before, the main branch's commit
@@ -461,6 +566,172 @@ pub struct SyncOpen {
     pub floor: u64,
     /// The checkpoint checks that failed on the joined content when the sync opened.
     pub failed: Vec<Value>,
+}
+
+/// A checkpoint fix that was aborted.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixAbort {
+    pub checkpoint: String,
+    /// The (round, number) of each finding the aborted fix was opened for.
+    pub ids: Vec<(u32, u32)>,
+    pub seq: u64,
+}
+
+/// A fix of a checkpoint that failed a check or drew findings: a builder works in the checkpoint's own
+/// working copy, a reviewer judges it, and the checkpoint's checks run again.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixOpen {
+    pub checkpoint: String,
+    /// `check` (a check failed) or `review` (the checkpoint review filed findings).
+    pub source: String,
+    /// `fix` (a builder works), `review` (a reviewer judges), `parked` or `gap` (the human decides).
+    pub phase: String,
+    /// Review rounds that ended in findings.
+    pub rounds: u32,
+    /// Failing check runs and blocked reports since the fix opened or was released.
+    pub attempts: u32,
+    pub reason: String,
+    /// What is missing, when the fix is a plan gap.
+    pub missing: Vec<String>,
+    /// The findings the builder has to fix now.
+    pub findings: Vec<Value>,
+    /// The failing checks the builder has to fix now: check, command, exit, tail.
+    pub failed: Vec<Value>,
+    /// Patterns of the files the fix may change, and the test folders where it may add new test files.
+    pub allowed: Vec<String>,
+    pub test_dirs: Vec<String>,
+    pub units: Vec<String>,
+    /// Where each repository's checkpoint branch stood when the fix opened: (repository, commit).
+    pub before: Vec<(String, String)>,
+    /// The content of the checkpoint when the fix opened.
+    pub content: String,
+    pub open_seq: u64,
+    /// The seq of the latest event that parked the fix; 0 while it was never parked.
+    pub park_seq: u64,
+    /// What set the fix off, as the opening event recorded it: the failed checks, or the findings.
+    pub origin_failed: Vec<Value>,
+    pub origin_findings: Vec<Value>,
+    /// The round and the number inside the round (from 1) of each finding the fix was opened for. Empty for
+    /// a fix opened before the pairs were recorded, and for a fix that no review finding opened.
+    pub origin_ids: Vec<(u32, u32)>,
+    /// Every review round: number, the content it judged, the commits, what it covered, its outcome.
+    pub rounds_log: Vec<Value>,
+    /// The findings of every earlier round, with the round they were filed in.
+    pub history: Vec<Value>,
+    /// The wave a wave fix is for; 0 for every other fix.
+    pub wave: u32,
+    /// The opening event cites a human turn of its own (a pick with words).
+    pub own_turn: bool,
+}
+
+/// A hold the engine logged for a checkpoint: `marked`, `question` or `wave`, what it names, and the seq
+/// of the event that started it.
+#[derive(Debug, Clone, Default)]
+pub struct CkHold {
+    pub cause: String,
+    pub detail: String,
+    pub seq: u64,
+}
+
+/// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hold {
+    /// A sync of main into this checkpoint is open (any phase, parked included).
+    Sync { checkpoint: String },
+    /// A checkpoint fix of this checkpoint is at work (open and not parked, the gap phase included).
+    Fix { checkpoint: String },
+    /// These checks of the checkpoint are marked failed or unreachable at its content.
+    Marked {
+        checkpoint: String,
+        checks: Vec<String>,
+    },
+    /// A worker's question on the checkpoint is unanswered.
+    Question { checkpoint: String, id: String },
+    /// A wave check holds the checkpoint's close.
+    Wave { checkpoint: String, reason: String },
+}
+
+impl Hold {
+    /// The checkpoint the hold is of (for a sync or a fix, that of the sync or the fix).
+    pub fn checkpoint(&self) -> &str {
+        match self {
+            Hold::Sync { checkpoint }
+            | Hold::Fix { checkpoint }
+            | Hold::Marked { checkpoint, .. }
+            | Hold::Question { checkpoint, .. }
+            | Hold::Wave { checkpoint, .. } => checkpoint,
+        }
+    }
+    /// The hold in words, for a refusal ("because ...").
+    pub fn because(&self) -> String {
+        match self {
+            Hold::Sync { checkpoint } => {
+                format!("a sync of main into {checkpoint} is open")
+            }
+            Hold::Fix { checkpoint } => {
+                format!("a checkpoint fix is at work on {checkpoint}")
+            }
+            Hold::Marked { checkpoint, checks } => format!(
+                "a check of {checkpoint} is marked failed or unreachable ({})",
+                checks.join(", ")
+            ),
+            Hold::Question { checkpoint, id } => {
+                format!("a worker's question on {checkpoint} ({id}) is unanswered")
+            }
+            Hold::Wave { checkpoint, reason } => {
+                format!("a wave check holds the close of {checkpoint} ({reason})")
+            }
+        }
+    }
+    /// The hold in words of the past, for the note of an ignored event.
+    pub fn during(&self) -> String {
+        match self {
+            Hold::Sync { checkpoint } => format!("a sync of main into {checkpoint} was open"),
+            Hold::Fix { .. } => "a checkpoint fix was at work".to_string(),
+            Hold::Marked { checkpoint, checks } => format!(
+                "a check of {checkpoint} was marked failed or unreachable ({})",
+                checks.join(", ")
+            ),
+            Hold::Question { checkpoint, id } => {
+                format!("a worker's question on {checkpoint} ({id}) was unanswered")
+            }
+            Hold::Wave { checkpoint, reason } => {
+                format!("a wave check held the close of {checkpoint} ({reason})")
+            }
+        }
+    }
+}
+
+/// A finding of a checkpoint review that the human accepted, or declined with a reason.
+#[derive(Clone, Debug, Default)]
+pub struct CkSettled {
+    pub checkpoint: String,
+    pub round: u32,
+    /// The finding's number inside its round, from 1.
+    pub index: u32,
+    /// `accepted` or `declined`.
+    pub fate: String,
+    pub reason: String,
+}
+
+/// A checkpoint fix that was reviewed clean and whose checks passed again.
+#[derive(Clone, Debug, Default)]
+pub struct CkFixDone {
+    pub id: String,
+    pub checkpoint: String,
+    pub source: String,
+    pub files: Vec<String>,
+    pub units: Vec<String>,
+    /// File -> the units whose file lists hold it.
+    pub by_file: Value,
+    pub rounds_log: Vec<Value>,
+    pub origin_failed: Vec<Value>,
+    pub origin_findings: Vec<Value>,
+    /// The (round, number) pairs the fix was opened for; empty for a fix recorded before they were kept.
+    pub ids: Vec<(u32, u32)>,
+    /// The latest review round of the checkpoint that had reported when the fix opened.
+    pub from_round: u32,
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +800,27 @@ pub struct State {
     pub synced: Vec<(String, String, String)>,
     /// A sync that stopped at a conflict and is being resolved.
     pub sync_open: Option<SyncOpen>,
+    /// A checkpoint fix being worked on.
+    pub ck_fix: Option<CkFixOpen>,
+    /// Every checkpoint fix that was finished, in log order.
+    pub ck_fixes: Vec<CkFixDone>,
+    /// `<checkpoint>@<content>` of fixes the human turned down: no fix opens for that content again.
+    pub ck_declined: Vec<String>,
+    /// The seq of the latest event that ended, aborted or parked a checkpoint fix, of any checkpoint; 0 when none.
+    pub ck_end_seq: u64,
+    /// Checkpoint -> the hold the engine logged for it (a marked check, an unanswered question, a wave
+    /// check), with the seq it started at. Kept by `checkpoint.hold`.
+    pub ck_holds: BTreeMap<String, CkHold>,
+    /// Findings of checkpoint reviews that the human accepted or declined, in log order.
+    pub ck_settled: Vec<CkSettled>,
+    /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
+    pub ck_round_done: Vec<(String, u32, u64)>,
+    /// Every checkpoint fix that was aborted: (checkpoint, the findings it was opened for as (round, number),
+    /// seq of the abort).
+    pub ck_fix_aborts: Vec<CkFixAbort>,
+    /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
+    /// the number of reviews a checkpoint may have.
+    pub ck_review_floor: BTreeMap<String, u32>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -536,6 +828,15 @@ pub struct State {
     pub checks_default: BTreeMap<String, String>,
     /// Proposals of check settings shown to the human, in log order.
     pub checks_proposals: Vec<CheckProposal>,
+    /// The project's default wave checks, kept by the engine: `{enabled, checks}`. None when the project
+    /// has no default.
+    pub wave_default: Option<Value>,
+    /// Proposals about the wave checks and the checks every unit must pass, in log order.
+    pub setting_proposals: Vec<SettingProposal>,
+    /// The latest wave check run of each checkpoint and wave.
+    pub wave_runs: BTreeMap<(String, u32), WaveRun>,
+    /// Unit -> its open request, its grants and its refused requests.
+    pub scope: BTreeMap<String, ScopeSt>,
 }
 
 impl State {
@@ -633,6 +934,136 @@ fn decision_turn_ok(
         && t.seq > after
         && t.seq < before
         && check_decision(&t.text, quote, kind, &words).is_ok()
+}
+
+fn id_pairs(v: &Value) -> Vec<(u32, u32)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(|x| {
+            (
+                x["round"].as_u64().unwrap_or(0) as u32,
+                x["index"].as_u64().unwrap_or(0) as u32,
+            )
+        })
+        .collect()
+}
+
+/// The seq of the report of a checkpoint's review round (the latest one, when it reported more than once);
+/// 0 when none.
+pub fn round_report_seq(st: &State, k: &str, round: u32) -> u64 {
+    st.ck_round_done
+        .iter()
+        .filter(|(c, r, _)| c == k && *r == round)
+        .map(|(_, _, q)| *q)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The seq of the latest event that put these findings (round, number) of a checkpoint to the human: for
+/// each, the later of the report of its round and the abort of the latest fix opened for it. A fix recorded
+/// without finding ids is not matched to its abort. The latest over all the findings; 0 when none.
+pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
+    ids.iter()
+        .map(|id| {
+            let abort = st
+                .ck_fix_aborts
+                .iter()
+                .filter(|a| a.checkpoint == k && a.ids.contains(id))
+                .map(|a| a.seq)
+                .max()
+                .unwrap_or(0);
+            abort.max(round_report_seq(st, k, id.0))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The one bound of the human decisions on a checkpoint finding (accept, decline, a pick to fix, the release
+/// of a parked review, the release of a parked fix). `None` while a checkpoint fix opened before
+/// `opened_before` is at work (open and not parked, the gap phase counts as at work), whatever it was opened
+/// for and whichever checkpoint it is of: then the human is not asked. Otherwise the later of `base` and the
+/// latest end, abort or park of a checkpoint fix. Commands pass `u64::MAX` as `opened_before`; the replay
+/// passes the seq of the event it judges. One rule for the command and for the replay.
+pub fn decision_bound(st: &State, k: &str, base: u64, opened_before: u64) -> Result<u64, Hold> {
+    match hold(st, k, opened_before) {
+        Some(h) => Err(h),
+        None => Ok(base.max(st.ck_end_seq)),
+    }
+}
+
+/// The one predicate for "the human is not being asked about the findings of checkpoint `k`": a sync of main
+/// into any checkpoint is open (every phase); any checkpoint fix opened before `opened_before` is at work
+/// (open and not parked, the gap phase included); or the engine logged a hold of `k` (a check marked, a
+/// worker's question unanswered, a wave check holding the close). `bf next` and the five decisions share it.
+pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
+    if let Some(so) = st.sync_open.as_ref() {
+        return Some(Hold::Sync {
+            checkpoint: so.checkpoint.clone(),
+        });
+    }
+    if let Some(f) = st.ck_fix.as_ref() {
+        if f.open_seq < opened_before && f.phase != "parked" {
+            return Some(Hold::Fix {
+                checkpoint: f.checkpoint.clone(),
+            });
+        }
+    }
+    let h = st.ck_holds.get(k)?;
+    let checkpoint = k.to_string();
+    match h.cause.as_str() {
+        "marked" => Some(Hold::Marked {
+            checkpoint,
+            checks: h
+                .detail
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string())
+                .collect(),
+        }),
+        "question" => Some(Hold::Question {
+            checkpoint,
+            id: h.detail.clone(),
+        }),
+        "wave" => Some(Hold::Wave {
+            checkpoint,
+            reason: h.detail.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// The `opened_before` of a review release's replay: the fix the release itself opened is the event just
+/// before it, for the same checkpoint, with source `review` and no human turn of its own; only that fix is
+/// set aside. Any other open fix counts.
+fn release_opened_before(st: &State, k: &str, seq: u64) -> u64 {
+    match st.ck_fix.as_ref() {
+        Some(f)
+            if f.open_seq + 1 == seq
+                && f.checkpoint == k
+                && f.source == "review"
+                && !f.own_turn =>
+        {
+            seq.saturating_sub(1)
+        }
+        _ => seq,
+    }
+}
+
+/// Whether an event of this kind can start or end a hold: the engine looks at the holds after it.
+pub fn can_change_hold(kind: &str) -> bool {
+    matches!(
+        kind,
+        "evidence.run"
+            | "evidence.outcome"
+            | "question.asked"
+            | "question.answered"
+            | "wave.check.run"
+            | "unit.land"
+            | "checkpoint.fix.done"
+            | "checkpoint.sync"
+            | "amend.approve"
+    )
 }
 
 pub fn replay_log_with(log: &Log, words: &Words) -> State {
@@ -825,7 +1256,124 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ended: false,
                     simulated_used: false,
                     checks_off: st.checks_default.clone(),
+                    wave: None,
+                    unit_checks: None,
                 });
+            }
+            "wave.propose" | "unitchecks.propose" => {
+                st.setting_proposals.push(SettingProposal {
+                    seq,
+                    topic: if ev["kind"] == "wave.propose" {
+                        "wave"
+                    } else {
+                        "unitchecks"
+                    }
+                    .into(),
+                    scope: sv("scope"),
+                    value: ev["value"].clone(),
+                    run: st
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|r| !r.ended)
+                        .map(|r| r.id.clone())
+                        .unwrap_or_default(),
+                    used: false,
+                });
+            }
+            "wave.set" | "unitchecks.set" => {
+                let topic = if ev["kind"] == "wave.set" {
+                    "wave"
+                } else {
+                    "unitchecks"
+                };
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let pseq = ev["proposal"].as_u64().unwrap_or(0);
+                let active = st
+                    .runs
+                    .iter()
+                    .rev()
+                    .find(|r| !r.ended)
+                    .map(|r| r.id.clone())
+                    .unwrap_or_default();
+                let prop = st.setting_proposals.iter().find(|x| x.seq == pseq).cloned();
+                let ok = prop
+                    .as_ref()
+                    .map(|x| {
+                        x.topic == topic
+                            && x.scope == sv("scope")
+                            && x.value == ev["value"]
+                            && !x.used
+                            && !st
+                                .setting_proposals
+                                .iter()
+                                .any(|y| y.topic == topic && y.seq > x.seq && y.seq < tseq)
+                            && (x.scope == "default" || (!active.is_empty() && x.run == active))
+                    })
+                    .unwrap_or(false)
+                    && decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        pseq,
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    );
+                if !ok {
+                    st.ignored.push(format!(
+                        "event {seq}: a {topic} setting cites no matching proposal or no valid human turn and quote after it"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(x) = st.setting_proposals.iter_mut().find(|x| x.seq == pseq) {
+                    x.used = true;
+                }
+                let scope = sv("scope");
+                let value = ev["value"].clone();
+                if topic == "wave" {
+                    if scope == "default" || scope == "both" {
+                        st.wave_default = Some(json!({
+                            "enabled": value["source"] != "none",
+                            "checks": value["checks"],
+                        }));
+                    }
+                    if scope == "run" || scope == "both" {
+                        if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                            r.wave = Some(value);
+                        }
+                    }
+                } else if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+                    r.unit_checks = Some(value);
+                }
+            }
+            "wave.check.start" => {
+                let key = (sv("checkpoint"), ev["wave"].as_u64().unwrap_or(0) as u32);
+                st.wave_runs.insert(
+                    key.clone(),
+                    WaveRun {
+                        checkpoint: key.0,
+                        wave: key.1,
+                        content: sv("content"),
+                        state: "running".into(),
+                        start_seq: seq,
+                        start_at: at.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+            "wave.check.run" => {
+                let key = (sv("checkpoint"), ev["wave"].as_u64().unwrap_or(0) as u32);
+                let w = st.wave_runs.entry(key.clone()).or_insert_with(|| WaveRun {
+                    checkpoint: key.0.clone(),
+                    wave: key.1,
+                    ..Default::default()
+                });
+                w.content = sv("content");
+                w.state = sv("state");
+                w.failed = ev["failed"].as_array().cloned().unwrap_or_default();
+                w.receipts = crate::store::str_list(ev, "receipts");
             }
             "checks.propose" => {
                 st.checks_proposals.push(CheckProposal {
@@ -933,8 +1481,103 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if !note.is_empty() {
                     u.notes.push(note);
                 }
+                if ev.get("round").is_some() {
+                    u.review_rounds.push(json!({
+                        "round": ev["round"], "content": ev["content"], "head": ev["head"],
+                        "covered": ev["covered"], "result": ev["result"],
+                    }));
+                }
                 u.last_seq = seq;
                 u.last_at = at;
+            }
+            "unit.scope.request" => {
+                let u = st.units.entry(sv("unit")).or_default();
+                u.attempts += 1;
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                u.cost += c;
+                u.last_seq = seq;
+                u.last_at = at.clone();
+                st.cost += c;
+                st.scope.entry(sv("unit")).or_default().open = Some(ScopeReq {
+                    seq,
+                    at,
+                    from: sv("from"),
+                    files: ev["files"].as_array().cloned().unwrap_or_default(),
+                });
+            }
+            "unit.scope.grant" => {
+                let sc = st.scope.entry(sv("unit")).or_default();
+                sc.open = None;
+                let n = sc.grants.len() as u32 + 1;
+                sc.grants.push(ScopeGrant {
+                    n,
+                    seq,
+                    at: at.clone(),
+                    files: ev["files"].as_array().cloned().unwrap_or_default(),
+                    marks: ev["marks"].as_array().cloned().unwrap_or_default(),
+                    request: ev["request"].as_u64().unwrap_or(0),
+                    withdrawn: None,
+                    undo: false,
+                });
+                let c = ev["cost"].as_f64().unwrap_or(0.0);
+                st.cost += c;
+                if let Some(u) = st.units.get_mut(&sv("unit")) {
+                    u.cost += c;
+                    u.last_seq = seq;
+                    u.last_at = at;
+                }
+            }
+            "unit.scope.refused" => {
+                // A hard refusal never opened a request, so it counts here; an extension's request
+                // was counted when it was made.
+                let hard = sv("refusal") == "hard";
+                let sc = st.scope.entry(sv("unit")).or_default();
+                sc.open = None;
+                sc.refused.push(json!({
+                    "seq": seq, "at": at, "refusal": sv("refusal"), "files": ev["files"],
+                }));
+                let u = st.units.entry(sv("unit")).or_default();
+                if u.state != "blocked" {
+                    u.prev_state = u.state.clone();
+                }
+                u.state = "blocked".into();
+                if hard {
+                    u.attempts += 1;
+                    let c = ev["cost"].as_f64().unwrap_or(0.0);
+                    u.cost += c;
+                    st.cost += c;
+                }
+                u.last_seq = seq;
+                u.last_at = at;
+            }
+            "unit.scope.revert" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: a withdrawal of a grant cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                let n = ev["n"].as_u64().unwrap_or(0) as u32;
+                let to = sv("to");
+                if let Some(g) = st
+                    .scope
+                    .get_mut(&sv("unit"))
+                    .and_then(|sc| sc.grants.iter_mut().find(|g| g.n == n))
+                {
+                    g.withdrawn = Some((sv("quote"), at.clone()));
+                    g.undo = !to.is_empty();
+                }
+                if !to.is_empty() {
+                    if let Some(u) = st.units.get_mut(&sv("unit")) {
+                        if u.state != "landed" {
+                            u.state = to;
+                            u.last_seq = seq;
+                            u.last_at = at;
+                        }
+                    }
+                }
             }
             "unit.role-report" => {
                 // The cost a role reports counts in the total, and for a unit also in the unit's.
@@ -1028,7 +1671,30 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.reason.clear();
                 }
             }
-            "checkpoint.sync.abort" => st.sync_open = None,
+            "checkpoint.sync.abort" => {
+                if st.sync_open.take().is_some() {
+                    st.ck_end_seq = seq;
+                }
+            }
+            "checkpoint.hold" => {
+                let k = sv("checkpoint");
+                let cause = sv("cause");
+                if cause.is_empty() {
+                    if st.ck_holds.remove(&k).is_some() {
+                        st.ck_end_seq = seq;
+                    }
+                } else {
+                    let started = st.ck_holds.get(&k).map(|h| h.seq).unwrap_or(seq);
+                    st.ck_holds.insert(
+                        k,
+                        CkHold {
+                            cause,
+                            detail: sv("detail"),
+                            seq: started,
+                        },
+                    );
+                }
+            }
             "checkpoint.sync" => {
                 // A sync that agents resolved was asked for in the human's words when it opened.
                 let via_open = ev["via_open"].as_bool().unwrap_or(false);
@@ -1050,6 +1716,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     .unwrap_or(false)
                 {
                     st.sync_open = None;
+                    st.ck_end_seq = seq;
                 }
                 for r in ev["repos"].as_array().into_iter().flatten() {
                     st.synced.push((
@@ -1063,6 +1730,311 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 for c in crate::store::str_list(ev, "reopen_checks") {
                     let e = st.reopen_floor.entry(c).or_insert(0);
                     *e = (*e).max(floor);
+                }
+            }
+            "checkpoint.fix.open" => {
+                if let Some(tseq) = ev["human"]["turn"].as_u64() {
+                    let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
+                    let ids = id_pairs(&ev["finding_ids"]);
+                    let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                    let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                        Ok(b) => b,
+                        Err(h) => {
+                            st.ignored.push(format!(
+                                "event {seq}: a fix was picked for findings while {}",
+                                h.during()
+                            ));
+                            continue;
+                        }
+                    };
+                    if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
+                        st.ignored.push(format!(
+                            "event {seq}: a fix opened for findings cites no valid human turn and quote, or words written before the bound"
+                        ));
+                        continue;
+                    }
+                    st.turns[turn_ix[&tseq]].used = true;
+                }
+                let heads: Vec<(String, String)> = ev["before"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|r| {
+                        (
+                            r["repo"].as_str().unwrap_or("").to_string(),
+                            r["head"].as_str().unwrap_or("").to_string(),
+                        )
+                    })
+                    .collect();
+                let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                st.ck_fix = Some(CkFixOpen {
+                    checkpoint: sv("checkpoint"),
+                    source: sv("source"),
+                    phase: "fix".into(),
+                    history: if findings.is_empty() {
+                        vec![]
+                    } else {
+                        vec![json!({"round": 0, "findings": findings})]
+                    },
+                    origin_findings: findings.clone(),
+                    origin_ids: ev["finding_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|x| {
+                            (
+                                x["round"].as_u64().unwrap_or(0) as u32,
+                                x["index"].as_u64().unwrap_or(0) as u32,
+                            )
+                        })
+                        .collect(),
+                    origin_failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    findings,
+                    failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    allowed: crate::store::str_list(ev, "allowed"),
+                    test_dirs: crate::store::str_list(ev, "test_dirs"),
+                    units: crate::store::str_list(ev, "units"),
+                    before: heads,
+                    content: sv("content"),
+                    open_seq: seq,
+                    wave: ev["wave"].as_u64().unwrap_or(0) as u32,
+                    own_turn: ev["human"]["turn"].as_u64().is_some(),
+                    ..Default::default()
+                });
+            }
+            "checkpoint.fix.built" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "review".into();
+                    o.failed.clear();
+                }
+            }
+            "checkpoint.fix.attempt" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.attempts += 1;
+                    o.phase = sv("to");
+                    if o.phase == "parked" {
+                        o.park_seq = seq;
+                        st.ck_end_seq = seq;
+                    }
+                    o.reason = sv("reason");
+                    o.failed = ev["failed"].as_array().cloned().unwrap_or_default();
+                    o.findings.clear();
+                }
+            }
+            "checkpoint.fix.reviewed" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.rounds_log.push(json!({
+                        "round": ev["round"], "content": ev["content"], "heads": ev["heads"],
+                        "covered": ev["covered"], "result": ev["result"],
+                    }));
+                    if sv("result") == "findings" {
+                        o.rounds += 1;
+                        o.phase = sv("to");
+                        if o.phase == "parked" {
+                            o.park_seq = seq;
+                            st.ck_end_seq = seq;
+                        }
+                        o.reason = sv("reason");
+                        o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                        o.history
+                            .push(json!({"round": ev["round"], "findings": o.findings}));
+                    }
+                }
+            }
+            "checkpoint.fix.park" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "parked".into();
+                    o.park_seq = seq;
+                    st.ck_end_seq = seq;
+                    o.reason = sv("reason");
+                }
+            }
+            "checkpoint.fix.gap" => {
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "gap".into();
+                    o.reason = sv("reason");
+                    o.missing = crate::store::str_list(ev, "missing");
+                }
+            }
+            "checkpoint.fix.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let Some(parked_at) = st
+                    .ck_fix
+                    .as_ref()
+                    .filter(|f| f.phase == "parked")
+                    .map(|f| f.park_seq)
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix release of a fix that was not parked"
+                    ));
+                    continue;
+                };
+                let bound = match decision_bound(&st, &sv("checkpoint"), parked_at, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint fix release was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix release cites no valid human turn and quote, or words written before the park"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(o) = st.ck_fix.as_mut() {
+                    o.phase = "fix".into();
+                    o.rounds = 0;
+                    o.attempts = 0;
+                    o.reason.clear();
+                    o.missing.clear();
+                }
+            }
+            "checkpoint.finding.settle" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let fate = sv("fate");
+                let ids = id_pairs(&ev["ids"]);
+                let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a finding settled while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if fate == "declined" && sv("reason").trim().is_empty() {
+                    st.ignored
+                        .push(format!("event {seq}: a finding declined with no reason"));
+                    continue;
+                }
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) || !matches!(fate.as_str(), "accepted" | "declined")
+                {
+                    st.ignored.push(format!(
+                        "event {seq}: a finding settled with no valid human turn and quote, or words written before the bound"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                for id in ev["ids"].as_array().into_iter().flatten() {
+                    st.ck_settled.push(CkSettled {
+                        checkpoint: sv("checkpoint"),
+                        round: id["round"].as_u64().unwrap_or(0) as u32,
+                        index: id["index"].as_u64().unwrap_or(0) as u32,
+                        fate: fate.clone(),
+                        reason: sv("reason"),
+                    });
+                }
+            }
+            "checkpoint.review.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let base = round_report_seq(
+                    &st,
+                    &sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
+                // Only the fix this release itself opened (the event just before it) is set aside.
+                let before = release_opened_before(&st, &sv("checkpoint"), seq);
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, before) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint review release was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint review release cites no valid human turn and quote, or words written before the bound"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                st.ck_review_floor.insert(
+                    sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
+            }
+            "checkpoint.review.done" => {
+                st.ck_round_done.push((
+                    sv("checkpoint"),
+                    ev["round"].as_u64().unwrap_or(0) as u32,
+                    seq,
+                ));
+            }
+            "checkpoint.fix.abort" => {
+                if let Some(o) = st.ck_fix.take() {
+                    st.ck_end_seq = seq;
+                    st.ck_fix_aborts.push(CkFixAbort {
+                        checkpoint: o.checkpoint.clone(),
+                        ids: o.origin_ids.clone(),
+                        seq,
+                    });
+                    st.ck_declined
+                        .push(format!("{}@{}", o.checkpoint, o.content));
+                }
+            }
+            "checkpoint.fix.done" => {
+                if let Some(o) = st.ck_fix.take() {
+                    st.ck_end_seq = seq;
+                    let n = st
+                        .ck_fixes
+                        .iter()
+                        .filter(|f| f.checkpoint == o.checkpoint)
+                        .count()
+                        + 1;
+                    st.ck_fixes.push(CkFixDone {
+                        id: format!("{}-fix-{n}", o.checkpoint),
+                        checkpoint: o.checkpoint.clone(),
+                        source: o.source.clone(),
+                        files: crate::store::str_list(ev, "files"),
+                        units: crate::store::str_list(ev, "units"),
+                        by_file: ev["by_file"].clone(),
+                        rounds_log: o.rounds_log.clone(),
+                        origin_failed: o.origin_failed.clone(),
+                        origin_findings: o.origin_findings.clone(),
+                        ids: o.origin_ids.clone(),
+                        from_round: st
+                            .ck_round_done
+                            .iter()
+                            .filter(|(c, _, q)| *c == o.checkpoint && *q < o.open_seq)
+                            .map(|(_, r, _)| *r)
+                            .max()
+                            .unwrap_or(0),
+                        seq,
+                    });
                 }
             }
             "page.published" => {
@@ -1517,24 +2489,59 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
         .rev()
         .filter(|t| t.seq > after_seq && !t.used)
         .peekable();
+    if !candidates.clone().any(|t| t.text.contains(q)) {
+        if st
+            .turns
+            .iter()
+            .any(|t| t.used && t.text.contains(q) && !crate::gates::recorded_text_is_host(&t.text))
+        {
+            return Err(refuse(
+                "record a decision with this quote",
+                "those words were already used for another decision: a message decides once",
+                &[
+                    "Ask the human in chat for their decision in a new message, in their own words.",
+                    "Then run the command again with `--quote` set to the words of that new message.",
+                ],
+                "`bf gate status` shows the decision with its quote.",
+            ));
+        }
+        if after_seq > 0
+            && st
+                .turns
+                .iter()
+                .any(|t| t.seq <= after_seq && !t.used && t.text.contains(q))
+        {
+            return Err(refuse(
+                "record a decision with this quote",
+                format!("no human turn written after this was put to the human can decide it: those words were written before the decision was put to the human (log event {after_seq})"),
+                &[
+                    "Ask the human in chat for their decision in a new message, written now, in their own words.",
+                    "Then run the command again with `--quote` set to the words of that new message.",
+                ],
+                "`bf gate status` shows the decision with its quote.",
+            ));
+        }
+    }
     if candidates.peek().is_none() {
         let cause = st.human_turns_note();
-        let first = cause.clone().unwrap_or_else(|| {
-            "Ask the human in chat for their decision, in their own words.".to_string()
-        });
-        return Err(refuse(
+        let mut steps: Vec<String> = Vec::new();
+        if let Some(c) = &cause {
+            steps.push(c.clone());
+        }
+        steps.push("Ask the human in chat for their decision, in their own words.".to_string());
+        steps.push("The harness hook records their message with `bf human-turn`; check with `bf log --tail 5`.".to_string());
+        steps.push(
+            "Then run the command again with `--quote` set to the sentence that decides it."
+                .to_string(),
+        );
+        return Err(crate::refusal::refuse_owned(
             "record a decision",
             if cause.is_some() {
                 "no human turn was recorded at all: the hook that records the human's messages is not loaded"
             } else {
                 "no human turn was recorded after this opened that can decide it: the human has not written since, or the message was already used for another decision"
             },
-            &[
-                &first,
-                "Then ask the human in chat for their decision, in their own words.",
-                "The harness hook records their message with `bf human-turn`; check with `bf log --tail 5`.",
-                "Then run the command again with `--quote` set to the sentence that decides it.",
-            ],
+            steps,
             "`bf gate status` shows the decision with its quote.",
         ));
     }

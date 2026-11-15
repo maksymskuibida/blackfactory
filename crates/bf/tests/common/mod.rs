@@ -443,6 +443,17 @@ impl Fx {
         self.root.join(".bf/work").join(id)
     }
 
+    /// The open checkpoint fix of K-1 passes: its builder changes `src/a.txt` to `text`, commits it, and
+    /// its reviewer passes it. The findings it was opened for are then fixed, and no fix is open.
+    pub fn pass_checkpoint_fix(&self, text: &str) {
+        let k = self.work("K-1");
+        fs::write(k.join("src/a.txt"), text).unwrap();
+        git(&k, &["add", "-A"]);
+        git(&k, &["commit", "-q", "-m", "fix"]);
+        self.must_in(&k, &["report", "K-1", "--role", "builder", "--result", "built"]);
+        self.must_in(&k, &["report", "K-1", "--role", "reviewer", "--result", "built"]);
+    }
+
     /// The tiny project used by the end-to-end and attack tests.
     pub fn tiny(&self) {
         let recs: &[(&str, &str)] = &[
@@ -474,8 +485,26 @@ impl Fx {
             "yes, make this a test run with simulated approvals",
         ]);
         self.must(&["run", "start"]);
+        self.answer_plan_questions();
         self.must(&["gate", "open", "plan"]);
         self.must(&["gate", "approve", "plan", "--simulated"]);
+    }
+
+    /// The two questions of the run's plan stage, answered with no wave checks and no checks for every
+    /// unit, so the plan gate can open.
+    pub fn answer_plan_questions(&self) {
+        self.must(&["checks", "wave", "propose", "none"]);
+        self.human("No wave checks for this run.");
+        self.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
+        self.must(&["checks", "unit", "propose", "none"]);
+        self.human("No checks for every unit in this run.");
+        self.must(&[
+            "checks",
+            "unit",
+            "set",
+            "--quote",
+            "No checks for every unit",
+        ]);
     }
 
     /// `bf next` shows the token of every open worker directive, every time it is asked.

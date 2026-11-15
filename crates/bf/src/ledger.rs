@@ -101,7 +101,7 @@ fn handoff_evidence(pl: &Plan, receipts: &[Receipt], st: &State, id: &str) -> Ve
         let unit = s(c, "unit");
         if !unit.is_empty() {
             if let Some(u) = st.units.get(unit).filter(|u| u.state == "landed") {
-                if let Some(r) = evidence::satisfied_at(receipts, cid, &u.landed_hash) {
+                if let Some(r) = evidence::satisfied_unit_at(receipts, cid, &u.landed_hash) {
                     out.push(r.id().to_string());
                 }
             }
