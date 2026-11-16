@@ -65,6 +65,7 @@ fn closing_a_checkpoint_names_the_way_out_for_each_check_without_proof() {
     let fx = Fx::with_checks();
     fx.tiny();
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     fx.build_unit(
         "U-1",

@@ -132,6 +132,61 @@ fn state_map(p: &Project, pl: &Plan, st: &State, rc: &[Receipt]) -> HashMap<Stri
         .collect()
 }
 
+/// What a record's row says about who made it: the designer agent and the model it reported, or the
+/// human's words that lifted the designer rule.
+fn mark_made(rows: &mut [Value], made: &std::collections::BTreeMap<String, Value>) {
+    for row in rows.iter_mut() {
+        let Some(m) = row["id"].as_str().and_then(|id| made.get(id)) else {
+            continue;
+        };
+        let model = m["model"].as_str().unwrap_or("");
+        let lifted = m["lifted"].as_str().unwrap_or("");
+        let (by, line) = if lifted.is_empty() {
+            (
+                "designer agent",
+                format!(
+                    "Made by the designer agent ({}) on the model it reported: {model}.",
+                    m["role"].as_str().unwrap_or("designer")
+                ),
+            )
+        } else {
+            (
+                "conductor",
+                format!("Made without a designer: the human lifted the rule in their words: \"{lifted}\"."),
+            )
+        };
+        row["made_by"] = json!({"by": by, "role": m["role"], "model": model, "subject": m["subject"], "lifted": lifted});
+        if let Some(b) = row["body"].as_array_mut() {
+            b.push(text(&line));
+        }
+    }
+}
+
+/// The policy in force for the run: the tier, the effort and any model of each kind of work.
+fn policy_section(p: &Project) -> Value {
+    let work = run::work_policy(p);
+    let rows: Vec<Value> = crate::store::WORK_KINDS
+        .iter()
+        .map(|k| {
+            let e = &work[*k];
+            let model = e["model"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(h, v)| format!("{h}: {}", v.as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            json!({"id": k, "title": format!("{}: tier {}, effort {}", k.replace('_', " "), e["tier"].as_str().unwrap_or(""), e["effort"].as_str().unwrap_or("")),
+                "tier": e["tier"], "effort": e["effort"], "model": e.get("model").cloned().unwrap_or(Value::Null),
+                "handled": {"tone": "accepted", "text": if model.is_empty() { "tier of the harness".to_string() } else { model }},
+                "body": []})
+        })
+        .collect();
+    json!({"id": "policy", "title": "Policy in force", "hint": "The tier and effort for each kind of work; only the human changes it", "open": false, "blocks": [], "rows": rows})
+}
+
 fn design_row(rec: &Value, round: Option<(&str, String, Option<String>)>) -> Value {
     let mut body = Vec::new();
     if !s(rec, "text").is_empty() {
@@ -214,6 +269,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         .find(|g| g.kind == kind && g.refr == refr && g.round + 1 == round);
     let prev_snap = prev.map(|g| g.snapshot.clone()).unwrap_or(Value::Null);
     let pl = plan::load(p)?;
+    let made = crate::gates::made_by(p)?;
     let mut records: Vec<Value> = Vec::new();
     let mut sections = Vec::new();
     let (mut changed, mut new, mut removed) = (0, 0, 0);
@@ -288,6 +344,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
                 }
             }
         }
+        mark_made(&mut rows, &made);
         sections.push(json!({"id": *k, "title": plural(k), "hint": format!("{} in this gate", plural(k).to_lowercase()), "open": true, "blocks": [], "rows": rows}));
     }
     if kind == "idea" {
@@ -440,6 +497,11 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             ));
         }
     }
+    if crate::checks::review::GATES.contains(&kind.as_str()) {
+        v["review"] = crate::checks::review::page_section(p, st, &kind)?;
+    }
+    sections.push(policy_section(p));
+    v["policy"] = run::work_policy(p);
     v["page"]["round"] = json!({"n": round, "prev": if prev.is_some() { json!(round - 1) } else { Value::Null }, "changed": changed, "new": new, "removed": removed});
     v["sections"] = json!(sections);
     v["records"] = json!(records);
@@ -966,6 +1028,9 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     if let Some(r) = run {
         secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
     }
+    secs.push(policy_section(p));
+    v["policy"] = run::work_policy(p);
+    let made = crate::gates::made_by(p)?;
     let amends = crate::gates::amendments_json(st);
     if !amends.is_empty() {
         secs.push(json!({"id": "amendments", "title": "Amendments", "hint": "Open, approved or withdrawn", "open": true, "blocks": [],
@@ -976,8 +1041,15 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     }
     // The amendment page: for each amendment that is not withdrawn, the four stages as sections,
     // each with its records or its not affected sentence.
+    let mut reviews = serde_json::Map::new();
     for a in st.amends.iter().filter(|a| a.status != "withdrawn") {
         let repair = crate::amend::is_repair(a);
+        if !repair {
+            reviews.insert(
+                a.id.clone(),
+                crate::checks::review::page_section(p, st, &a.id)?,
+            );
+        }
         // What its checkpoint operations would leave: a renamed checkpoint shows under its old number,
         // marked as moved, so the human's read mark follows it.
         let edit = if a.ops.is_empty() {
@@ -993,6 +1065,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             } else {
                 c.records.iter().map(|r| design_row(r, None)).collect()
             };
+            mark_made(&mut rows, &made);
             if let (true, "plan") = (edit.is_some(), c.stage) {
                 if let Some(e) = &edit {
                     let touched = e.touched();
@@ -1018,6 +1091,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
         }
     }
     secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
+    v["amendment_reviews"] = Value::Object(reviews);
     v["sections"] = json!(secs);
     Ok(v)
 }

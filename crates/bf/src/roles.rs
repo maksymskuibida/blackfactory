@@ -287,6 +287,19 @@ pub fn check_subject(p: &Project, subject: &str, role: &str) -> R<&'static Role>
     let Some(r) = get(role) else {
         return Err(unknown(role));
     };
+    if is_amendment(subject) {
+        // An amendment's general designer: the token key is `<A-n>:designer`.
+        if role != "designer" {
+            return Err(refuse(
+                format!("use the role `{role}` on {subject}"),
+                format!("an amendment is drafted by its designer; `{role}` works on it only as a stage agent, with `bf review token --subject {subject} --stage <stage> --role {role}`"),
+                &["Use `designer`, or issue a stage token."],
+                "The command prints its result.",
+            ));
+        }
+        open_non_repair_amendment(p, subject)?;
+        return Ok(r);
+    }
     if subject == DESIGN {
         if !r.at_design() {
             return Err(refuse(
@@ -320,6 +333,114 @@ pub fn check_subject(p: &Project, subject: &str, role: &str) -> R<&'static Role>
         ));
     }
     Ok(r)
+}
+
+/// Whether `subject` names an amendment (`A-n`).
+pub fn is_amendment(subject: &str) -> bool {
+    crate::schema::parse_id(subject).map(|(k, _)| k) == Some("A")
+}
+
+/// The open amendment `id` when it is not a plan repair; a repair needs no designer.
+fn open_non_repair_amendment(p: &Project, id: &str) -> R<crate::events::Amend> {
+    let st = crate::events::require_chain(p)?;
+    let what = format!("use a designer on {id}");
+    let Some(a) = st.amends.iter().find(|a| a.id == id) else {
+        return Err(refuse(
+            what,
+            "there is no such amendment",
+            &["Use the ID of the open amendment from `bf status`."],
+            "The command prints its result.",
+        ));
+    };
+    if !matches!(a.status.as_str(), "open" | "narrowed") {
+        return Err(refuse(
+            what,
+            format!("{id} is {}, and a designer works on an open amendment", a.status),
+            &["Open one with `bf amend open <ID>...`."],
+            "The command prints its result.",
+        ));
+    }
+    if crate::amend::is_repair(a) {
+        return Err(refuse(
+            what,
+            format!("{id} is a plan repair, which needs no designer"),
+            &["A plan repair is judged by the human alone."],
+            "The command prints its result.",
+        ));
+    }
+    Ok(a.clone())
+}
+
+/// The kind of work the policy names for a designer's subject: a design stage or an amendment.
+fn work_kind(subject: &str) -> &'static str {
+    if is_amendment(subject) {
+        "amender"
+    } else {
+        "designer"
+    }
+}
+
+/// The brief's section on the model: the tier, the effort and any model the policy names for the
+/// work, and what the designer reports.
+fn designer_section(p: &Project, subject: &str) -> String {
+    let kind = work_kind(subject);
+    let e = run::work_entry(p, kind);
+    let mut md = format!(
+        "\n## Model\n\nThis is work of the kind `{kind}`: tier {}, effort {}",
+        e["tier"].as_str().unwrap_or(""),
+        e["effort"].as_str().unwrap_or("")
+    );
+    if let Some(m) = e["model"].as_object() {
+        let list: Vec<String> = m
+            .iter()
+            .map(|(h, v)| format!("{h}: {}", v.as_str().unwrap_or("")))
+            .collect();
+        md.push_str(&format!(", model named outright: {}", list.join(", ")));
+    }
+    md.push_str(".\n\nPut every record with `--token <token> --model <the model you run on>`. The model is your own report; the engine keeps it with each record you make and shows the human that the designer agent made it.\n");
+    md
+}
+
+/// The brief of an amendment for its designer: the IDs of its set and what each is now.
+fn amend_brief(p: &Project, amend: &str, r: &Role) -> R<std::path::PathBuf> {
+    let a = open_non_repair_amendment(p, amend)?;
+    let role = r.name;
+    let mut md = format!("# Brief: {amend} as {role}\n\n");
+    md.push_str(&format!(
+        "## Your role\n\n{} Amendment: {amend}. Its set: {}.\n\n## The records of the set\n\n",
+        r.summary,
+        a.ids.join(", ")
+    ));
+    for id in &a.ids {
+        match p.get_record(id)? {
+            Some(rec) => md.push_str(&format!("- {id}: {}\n", s(&rec, "title"))),
+            None => md.push_str(&format!("- {id}: no record yet\n")),
+        }
+    }
+    md.push_str("\n## You may\n\nRead:\n");
+    for x in r.reads {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nWrite:\n");
+    for x in r.writes {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nRun:\n");
+    for x in r.runs {
+        md.push_str(&format!("- `{x}`\n"));
+    }
+    md.push_str("- `bf review split` with your own token, to hand stages of the amendment to stage agents\n");
+    md.push_str(&designer_section(p, amend));
+    md.push_str(&format!(
+        "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
+        p.policy.limits.max_rounds, p.policy.limits.idle_minutes
+    ));
+    md.push_str(&format!(
+        "\n## Rules\n\n- Report with `bf report {amend} --result built|blocked --role {role} --token <token>`; the report spends your token.\n- Never edit anything under the factory or engine folders.\n- Never run the human's commands (gates, the human's turns), `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\"`.\n- A check counts only when `bf evidence run` ran it.\n"
+    ));
+    let path = p.briefs_dir().join(format!("{amend}-{role}.md"));
+    util::atomic_write(&path, md.as_bytes())?;
+    Ok(path)
 }
 
 /// The brief of the design stage for a design-stage role: no unit exists, so it lists the design records.
@@ -364,6 +485,9 @@ fn design_brief(p: &Project, r: &Role) -> R<std::path::PathBuf> {
     for x in r.runs {
         md.push_str(&format!("- `{x}`\n"));
     }
+    if role == "designer" {
+        md.push_str(&designer_section(p, DESIGN));
+    }
     md.push_str(&format!(
         "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
         p.policy.limits.max_rounds, p.policy.limits.idle_minutes
@@ -381,6 +505,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
     let r = check_subject(p, unit, role)?;
     if unit == DESIGN {
         return design_brief(p, r);
+    }
+    if is_amendment(unit) {
+        return amend_brief(p, unit, r);
     }
     let pl = plan::load(p)?;
     // A checkpoint is briefed like a unit: what it proves stands where a unit's deliveries stand.
@@ -467,7 +594,16 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
 
 /// Entry point of `bf roles <sub> ...`: `list`, `show <role>`, `token <unit> <role>`.
 pub fn run_in(p: &Project, sub: &str, rest: &[String]) -> R<Value> {
+    run_with(p, sub, rest, None)
+}
+
+/// The same, with the human's words (`--quote`), which `lift` records.
+pub fn run_with(p: &Project, sub: &str, rest: &[String], quote: Option<&str>) -> R<Value> {
     match sub {
+        "lift" => {
+            let subject = rest.first().map(|x| x.as_str()).unwrap_or("");
+            crate::gates::designer_lift(p, subject, quote.unwrap_or(""))
+        }
         "list" => Ok(json!({"roles": ROLES.iter().map(describe).collect::<Vec<_>>()})),
         "show" => {
             let name = rest.first().map(|x| x.as_str()).unwrap_or("");
@@ -486,7 +622,7 @@ pub fn run_in(p: &Project, sub: &str, rest: &[String]) -> R<Value> {
         _ => Err(refuse(
             format!("run `bf roles {sub}`"),
             "unknown subcommand",
-            &["Use `bf roles list`, `bf roles show <role>` or `bf roles token <unit> <role>`."],
+            &["Use `bf roles list`, `bf roles show <role>`, `bf roles token <unit> <role>` or `bf roles lift <stage|A-n> --quote \"<their words>\"`."],
             "The command prints its result.",
         )),
     }

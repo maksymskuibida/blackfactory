@@ -65,6 +65,7 @@ fn only_on(fx: &Fx, keep: &[&str]) {
     fx.must(&["checks", "set", "--quote", "switch the others off"]);
 }
 
+
 // ---- R-5: the design gates ----
 
 #[test]
@@ -141,6 +142,7 @@ fn the_ui_gate_does_not_ask_for_a_check_the_human_switched_off() {
 fn the_architecture_gate_needs_a_threat_and_a_markets_statement() {
     let fx = Fx::with_checks();
     design_records(&fx);
+    fx.design_reviews_off();
     let o = fx.refused(&["gate", "open", "architecture"]);
     assert!(o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(o.stderr.contains("no markets statement"), "{}", o.stderr);

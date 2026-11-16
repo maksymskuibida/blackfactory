@@ -18,7 +18,6 @@ fn write(root: &Path, rel: &str, text: &str) {
 /// One unit that lists src/a.rs, on a project with some other files at the base.
 fn setup() -> (Fx, PathBuf, String) {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     let recs: &[(&str, &str)] = &[
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"src/a.rs exists\"]\n"),
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"Part A\"\ntext=\"Build a.\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.rs\"]\ncheckpoint=\"K-1\"\n"),
@@ -30,6 +29,7 @@ fn setup() -> (Fx, PathBuf, String) {
         let o = fx.put(k, t);
         assert_eq!(o.code, 0, "{k}: {}", o.all());
     }
+    fx.set_policy("tokens = false", "tokens = true");
     write(&fx.root, "src/a.rs", "fn a() {}\n");
     write(&fx.root, "src/other.rs", "fn o() {}\n");
     write(&fx.root, "src/second.rs", "fn s() {}\n");

@@ -245,6 +245,16 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             ));
         }
     }
+    // A record of a design stage, or of an amendment that is not a plan repair, is accepted only with
+    // the token of the designer the engine issued for it (R-67), unless the human lifted the rule.
+    let made = gates::designer_accept(
+        p,
+        &st,
+        kind.name,
+        &id,
+        args.flag("token"),
+        args.flag("model"),
+    )?;
     // An accepted legal record that changes is no longer what the human accepted: it goes back to open.
     let mut reset_open = false;
     if kind.name == "legal" && accepted_by.is_none() && s(&rec, "outcome") == "accepted" {
@@ -263,6 +273,9 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
         p.write_record(&rec)?;
     }
     p.write_guard()?;
+    if let Some(m) = &made {
+        gates::design_made(p, &id, kind.name, m)?;
+    }
     if let Some((turn, message)) = accepted_by {
         // The acceptance leaves a trace: the record, the human's message and the words taken from it.
         // The message is used up.

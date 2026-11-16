@@ -126,6 +126,7 @@ fn a_marked_finding_holds_the_close_until_the_human_answers_after_their_own_mess
     let fx = Fx::with_checks();
     fx.tiny();
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     fx.run_checks_all_off();
     let f = file(&fx, "f.json", &finding(true));

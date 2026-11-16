@@ -95,7 +95,16 @@ impl<'a> Walk<'a> {
         let f = self.fx.root.join(".bf/drafts").join(format!("{id}.toml"));
         self.guard_write(&self.fx.root, &f);
         fs::write(&f, format!("id = \"{id}\"\n{body}")).unwrap();
-        self.conductor(&["record", "put", kind, "--file", f.to_str().unwrap()])
+        let file = f.to_str().unwrap();
+        // A design record is put by the designer agent: with its token and the model it reports.
+        if bf::gates::stage_of_kind(kind).is_some() {
+            let t = self.conductor(&["roles", "token", "design", "designer", "--json"]).json()["token"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            return self.conductor(&["record", "put", kind, "--file", file, "--token", &t, "--model", "a-test-model"]);
+        }
+        self.conductor(&["record", "put", kind, "--file", file])
     }
 
     fn render(&self, kind_and_id: &[&str], page: &str) -> serde_json::Value {
@@ -644,6 +653,11 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
     );
     assert_eq!(o.code, 2);
     assert!(o.stderr.contains("--replace"));
+    // The designer agent revises it, with its token and the model it reports.
+    let dt = w.conductor(&["roles", "token", "design", "designer", "--json"]).json()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     w.conductor(&[
         "record",
         "put",
@@ -651,6 +665,10 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
         "--file",
         f.to_str().unwrap(),
         "--replace",
+        "--token",
+        &dt,
+        "--model",
+        "a-test-model",
     ]);
     let g2 = w
         .conductor(&["gate", "open", "requirements"])

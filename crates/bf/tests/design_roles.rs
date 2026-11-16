@@ -55,8 +55,8 @@ fn a_design_role_has_a_brief_and_a_token_before_any_plan_exists() {
 #[test]
 fn a_design_role_reports_outside_a_run_and_the_token_is_spent() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     design_records(&fx);
+    fx.set_policy("tokens = false", "tokens = true");
     let t = token(&fx, "design", "security-expert");
     assert!(report(&fx, "design", "security-expert", "nope").code != 0);
     let ok = report(&fx, "design", "security-expert", &t);
@@ -100,8 +100,8 @@ fn a_role_works_only_at_its_stage() {
 #[test]
 fn a_token_ends_with_the_run_it_was_issued_in() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     fx.tiny();
+    fx.set_policy("tokens = false", "tokens = true");
     let before_run = token(&fx, "design", "lawyer");
     fx.start_test_run();
     let r = report(&fx, "design", "lawyer", &before_run);
@@ -167,9 +167,9 @@ fn attach(fx: &Fx, tok: Option<&str>) -> common::Out {
 #[test]
 fn an_outcome_on_a_design_stage_check_needs_the_token_of_a_role_of_its_family() {
     let fx = Fx::with_checks();
-    fx.set_policy("tokens = false", "tokens = true");
     design_records(&fx);
     ui_check(&fx);
+    fx.set_policy("tokens = false", "tokens = true");
     let o = attach(&fx, None);
     assert!(o.code != 0 && o.all().contains("token"), "{}", o.all());
     assert!(attach(&fx, Some("0123456789abcdef01234567")).code != 0);
@@ -221,6 +221,7 @@ fn the_design_stage_receipt_is_tied_to_the_screens_it_judged() {
 fn the_markets_statement_belongs_to_the_architecture_stage() {
     let fx = Fx::with_checks();
     design_records(&fx);
+    fx.design_reviews_off();
     fx.put(
         "threat",
         "id=\"TH-1\"\nkind=\"threat\"\ntitle=\"A visitor changes a text\"\nprotects=\"The texts\"\nattack=\"A visitor edits a file by hand\"\nmitigation=\"The texts are read-only files\"\n",

@@ -36,7 +36,7 @@ fn plan(fx: &Fx) {
 }
 
 fn start(fx: &Fx) {
-    fx.must(&["checks", "propose", "checkpoint-review=on", "--scope", "default"]);
+    fx.must(&["checks", "propose", "checkpoint-review=on", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
     fx.human("Yes, set the checkpoint review that way.");
     fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
     fx.must(&["gate", "open", "plan"]);

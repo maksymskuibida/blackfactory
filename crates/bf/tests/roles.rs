@@ -108,8 +108,8 @@ fn each_role_gets_its_own_stable_token() {
 #[test]
 fn an_issued_role_token_survives_bf_next_and_reports_once() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     fx.tiny();
+    fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     let t = fx
         .must(&["roles", "token", "design", "security-expert", "--json"])
@@ -265,8 +265,8 @@ fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
 fn a_builder_keeps_its_token_while_its_question_is_open() {
     use std::path::PathBuf;
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     fx.tiny();
+    fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     let wc = PathBuf::from(
         fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
