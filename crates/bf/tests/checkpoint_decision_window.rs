@@ -163,7 +163,7 @@ fn words_written_during_a_checks_fix_do_not_accept_the_high_finding() {
     git(&fx.root, &["add", "docs/note.txt"]);
     git(&fx.root, &["commit", "-q", "-m", "work on main"]);
     fx.human("Yes, bring main in now.");
-    say("sync", &fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]));
+    say("sync", &fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]));
     say("verifier runs X-2", &fx.bf_stdin(&fx.work("K-1"), &["evidence", "run", "X-2", "--", "grep", "-q", "ok", "src/a.txt"], ""));
     eprintln!("next: {:?}", actions(&fx));
     assert_eq!(open_phase(&fx), "fix", "a fix for the failed check is at work");

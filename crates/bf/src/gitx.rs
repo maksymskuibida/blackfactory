@@ -23,11 +23,25 @@ pub fn configure(git: &str, path: &str, profile: Option<String>) {
 }
 
 pub fn run(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> R<Out> {
+    run_with(dir, args, envs, false)
+}
+
+/// A git call that may reach the network. Only the sync's update of the main branch uses it.
+pub fn run_net(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> R<Out> {
+    run_with(dir, args, envs, true)
+}
+
+fn run_with(dir: &Path, args: &[&str], envs: &[(&str, &str)], net: bool) -> R<Out> {
     let (prog, path, profile) = GIT_CFG
         .lock()
         .unwrap()
         .clone()
         .unwrap_or_else(|| (String::new(), String::new(), None));
+    let profile = if net {
+        profile.map(|p| crate::sandbox::allow_network(&p))
+    } else {
+        profile
+    };
     let program = if prog.is_empty() {
         "git".to_string()
     } else {

@@ -402,7 +402,7 @@ fn after_an_abort_and_a_sync_the_human_is_asked_and_the_close_names_the_finding(
     git(&fx.root, &["add", "docs/note.txt"]);
     git(&fx.root, &["commit", "-q", "-m", "work on main"]);
     fx.human("Yes, bring main in now.");
-    fx.must(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    fx.must(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     let d = directives(&fx);
     eprintln!("next: {d:?}");
     assert!(d.contains(&"decide-checkpoint-fix".to_string()), "{d:?}");

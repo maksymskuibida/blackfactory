@@ -18,6 +18,7 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                 resolved: args.has("resolved"),
                 abort: args.has("abort"),
                 release: args.has("release"),
+                local: args.has("local"),
             },
         )?;
         out(args, &v, || {

@@ -51,6 +51,123 @@ pub struct SyncMode {
     pub abort: bool,
     /// The human releases a parked sync back to its builder.
     pub release: bool,
+    /// The human says to go on with the local main branch when there is no remote or it is out of reach.
+    pub local: bool,
+}
+
+/// The remote a repository's main branch comes from: `origin`, or the only remote there is.
+fn remote_of(r: &Repo) -> Option<String> {
+    let list = gitx::must(&r.path, &["remote"]).unwrap_or_default();
+    let names: Vec<&str> = list
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if names.contains(&"origin") {
+        Some("origin".to_string())
+    } else if names.len() == 1 {
+        Some(names[0].to_string())
+    } else {
+        None
+    }
+}
+
+/// The first step of a sync: bring the repository's local main branch in from its remote, by
+/// fast-forward only. Nothing is pushed. Returns what was done, for the answer.
+fn update_main_from_remote(k: &str, r: &Repo, local: bool) -> R<Value> {
+    let what = format!("sync {k}");
+    let b = &r.branch;
+    let Some(remote) = remote_of(r) else {
+        if local {
+            return Ok(json!({"repo": r.name, "remote": null, "updated": false,
+                "note": "no remote; went on with the local main branch, as the command said"}));
+        }
+        return Err(refuse(
+            what,
+            format!("`{}` has no remote to bring the main branch in from", r.name),
+            &[&format!(
+                "To go on with the local main branch only, run the command again with `--local`: `bf checkpoint sync {k} --local --quote \"<the human's words>\"`."
+            )],
+            "The command prints the sync.",
+        ));
+    };
+    let spec = format!("+refs/heads/{b}:refs/remotes/{remote}/{b}");
+    let fetched = gitx::run_net(&r.path, &["fetch", "--quiet", &remote, &spec], &[])?;
+    if !fetched.ok {
+        if local {
+            return Ok(json!({"repo": r.name, "remote": remote, "updated": false,
+                "note": format!("the remote `{remote}` is out of reach ({}); went on with the local main branch, as the command said", fetched.stderr)}));
+        }
+        return Err(refuse(
+            what,
+            format!("the remote `{remote}` of `{}` is out of reach: {}", r.name, fetched.stderr),
+            &[&format!(
+                "Fix the connection and run the command again, or go on with the local main branch only with `--local`: `bf checkpoint sync {k} --local --quote \"<the human's words>\"`."
+            )],
+            "The command prints the sync.",
+        ));
+    }
+    let remote_ref = format!("refs/remotes/{remote}/{b}");
+    let remote_tip = gitx::must(&r.path, &["rev-parse", &remote_ref])?;
+    let local_tip =
+        gitx::must(&r.path, &["rev-parse", &format!("refs/heads/{b}")]).map_err(|_| {
+            refuse(
+                what.clone(),
+                format!("the main branch `{b}` of `{}` does not exist", r.name),
+                &["Check the branch the project files name."],
+                "`bf status` shows the repository.",
+            )
+        })?;
+    if remote_tip == local_tip || gitx::is_ancestor(&r.path, &remote_tip, &local_tip) {
+        return Ok(json!({"repo": r.name, "remote": remote, "updated": false,
+            "note": "the local main branch already holds everything the remote has"}));
+    }
+    if !gitx::is_ancestor(&r.path, &local_tip, &remote_tip) {
+        return Err(refuse(
+            what,
+            format!(
+                "the main branch `{b}` of `{}` cannot be fast-forwarded to `{remote}/{b}`: the two have diverged; nothing was merged",
+                r.name
+            ),
+            &[
+                &format!("In {}: look at `git log {b} {remote}/{b}`, and bring the two together with git yourself (the engine never does it for you).", r.path.display()),
+                "Then run the command again.",
+            ],
+            "The sync starts and takes in the main branch.",
+        ));
+    }
+    let moved = if gitx::current_branch(&r.path).as_deref() == Some(b.as_str()) {
+        gitx::run(
+            &r.path,
+            &["merge", "--ff-only", "--quiet", &remote_tip],
+            &[],
+        )?
+    } else {
+        gitx::run(
+            &r.path,
+            &[
+                "update-ref",
+                &format!("refs/heads/{b}"),
+                &remote_tip,
+                &local_tip,
+            ],
+            &[],
+        )?
+    };
+    if !moved.ok {
+        return Err(refuse(
+            what,
+            format!(
+                "the main branch `{b}` of `{}` cannot be fast-forwarded to `{remote}/{b}`: {}; nothing was merged",
+                r.name, moved.stderr
+            ),
+            &["Make the main checkout clean (commit or stash), then run the command again."],
+            "The sync starts and takes in the main branch.",
+        ));
+    }
+    Ok(
+        json!({"repo": r.name, "remote": remote, "updated": true, "from": local_tip, "to": remote_tip}),
+    )
 }
 
 pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<Value> {
@@ -160,6 +277,15 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
             "`bf status` shows no unit running, in review, fixing, blocked or parked.",
         ));
     }
+    // The first step: the main branch comes in from the remote, by fast-forward only, and only on the
+    // human's words (a sync with words that cannot be used reaches nothing).
+    let mut main_update: Vec<Value> = Vec::new();
+    if !resolved {
+        events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+        for r in &repos {
+            main_update.push(update_main_from_remote(k, r, mode.local)?);
+        }
+    }
     // What each repository's checkpoint branch lacks.
     struct Step {
         repo: Repo,
@@ -229,7 +355,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     let todo: Vec<&Step> = steps.iter().filter(|x| x.lacks || x.hand_merged).collect();
     if todo.is_empty() {
         return Ok(
-            json!({"checkpoint": k, "synced": false, "nothing_to_take_in": true,
+            json!({"checkpoint": k, "synced": false, "nothing_to_take_in": true, "main_update": main_update,
             "message": "the checkpoint already holds everything on the main branch; nothing changed"}),
         );
     }
@@ -335,7 +461,7 @@ pub fn checkpoint_sync(p: &Project, k: &str, quote: &str, mode: SyncMode) -> R<V
     events::set_commits(p, &moved)?;
     p.write_guard()?;
     Ok(
-        json!({"checkpoint": k, "synced": true, "skipped_checks": skipped,
+        json!({"checkpoint": k, "synced": true, "skipped_checks": skipped, "main_update": main_update,
         "repos": done.iter().map(|(r, m, c)| json!({"repo": r, "main": m, "merge": c})).collect::<Vec<_>>()}),
     )
 }
