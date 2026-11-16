@@ -57,6 +57,18 @@ pub const DECISION_STAGES: &[&str] = &[
     "build",
 ];
 
+/// The gates a finding of a review can belong to.
+pub const FINDING_GATES: &[&str] = &[
+    "idea",
+    "requirements",
+    "ui",
+    "architecture",
+    "legal",
+    "plan",
+];
+/// The stages a finding can ask to be redone.
+pub const FINDING_ASKS: &[&str] = &["requirements", "ui", "architecture", "legal", "plan"];
+
 pub struct Kind {
     pub name: &'static str,
     pub prefix: &'static str,
@@ -225,7 +237,11 @@ pub static KINDS: &[Kind] = &[
             f("kind", Ty::Str, true),
             f("title", Ty::Str, true),
             f("text", Ty::Str, false),
-            f("unit", Ty::Id("U"), true),
+            // Required only when neither `gate` nor `amendment` is given (see `validate`).
+            f("unit", Ty::Id("U"), false),
+            fe("gate", Ty::Str, false, FINDING_GATES),
+            f("amendment", Ty::Id("A"), false),
+            fe("asks", Ty::Str, false, FINDING_ASKS),
             fe(
                 "severity",
                 Ty::Str,
@@ -445,6 +461,16 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
     {
         bad.push(
             "a checkpoint needs `stop_why`, one sentence on why it stops or why it has no stop"
+                .into(),
+        );
+    }
+    if kind.name == "finding"
+        && !obj.contains_key("unit")
+        && !obj.contains_key("gate")
+        && !obj.contains_key("amendment")
+    {
+        bad.push(
+            "missing required field `unit` (a finding that names neither a `gate` nor an `amendment` belongs to a unit)"
                 .into(),
         );
     }

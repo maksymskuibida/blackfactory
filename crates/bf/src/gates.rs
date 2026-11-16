@@ -517,10 +517,15 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
     }
 }
 
-/// An approved amendment covers this ID.
+/// An approved amendment covers this ID. So does the amendment that is open now, for the IDs of its
+/// own set: its new or changed records and the agent's not affected decisions are put while it waits
+/// for the human (R-39), and the one approval covers them. A change after the human read it needs
+/// the human's reading again, because the amendment is revised or narrowed again.
 pub fn amended(st: &State, id: &str) -> bool {
     st.amends.iter().any(|a| {
-        a.status == "approved" && (a.keep.iter().any(|k| k == id) || a.ids.iter().any(|k| k == id))
+        (a.status == "approved" && a.keep.iter().any(|k| k == id))
+            || (matches!(a.status.as_str(), "approved" | "open" | "narrowed")
+                && a.ids.iter().any(|k| k == id))
     })
 }
 
@@ -1226,10 +1231,15 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             "The command prints the narrowed set.",
         ));
     }
+    // The records of the set as the human reads them now: approval is refused if they change later.
+    let set_hash = match st.amends.iter().find(|a| a.id == aid) {
+        Some(a) => crate::amend::set_hash(p, a)?,
+        None => String::new(),
+    };
     events::append(
         p,
         "amend.narrow",
-        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons}),
+        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons, "set_hash": set_hash}),
     )?;
     p.write_guard()?;
     Ok(json!({"amend": aid, "keep": keep, "waive": waive}))
@@ -1270,19 +1280,20 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
             "`bf amend approve` prints the approved set.",
         ));
     }
-    let narrow_seq = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| {
-            matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
-                && e["amend"] == aid.as_str()
-        })
-        .and_then(|e| e["seq"].as_u64())
-        .unwrap_or(0);
+    let last_change = log.events.iter().rev().find(|e| {
+        matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
+            && e["amend"] == aid.as_str()
+    });
+    let narrow_seq = last_change.and_then(|e| e["seq"].as_u64()).unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
-    // What the amendment re-opens, worked out from the plan now and written into the event.
     let a = a.unwrap();
+    // Every stage covered and every requirement linked, before the approval is written (R-40).
+    crate::amend::refuse_if_uncovered(p, a)?;
+    // And no record of the set changed after the narrowing the human read (TH-12).
+    if let Some(e) = last_change {
+        crate::amend::refuse_if_changed_since_narrowing(p, a, e)?;
+    }
+    // What the amendment re-opens, worked out from the plan now and written into the event.
     let pl = plan::load(p)?;
     // What changed is the amendment's IDs and the kept impact set, less what the human waived.
     let changed: Vec<String> = a

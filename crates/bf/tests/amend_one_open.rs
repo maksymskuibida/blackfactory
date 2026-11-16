@@ -69,11 +69,25 @@ fn revising_without_an_open_amendment_is_refused() {
 fn a_revised_amendment_needs_a_human_message_after_the_revision() {
     let fx = Fx::new();
     fx.tiny();
-    let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    // U-19: both sets cover every stage and link their requirement, so only the revision stops approval.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("component", "id=\"C-8\"\nkind=\"component\"\ntitle=\"Greeting wording\"\nlinks=[\"R-1\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: none shows the wording\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the units already exist\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let opened = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     narrow_all(&fx, "A-1", &opened);
     // The human says yes to the narrowed amendment, then it is revised.
     fx.human("Yes, approve the change to the second requirement.");
-    let revised = fx.must(&["amend", "revise", "R-1", "--json"]).json();
+    let revised = fx
+        .must(&["amend", "revise", "R-1", "C-8", "D-91", "D-92", "--json"])
+        .json();
     // The earlier message does not count, and the revised amendment must be narrowed again.
     fx.refused(&["amend", "approve", "A-1", "--quote", "approve the change"]);
     narrow_all(&fx, "A-1", &revised);

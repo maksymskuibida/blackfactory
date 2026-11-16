@@ -53,8 +53,20 @@ fn a_withdrawn_amendment_cannot_be_approved() {
 fn narrow_without_a_name_takes_the_open_amendment_after_a_revision() {
     let fx = Fx::new();
     fx.tiny();
-    fx.must(&["amend", "open", "R-2"]);
-    let revised = fx.must(&["amend", "revise", "R-1", "--json"]).json();
+    // U-19: both sets cover every stage and link their requirement.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("component", "id=\"C-8\"\nkind=\"component\"\ntitle=\"Greeting wording\"\nlinks=[\"R-1\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: none shows the wording\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the units already exist\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.must(&["amend", "open", "R-2", "C-9", "D-91", "D-92"]);
+    let revised = fx
+        .must(&["amend", "revise", "R-1", "C-8", "D-91", "D-92", "--json"])
+        .json();
     // No amendment named in the file: the open one is narrowed.
     narrow(
         &fx,

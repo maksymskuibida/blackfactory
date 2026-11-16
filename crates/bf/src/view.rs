@@ -973,6 +973,28 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
                 "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" }, "text": a["status"]},
                 "body": if a["withdrawn_why"].as_str().unwrap_or("").is_empty() { vec![] } else { vec![text(a["withdrawn_why"].as_str().unwrap_or(""))] }})).collect::<Vec<_>>()}));
     }
+    // The amendment page: for each amendment that is not withdrawn, the four stages as sections,
+    // each with its records or its not affected sentence.
+    for a in st.amends.iter().filter(|a| a.status != "withdrawn") {
+        for c in crate::amend::coverage(p, a)? {
+            let rows: Vec<Value> = if let Some(d) = &c.sentence {
+                vec![json!({"id": s(d, "id"), "title": s(d, "title"),
+                    "handled": {"tone": "accepted", "text": "not affected"},
+                    "body": [text(if s(d, "text").is_empty() { s(d, "chosen") } else { s(d, "text") })]})]
+            } else {
+                c.records.iter().map(|r| design_row(r, None)).collect()
+            };
+            let tail = if c.covered() {
+                ""
+            } else {
+                " (neither records nor a not affected sentence yet)"
+            };
+            secs.push(json!({"id": format!("{}-{}", a.id, c.stage),
+                "title": format!("{}: {}{}", a.id, c.stage, tail),
+                "hint": "Its records, or the sentence that says it is not affected",
+                "open": true, "blocks": [], "rows": rows}));
+        }
+    }
     secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
     v["sections"] = json!(secs);
     Ok(v)

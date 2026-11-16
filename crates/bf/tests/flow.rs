@@ -206,6 +206,20 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
     let fx = Fx::new();
     // Two checkpoints: K-1 has U-1, K-2 has U-2.
     two_checkpoints(&fx);
+    // U-19: the amendment of R-2 covers every design stage and links R-2. Its new parts belong to
+    // U-2 and are proved by X-4, so the ledger closes again at the end.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: none shows the farewell\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the farewell unit exists\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\n");
+    replace_record(&fx, "check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nscope=\"checkpoint\"\n");
+    replace_record(&fx, "checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nchecks=[\"X-4\"]\n");
+    fx.commit_all("records");
     fx.start_test_run();
     fx.build_unit("U-1", "src/a.txt", "X-1", &["test", "-f", "src/a.txt"]);
     fx.must_in(
@@ -233,7 +247,9 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
         "closed before the amendment"
     );
     // The human changes R-2 only.
-    let imp = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    let imp = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     let keep: Vec<String> = imp["impact_ids"]
         .as_array()
         .unwrap()
