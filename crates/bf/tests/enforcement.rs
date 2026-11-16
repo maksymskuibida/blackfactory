@@ -23,6 +23,22 @@ fn revise(fx: &Fx, kind: &str, text: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
+/// The security expert reports on the threat model at the design stage, a second after the last change.
+fn expert_reports(fx: &Fx) {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let o = fx.bf(&[
+        "report",
+        "design",
+        "--result",
+        "built",
+        "--role",
+        "security-expert",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
 fn design_records(fx: &Fx) {
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A greeting exists\"\nacceptance=[\"src/a.txt exists\"]\n"),
@@ -134,6 +150,11 @@ fn the_architecture_gate_needs_a_threat_and_a_markets_statement() {
     let o = fx.refused(&["gate", "open", "architecture"]);
     assert!(!o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(o.stderr.contains("no markets statement"), "{}", o.stderr);
+    // The threat model stands only after the security expert reports on it.
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(!o.stderr.contains("has not reported"), "{}", o.stderr);
     // A statement of no market counts.
     let o = fx.put(
         "markets",
@@ -153,6 +174,29 @@ fn the_architecture_gate_follows_the_settings_for_the_threat_model_and_the_legal
     assert!(o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(!o.stderr.contains("markets"), "{}", o.stderr);
     fx.put("threat", THREAT);
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
+    fx.must(&["gate", "open", "architecture"]);
+}
+
+#[test]
+fn a_change_to_a_threat_needs_a_newer_report_of_the_security_expert() {
+    let fx = Fx::with_checks();
+    design_records(&fx);
+    only_on(&fx, &["threat-model"]);
+    fx.put("threat", THREAT);
+    expert_reports(&fx);
+    // The threat changes after the report: the report is older than the change.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    revise(
+        &fx,
+        "threat",
+        &THREAT.replace("read-only files", "files nobody can write"),
+    );
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
     fx.must(&["gate", "open", "architecture"]);
 }
 

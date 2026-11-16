@@ -61,6 +61,9 @@ pub(crate) fn drop_role_tokens(p: &Project) -> R<()> {
 }
 
 pub(crate) fn brief_checkpoint(p: &Project, k: &str, role: &str) -> R<PathBuf> {
+    if crate::roles::is_new_role(role) {
+        return crate::roles::brief(p, k, role);
+    }
     if matches!(role, "builder" | "reviewer") {
         if let Some(so) = events::replay(p)?.sync_open.filter(|o| o.checkpoint == k) {
             return brief_sync(p, &so, role);

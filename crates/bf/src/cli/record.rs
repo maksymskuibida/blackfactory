@@ -2,8 +2,8 @@
 
 use super::{kind_arg, out, pretty, project, read_data_in, real_zone, Args};
 use crate::refusal::{err, refuse, R};
-use crate::store::{s, Project};
-use crate::{events, gates, run, schema, util};
+use crate::store::{s, str_list, Project};
+use crate::{events, gates, plan, run, schema, util};
 use serde_json::{json, Value};
 use std::fs;
 
@@ -86,16 +86,52 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             let st = events::replay(p)?;
             let unit = s(&rec, "unit").to_string();
             let outcome = s(&rec, "outcome").to_string();
-            if kind.name != "finding"
-                || st.unit_state(&unit) != "review"
-                || !(outcome.is_empty() || outcome == "open")
-            {
+            // An auditor files a finding for its unit in any state once the unit has started; on a
+            // checkpoint, for a started unit that the checkpoint comes after. The token says who is
+            // speaking; a checkpoint's copy has no other way to file a finding.
+            let in_checkpoint = zone_id.starts_with("K-");
+            let holds_auditor = crate::roles::finding_auditors()
+                .iter()
+                .any(|r| run::holds_token(p, &format!("{zone_id}:{r}"), args.flag("token")));
+            let its_unit = if in_checkpoint {
+                plan::load(p)?
+                    .checkpoint(&zone_id)
+                    .map(|k| str_list(k, "after").contains(&unit))
+                    .unwrap_or(false)
+            } else {
+                unit == zone_id
+            };
+            let open = outcome.is_empty() || outcome == "open";
+            let auditor = kind.name == "finding"
+                && holds_auditor
+                && open
+                && !st.unit_state(&unit).is_empty()
+                && its_unit;
+            let worker = !in_checkpoint
+                && kind.name == "finding"
+                && st.unit_state(&unit) == "review"
+                && open;
+            if !auditor && !worker {
                 return Err(refuse(
                 format!("put a {} from a working copy", kind.name),
-                "a worker may file a new, open finding for a unit that is in review; every other record belongs to the planner and the human, and fixed and accepted are set by the engine and the human",
-                &["Report with `bf report <unit> --result findings --role reviewer` while the unit is in review.", "To accept a finding, ask the human; they put it from the main checkout."],
+                "a worker may file a new, open finding for a unit that is in review, and an auditor with its token for a started unit of its own copy (a checkpoint's auditor: a unit the checkpoint comes after); every other record belongs to the planner and the human, and fixed and accepted are set by the engine and the human",
+                &["Report with `bf report <unit> --result findings --role reviewer` while the unit is in review.", "An auditor files with `--token <token>`, for a started unit of its copy.", "To accept a finding, ask the human; they put it from the main checkout."],
                 "`bf record get` shows the finding as open.",
             ));
+            }
+            // A finding put from a working copy is always new: it never replaces one that exists, whatever
+            // its outcome.
+            let taken = match rec.get("id").and_then(|v| v.as_str()) {
+                Some(id) => p.get_record(id)?.is_some(),
+                None => false,
+            };
+            if taken {
+                return Err(refuse(
+                    format!("put the finding {} from a working copy", s(&rec, "id")),
+                    "a record with that ID exists; a working copy files new findings only, and never changes one that is filed",
+                    &["Put the finding without an `id`: the engine gives it the next free one."],
+                    "`bf record get` shows the filed finding as it was.",
+                ));
             }
         }
     }
