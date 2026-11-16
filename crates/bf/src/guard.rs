@@ -4139,6 +4139,7 @@ const UNIT_BF: &[(&str, &[&str])] = &[
         &["run", "verify", "fail", "unreachable", "attach"],
     ),
     ("record", &["get", "list", "put"]),
+    ("unit", &["restore"]),
 ];
 /// The record kinds a working copy may put: a finding (builders' reviewers and the security and legal
 /// auditors), a threat (the security expert) and a legal record (the lawyer and the legal auditor).
