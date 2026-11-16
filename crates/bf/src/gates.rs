@@ -461,7 +461,8 @@ pub fn snapshot(p: &Project, kind: &str, refr: Option<&str>) -> R<Value> {
     let mut m = serde_json::Map::new();
     let mut add = |rec: &Value| {
         let canon = serde_json::to_string(rec).unwrap_or_default();
-        let mut e = json!({"h": util::sha256_hex(canon.as_bytes()), "title": s(rec, "title")});
+        let mut e = json!({"h": util::sha256_hex(canon.as_bytes()), "title": s(rec, "title"),
+            "rec": rec});
         // The unit a check belongs to, so a landing can tell which checks the record in force holds.
         if !s(rec, "unit").is_empty() {
             e["unit"] = json!(s(rec, "unit"));
@@ -540,8 +541,7 @@ pub fn amended(st: &State, id: &str) -> bool {
 fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     st.amends.iter().find(|a| {
         matches!(a.status.as_str(), "open" | "narrowed")
-            && (a.ids.iter().any(|k| k == id)
-                || a.touched.iter().any(|k| k == id))
+            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
     })
 }
 
@@ -583,6 +583,20 @@ pub fn approved_entry(st: &State, stage: &str, id: &str) -> Option<(String, Opti
         e["h"].as_str().unwrap_or_default().to_string(),
         e["unit"].as_str().map(|x| x.to_string()),
     ))
+}
+
+/// The content the human approved for a record, when the approval kept it: the same entry
+/// `approved_entry` reads, so the old content and its hash always belong together.
+pub fn approved_record(st: &State, stage: &str, id: &str) -> Option<Value> {
+    let g = st
+        .latest_gate(stage, None)
+        .filter(|g| g.status == "approved")?;
+    if let Some((seq, e)) = st.approved_content.get(id) {
+        if g.decided_seq.map(|d| d < *seq).unwrap_or(true) {
+            return e.get("rec").cloned();
+        }
+    }
+    g.snapshot.as_object()?.get(id)?.get("rec").cloned()
 }
 
 /// Whether this record is, byte for byte, the content the human approved for its ID.
@@ -1858,7 +1872,7 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     for id in a.keep.iter().chain(a.ids.iter()).chain(a.touched.iter()) {
         let e = match p.get_record(id) {
             Ok(Some(r)) => {
-                let mut e = json!({"h": crate::evidence::record_hash(&r)});
+                let mut e = json!({"h": crate::evidence::record_hash(&r), "rec": r});
                 if !s(&r, "unit").is_empty() {
                     e["unit"] = json!(s(&r, "unit"));
                 }

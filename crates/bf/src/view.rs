@@ -1105,43 +1105,61 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     Ok(v)
 }
 
-/// One row of the list a narrowing stored: the record as it was then, with its key fields, marked
-/// as changed, new or removed.
-fn change_row(c: &Value) -> Value {
-    let rec = &c["record"];
-    let how = c["how"].as_str().unwrap_or("changed");
-    let mut row = if rec.is_null() {
-        json!({"id": c["id"], "title": "", "body": []})
-    } else {
-        design_row(rec, None)
-    };
-    row["id"] = c["id"].clone();
-    for (k, label) in [
-        ("unit", "Unit"),
-        ("checkpoint", "Checkpoint"),
-        ("how", "How"),
-        ("scope", "Scope"),
-        ("command", "Command"),
-        ("proves", "Proves"),
-        ("files", "Files"),
-        ("delivers", "Delivers"),
-        ("depends_on", "Depends on"),
-        ("after", "After"),
-        ("checks", "Checks"),
-    ] {
-        let line = match rec.get(k) {
-            Some(Value::String(x)) if !x.is_empty() => x.clone(),
-            Some(Value::Array(_)) => str_list(rec, k).join(", "),
-            _ => String::new(),
-        };
-        if !line.is_empty() {
-            if let Some(b) = row["body"].as_array_mut() {
-                b.push(text(&format!("{label}: {line}")));
+/// One value as a line: a string as it is, a list of strings joined, anything else as compact JSON.
+fn field_text(v: &Value) -> String {
+    match v {
+        Value::String(x) => x.clone(),
+        Value::Array(a) if a.iter().all(|i| i.is_string()) => format!(
+            "[{}]",
+            a.iter()
+                .filter_map(|i| i.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        other => other.to_string(),
+    }
+}
+
+/// Every field that differs between the approved content and the content now, as lines: the field,
+/// then the old value, then the new one. A field on one side only shows as added or removed. Walks
+/// the records, so it covers every kind and every field.
+fn diff_lines(was: &Value, now: &Value) -> Vec<String> {
+    let empty = serde_json::Map::new();
+    let (w, n) = (
+        was.as_object().unwrap_or(&empty),
+        now.as_object().unwrap_or(&empty),
+    );
+    let mut keys: Vec<&String> = w.keys().chain(n.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let mut out = Vec::new();
+    for k in keys {
+        match (w.get(k), n.get(k)) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) => {
+                out.push(format!("{k}: was {}, now {}", field_text(a), field_text(b)))
             }
+            (None, Some(b)) => out.push(format!("{k}: added {}", field_text(b))),
+            (Some(a), None) => out.push(format!("{k}: removed {}", field_text(a))),
+            (None, None) => {}
         }
     }
-    row["handled"] = json!({"tone": if c["kept"] == true { "open" } else { "accepted" }, "text": how});
-    row
+    out
+}
+
+/// One row of the list a narrowing stored: the record as it was approved and as it is, with every
+/// field that differs, marked as changed, new or removed.
+fn change_row(c: &Value) -> Value {
+    let (rec, was) = (&c["record"], &c["was"]);
+    let how = c["how"].as_str().unwrap_or("changed");
+    let title = if s(rec, "title").is_empty() {
+        s(was, "title")
+    } else {
+        s(rec, "title")
+    };
+    let body: Vec<Value> = diff_lines(was, rec).iter().map(|l| text(l)).collect();
+    json!({"id": c["id"], "title": title, "body": body,
+        "handled": {"tone": if c["kept"] == true { "open" } else { "accepted" }, "text": how}})
 }
 
 fn strip_event(e: &Value) -> Value {

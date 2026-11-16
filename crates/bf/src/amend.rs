@@ -88,7 +88,7 @@ pub fn coverage(p: &Project, a: &Amend) -> R<Vec<StageCover>> {
 /// fingerprint of exactly that. The set is the amendment's own records, the records its operations
 /// touch and the kept impact set (`keep`, the one of the narrowing being written or the one in force).
 /// A record differs when it is new, when its content is not the approved content, or when the approval
-/// has it and it is gone. Each entry holds the record as read now, so the page shows what the
+/// has it and it is gone. Each entry holds the record as read now and the approved content it differs from, so the page shows what the
 /// fingerprint covers. The fingerprint also covers every record of the set and the operations, so a
 /// change of any of them after the narrowing, by any route, voids the human's reading (TH-12).
 pub fn narrowing(p: &Project, st: &State, a: &Amend, keep: &[String]) -> R<(Vec<Value>, String)> {
@@ -112,13 +112,17 @@ pub fn narrowing(p: &Project, st: &State, a: &Amend, keep: &[String]) -> R<(Vec<
             None => "missing".to_string(),
         };
         parts.push(format!("{id}:{h}"));
-        let approved = rec
+        let stage = rec
             .as_ref()
             .map(|r| s(r, "kind").to_string())
             .or_else(|| schema::kind_of_id(id).map(|k| k.name.to_string()))
-            .and_then(|k| crate::gates::stage_of_kind(&k))
+            .and_then(|k| crate::gates::stage_of_kind(&k));
+        let approved = stage
             .and_then(|stage| crate::gates::approved_entry(st, stage, id))
             .map(|(h, _)| h);
+        let was = stage
+            .and_then(|stage| crate::gates::approved_record(st, stage, id))
+            .unwrap_or(Value::Null);
         let how = match (&rec, &approved) {
             (Some(_), Some(ah)) if *ah == h => continue,
             (Some(_), Some(ah)) if ah != "missing" => "changed",
@@ -127,9 +131,12 @@ pub fn narrowing(p: &Project, st: &State, a: &Amend, keep: &[String]) -> R<(Vec<
             (None, _) => continue,
         };
         let kept = keep.contains(id) && !a.ids.contains(id) && !a.touched.contains(id);
-        parts.push(format!("change:{id}:{how}:{h}"));
+        parts.push(format!(
+            "change:{id}:{how}:{h}:{}",
+            crate::evidence::record_hash(&was)
+        ));
         changes.push(json!({"id": id, "how": how, "kept": kept,
-            "record": rec.unwrap_or(Value::Null)}));
+            "record": rec.unwrap_or(Value::Null), "was": was}));
     }
     Ok((changes, crate::evidence::record_hash(&json!(parts))))
 }
