@@ -48,6 +48,25 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     }
     let mut md = String::new();
     md.push_str(&format!("# Brief: {} as {}\n\n", unit, role));
+    if role == "builder" && crate::scope::reconsider::request_from(&st, unit) {
+        // The note of the blocked report itself, not the last note of any kind.
+        let note = events::load_log(p)
+            .ok()
+            .and_then(|l| {
+                l.events
+                    .iter()
+                    .rev()
+                    .find(|e| e["kind"] == "unit.report" && e["unit"] == unit)
+                    .map(|e| s(e, "note").trim().to_string())
+            })
+            .unwrap_or_default();
+        let said = if note.is_empty() {
+            String::new()
+        } else {
+            format!(" and said: {note}")
+        };
+        md.push_str(&format!("## Look again\n\nYou reported this unit blocked{said}.\n\nLook again before the human is asked. Pick the way that fits:\n\n- A file outside your list that your work needs: ask for it with `bf report {unit} --result blocked --token <token> --need-files -`.\n- A file you changed by mistake outside your list: put it back with `bf unit restore {unit} <path> --token <token>`, then go on.\n- A file whose change is formatting only: name it in your report's note as format only, and report built; the engine proves it.\n- A gap in the design (a requirement, decision or contract that is missing or contradicts this brief): report blocked again. It then goes to the human.\n\n"));
+    }
     md.push_str(&format!("Unit: {}\n\n", s(u, "title")));
     if !s(u, "text").is_empty() {
         md.push_str(&format!("{}\n\n", s(u, "text")));
@@ -257,8 +276,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         p.policy.limits.idle_minutes
     ));
     md.push_str(&format!(
-        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n- A check counts only when `bf evidence run` ran it.\n",
-        p.work_dir().join(unit).display()
+        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n- A file outside your list that your work needs, most often a test your own change breaks, is a request with `--need-files`, never a plain blocked report.\n- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
+        p.work_dir().join(unit).display(),
+        unit = unit
     ));
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
