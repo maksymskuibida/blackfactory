@@ -8,7 +8,7 @@ use crate::store::Project;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-mod review;
+pub mod review;
 pub use review::{kind_records, records_hash, ReviewKind, REVIEW_KINDS};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
