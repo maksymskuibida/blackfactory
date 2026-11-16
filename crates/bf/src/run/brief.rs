@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// The engine writes a unit's brief itself at the state change that needs it. When it cannot, the
+/// command still succeeds, an older brief of that role is removed, and the answer says so.
+pub(crate) fn write_brief(p: &Project, unit: &str, role: &str) -> Option<String> {
+    match brief(p, unit, role) {
+        Ok(_) => None,
+        Err(_) => {
+            let _ = std::fs::remove_file(p.briefs_dir().join(format!("{unit}-{role}.md")));
+            let note = format!(
+                "the {role}'s brief of {unit} could not be written; run `bf brief {unit} --role {role}` and read what it says"
+            );
+            eprintln!("note: {note}");
+            Some(note)
+        }
+    }
+}
+
 pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if unit.starts_with("K-") {
         return brief_checkpoint(p, unit, role);

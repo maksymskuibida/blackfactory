@@ -72,6 +72,17 @@ pub fn report(
             "`bf status` shows the unit in its new state.",
         ));
     }
+    if cur == "review"
+        && ["findings", "built"].contains(&result)
+        && !p.briefs_dir().join(format!("{unit}-reviewer.md")).exists()
+    {
+        return Err(refuse(
+            format!("report {result} on {unit}"),
+            format!("the reviewer's brief of {unit} is missing, so the review would not be judged against it"),
+            &[&format!("Run `bf brief {unit} --role reviewer`, give the reviewer that brief, then report again.")],
+            "`bf report` is accepted and the unit moves on.",
+        ));
+    }
     if let Some(r) = role {
         if r != expected_role && !cur.is_empty() {
             return Err(refuse(
@@ -224,5 +235,14 @@ pub fn report(
         )?;
     }
     p.write_guard()?;
-    Ok(json!({"unit": unit, "result": result, "state": to, "findings": finding_ids}))
+    let note = match to.as_str() {
+        "review" => brief::write_brief(p, unit, "reviewer"),
+        "fixing" if cur == "review" => brief::write_brief(p, unit, "builder"),
+        _ => None,
+    };
+    let mut out = json!({"unit": unit, "result": result, "state": to, "findings": finding_ids});
+    if let Some(n) = note {
+        out["brief_note"] = json!(n);
+    }
+    Ok(out)
 }
