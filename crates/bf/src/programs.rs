@@ -59,6 +59,13 @@ fn entry(p: &Project, word: &str) -> Option<Value> {
     )
 }
 
+/// Where a program is found on the check PATH and a hash of that file: `{word, path, size, mtime,
+/// hash}`, or nothing when the program is not there. The scan runner uses it to refuse a missing tool
+/// and to record where the tool it started was found.
+pub fn locate(p: &Project, word: &str) -> Option<Value> {
+    entry(p, word)
+}
+
 fn first_word(check: &Value) -> Option<String> {
     match check.get("command") {
         Some(Value::String(c)) => c.split_whitespace().next().map(|w| w.to_string()),
