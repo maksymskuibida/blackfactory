@@ -94,14 +94,25 @@ fn t6_every_kind_of_refusal_has_the_four_parts() {
     assert!(!v["do_this"].as_array().unwrap().is_empty());
 }
 
-/// Every `.rs` file under `dir`, descending into subfolders.
-fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+/// The same scan as t8 makes in `src`, for every file in the subfolders below `dir`.
+fn scan_dir_for_banned(dir: &Path, banned: &[&str]) {
     for e in fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            rs_files(&p, out);
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p);
+        if e.path().is_dir() {
+            scan_dir_for_banned(&e.path(), banned);
+            continue;
+        }
+        let t = fs::read_to_string(e.path()).unwrap();
+        for b in banned {
+            let hits: Vec<&str> = t
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(b))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "{} contains `{b}`: {hits:?}",
+                e.path().display()
+            );
         }
     }
 }
@@ -121,10 +132,12 @@ fn t8_the_engine_has_no_network_code() {
         "http://",
         "https://",
     ];
-    let mut files = Vec::new();
-    rs_files(&src, &mut files);
-    for e in files {
-        let t = fs::read_to_string(&e).unwrap();
+    for e in fs::read_dir(&src).unwrap().flatten() {
+        if e.path().is_dir() {
+            scan_dir_for_banned(&e.path(), &banned);
+            continue;
+        }
+        let t = fs::read_to_string(e.path()).unwrap();
         for b in banned {
             // The test module of this very check and doc comments are allowed to mention nothing: scan code only.
             let hits: Vec<&str> = t
@@ -135,7 +148,7 @@ fn t8_the_engine_has_no_network_code() {
             assert!(
                 hits.is_empty(),
                 "{} contains `{b}`: {hits:?}",
-                e.display()
+                e.path().display()
             );
         }
     }
