@@ -157,16 +157,11 @@ fn the_new_fields_stay_at_rest() {
 }
 
 #[test]
-fn a_command_not_built_yet_refuses_with_the_four_parts() {
+fn pause_and_resume_refuse_with_the_four_parts_without_a_run() {
     let fx = Fx::new();
     for sub in ["pause", "resume"] {
-        let o = fx.bf(&["unit", sub, "U-a", "src/x.rs"]);
+        let o = fx.bf(&["unit", sub, "U-a"]);
         assert_ne!(o.code, 0, "{sub}: {}", o.all());
         assert_four_parts(&o.all());
-        assert!(
-            o.all().contains("not built in this binary"),
-            "{sub}: {}",
-            o.all()
-        );
     }
 }
