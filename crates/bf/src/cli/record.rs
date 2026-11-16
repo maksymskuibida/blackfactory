@@ -147,6 +147,11 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     let mut id = s(&rec, "id").to_string();
     let st = events::require_chain(p)?;
     let old = p.get_record(&id)?;
+    // A finding of a gate or an amendment is put only as the review rules allow: never accepted by a
+    // put, and only with the token of its review kind.
+    if kind.name == "finding" {
+        crate::checks::review::may_put_finding(p, &st, &rec, old.as_ref(), args.flag("token"))?;
+    }
     let mut accepted_by: Option<(u64, String)> = None;
     // A legal record is accepted by the human alone: not by a role that writes it, and from the main
     // checkout only with the words of a human message.

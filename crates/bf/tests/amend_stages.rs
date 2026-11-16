@@ -227,7 +227,7 @@ fn a_finding_with_a_gate_and_no_unit_is_put_and_one_with_neither_is_refused() {
     fx.tiny();
     let o = fx.put(
         "finding",
-        "id=\"F-1\"\nkind=\"finding\"\ntitle=\"A requirement is vague\"\ngate=\"requirements\"\nasks=\"requirements\"\n",
+        "id=\"F-1\"\nkind=\"finding\"\ntitle=\"A requirement is vague\"\ngate=\"requirements\"\n",
     );
     assert_eq!(o.code, 0, "{}", o.all());
     let o = fx.put(

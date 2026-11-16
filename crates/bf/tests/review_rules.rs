@@ -219,7 +219,14 @@ fn an_open_high_finding_holds_and_refuses_met_and_a_low_one_does_not() {
 fn a_recorded_accepted_without_the_humans_words_does_not_release() {
     let fx = setup();
     gate_review(&fx, "idea", "met");
-    put_ok(&fx, "finding", &finding("F-1", "idea", "high", "outcome=\"accepted\"\n"));
+    put_ok(&fx, "finding", &finding("F-1", "idea", "high", ""));
+    // A put never accepts: the rule refuses it, and the finding still holds.
+    let o = fx.put("finding", &finding("F-1", "idea", "high", "outcome=\"accepted\"\n"));
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(gate_lines(&fx, "idea").iter().any(|l| l.contains("F-1")));
+    // An accepted outcome written with no words of the human behind it does not release either.
+    let rec: Value = toml::from_str(&finding("F-1", "idea", "high", "outcome=\"accepted\"\n")).unwrap();
+    fx.project().write_record(&rec).unwrap();
     assert!(gate_lines(&fx, "idea").iter().any(|l| l.contains("F-1")));
 }
 
@@ -296,7 +303,9 @@ fn the_humans_accept_needs_words_after_the_review() {
         json!({"subject": "idea", "ids": ["F-1"], "turn": turn, "quote": "I accept the point about the scope"}),
     )
     .unwrap();
-    put_replace(&fx, "finding", &finding("F-1", "idea", "high", "outcome=\"accepted\"\n"));
+    // The command that took the words sets the outcome; here the record is written the way it does.
+    let rec: Value = toml::from_str(&finding("F-1", "idea", "high", "outcome=\"accepted\"\n")).unwrap();
+    p.write_record(&rec).unwrap();
     assert!(gate_lines(&fx, "idea").is_empty());
     let page = review::page_section(&p, &events::replay(&p).unwrap(), "idea").unwrap();
     assert_eq!(page["findings"]["holding"][0]["outcome"], "accepted");
