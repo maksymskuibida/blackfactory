@@ -230,6 +230,19 @@ fn the_markets_statement_belongs_to_the_architecture_stage() {
         "id=\"M-1\"\nkind=\"markets\"\ntitle=\"Served markets\"\nmarkets=[\"Norway\"]\n",
     );
     assert_eq!(o.code, 0, "{}", o.all());
+    // The threat model stands once the security expert has reported after the last threat change.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let o = fx.bf(&[
+        "report",
+        "design",
+        "--result",
+        "built",
+        "--role",
+        "security-expert",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    std::thread::sleep(std::time::Duration::from_millis(50));
     fx.must(&["gate", "open", "architecture"]);
     let snap = bf::gates::snapshot(&fx.project(), "architecture", None).unwrap();
     assert!(snap.get("M-1").is_some(), "{snap}");

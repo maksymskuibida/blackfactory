@@ -45,6 +45,7 @@ const fn c(n: u32, place: Place, want: Want, cmd: &'static str) -> Case {
     }
 }
 
+#[allow(dead_code)]
 const fn waiting(n: u32, place: Place, want: Want, unit: &'static str, cmd: &'static str) -> Case {
     Case {
         n,
@@ -131,18 +132,16 @@ fn table() -> Vec<Case> {
         c(22, Wc, Refused, "tar xf /tmp/a.tar"),
         c(23, Wc, Refused, "unzip /tmp/a.zip"),
         c(24, Wc, Refused, "git merge main"),
-        waiting(
+        c(
             25,
             Cpwc,
             Passed,
-            "U-35",
             "bf report K-1 --result built --role security-auditor --token abc",
         ),
-        waiting(
+        c(
             26,
             Cpwc,
             Passed,
-            "U-35",
             "bf record put legal --file /tmp/l.toml --token abc",
         ),
         c(

@@ -276,10 +276,11 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
         (_, "status") => true,
         (_, "evidence") => evidence_ok.contains(&sub),
         (_, "ask") => true,
-        // A checkpoint's working copy reports only on an open sync (the engine checks that).
+        // A checkpoint's working copy reports on an open sync, or as a role with its token, and puts
+        // records only with a role's token (the engine checks both).
         ("checkpoint", "report") => true,
         ("unit", "report") => true,
-        (_, "record") => matches!(sub, "get" | "list") || (zone == "unit" && sub == "put"),
+        (_, "record") => matches!(sub, "get" | "list" | "put"),
         _ => false,
     };
     if ok {
@@ -287,7 +288,7 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
     }
     Err(refuse(
         format!("run `bf {cmd}` from the working copy of {id}"),
-        "commands run from inside a working copy are a worker's or a verifier's: they may run evidence, read the status, and (a unit's worker) report and file findings; planning, gates, briefs, landing, the log and the pages belong to the conductor and the human",
+        "commands run from inside a working copy are a worker's or a verifier's: they may run evidence, read the status, and (a unit's worker, or an auditor with its token) report and file findings; planning, gates, briefs, landing, the log and the pages belong to the conductor and the human",
         &["Run the command from the project folder, as the conductor.", "From a working copy use `bf report`, `bf evidence run|verify|fail|unreachable|attach`, `bf record put finding`, `bf record get|list` or `bf status`."],
         "The command runs from the project folder.",
     ))

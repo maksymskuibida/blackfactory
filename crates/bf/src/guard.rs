@@ -4150,7 +4150,7 @@ const CP_BF: &[(&str, &[&str])] = &[
         "evidence",
         &["run", "verify", "fail", "unreachable", "attach"],
     ),
-    ("record", &["get", "list"]),
+    ("record", &["get", "list", "put"]),
 ];
 
 fn human_turn_denial() -> Decision {
@@ -4312,6 +4312,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     || matches!(sub, "help" | "version")
                     // The resolver of an open sync reports from the checkpoint's working copy.
                     || (in_cp && sub == "report" && here.sync)
+                    // A built-stage role (an auditor) reports on a checkpoint with its own token.
+                    || (in_cp
+                        && sub == "report"
+                        && w.windows(2)
+                            .any(|x| x[0] == "--role" && crate::roles::is_new_role(&x[1])))
                     || list.iter().any(|(c, subs)| *c == sub && (subs.is_empty() || subs.contains(&second)))
                     // Of `record put`, only a finding.
                     && !(sub == "record"
@@ -4323,7 +4328,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         if in_worker {
                             "a worker may report, file a finding, run evidence and read the status, and put a threat or a legal record with the token of a role that writes it; nothing else"
                         } else {
-                            "a checkpoint's working copy is for running its checks and reading state"
+                            "a checkpoint's working copy is for running its checks, reading state, and an auditor's report and records with its token"
                         },
                         &["Use `bf report`, `bf evidence run|verify|fail|unreachable`, `bf record put finding|threat|legal`, `bf record get|list` or `bf status`.", "Ask the conductor for anything else."],
                         "The command you need is on that list.",
@@ -5535,8 +5540,13 @@ mod tests {
             "/p/.bf/work/U-1"
         ));
         assert!(bash("bf record put legal --file f.toml", "/p/.bf/work/U-1"));
-        assert!(!bash(
+        // A checkpoint's copy may put a record too; the engine asks for the role's token.
+        assert!(bash(
             "bf record put threat --file f.toml",
+            "/p/.bf/work/K-1"
+        ));
+        assert!(!bash(
+            "bf record put requirement --file f.toml",
             "/p/.bf/work/K-1"
         ));
         assert!(

@@ -232,6 +232,20 @@ pub fn writers_of(kind: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The built-stage roles that file findings (the auditors), by name.
+pub fn finding_auditors() -> Vec<&'static str> {
+    ROLES
+        .iter()
+        .filter(|r| {
+            r.stage == "built"
+                && r.writes
+                    .iter()
+                    .any(|w| w.contains("`bf record put finding`"))
+        })
+        .map(|r| r.name)
+        .collect()
+}
+
 pub fn is_new_role(name: &str) -> bool {
     get(name).is_some()
 }
@@ -347,16 +361,26 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
         return design_brief(p, r);
     }
     let pl = plan::load(p)?;
-    let Some(u) = pl.unit(unit) else {
-        return Err(refuse(
-            format!("brief {unit}"),
-            "no such unit",
-            &["Use a unit ID from `bf status`."],
-            "The command prints a path.",
-        ));
+    // A checkpoint is briefed like a unit: what it proves stands where a unit's deliveries stand.
+    let (u, what, ids, label) = match pl.unit(unit) {
+        Some(u) => (u, "unit", str_list(u, "delivers"), "Unit"),
+        None => match pl.checkpoint(unit) {
+            Some(k) => (k, "checkpoint", str_list(k, "proves"), "Checkpoint"),
+            None => {
+                return Err(refuse(
+                    format!("brief {unit}"),
+                    "no such unit or checkpoint",
+                    &["Use a unit or checkpoint ID from `bf status`."],
+                    "The command prints a path.",
+                ));
+            }
+        },
     };
     let wc = p.work_dir().join(unit);
-    let mut md = format!("# Brief: {unit} as {role}\n\nUnit: {}\n\n", s(u, "title"));
+    let mut md = format!(
+        "# Brief: {unit} as {role}\n\n{label}: {}\n\n",
+        s(u, "title")
+    );
     if !s(u, "text").is_empty() {
         md.push_str(&format!("{}\n\n", s(u, "text")));
     }
@@ -364,8 +388,12 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
         "## Your role\n\n{} Stage: {}.\n\n",
         r.summary, r.stage
     ));
-    md.push_str("## What this unit delivers\n\n");
-    for id in str_list(u, "delivers") {
+    if what == "checkpoint" {
+        md.push_str("## What this checkpoint proves\n\n");
+    } else {
+        md.push_str("## What this unit delivers\n\n");
+    }
+    for id in ids {
         if let Some(rec) = p.get_record(&id)? {
             md.push_str(&format!("### {} {}\n\n", id, s(&rec, "title")));
             if !s(&rec, "text").is_empty() {
@@ -407,6 +435,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
     md.push_str(&format!(
         "\n## Rules\n\n- Report with `bf report <unit> --result built|blocked --role {role} --token <token>`; the report spends your token and does not move the unit.\n- Never edit anything under the factory or engine folders.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\"`.\n- A check counts only when `bf evidence run` ran it.\n"
     ));
+    if r.stage == "built" && !r.writes.is_empty() {
+        md.push_str("- Put each record from the working copy with `--token <token>`; a finding names the `unit` it is about, a unit that has started.\n");
+    }
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)
