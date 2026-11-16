@@ -279,7 +279,7 @@ fn fill(rest: &[String]) -> R<Value> {
                 "run `bf preset fill` with a missing argument",
                 format!("it needs {what}"),
                 &["Run `bf preset fill <kind> <language> <values-file> [<out-file>]`; `bf preset list` shows the kinds and languages."],
-                "The command prints the draft, or writes it to the out file.",
+                "The command prints the draft, or writes it to the out file inside `.bf/drafts/`.",
             )
         })
     };
@@ -328,12 +328,80 @@ fn fill(rest: &[String]) -> R<Value> {
         "source": p.file.display().to_string(), "shipped": p.shipped,
     });
     if let Some(o) = rest.get(3) {
-        util::atomic_write(Path::new(o), text.as_bytes())?;
+        let target = draft_path(o)?;
+        util::atomic_write(&target, text.as_bytes())?;
         out["written"] = json!(o);
+        out["path"] = json!(target.display().to_string());
     } else {
         out["text"] = json!(text);
     }
     Ok(out)
+}
+
+/// The folder a draft may be written to: `.bf/drafts/` in the project folder. No record, hook
+/// setting or other protected file lives there.
+fn drafts_dir() -> R<PathBuf> {
+    let raw: Vec<String> = std::env::args().collect();
+    let start = match raw.iter().position(|a| a == "-C") {
+        Some(i) if i + 1 < raw.len() => PathBuf::from(&raw[i + 1]),
+        _ => std::env::current_dir()?,
+    };
+    let p = crate::store::Project::discover(&start)?;
+    Ok(p.root.join(".bf/drafts"))
+}
+
+/// Where the out file of `bf preset fill` goes: inside `.bf/drafts/` of the project, never anywhere
+/// else. A bare file name is placed there; a path must resolve (links followed) to a place inside
+/// it.
+fn draft_path(out: &str) -> R<PathBuf> {
+    let refused = |why: String| {
+        refuse(
+            format!("write the draft to `{out}`"),
+            why,
+            &["Give a file name, or a path inside `.bf/drafts/` of the project folder, as the out file, or leave the out file off to print the draft."],
+            "The command writes the draft inside `.bf/drafts/`, or prints it.",
+        )
+    };
+    let dir = drafts_dir()?;
+    let given = Path::new(out);
+    let cand = if given.components().count() == 1 {
+        dir.join(given)
+    } else if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(given)
+    };
+    if cand
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(refused("a draft is written only inside `.bf/drafts/` of the project, and this path leaves it with `..`".into()));
+    }
+    fs::create_dir_all(&dir)?;
+    let real_dir = fs::canonicalize(&dir)?;
+    // Resolve the deepest part of the path that exists, then put the rest back.
+    let mut existing = cand.clone();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() && fs::symlink_metadata(&existing).is_err() {
+        match (
+            existing.file_name().map(|n| n.to_os_string()),
+            existing.parent(),
+        ) {
+            (Some(n), Some(par)) => {
+                tail.push(n);
+                existing = par.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut real = fs::canonicalize(&existing)?;
+    for n in tail.iter().rev() {
+        real.push(n);
+    }
+    if real == real_dir || !real.starts_with(&real_dir) {
+        return Err(refused("a draft is written only inside `.bf/drafts/` of the project, never over a record, the hook settings or any other file".into()));
+    }
+    Ok(real)
 }
 
 /// Entry point of `bf preset <sub> ...`.

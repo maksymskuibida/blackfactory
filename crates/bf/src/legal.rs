@@ -185,6 +185,21 @@ pub fn validate_finding(f: &Value) -> Vec<String> {
     out
 }
 
+/// A hash of what the human reads in a finding: the record's title, text, severity, where, action,
+/// market and links, and the detail's risk, markets, research mark and sources. The closing question
+/// is bound to it when it is asked, so a finding changed afterwards (by any put) is no longer the one
+/// the human acknowledged. The outcome is left out: it moves without changing what was read.
+fn content_hash(f: &Value, d: &Value) -> String {
+    let v = json!({
+        "title": f.get("title"), "text": f.get("text"), "severity": f.get("severity"),
+        "where": f.get("where"), "action": f.get("action"), "market": f.get("market"),
+        "links": f.get("links"),
+        "risk": d.get("risk"), "markets": d.get("markets"),
+        "researched": d.get("researched"), "sources": d.get("sources"),
+    });
+    util::sha256_hex(v.to_string().as_bytes())
+}
+
 fn is_marked(d: &Value) -> bool {
     d.get("lawyer_check").and_then(|v| v.as_bool()) == Some(true)
 }
@@ -227,12 +242,7 @@ fn question_acknowledges(p: &Project, log: &events::Log, st: &events::State, qid
 }
 
 /// Whether a question is still waiting, or was answered with an acknowledgement.
-fn question_is_current(
-    p: &Project,
-    log: &events::Log,
-    st: &events::State,
-    qid: &str,
-) -> R<bool> {
+fn question_is_current(p: &Project, log: &events::Log, st: &events::State, qid: &str) -> R<bool> {
     let Some(q) = p.get_record(qid)? else {
         return Ok(false);
     };
@@ -267,6 +277,12 @@ pub fn unacknowledged(p: &Project) -> R<Vec<String>> {
         if qid.is_empty() {
             out.push(format!(
                 "{id} \"{title}\" (no closing question yet: run `bf legal questions`)"
+            ));
+            continue;
+        }
+        if text_of(&d, "asked_hash") != content_hash(f, &d) {
+            out.push(format!(
+                "{id} \"{title}\" (changed since its question was asked: run `bf legal questions`)"
             ));
             continue;
         }
@@ -461,7 +477,9 @@ pub fn ask_questions(p: &Project) -> R<Value> {
                 ctx = Some((events::load_log(p)?, events::replay(p)?));
             }
             let (log, st) = ctx.as_ref().unwrap();
-            if question_is_current(p, log, st, &cur)? {
+            if text_of(&d, "asked_hash") == content_hash(f, &d)
+                && question_is_current(p, log, st, &cur)?
+            {
                 continue;
             }
         }
@@ -474,6 +492,7 @@ pub fn ask_questions(p: &Project) -> R<Value> {
         let qid = p.write_numbered(qkind, &mut q)?;
         events::append(p, "question.asked", json!({"question": qid}))?;
         d["question"] = json!(qid);
+        d["asked_hash"] = json!(content_hash(f, &d));
         write_detail(p, &id, &d)?;
         made.push(json!({"finding": id, "question": qid}));
     }

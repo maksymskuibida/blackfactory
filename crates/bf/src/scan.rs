@@ -331,17 +331,33 @@ fn flag(name: &str) -> Option<String> {
 /// The check record the scan is the proof of: the command check whose command is `bf scan <sub>`,
 /// or the one named with `--check`. Falls back to the named check's name.
 fn check_for(p: &Project, sub: &str, fallback: &str) -> R<String> {
-    if let Some(c) = flag("check") {
-        return Ok(c);
-    }
+    let named = flag("check");
     for c in p.list_records(crate::schema::kind_by_name("check"))? {
         if s(&c, "how") != "command" {
             continue;
         }
         let w = crate::evidence::command_words(&c);
-        if w.len() >= 3 && w[1] == "scan" && w[2] == sub {
-            return Ok(s(&c, "id").to_string());
+        let is_scan = w.len() == 3
+            && w[1] == "scan"
+            && (w[2] == sub || (sub == "licences" && w[2] == "licenses"));
+        if !is_scan {
+            continue;
         }
+        match &named {
+            Some(n) if n != s(&c, "id") => continue,
+            _ => return Ok(s(&c, "id").to_string()),
+        }
+    }
+    if let Some(n) = named {
+        return Err(refuse_owned(
+            format!("write the receipt of `bf scan {sub}` for the check {n}"),
+            format!("`--check {n}` does not name a command check whose command is `bf scan {sub}`; a scan proves only the check whose command it is"),
+            vec![
+                format!("Name a check record with how = \"command\" and the command `bf scan {sub}`, or leave `--check` out so the engine finds it."),
+                "Run the `bf scan` command again.".to_string(),
+            ],
+            "The command prints a result and a receipt ID.",
+        ));
     }
     Err(refuse_owned(
         format!("write the receipt of `bf scan {sub}`"),

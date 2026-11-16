@@ -649,6 +649,16 @@ What each protection gives, and what stays open:
 | Cost on every report | The number is still the conductor's word |
 | Frozen records and receipt-to-check binding | A same-account agent could edit records and the log together |
 
+## Scans, presets and legal acknowledgements
+
+**`bf scan secrets` and `bf scan licences`** (`licenses` too) run where their check runs. The one way to prove a scan for a unit or a checkpoint: from inside its working copy, run `bf scan secrets` (or `licences`) itself, not through `bf evidence run`. The command is allowed in a working copy, scans that copy, and writes its receipt at that copy's content, which is the content the checkpoint close compares. The refusal of any other command in a working copy names this form. Example: `cd .bf/work/K-1 && bf scan secrets && bf scan licences`. From the project folder a scan covers the main checkout, so its receipt counts only at that content.
+
+**`--check <ID>`** names the check record a scan proves. It is accepted only for a command check whose command is exactly `bf scan <that sub>`; a scan named for any other check (a test command, the other scan, a record that does not exist) is refused with the four parts and writes no receipt. Without `--check` the engine finds the record by its command.
+
+**`bf preset list|fill`**: `bf preset fill <kind> <language> <values-file> [<out-file>]` prints the draft, or writes it under `.bf/drafts/` of the project folder and nowhere else. A bare file name is placed there; a path must resolve (links followed) to a place inside `.bf/drafts/`, so a record, the hook settings, `factory/` or `.claude/` is never written and the command refuses it with the four parts.
+
+**Legal acknowledgement.** The human's acknowledgement of a marked legal finding is bound to what they read: the closing question stores a hash of the finding's title, text, severity, where, action, market and links, and of its risk, markets, research mark and sources. A change of any of these after the question was asked (by a plain `bf record put legal --replace` or by filing it again) makes the finding unacknowledged: it holds the close of the checkpoint and of the run until `bf legal questions` asks again and the human answers again. A change of the outcome alone does not.
+
 ## Git: the `git` program, not a library
 
 

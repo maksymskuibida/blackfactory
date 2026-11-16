@@ -79,17 +79,10 @@ fn a_missing_blank_is_refused_by_name() {
 fn the_draft_can_be_written_to_a_file() {
     let fx = Fx::new();
     let vf = values(&fx, "v.json", &all_blanks(&fx, "impressum", "de"));
-    let out = fx.root.join("impressum.md");
-    let o = fx.must(&[
-        "preset",
-        "fill",
-        "impressum",
-        "de",
-        &vf,
-        out.to_str().unwrap(),
-        "--json",
-    ]);
-    assert_eq!(o.json()["written"], out.to_str().unwrap());
+    // A draft goes only under `.bf/drafts/` of the project: a bare name is placed there.
+    let out = fx.root.join(".bf/drafts/impressum.md");
+    let o = fx.must(&["preset", "fill", "impressum", "de", &vf, "impressum.md", "--json"]);
+    assert_eq!(o.json()["written"], "impressum.md");
     assert!(fs::read_to_string(out).unwrap().starts_with("ENTWURF"));
 }
 
