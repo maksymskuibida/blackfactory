@@ -76,6 +76,25 @@ export function button(
   )
 }
 
+// A link to a full page, drawn only for an https address.
+export function linkLine(ctx: Ctx, url: string, label: string) {
+  if (label === '' || !/^https:\/\/\S+$/.test(url)) return null
+  const { Link } = ctx.ui
+  return <Link key={`page:${label}`} href={url} label={label} />
+}
+
+// A swatch of a colour pair with its word: the legend of a picture.
+export function swatch(ctx: Ctx, bg: string, fg: string, word: string, key: string) {
+  if (word === '') return null
+  const { Text } = ctx.ui
+  return (
+    <Text key={key} color={fg} backgroundColor={bg} bold>
+      {' '}
+      {word}{' '}
+    </Text>
+  )
+}
+
 // How long ago the panel read, in the panel's own words; empty before the first read.
 export function stamp(ctx: Ctx): string {
   const at = ctx.data.readAt

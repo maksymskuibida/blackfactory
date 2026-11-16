@@ -2,6 +2,7 @@ import type { FactoryPanelChoices, FactoryPanelSession, FactoryPanelTab } from '
 import { createRefresh } from './refresh'
 import type { RefreshPorts } from './refresh'
 import { t } from './strings'
+import { createViews } from './views'
 
 export const PANE_ID = 'factory-panel'
 export const COMMAND = 'factory-panel'
@@ -58,6 +59,7 @@ const TABS: FactoryPanelTab[] = ['overview', 'idea', 'requirements', 'ui', 'arch
 
 export function createPanel(p: PanelPorts) {
   const refresh = createRefresh(p)
+  const views = createViews(p)
 
   async function active(): Promise<boolean> {
     const s = await p.session.get()
@@ -84,12 +86,14 @@ export function createPanel(p: PanelPorts) {
       if (isDesktop) await p.session.update(s => ({ ...s, isDesktop: true }))
       if (!(await active())) return
       await refresh.full()
+      await views.again()
       await maybeOpen()
     },
 
     async turnComplete(): Promise<void> {
       if (!(await active())) return
       await refresh.full()
+      await views.again()
       await maybeOpen()
     },
 
@@ -99,6 +103,7 @@ export function createPanel(p: PanelPorts) {
       if (!s.isDesktop) return t('desktopOnly')
       if (p.options().panel === 'off') return t('commandOff')
       await refresh.full()
+      await views.again()
       const d = await p.data.get()
       if (d.folder === 'not-factory') return t('commandNotFactory')
       if (d.folder === 'no-engine') return t('commandNoEngine', { bf: p.options().bf })
@@ -123,20 +128,57 @@ export function createPanel(p: PanelPorts) {
     },
 
     async tick(): Promise<void> {
-      if (await this.shouldPoll()) await refresh.poll()
+      if (!(await this.shouldPoll())) return
+      // The event count changed: the views the open tab and record draw from are read again too.
+      if ((await refresh.poll()) === 'read') await views.again()
+    },
+
+    // The text of the search field changed.
+    async search(value: string): Promise<void> {
+      await p.choices.update(c => ({ ...c, search: value }))
     },
 
     // A press on one of the panel's buttons, by its key.
     async press(key: string): Promise<void> {
       if (key === 'refresh') {
         await refresh.full()
+        await views.again()
       } else if (key === 'open-panel') {
         await p.session.update(s => ({ ...s, isClosed: false, wasOpened: true }))
         const placed = await p.ui.open()
         await p.session.update(s => ({ ...s, isShown: placed }))
+        // The pane returns on the tab and the record it left: read what they draw from again.
+        await views.again()
       } else if (key.startsWith('tab:') || key.startsWith('tabs:')) {
         const tab = key.slice(key.indexOf(':') + 1) as FactoryPanelTab
-        if (TABS.includes(tab)) await p.choices.update(c => ({ ...c, tab, open: null, back: [] }))
+        if (TABS.includes(tab)) {
+          await p.choices.update(c => ({ ...c, tab, open: null, back: [], search: '' }))
+          await views.forTab(tab)
+        }
+      } else if (key.startsWith('open:')) {
+        // A press on an ID: the record opens and the one left is kept for the way back.
+        // The key may end in @ and a place, so one ID can be a button in many places.
+        const id = key.slice(5).split('@')[0]!
+        await p.choices.update(c => ({ ...c, open: id, back: c.open !== null && c.open !== id ? [...c.back, c.open] : c.back }))
+        await views.forRecord(id)
+      } else if (key === 'back') {
+        let next = null as string | null
+        await p.choices.update(c => {
+          next = c.back[c.back.length - 1] ?? null
+          return { ...c, open: next, back: c.back.slice(0, -1) }
+        })
+        await views.forRecord(next)
+      } else if (key.startsWith('crumb:')) {
+        const at = Number(key.slice(6))
+        let next = null as string | null
+        await p.choices.update(c => {
+          if (!(Number.isInteger(at) && at >= 0 && at < c.back.length)) return c
+          next = c.back[at]!
+          return { ...c, open: next, back: c.back.slice(0, at) }
+        })
+        if (next !== null) await views.forRecord(next)
+      } else if (key === 'search-clear') {
+        await p.choices.update(c => ({ ...c, search: '' }))
       } else if (key.startsWith('fold:')) {
         const id = key.slice(5)
         await p.choices.update(c => ({ ...c, folds: { ...c.folds, [id]: !c.folds[id] } }))
