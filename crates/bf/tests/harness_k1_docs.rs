@@ -37,7 +37,7 @@ fn the_skill_names_each_new_demand() {
             "listed in `checks` by the last checkpoint",
             "before `bf plan check`",
             "`bf roles list`",
-            "`uiux-verifier`, `security-expert`, `security-auditor`, `lawyer` and `legal-auditor`",
+            "`uiux-verifier`, `security-expert`, `security-auditor`, `lawyer`, `legal-auditor`, `design-reviewer`, `designer` and `uiux-designer`",
             "bf amend withdraw <A-n> --reason",
             "it works in the main checkout",
         ],

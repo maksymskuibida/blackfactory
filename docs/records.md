@@ -52,7 +52,7 @@ Extra fields by kind:
 | decision | `chosen` | string | What was chosen |
 | decision | `rejected` | string | What was rejected and why |
 | decision | `maker` | `human` or `agent` | Who made the call. A call the agent makes by itself is a decision with `maker = "agent"`, not a new kind |
-| decision | `stage` | `idea`, `requirements`, `ui`, `architecture`, `plan` or `build` | The stage it was made in |
+| decision | `stage` | `idea`, `requirements`, `ui`, `architecture`, `plan` or `build` | The stage it was made in. A decision with `maker = "agent"` and a `stage` of `requirements`, `ui`, `architecture` or `plan`, named in an amendment's set, is the **not-affected decision**: one sentence that says the stage is not affected by the amendment, and it covers that stage as records would |
 | screen | `interface` | `web`, `mobile`, `desktop`, `terminal`, `voice` or `api` | The kind of interface the screen is |
 | journey | `steps` | list of strings | The steps of the journey, in order |
 
@@ -145,11 +145,22 @@ A problem a reviewer found. Findings are created by `bf report ... --result find
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `title` | string | yes | |
-| `unit` | `U-` ID | yes | |
+| `unit` | `U-` ID | one of `unit`, `gate` and `amendment` | The unit the finding is about. Required when the finding names neither a `gate` nor an `amendment` |
+| `gate` | `idea`, `requirements`, `ui`, `architecture`, `legal` or `plan` | no | Set on a finding of a design review: the review it belongs to. It is a finding of that gate's review, not of a unit |
+| `amendment` | `A-` ID | no | Set on a finding of the review of an amendment, with or without a `gate` that names the stage |
+| `asks` | `requirements`, `ui`, `architecture`, `legal` or `plan` | no | Set by the solo reviewer of an amendment to ask for a review of that stage: the amendment cannot be approved until a review of the stage exists at the current records |
 | `severity` | `critical`, `high`, `medium` or `low` | no | |
 | `where` | string | no | File and line |
 | `action` | string | no | What must be done |
 | `outcome` | `open`, `fixed` or `accepted` | no | Starts as `open`. `bf report --result fixed` sets `fixed` |
+
+### Who made a design record
+
+A record of a design stage, or of an amendment that is not a plan repair, is put with the token of the designer the engine issued and `--model <the model the designer ran on>`. The record itself holds no extra field: the engine keeps the maker in a `design.made` event of the run log (the record, the role, the model, and the human's words when the rule was lifted), and the pages show that the designer agent made it and on which model. The model is the agent's own report. See `bf roles` in [engine.md](engine.md).
+
+### The review checks
+
+A design review is a named check (a record with `named = "<name>"` and `how = "agent"`), one for each kind of review. The five names are `idea-review`, `requirements-review`, `architecture-review`, `plan-review` and `amendment-review`. A review's receipt carries `review_kind`, `review_amendment`, `review_round` and `records_hash`, the hash of the records the kind judges, so a change to one of them needs the review again. The findings of a review are findings (`F`) with a `gate` or an `amendment`. See `bf review` in [engine.md](engine.md).
 
 ## Markets statement (`M`)
 
@@ -242,7 +253,8 @@ Only the human edits it. The guard keeps agents away from it.
 | Section | Keys | Meaning |
 |---|---|---|
 | `[limits]` | `max_rounds`, `idle_minutes`, `max_attempts`, `checkpoint_reviews` | Review rounds before parking (3); idle time before a running unit counts as stuck (60); failing check runs and blocked reports in a row before parking (10); reviews a checkpoint may have before it parks with a high or medium finding still open (3) |
-| `[tiers]` | `builder`, `reviewer`, `verifier` | Model tier by role |
+| `[tiers]`, `[efforts]` | `conductor`, `designer`, `amender`, `advisor`, `builder`, `reviewer`, `checkpoint_reviewer`, `verifier` | The tier (`cheap`, `standard`, `strong`) and the effort (`low`, `medium`, `high`) of each kind of work; a model may also be named outright for a harness in a `[models.<kind>]` table |
+| `[context]` | `max_share`, `max_age_seconds` | The share of the context window a conductor's session may fill before the hook adds a note (40 percent), and how old a saved share may be before it is ignored (900 seconds) |
 | `[budget]` | `cap`, `unit` | Spending cap (0 = none) and its unit |
 | `[review]` | `required` | A unit needs a clean review before landing |
 | `[ledger]` | `kinds` | Which record kinds the ledger holds to account |
