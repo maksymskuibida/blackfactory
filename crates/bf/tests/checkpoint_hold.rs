@@ -772,13 +772,17 @@ fn every_directive_action_is_classified_as_asking_holding_or_neither() {
 /// The sites where `"action":` takes a variable: (file, the text after `"action": `). The first gives the two
 /// plan-question actions, both in the table (`answer-wave-checks`, `answer-unit-checks`); the second is a
 /// finding's own action text in a review round, not a directive.
-const VARIABLE_ACTION_SITES: &[(&str, &str)] = &[("run.rs", "action,"), ("ckreview.rs", "s(f, \"action\")"), ("ckreview.rs", "s(&f, \"action\")")];
+const VARIABLE_ACTION_SITES: &[(&str, &str)] = &[("next.rs", "action,"), ("ckreview.rs", "s(f, \"action\")"), ("ckreview.rs", "s(&f, \"action\")")];
 
 /// Every string a directive's `"action":` takes in the source: a literal, or the literals of an `if` choice.
 fn actions_in_source(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for e in fs::read_dir(dir).unwrap() {
         let path = e.unwrap().path();
+        if path.is_dir() {
+            out.extend(actions_in_source(&path));
+            continue;
+        }
         if path.extension().and_then(|x| x.to_str()) != Some("rs") {
             continue;
         }
