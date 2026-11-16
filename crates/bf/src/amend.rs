@@ -148,6 +148,7 @@ pub fn unlinked_requirements(p: &Project, a: &Amend) -> R<Vec<String>> {
 
 /// Refuse approval while a stage is uncovered or a requirement has no links. The refusal names each.
 pub fn refuse_if_uncovered(p: &Project, a: &Amend) -> R<()> {
+    refuse_if_unreviewed(p, a)?;
     let missing: Vec<&'static str> = coverage(p, a)?
         .iter()
         .filter(|c| !c.covered())
@@ -186,6 +187,30 @@ pub fn refuse_if_uncovered(p: &Project, a: &Amend) -> R<()> {
         format!("approve {aid}"),
         because.join("; "),
         steps,
+        "`bf amend approve` prints the approved amendment.",
+    ))
+}
+
+/// Refuse approval while the amendment review holds it (R-98): a review the shape needs is missing
+/// at the current records, or an open critical, high or medium finding remains. A plan repair and an
+/// amendment whose review check is off are not held. The refusal names each.
+pub fn refuse_if_unreviewed(p: &Project, a: &Amend) -> R<()> {
+    if is_repair(a) {
+        return Ok(());
+    }
+    let st = crate::events::replay(p)?;
+    let lines = crate::checks::review::amendment_blocker(p, &st, &a.id)?;
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let aid = &a.id;
+    Err(refuse_owned(
+        format!("approve {aid}"),
+        format!("the amendment review holds it: {}", lines.join("; ")),
+        vec![
+            format!("Have the missing reviews run on the records of {aid} as they are now (`bf review token amendment --subject {aid}`)."),
+            "Fix each open finding, or ask the human to accept it in their own words: `bf review finding <A-n> --accept <F-ids> --quote \"<their words>\"`.".to_string(),
+        ],
         "`bf amend approve` prints the approved amendment.",
     ))
 }
