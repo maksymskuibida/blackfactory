@@ -2480,7 +2480,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "amend.bind" => {
                 let id = sv("id");
                 if crate::gates::approved_missing(&st, &id) {
-                    let mut e = json!({"h": sv("h")});
+                    let mut e = json!({"h": sv("content_h")});
                     if !sv("unit").is_empty() {
                         e["unit"] = json!(sv("unit"));
                     }

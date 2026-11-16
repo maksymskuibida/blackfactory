@@ -539,7 +539,9 @@ pub fn amended(st: &State, id: &str) -> bool {
 fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     st.amends.iter().find(|a| {
         matches!(a.status.as_str(), "open" | "narrowed")
-            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
+            && (a.ids.iter().any(|k| k == id)
+                || a.touched.iter().any(|k| k == id)
+                || a.keep.iter().any(|k| k == id))
     })
 }
 

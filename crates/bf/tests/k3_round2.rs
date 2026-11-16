@@ -404,10 +404,59 @@ fn a_record_named_before_it_existed_is_bound_when_it_is_put_after_the_approval()
     fx.must(&["amend", "approve", "A-1", "--quote", "add the new check"]);
     let o = put_x(&fx, &x9("test -d src"));
     assert_eq!(o.code, 0, "{}", o.all());
+    // The put binds the content: the run is not frozen, a unit starts, and the same content is put again.
+    let d = fx.bf(&["doctor"]);
+    assert!(
+        !d.all().contains("frozen records: PROBLEM"),
+        "the run is frozen after the put: {}",
+        d.all()
+    );
+    let o = fx.bf(&["unit", "start", "U-2"]);
+    assert!(
+        !o.all().contains("was changed after the plan gate"),
+        "the plan is frozen after the put: {}",
+        o.all()
+    );
+    let o = put_x(&fx, &x9("test -d src"));
+    assert_eq!(o.code, 0, "{}", o.all());
     let o = put_x(&fx, &x9("true"));
     assert!(
         o.code != 0,
         "the record changed again with no amendment: {}",
         o.all()
     );
+}
+
+/// The refusal's own steps end in the record put: open the amendment, put the record while it waits,
+/// narrow, the human approves, and the record is in force.
+#[test]
+fn the_printed_steps_of_the_refusal_end_with_the_record_in_force() {
+    let (fx, _wc) = start();
+    let changed = X1.replace("test -f src/hello.txt", "test -d src");
+    let o = put_x(&fx, &changed);
+    assert!(o.code != 0, "{}", o.all());
+    let opened = fx
+        .must(&["amend", "open", "--repair", "X-1", "--json"])
+        .json();
+    let o = put_x(&fx, &changed);
+    assert_eq!(o.code, 0, "put while the amendment waits: {}", o.all());
+    let keep: Vec<String> = opened["impact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let f = fx.root.join("narrow.json");
+    fs::write(
+        &f,
+        json!({"amend": "A-1", "keep": keep, "waive": []}).to_string(),
+    )
+    .unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+    fx.human("Yes, change the check.");
+    fx.must(&["amend", "approve", "A-1", "--quote", "change the check"]);
+    let o = put_x(&fx, &changed);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let d = fx.bf(&["doctor"]);
+    assert!(!d.all().contains("frozen records: PROBLEM"), "{}", d.all());
 }

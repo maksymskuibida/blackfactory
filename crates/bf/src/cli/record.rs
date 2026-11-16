@@ -269,9 +269,9 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
                 format!("{} {id}", if old.is_some() { "replace" } else { "add" }),
                 format!("the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"),
                 &[
-                    &format!("Run `bf amend open {id}` to see the impact."),
+                    &format!("Run `bf amend open {id}` (name every record to change; a kept record of the impact set is named too, or added with `bf amend revise`) to see the impact."),
+                    &format!("Put {id} again while the amendment waits for the human; the one approval covers the content put."),
                     "Narrow it with `bf amend narrow --file <f>`; the human approves it.",
-                    "Put the record again.",
                 ],
                 format!("`bf record get {id}` shows the new content."),
             ));
@@ -322,7 +322,7 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     // approval covers, and a later change needs an amendment again.
     if old.is_none() && gates::approved_missing(&st, &id) {
         let put = p.get_record(&id)?.unwrap_or_else(|| rec.clone());
-        let mut e = json!({"id": id, "h": crate::evidence::record_hash(&put)});
+        let mut e = json!({"id": id, "content_h": crate::evidence::record_hash(&put)});
         if !s(&put, "unit").is_empty() {
             e["unit"] = json!(s(&put, "unit"));
         }
