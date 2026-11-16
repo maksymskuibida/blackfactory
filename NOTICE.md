@@ -31,3 +31,9 @@ Pulled in by the crates above (from `Cargo.lock`):
 | version_check | MIT/Apache-2.0 |
 
 The engine contains no network code and starts no background process. It calls the `git` command-line tool, which is not bundled.
+
+## UI/UX mode contracts
+
+The files under `harness/claude/ux/` (`journey-contract.md`, `report-contract.md` and `accessibility-checklist.md`) were written new for this harness. No text was copied or adapted from any other project, so no third-party licence applies to them. The accessibility checklist was written against WCAG 2.2 (a W3C Recommendation); it quotes no WCAG text.
+
+The four driver guides under `harness/claude/ux/drivers/` use only command-line tools that are not bundled: Playwright, `simctl`, `adb` and a plain shell.
