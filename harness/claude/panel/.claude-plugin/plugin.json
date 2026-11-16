@@ -1,0 +1,29 @@
+{
+  "name": "factory-panel",
+  "version": "0.1.0",
+  "description": "A pane beside the chat in the Claude desktop app that shows where a Black Factory run stands and what waits on the human. It reads only through the engine's read commands.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "panel": {
+      "type": "string",
+      "title": "Panel",
+      "description": "auto opens the pane by itself in a factory folder, command opens it only with /factory-panel, off draws nothing.",
+      "options": ["auto", "command", "off"],
+      "default": "auto"
+    },
+    "pollSeconds": {
+      "type": "number",
+      "title": "Poll seconds",
+      "description": "How often the engine's event count is read while the pane or the status line is on screen. At least 3; 0 for off.",
+      "default": 5,
+      "min": 0,
+      "max": 3600
+    },
+    "bf": {
+      "type": "string",
+      "title": "Engine command",
+      "description": "The name of the engine's command, when it is not bf on the path.",
+      "default": "bf"
+    }
+  }
+}
