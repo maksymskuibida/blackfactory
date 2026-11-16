@@ -535,7 +535,6 @@ fn a_product_with_no_interface_skips_the_ui_gate_in_the_humans_words() {
 #[test]
 fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n"),
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
@@ -545,6 +544,7 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     ] {
         assert_eq!(fx.put(k, t).code, 0);
     }
+    fx.set_policy("tokens = false", "tokens = true");
     fx.commit_all("records");
     fx.start_test_run();
     // Build U-1 with the tokens the engine shows.
@@ -1051,8 +1051,14 @@ fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
         d.stdout
     );
     // The refusal at a decision points at the same cause first.
-    fx.must(&["gate", "open", "idea"]);
-    let o = fx.refused(&["gate", "approve", "idea", "--quote", "Approved."]);
+    // A checkpoint-step gate has no design review, and nothing here may record a message of the human.
+    let o = fx.put(
+        "checkpoint",
+        "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[]\nproves=[]\nchecks=[]\n",
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["gate", "open", "checkpoint-step", "--ref", "K-1"]);
+    let o = fx.refused(&["gate", "approve", "checkpoint-step-K-1-r1", "--quote", "Approved."]);
     assert!(
         o.stderr.contains("no human turn was recorded at all"),
         "{}",

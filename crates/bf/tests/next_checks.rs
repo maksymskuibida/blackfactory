@@ -7,6 +7,7 @@ use common::Fx;
 fn two_units_landed(fx: &Fx) {
     fx.tiny();
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     fx.build_unit(
         "U-1",
@@ -91,6 +92,7 @@ fn a_requirement_proven_only_by_switched_off_checks_does_not_hold_the_close() {
     ]);
     assert_eq!(o.code, 0, "{}", o.all());
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     fx.build_unit(
         "U-1",

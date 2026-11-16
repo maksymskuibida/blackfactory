@@ -3,7 +3,7 @@
 use super::*;
 
 /// One of the five new roles reports with its own token; the unit's state does not move. The design
-/// stage (`design`) needs no run and no plan; a unit or a checkpoint needs a run. A role reports only
+/// stage (`design`) and an amendment (`A-n`, its designer) need no run and no plan; a unit or a checkpoint needs a run. A role reports only
 /// on a subject at its stage.
 pub(crate) fn role_report(
     p: &Project,
@@ -15,7 +15,8 @@ pub(crate) fn role_report(
     token: Option<&str>,
 ) -> R<Value> {
     let st = events::require_chain(p)?;
-    if subject != crate::roles::DESIGN {
+    let outside_run = subject == crate::roles::DESIGN || crate::roles::is_amendment(subject);
+    if !outside_run {
         need_run(&st)?;
     }
     if !["built", "blocked"].contains(&result) {
@@ -36,7 +37,7 @@ pub(crate) fn role_report(
         "unit.role-report",
         json!({"unit": subject, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
     )?;
-    let state = if subject == crate::roles::DESIGN {
+    let state = if outside_run {
         String::new()
     } else {
         st.unit_state(subject).to_string()

@@ -72,6 +72,7 @@ const VALUE_FLAGS: &[&str] = &[
     "scope",
     "quote",
     "token",
+    "model",
     "attempt",
     "judge",
     "accept",

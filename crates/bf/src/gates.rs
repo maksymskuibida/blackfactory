@@ -646,6 +646,19 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     }
     // A required check's design-stage product comes before its gate.
     crate::enforce::design_blocker(p, &st, kind)?;
+    // A design gate with its review check on opens after the review of its records as they are now.
+    let held = crate::checks::review::gate_blocker(p, &st, kind)?;
+    if !held.is_empty() {
+        return Err(refuse_owned(
+            format!("open the `{kind}` gate"),
+            format!("its review holds it: {}", held.join("; ")),
+            vec![
+                "Have the design reviewer judge the records: `bf review token {kind}`, then its findings and receipt.".replace("{kind}", kind),
+                "Open the gate again once the review is clean.".to_string(),
+            ],
+            format!("`bf gate status` lists the {kind} gate as open."),
+        ));
+    }
     // Decision D-19: a stage's questions come before its gate.
     let open_q: Vec<String> = p
         .list_records(schema::kind_by_name("question"))?
@@ -687,7 +700,19 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
 /// or `None` when it would open. `bf next` uses it so that no directive carries a command the engine
 /// would refuse.
 pub fn open_blocker(p: &Project, st: &State, kind: &str) -> Option<String> {
-    let product = crate::enforce::design_blocker(p, st, kind);
+    let product = crate::enforce::design_blocker(p, st, kind).and_then(|_| {
+        let held = crate::checks::review::gate_blocker(p, st, kind)?;
+        if held.is_empty() {
+            Ok(())
+        } else {
+            Err(refuse(
+                format!("open the `{kind}` gate"),
+                format!("its review holds it: {}", held.join("; ")),
+                &["Have the design reviewer judge the records."],
+                "`bf gate status` lists the gate as open.",
+            ))
+        }
+    });
     match check_order_and_content(p, st, kind).and(product) {
         Ok(()) => None,
         Err(crate::refusal::Fail::Refused(r)) => {
@@ -982,6 +1007,241 @@ pub fn grant(p: &Project, quote: &str) -> R<Value> {
     Ok(
         json!({"granted": true, "turn": seq, "run": run, "event": ev["seq"], "applies_to": run.clone().unwrap_or_else(|| "the next run".into())}),
     )
+}
+
+// ---- the designer's token (R-67) ----
+
+/// The log event of a record the engine accepted from a designer (or, lifted, from the conductor).
+pub const MADE_EVENT: &str = "design.made";
+/// The log event of the human's words that lift the designer rule for one stage or one amendment.
+pub const LIFT_EVENT: &str = "designer.lift";
+
+/// The roles whose tokens put a record of this kind at the design stage: the designer for every kind,
+/// and each role that writes the kind.
+fn design_writers(kind: &str) -> Vec<&'static str> {
+    let needle = format!("`bf record put {kind}`");
+    crate::roles::ROLES
+        .iter()
+        .filter(|r| {
+            r.at_design()
+                && r.stage == "design"
+                && (r.name == "designer" || r.writes.iter().any(|w| w.contains(&needle)))
+        })
+        .map(|r| r.name)
+        .collect()
+}
+
+/// What the designer rule says about a record put now.
+#[derive(Clone, Debug)]
+pub struct Made {
+    /// The stage (`requirements`...) or the amendment ID the record belongs to.
+    pub subject: String,
+    /// The role whose token was given; empty when the human lifted the rule.
+    pub role: String,
+    pub model: String,
+    /// The human's words, when the rule was lifted.
+    pub lifted: String,
+}
+
+/// The subject a design record belongs to: the open amendment that holds it when it is not a plan
+/// repair, else the stage while its gate is not approved. `None` when the record is no design record, or belongs to a plan
+/// repair or to an approved amendment, which need no designer.
+fn designer_subject(st: &State, kind: &str, id: &str) -> Option<(String, bool)> {
+    let stage = stage_of_kind(kind)?;
+    let open = st.amends.iter().find(|a| {
+        matches!(a.status.as_str(), "open" | "narrowed")
+            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
+    });
+    if let Some(a) = open {
+        if crate::amend::is_repair(a) {
+            return None;
+        }
+        return Some((a.id.clone(), true));
+    }
+    if st.gate_passed(stage, None) {
+        return None;
+    }
+    Some((stage.to_string(), false))
+}
+
+/// The words with which the human lifted the rule for `subject`, if they did.
+fn lifted_words(p: &Project, subject: &str) -> R<Option<String>> {
+    let log = events::load_log(p)?;
+    Ok(log
+        .events
+        .iter()
+        .rev()
+        .find(|e| e["kind"] == LIFT_EVENT && e["subject"] == subject)
+        .map(|e| e["quote"].as_str().unwrap_or("").to_string()))
+}
+
+/// Accept or refuse a design record put with `token` and the `model` the agent reports. `Ok(None)`
+/// when the rule does not apply: role tokens are off, the record is no design record, or it belongs to
+/// a plan repair. The caller writes the record and then calls [`design_made`] with the result.
+pub fn designer_accept(
+    p: &Project,
+    st: &State,
+    kind: &str,
+    id: &str,
+    token: Option<&str>,
+    model: Option<&str>,
+) -> R<Option<Made>> {
+    if !p.policy.roles.tokens {
+        return Ok(None);
+    }
+    let Some((subject, amendment)) = designer_subject(st, kind, id) else {
+        return Ok(None);
+    };
+    let model = model.map(|m| m.trim()).unwrap_or("");
+    let mut role = String::new();
+    if amendment {
+        if crate::run::holds_token(p, &format!("{subject}:designer"), token) {
+            role = "designer".into();
+        } else {
+            for stage in crate::roles::design::STAGES {
+                for r in crate::roles::ROLES
+                    .iter()
+                    .filter(|r| r.at_design() && !r.writes.is_empty())
+                {
+                    if crate::run::holds_token(p, &format!("{subject}:{}:{stage}", r.name), token)
+                        && crate::roles::design::stage_may_put(p, &subject, stage, id)
+                    {
+                        role = r.name.to_string();
+                    }
+                }
+            }
+        }
+    } else {
+        for r in design_writers(kind) {
+            if crate::run::holds_token(p, &format!("{}:{r}", crate::roles::DESIGN), token) {
+                role = r.to_string();
+                break;
+            }
+        }
+    }
+    if role.is_empty() {
+        if let Some(words) = lifted_words(p, &subject)? {
+            return Ok(Some(Made {
+                subject,
+                role,
+                model: model.to_string(),
+                lifted: words,
+            }));
+        }
+        let what = if amendment {
+            format!("the amendment {subject}")
+        } else {
+            format!("the {subject} stage")
+        };
+        return Err(refuse(
+            format!("put the {kind} {id}"),
+            format!(
+                "a record of {what} is accepted only with the designer's token that the engine issued for it; none, or another one, was given. The conductor drafts no design record itself"
+            ),
+            &[
+                &format!(
+                    "Start a designer agent on the model the policy names (`bf policy` prints it) and issue its token: `bf roles token {} designer`.",
+                    if amendment { subject.as_str() } else { crate::roles::DESIGN }
+                ),
+                "The designer puts the record with `--token <token> --model <the model it runs on>`.",
+                &format!("Only the human lifts this, for {what} alone: `bf roles lift {subject} --quote \"<their words>\"`."),
+            ],
+            format!("`bf record get {id}` shows the record, made by the designer agent."),
+        ));
+    }
+    if model.is_empty() {
+        return Err(refuse(
+            format!("put the {kind} {id}"),
+            "the designer reports the model it ran on with every record, and none was given",
+            &["Put the record again with `--model <the model you run on>`; it is your own report, and the engine keeps it with the record."],
+            format!("`bf record get {id}` shows the record."),
+        ));
+    }
+    Ok(Some(Made {
+        subject,
+        role,
+        model: model.to_string(),
+        lifted: String::new(),
+    }))
+}
+
+/// Keep with the record who made it: the log event the pages read.
+pub fn design_made(p: &Project, id: &str, kind: &str, m: &Made) -> R<()> {
+    events::append(
+        p,
+        MADE_EVENT,
+        json!({"record": id, "record_kind": kind, "subject": m.subject, "role": m.role,
+            "model": m.model, "lifted": m.lifted}),
+    )?;
+    p.write_guard()?;
+    Ok(())
+}
+
+/// Who made each record, by ID: the latest `design.made` event of each.
+pub fn made_by(p: &Project) -> R<BTreeMap<String, Value>> {
+    let log = events::load_log(p)?;
+    let mut out = BTreeMap::new();
+    for e in log.events.iter().filter(|e| e["kind"] == MADE_EVENT) {
+        if let Some(id) = e["record"].as_str() {
+            out.insert(id.to_string(), e.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// `bf roles lift <stage|A-n> --quote "..."`: the human lifts the designer rule for one stage or one
+/// amendment. The words are recorded with the quote; a message lifts once.
+pub fn designer_lift(p: &Project, subject: &str, quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let what = format!("lift the designer rule for {subject}");
+    let is_stage = DESIGN_ORDER.contains(&subject);
+    let amend = st.amends.iter().find(|a| a.id == subject);
+    if !is_stage && amend.is_none() {
+        return Err(refuse(
+            what,
+            "the rule is lifted for one design stage (idea, requirements, ui, architecture or plan) or one amendment (A-n)",
+            &["Name the stage or the amendment: `bf roles lift requirements --quote \"<their words>\"`."],
+            "The command prints the words recorded.",
+        ));
+    }
+    if let Some(a) = amend {
+        if !matches!(a.status.as_str(), "open" | "narrowed") || crate::amend::is_repair(a) {
+            return Err(refuse(
+                what,
+                format!("{subject} is {}, and only an open amendment that is not a plan repair has the rule", if crate::amend::is_repair(a) { "a plan repair".to_string() } else { a.status.clone() }),
+                &["A plan repair needs no designer; nothing to lift."],
+                "The command prints the words recorded.",
+            ));
+        }
+    }
+    if lifted_words(p, subject)?.is_some() {
+        return Err(refuse(
+            what,
+            "it was lifted already",
+            &["Nothing more to do: the records of it are accepted without the designer's token."],
+            "`bf view run --json` shows the words.",
+        ));
+    }
+    let mut st = st;
+    for e in events::load_log(p)?
+        .events
+        .iter()
+        .filter(|e| e["kind"] == LIFT_EVENT)
+    {
+        if let Some(t) = e["turn"].as_u64() {
+            if let Some(x) = st.turns.iter_mut().find(|x| x.seq == t) {
+                x.used = true;
+            }
+        }
+    }
+    let (seq, message) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        LIFT_EVENT,
+        json!({"subject": subject, "turn": seq, "message": message, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"lifted": subject, "quote": quote.trim()}))
 }
 
 // ---- amendments ----

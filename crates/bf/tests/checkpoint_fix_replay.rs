@@ -27,7 +27,7 @@ fn start(fx: &Fx, review_on: bool) {
         fx.must(&[
             "checks",
             "propose",
-            "checkpoint-review=on",
+            "checkpoint-review=on", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it",
             "--scope",
             "default",
         ]);

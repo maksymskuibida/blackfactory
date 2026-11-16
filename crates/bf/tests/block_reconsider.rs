@@ -16,7 +16,6 @@ fn write(root: &Path, rel: &str, text: &str) {
 /// One unit that lists src/a.rs, on a project with another file at the base.
 fn setup(attempts: Option<u32>) -> (Fx, PathBuf) {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     if let Some(n) = attempts {
         fx.set_policy("max_attempts = 10", &format!("max_attempts = {n}"));
     }
@@ -31,6 +30,7 @@ fn setup(attempts: Option<u32>) -> (Fx, PathBuf) {
         let o = fx.put(k, t);
         assert_eq!(o.code, 0, "{k}: {}", o.all());
     }
+    fx.set_policy("tokens = false", "tokens = true");
     write(&fx.root, "src/a.rs", "fn a() {}\n");
     write(&fx.root, "src/other.rs", "fn o() {}\n");
     fx.commit_all("files");

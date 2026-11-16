@@ -38,7 +38,7 @@ fn plan(fx: &Fx, x2: &str) {
 }
 
 fn start(fx: &Fx) {
-    fx.must(&["checks", "propose", "checkpoint-review=on", "--scope", "default"]);
+    fx.must(&["checks", "propose", "checkpoint-review=on", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
     fx.human("Yes, set the checkpoint review that way.");
     fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
     fx.must(&["gate", "open", "plan"]);
@@ -437,7 +437,7 @@ fn a_wave_check_that_holds_the_close_refuses_the_decisions_through_the_command()
     let r = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"wave\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[]\nscope=\"wave\"\n");
     assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     fx.commit_all("wave check");
-    fx.must(&["checks", "propose", "checkpoint-review=on", "--scope", "default"]);
+    fx.must(&["checks", "propose", "checkpoint-review=on", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
     fx.human("Yes, set the checkpoint review that way.");
     fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
     fx.must(&["gate", "open", "plan"]);
@@ -1106,7 +1106,7 @@ fn wave_scenario() -> Fx {
     let r = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"wave\"\nhow=\"command\"\ncommand=\"grep -q ok src/a.txt\"\nproves=[]\nscope=\"wave\"\n");
     assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     fx.commit_all("wave check");
-    fx.must(&["checks", "propose", "checkpoint-review=on", "--scope", "default"]);
+    fx.must(&["checks", "propose", "checkpoint-review=on", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
     fx.human("Yes, set the checkpoint review that way.");
     fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
     fx.must(&["gate", "open", "plan"]);
