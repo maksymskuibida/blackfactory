@@ -18,6 +18,10 @@ idle_minutes = 60     # a running unit with no event for this long is stuck
 max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
 checkpoint_reviews = 3 # reviews a checkpoint may have before it parks with a high or medium finding open
 
+[context]
+max_share = 40        # percent of the context window a conductor's session may fill before the hook says so
+max_age_seconds = 900 # a saved share older than this is not used: no note is made
+
 [tiers]               # model tier by kind of work: cheap, standard or strong
 conductor = "standard"          # conducting the build loop
 designer = "strong"             # a design stage
@@ -129,6 +133,23 @@ impl Default for Limits {
             idle_minutes: 60,
             max_attempts: 10,
             checkpoint_reviews: 3,
+        }
+    }
+}
+/// How full a conductor's session may let its context get, and how old a saved share may be.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct ContextPol {
+    /// Percent of the context window; above it the hook adds a note for the conductor.
+    pub max_share: f64,
+    /// A share saved longer ago than this many seconds is not used.
+    pub max_age_seconds: u64,
+}
+impl Default for ContextPol {
+    fn default() -> Self {
+        ContextPol {
+            max_share: 40.0,
+            max_age_seconds: 900,
         }
     }
 }
@@ -495,6 +516,7 @@ pub struct Policy {
     pub roles: RolesPol,
     pub exec: ExecPol,
     pub limits: Limits,
+    pub context: ContextPol,
     pub tiers: Tiers,
     pub efforts: Efforts,
     /// A model named outright, by kind of work and then by harness.
