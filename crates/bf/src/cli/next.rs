@@ -11,7 +11,7 @@ pub(crate) fn cmd_next(args: &Args) -> R<()> {
         let mut t = format!("run {}\n", v["run"].as_str().unwrap_or(""));
         for d in v["directives"].as_array().into_iter().flatten() {
             t.push_str(&format!(
-                "  {} {} {} {}\n",
+                "  {} {} {} {} {}\n",
                 d["role"].as_str().unwrap_or(""),
                 d["action"].as_str().unwrap_or(""),
                 d["unit"]
@@ -19,7 +19,8 @@ pub(crate) fn cmd_next(args: &Args) -> R<()> {
                     .or(d["checkpoint"].as_str())
                     .or(d["gate"].as_str())
                     .unwrap_or(""),
-                d["tier"].as_str().unwrap_or("")
+                d["tier"].as_str().unwrap_or(""),
+                d["effort"].as_str().unwrap_or("")
             ));
         }
         for w in v["waiting"].as_array().into_iter().flatten() {
