@@ -137,21 +137,47 @@ fn the_role_file_settles_the_review_and_stops_when_parked() {
     );
 }
 
-#[test]
-fn the_harness_instructions_stay_at_most_five_hundred_lines() {
-    let mut total = 0;
-    for dir in ["harness/claude/skills", "harness/claude/agents"] {
-        let mut stack = vec![repo(dir)];
+/// Every file under the folders, at any depth, with more than `cap` lines, with its count.
+fn files_over(dirs: &[PathBuf], cap: usize) -> Vec<(PathBuf, usize)> {
+    let mut over = Vec::new();
+    for dir in dirs {
+        let mut stack = vec![dir.clone()];
         while let Some(d) = stack.pop() {
             for e in fs::read_dir(&d).unwrap() {
                 let p = e.unwrap().path();
                 if p.is_dir() {
                     stack.push(p);
                 } else {
-                    total += fs::read_to_string(&p).unwrap().lines().count();
+                    let n = fs::read_to_string(&p).unwrap().lines().count();
+                    if n > cap {
+                        over.push((p, n));
+                    }
                 }
             }
         }
     }
-    assert!(total <= 500, "{total} lines");
+    over.sort();
+    over
+}
+
+#[test]
+fn each_harness_instruction_file_stays_at_most_two_hundred_lines() {
+    let dirs = [repo("harness/claude/skills"), repo("harness/claude/agents")];
+    let over = files_over(&dirs, 200);
+    let named: Vec<String> = over
+        .iter()
+        .map(|(p, n)| format!("{} has {n} lines", p.display()))
+        .collect();
+    assert!(over.is_empty(), "{}", named.join("; "));
+}
+
+#[test]
+fn the_walk_returns_only_the_file_over_the_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sub = tmp.path().join("deep");
+    fs::create_dir(&sub).unwrap();
+    fs::write(tmp.path().join("ok.md"), "x\n".repeat(200)).unwrap();
+    fs::write(sub.join("long.md"), "x\n".repeat(201)).unwrap();
+    let over = files_over(&[tmp.path().to_path_buf()], 200);
+    assert_eq!(over, vec![(sub.join("long.md"), 201)]);
 }

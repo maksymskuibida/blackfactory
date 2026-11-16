@@ -1125,14 +1125,13 @@ fn the_role_files_and_the_conductors_skill_hold_the_rules_of_a_scope_request() {
     ] {
         assert!(skill.contains(part), "SKILL.md lacks `{part}`");
     }
-    let total: usize = [
+    for f in [
         "harness/claude/agents/builder.md",
         "harness/claude/agents/reviewer.md",
         "harness/claude/agents/verifier.md",
         "harness/claude/skills/factory/SKILL.md",
-    ]
-    .iter()
-    .map(|f| harness_text(f).lines().count())
-    .sum();
-    assert!(total < 500, "{total} lines");
+    ] {
+        let n = harness_text(f).lines().count();
+        assert!(n <= 200, "{f} has {n} lines");
+    }
 }

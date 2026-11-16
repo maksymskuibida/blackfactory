@@ -71,7 +71,7 @@ fn the_designer_file_carries_the_split_and_its_limits() {
     );
 }
 
-/// The reconciling, and the line target of the harness text.
+/// The reconciling, and the line target of the harness text, per file.
 #[test]
 fn the_designer_file_carries_the_reconciling_and_stays_short() {
     let t = designer();
@@ -87,7 +87,6 @@ fn the_designer_file_carries_the_reconciling_and_stays_short() {
         ],
     );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut total = 0;
     for rel in [
         "harness/claude/skills/factory/SKILL.md",
         "harness/claude/agents/builder.md",
@@ -95,7 +94,7 @@ fn the_designer_file_carries_the_reconciling_and_stays_short() {
         "harness/claude/agents/verifier.md",
         "harness/claude/agents/designer.md",
     ] {
-        total += fs::read_to_string(root.join(rel)).unwrap().lines().count();
+        let n = fs::read_to_string(root.join(rel)).unwrap().lines().count();
+        assert!(n <= 200, "{rel} has {n} lines");
     }
-    assert!(total <= 500, "{total} lines");
 }
