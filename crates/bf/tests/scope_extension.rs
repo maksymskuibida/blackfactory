@@ -965,6 +965,9 @@ fn landing_accepts_a_removed_line_that_the_patch_removes_and_a_changed_configura
             "src/a.rs",
         ],
     );
+    // The edit came after the clean review, so the unit goes back to review before it lands.
+    fx.refused(&["unit", "land", "U-1"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
     fx.must(&["unit", "land", "U-1"]);
     assert_eq!(unit(&fx, "U-1")["state"], "landed");
 }

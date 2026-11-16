@@ -80,6 +80,8 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
                     outcome: args.flag("outcome"),
                     says: args.flag("says").unwrap_or(""),
                     token: args.flag("token"),
+                    amendment: args.flag("amendment"),
+                    kind: args.flag("kind"),
                 },
             )?;
             out(args, &v, || {
@@ -95,12 +97,22 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
             });
         }
         "verify" => {
-            let (rows, ok) = evidence::verify(&p, args.flag("unit"), args.flag("checkpoint"))?;
-            let v = json!({"ok": ok, "receipts": rows.iter().map(|r| json!({"receipt": r.receipt, "check": r.check, "seal_ok": r.seal_ok, "content_ok": r.content_ok, "exit": r.exit})).collect::<Vec<_>>()});
+            let v = evidence::verify_full(&p, args.flag("unit"), args.flag("checkpoint"))?;
+            let (rows, ok) = (&v.rows, v.ok);
+            let marks: Vec<_> = v
+                .pass_after_failure
+                .iter()
+                .map(|m| json!({"check": m.check, "failing": m.failing, "passing": m.passing}))
+                .collect();
+            let mut j = json!({"ok": ok, "receipts": rows.iter().map(|r| json!({"receipt": r.receipt, "check": r.check, "seal_ok": r.seal_ok, "content_ok": r.content_ok, "exit": r.exit})).collect::<Vec<_>>()});
+            if args.flag("unit").is_some() && args.flag("checkpoint").is_none() {
+                j["pass_after_failure"] = json!(marks);
+                j["unmet"] = json!(v.unmet.iter().map(|(c, l)| json!({"check": c, "line": l})).collect::<Vec<_>>());
+            }
             if args.has("json") {
-                println!("{}", pretty(&v));
+                println!("{}", pretty(&j));
             } else {
-                for r in &rows {
+                for r in rows {
                     println!(
                         "{} {} seal={} content={} exit={}",
                         r.receipt,
@@ -111,6 +123,15 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
                             .unwrap_or("-"),
                         r.exit.map(|e| e.to_string()).unwrap_or("-".into())
                     );
+                }
+                for m in &v.pass_after_failure {
+                    println!(
+                        "PASS-AFTER-FAIL {} failing {} passing {}",
+                        m.check, m.failing, m.passing
+                    );
+                }
+                for (c, l) in &v.unmet {
+                    println!("NOT MET {c}: {l}");
                 }
                 println!("{}", if ok { "evidence ok" } else { "evidence NOT ok" });
             }

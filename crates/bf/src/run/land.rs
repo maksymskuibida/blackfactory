@@ -83,27 +83,46 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     let content = p.content_hash(&wt)?;
-    let receipts = evidence::load_receipts(p)?;
-    let mut missing: Vec<String> = Vec::new();
-    for c in &checks {
-        let cid = s(c, "id");
-        if evidence::satisfied_unit_at(&receipts, cid, &content).is_none() {
-            let stale = receipts.iter().any(|r| r.check() == cid && r.passes());
-            missing.push(format!(
-                "{cid}: {} - run `bf evidence run {cid} --unit {unit} -- <its command>` inside {}",
-                if stale {
-                    "the receipts on file are for other content"
-                } else {
-                    "no passing sealed receipt"
-                },
-                wt.display()
+    // R-95: the unit lands only on the content its last clean review judged.
+    if let Some(r) = st.units.get(unit).and_then(|u| u.review_rounds.last()) {
+        let judged = s(r, "content").to_string();
+        if s(r, "result") == "built" && !judged.is_empty() && judged != content {
+            let short = |h: &str| h[..12.min(h.len())].to_string();
+            let round = r["round"].as_u64().unwrap_or(0);
+            events::append(
+                p,
+                "unit.report",
+                json!({
+                    "unit": unit, "result": "changed", "role": "engine", "from": "reviewed",
+                    "to": "review", "note": format!("the content changed after review round {round}"),
+                    "cost": 0.0, "findings": [],
+                    "judged_content": judged, "changed_content": content,
+                }),
+            )?;
+            brief::write_brief(p, unit, "reviewer");
+            p.write_guard()?;
+            return Err(refuse(
+                format!("land {unit}"),
+                format!(
+                    "the content now in the working copy (hash {}) is not the content its last clean review judged (round {round}, hash {})",
+                    short(&content),
+                    short(&judged)
+                ),
+                &[
+                    &format!("{unit} is back in review. `bf next` gives the reviewer's directive."),
+                    "The reviewer reviews what changed since that round and reports with `bf report`.",
+                    &format!("Run `bf unit land {unit}` again after a clean report."),
+                ],
+                "`bf status` shows the unit reviewed, and landing goes on.",
             ));
         }
     }
-    // R-76: the checks every unit must pass apply beside the unit's own, and no plan repeats them.
-    missing.extend(crate::checks::attached_missing(
-        p, &pl, &st, &receipts, unit, &content, &wt,
-    ));
+    let receipts = evidence::load_receipts(p)?;
+    let missing: Vec<String> = evidence::unit_landing_needs(p, &pl, &st, &receipts, unit, &content)
+        .into_iter()
+        .filter(|n| n.met.is_none())
+        .map(|n| n.line)
+        .collect();
     if !missing.is_empty() {
         let mut steps = missing;
         steps.push(format!("Run `bf unit land {unit}` again."));
