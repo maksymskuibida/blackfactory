@@ -57,9 +57,15 @@ fn add_work(p: &Project, d: &mut Value) {
     }
 }
 
+/// Whether the budget cap is reached: `bf next` refuses, and the checkpoints' findings are held.
+pub fn budget_reached(p: &Project, st: &State) -> bool {
+    let cap = p.policy.budget.cap;
+    cap > 0.0 && st.cost >= cap
+}
+
 pub(crate) fn budget_check(p: &Project, st: &State) -> R<()> {
     let cap = p.policy.budget.cap;
-    if cap > 0.0 && st.cost >= cap {
+    if budget_reached(p, st) {
         return Err(refuse(
             "start new work",
             format!("the budget cap is reached: spent {:.2} of {:.2} {}", st.cost, cap, p.policy.budget.unit),
@@ -68,6 +74,51 @@ pub(crate) fn budget_check(p: &Project, st: &State) -> R<()> {
         ));
     }
     Ok(())
+}
+
+/// The directives while the latest plan gate of the run is not approved (`open_gate` is its ID when it is
+/// open). With the gates in order, the one to offer is the first that is not approved or skipped: decide it
+/// if it is open, otherwise open it, or say which record is missing for it to open.
+fn run_hold_directives(p: &Project, st: &State, open_gate: Option<&str>) -> Vec<Value> {
+    let mut directives: Vec<Value> = Vec::new();
+    if p.policy.gates.in_order {
+        let kind = gates::first_unpassed_design_gate(st);
+        if let Some(g) = st.latest_gate(kind, None).filter(|g| g.status == "open") {
+            directives.push(
+                json!({"role": "human", "action": "decide-gate", "gate": g.id, "gate_kind": kind,
+                "note": format!("Ask the human to approve or reject the {kind} gate in chat.")}),
+            );
+        } else if let Some(why) = gates::open_blocker(p, st, kind) {
+            let mut d = json!({"role": "conductor", "action": "add-records", "gate_kind": kind, "missing": why,
+                "note": format!("The {kind} gate cannot open yet: {why}. Write what it needs, then ask again.")});
+            if kind == "ui" {
+                // A product with no interface needs no screen: the human can skip the gate.
+                d["skip_command"] = json!("bf gate skip ui --quote \"<the human's words>\"");
+                d["note"] = json!(format!("The ui gate cannot open yet: {why}. Write a screen or journey, or, for a product with no interface, ask the human whether to skip the ui gate and record their words with the skip command."));
+            }
+            directives.push(d);
+        } else {
+            directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": kind, "command": format!("bf gate open {kind}")}));
+        }
+        return directives;
+    }
+    if let Some(g) = open_gate {
+        directives.push(json!({"role": "human", "action": "decide-gate", "gate": g, "note": "Ask the human to approve or reject the plan in chat."}));
+        return directives;
+    }
+    // The run's two plan questions come first: the plan gate does not open until both are answered.
+    if let Some(r) = st.active_run().filter(|_| plan::load(p).map(|pl| !pl.units.is_empty()).unwrap_or(false)) {
+        if r.wave.is_none() {
+            directives.push(json!({"role": "human", "action": "answer-wave-checks", "command": "bf checks wave question",
+                "note": "Ask the human which wave checks this run uses (the project default, an override or none), then record the answer with `bf checks wave propose` and `bf checks wave set --quote`."}));
+        }
+        if r.unit_checks.is_none() {
+            directives.push(json!({"role": "human", "action": "answer-unit-checks", "command": "bf checks unit question",
+                "note": "Ask the human which checks every unit of this run must pass (the project's list, an override or none), then record the answer with `bf checks unit propose` and `bf checks unit set --quote`."}));
+        }
+    }
+    directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": "plan", "command": "bf gate open plan"}));
+    directives
 }
 
 pub(crate) fn next_raw(p: &Project) -> R<Value> {
@@ -81,31 +132,15 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
     let mut directives: Vec<Value> = Vec::new();
     let mut waiting: Vec<String> = Vec::new();
 
-    // With the gates in order, the one to offer is the first that is not approved or skipped: decide it
-    // if it is open, otherwise open it, or say which record is missing for it to open.
-    if p.policy.gates.in_order && !st.gate_passed("plan", None) {
-        let kind = gates::first_unpassed_design_gate(&st);
-        if let Some(g) = st.latest_gate(kind, None).filter(|g| g.status == "open") {
-            directives.push(
-                json!({"role": "human", "action": "decide-gate", "gate": g.id, "gate_kind": kind,
-                "note": format!("Ask the human to approve or reject the {kind} gate in chat.")}),
-            );
-        } else if let Some(why) = gates::open_blocker(p, &st, kind) {
-            let mut d = json!({"role": "conductor", "action": "add-records", "gate_kind": kind, "missing": why,
-                "note": format!("The {kind} gate cannot open yet: {why}. Write what it needs, then ask again.")});
-            if kind == "ui" {
-                // A product with no interface needs no screen: the human can skip the gate.
-                d["skip_command"] = json!("bf gate skip ui --quote \"<the human's words>\"");
-                d["note"] = json!(format!("The ui gate cannot open yet: {why}. Write a screen or journey, or, for a product with no interface, ask the human whether to skip the ui gate and record their words with the skip command."));
-            }
-            directives.push(d);
-        } else {
-            directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": kind, "command": format!("bf gate open {kind}")}));
+    // The latest plan gate not approved: `bf next` returns before its checkpoints, and the predicate holds.
+    match events::run_hold(&st) {
+        Some(events::RunHold::Open { gate }) => {
+            return Ok(json!({"run": run, "directives": run_hold_directives(p, &st, Some(&gate)), "waiting": waiting}));
         }
-        return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
-    }
-    match st.latest_gate("plan", None) {
-        Some(g) if g.status == "approved" => {
+        Some(events::RunHold::NotOpen { .. }) => {
+            return Ok(json!({"run": run, "directives": run_hold_directives(p, &st, None), "waiting": waiting}));
+        }
+        None => {
             // A run that has not answered a plan question is asked it now; no unit starts until then.
             if !pl.units.is_empty() {
                 for (action, command, _) in unanswered_questions(&st) {
@@ -118,25 +153,6 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         "note": format!("Ask the human {what}, then record the answer with `{set} propose` and `{set} set --quote`. No unit starts until both questions are answered.")}));
                 }
             }
-        }
-        Some(g) if g.status == "open" => {
-            directives.push(json!({"role": "human", "action": "decide-gate", "gate": g.id, "note": "Ask the human to approve or reject the plan in chat."}));
-            return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
-        }
-        _ => {
-            // The run's two plan questions come first: the plan gate does not open until both are answered.
-            if let Some(r) = st.active_run().filter(|_| !pl.units.is_empty()) {
-                if r.wave.is_none() {
-                    directives.push(json!({"role": "human", "action": "answer-wave-checks", "command": "bf checks wave question",
-                        "note": "Ask the human which wave checks this run uses (the project default, an override or none), then record the answer with `bf checks wave propose` and `bf checks wave set --quote`."}));
-                }
-                if r.unit_checks.is_none() {
-                    directives.push(json!({"role": "human", "action": "answer-unit-checks", "command": "bf checks unit question",
-                        "note": "Ask the human which checks every unit of this run must pass (the project's list, an override or none), then record the answer with `bf checks unit propose` and `bf checks unit set --quote`."}));
-                }
-            }
-            directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": "plan", "command": "bf gate open plan"}));
-            return Ok(json!({"run": run, "directives": directives, "waiting": waiting}));
         }
     }
     // An open sync of the main branch into a checkpoint: nothing else starts until it is settled.
@@ -366,6 +382,13 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 }
                 continue;
             }
+            Some(Hold::Run { .. } | Hold::Budget { .. }) => {
+                // Both end `bf next` before this loop; a logged hold is shown for what it is.
+                if let Some(h) = hold {
+                    waiting.push(format!("{kid}: {}", h.because()));
+                }
+                continue;
+            }
             None => {}
         }
         if landed {
@@ -445,10 +468,9 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
                 }
             }
-            if !review_needed {
-                if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
-                    directives.push(d);
-                }
+            // Offered whenever a low finding is open and nothing holds.
+            if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
+                directives.push(d);
             }
         } else {
             waiting.push(format!("{kid}: waiting for its units to land"));

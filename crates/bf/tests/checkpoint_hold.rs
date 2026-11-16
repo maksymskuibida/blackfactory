@@ -711,45 +711,47 @@ fn a_run_with_the_checkpoint_review_off_has_no_ignored_event() {
     assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
 }
 
+/// (action, class): "asking", "holding:<Hold case>" or "neither".
+const CLASSES: &[(&str, &str)] = &[
+    ("decide-checkpoint-review", "asking"),
+    ("decide-checkpoint-fix", "asking"),
+    ("decide-low-findings", "asking"),
+    ("decide-sync", "holding:Sync"),
+    ("resolve-sync", "holding:Sync"),
+    ("review-sync", "holding:Sync"),
+    ("fix-checkpoint", "holding:Fix"),
+    ("review-checkpoint-fix", "holding:Fix"),
+    ("fix-wave", "holding:Fix"),
+    ("review-wave-fix", "holding:Fix"),
+    ("plan-gap", "holding:Fix"),
+    ("decide-check", "holding:Marked"),
+    ("answer-question", "holding:Question"),
+    ("decide-wave-check", "holding:Wave"),
+    ("wave-check", "neither"),
+    ("review-checkpoint", "neither"),
+    ("run-checkpoint-checks", "neither"),
+    ("close-checkpoint", "neither"),
+    ("fix-checkpoint-gaps", "neither"),
+    ("decide-gate", "holding:Run"),
+    ("open-gate", "holding:Run"),
+    ("add-records", "holding:Run"),
+    ("answer-wave-checks", "neither"),
+    ("answer-unit-checks", "neither"),
+    ("start-unit", "neither"),
+    ("build", "neither"),
+    ("fix", "neither"),
+    ("review", "neither"),
+    ("land", "neither"),
+    ("decide-unit", "neither"),
+    ("review-scope", "neither"),
+];
+
 // The guard of closure: every directive action `bf next` can give is classified as asking the human about
 // findings, as holding them (with its `Hold` case), or as neither. A new action fails here until it is placed.
 #[test]
 fn every_directive_action_is_classified_as_asking_holding_or_neither() {
-    // (action, class): "asking", "holding:<Hold case>" or "neither".
-    let table: &[(&str, &str)] = &[
-        ("decide-checkpoint-review", "asking"),
-        ("decide-checkpoint-fix", "asking"),
-        ("decide-low-findings", "asking"),
-        ("decide-sync", "holding:Sync"),
-        ("resolve-sync", "holding:Sync"),
-        ("review-sync", "holding:Sync"),
-        ("fix-checkpoint", "holding:Fix"),
-        ("review-checkpoint-fix", "holding:Fix"),
-        ("fix-wave", "holding:Fix"),
-        ("review-wave-fix", "holding:Fix"),
-        ("plan-gap", "holding:Fix"),
-        ("decide-check", "holding:Marked"),
-        ("answer-question", "holding:Question"),
-        ("decide-wave-check", "holding:Wave"),
-        ("wave-check", "neither"),
-        ("review-checkpoint", "neither"),
-        ("run-checkpoint-checks", "neither"),
-        ("close-checkpoint", "neither"),
-        ("fix-checkpoint-gaps", "neither"),
-        ("decide-gate", "neither"),
-        ("open-gate", "neither"),
-        ("add-records", "neither"),
-        ("answer-wave-checks", "neither"),
-        ("answer-unit-checks", "neither"),
-        ("start-unit", "neither"),
-        ("build", "neither"),
-        ("fix", "neither"),
-        ("review", "neither"),
-        ("land", "neither"),
-        ("decide-unit", "neither"),
-        ("review-scope", "neither"),
-    ];
-    let holds = ["Sync", "Fix", "Marked", "Question", "Wave"];
+    let table = CLASSES;
+    let holds = ["Sync", "Fix", "Marked", "Question", "Wave", "Run"];
     for (a, c) in table {
         let ok = matches!(*c, "asking" | "neither")
             || c.strip_prefix("holding:").map(|h| holds.contains(&h)).unwrap_or(false);
@@ -819,4 +821,625 @@ fn actions_in_source(dir: &Path) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// U-93: the early returns of `bf next` (the plan gate not approved, the budget cap reached) are holds of the
+// one predicate; switching the checkpoint review off is bound like the other decisions; the low decision is
+// offered whenever nothing holds; the observer runs after aborts, openings and gate events.
+// ---------------------------------------------------------------------------------------------------------
+
+fn gate_open_plan(fx: &Fx) {
+    let o = fx.bf(&["gate", "open", "plan"]);
+    say("gate open plan (again, during the run)", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+fn approve_plan(fx: &Fx, words: &str) {
+    fx.human(words);
+    let o = fx.bf(&["gate", "approve", "plan", "--quote", words]);
+    say("gate approve plan", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+fn hold_events(fx: &Fx) -> Vec<(u64, String)> {
+    bf::events::load_log(&fx.project()).unwrap().events.iter()
+        .filter(|e| e["kind"] == "checkpoint.hold")
+        .map(|e| (e["seq"].as_u64().unwrap(), e["cause"].as_str().unwrap_or("").to_string()))
+        .collect()
+}
+
+fn last_seq_of(fx: &Fx, kind: &str) -> u64 {
+    bf::events::load_log(&fx.project()).unwrap().events.iter()
+        .filter(|e| e["kind"] == kind).map(|e| e["seq"].as_u64().unwrap()).next_back().unwrap_or(0)
+}
+
+// a8: the plan gate opened again during the run: bf next gives the gate decision alone, so no decision on a
+// finding is taken on words written then, and the words stay refused after the gate is approved.
+#[test]
+fn words_written_while_the_plan_gate_is_open_again_decide_nothing_during_it_or_after() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    gate_open_plan(&fx);
+    assert_eq!(actions(&fx), vec!["decide-gate"]);
+    fx.human(OLD);
+    let cause = "the plan gate of the run is open again";
+    let ends = "bf gate approve plan";
+    refused_by_hold("a8 --accept while the plan gate is open", &accept(&fx, "r1.1", OLD), cause, ends);
+    refused_by_hold("a8 --decline while the plan gate is open", &decline(&fx, "r1.1", OLD), cause, ends);
+    refused_by_hold("a8 --fix-findings while the plan gate is open", &pick(&fx, "r1.1", OLD), cause, ends);
+    assert!(!fates(&fx).contains("accepted"), "{}", fates(&fx));
+    approve_plan(&fx, "I approve the plan again.");
+    refused_before("a8 --accept after the gate's approval, on the words written while it was open", &accept(&fx, "r1.1", OLD));
+    fx.human(NEW);
+    let o = accept(&fx, "r1.1", NEW);
+    say("a8 --accept on a new message", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+    close_ok(&fx, &["test", "-f", "src/a.txt"]);
+}
+
+// a8, rejected: the plan gate rejected is a hold too (bf next gives open-gate), and its hold ends with the
+// approval of a later round.
+#[test]
+fn a_rejected_plan_gate_holds_the_decisions_until_it_is_opened_and_approved_again() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    gate_open_plan(&fx);
+    fx.human("No, not this plan.");
+    let o = fx.bf(&["gate", "reject", "plan", "--quote", "not this plan"]);
+    say("gate reject plan", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(actions(&fx).iter().any(|a| a == "open-gate"), "{:?}", actions(&fx));
+    fx.human(OLD);
+    refused_by_hold("a8 --accept while the plan gate is rejected", &accept(&fx, "r1.1", OLD), "the plan gate of the run is rejected", "bf gate open plan");
+    gate_open_plan(&fx);
+    approve_plan(&fx, "I approve the corrected plan.");
+    refused_before("a8 --accept after the approval, on the words written while the gate was rejected", &accept(&fx, "r1.1", OLD));
+    fx.human(NEW);
+    assert_eq!(accept(&fx, "r1.1", NEW).code, 0);
+}
+
+// a8, replay: the same accept appended through the library while the gate is open is listed as ignored, with
+// the gate in the note; after the approval the old words are listed too.
+#[test]
+fn a_settle_appended_while_the_plan_gate_is_open_is_listed_with_the_gate_note() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    gate_open_plan(&fx);
+    fx.human(OLD);
+    let t = turn_seq(&fx, OLD);
+    let settle = |t: u64, q: &str| {
+        bf::events::append(
+            &fx.project(),
+            "checkpoint.finding.settle",
+            json!({"checkpoint": "K-1", "ids": [{"round": 1, "index": 1}], "fate": "accepted", "reason": "", "turn": t, "quote": q}),
+        )
+        .unwrap();
+    };
+    settle(t, OLD);
+    let notes = ignored(&fx);
+    eprintln!("ignored while the gate is open: {notes:?}");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("a finding settled while the plan gate was open"), "{notes:?}");
+    approve_plan(&fx, "I approve the plan again.");
+    settle(t, OLD);
+    let notes = ignored(&fx);
+    eprintln!("ignored after the approval: {notes:?}");
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes[1].contains("words written before the bound"), "{notes:?}");
+    assert!(!fates(&fx).contains("accepted"), "{}", fates(&fx));
+}
+
+// The budget cap reached: bf next refuses, the five decisions are refused naming the cap, the words written
+// then stay refused after the cap is raised, and a new message decides.
+#[test]
+fn words_written_while_the_budget_cap_is_reached_decide_nothing_during_it_or_after() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    // A role's reported cost takes the spending past a cap of 1.0.
+    bf::events::append(&fx.project(), "unit.role-report", json!({"unit": "U-1", "role": "auditor", "cost": 2.0})).unwrap();
+    fx.set_policy("cap = 0.0", "cap = 1.0");
+    abort_fix(&fx);
+    let o = fx.bf(&["next"]);
+    say("bf next with the cap reached", &o);
+    assert_eq!(o.code, 2, "{}", o.all());
+    fx.human(OLD);
+    let cause = "the budget cap is reached";
+    let ends = "budget.cap";
+    refused_by_hold("budget --accept", &accept(&fx, "r1.1", OLD), cause, ends);
+    refused_by_hold("budget --decline", &decline(&fx, "r1.1", OLD), cause, ends);
+    refused_by_hold("budget --fix-findings", &pick(&fx, "r1.1", OLD), cause, ends);
+    assert!(!fates(&fx).contains("accepted"), "{}", fates(&fx));
+    assert!(hold_events(&fx).iter().any(|(_, c)| c == "budget"), "{:?}", hold_events(&fx));
+    fx.set_policy("cap = 1.0", "cap = 0.0");
+    refused_before("budget --accept after the cap was raised, on the words written while it was reached", &accept(&fx, "r1.1", OLD));
+    fx.human(NEW);
+    let o = accept(&fx, "r1.1", NEW);
+    say("budget --accept on a new message", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+    close_ok(&fx, &["test", "-f", "src/a.txt"]);
+}
+
+// a1, a1b: switching the checkpoint review off for the run is a decision bound like the others. The proposal
+// is made before the sync (a1) or during it (a1b); the words written during the sync are refused during it
+// and after it, the close still refuses on the open finding, and new words after the sync switch it off.
+fn review_off_flow(propose_during: bool) {
+    let tag = if propose_during { "a1b" } else { "a1" };
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    let propose = |fx: &Fx| {
+        let o = fx.bf(&["checks", "propose", "checkpoint-review=off:faster", "--scope", "run"]);
+        say(&format!("{tag} propose the review off"), &o);
+        assert_eq!(o.code, 0, "{}", o.all());
+    };
+    if !propose_during {
+        propose(&fx);
+    }
+    open_conflicting_sync(&fx);
+    if propose_during {
+        propose(&fx);
+    }
+    fx.human(OLD);
+    refused_by_hold(&format!("{tag} checks set during the sync"), &fx.bf(&["checks", "set", "--quote", OLD]), "a sync of main into K-1 is open", "bf checkpoint sync K-1 --abort");
+    resolve_sync(&fx);
+    refused_before(&format!("{tag} checks set after the sync, on the words written during it"), &fx.bf(&["checks", "set", "--quote", OLD]));
+    fx.bf_stdin(&fx.work("K-1"), &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"], "");
+    let o = fx.bf(&["checkpoint", "close", "K-1"]);
+    say(&format!("{tag} close with the high finding open"), &o);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.all().contains("r1.1"), "{}", o.all());
+    fx.human(NEW);
+    let o = fx.bf(&["checks", "set", "--quote", NEW]);
+    say(&format!("{tag} checks set on a new message"), &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
+}
+
+#[test]
+fn the_review_switched_off_on_words_written_during_a_sync_is_refused_during_it_and_after() {
+    review_off_flow(false);
+}
+
+#[test]
+fn the_review_switched_off_by_a_proposal_made_during_a_sync_takes_no_words_from_it() {
+    review_off_flow(true);
+}
+
+// a1, replay: the same `checks.set` appended through the library during the sync is listed as ignored with the
+// sync in the note, and the review stays required.
+#[test]
+fn a_review_switch_off_appended_during_a_sync_is_listed_with_the_sync_note() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    let o = fx.bf(&["checks", "propose", "checkpoint-review=off:faster", "--scope", "run"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    open_conflicting_sync(&fx);
+    fx.human(OLD);
+    let t = turn_seq(&fx, OLD);
+    let st = bf::events::replay_log(&bf::events::load_log(&fx.project()).unwrap());
+    let prop = st.checks_proposals.last().unwrap().clone();
+    bf::events::append(
+        &fx.project(),
+        "checks.set",
+        json!({"scope": prop.scope, "proposal": prop.seq, "turn": t, "quote": OLD,
+               "changes": bf::events::changes_to_json(&prop.changes), "run": prop.run}),
+    )
+    .unwrap();
+    let notes = ignored(&fx);
+    eprintln!("ignored: {notes:?}");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("the checkpoint review was switched off while a sync of main into K-1 was open"), "{notes:?}");
+    let st = bf::events::replay_log(&bf::events::load_log(&fx.project()).unwrap());
+    assert!(bf::ckreview::required(&st), "the review stays required");
+}
+
+// a3b: a low finding of round 1 is open and round 2 is at work after a sync that changed the content: bf next
+// gives the low decision, and the human's words then settle it.
+#[test]
+fn the_low_decision_is_given_while_a_review_round_is_at_work() {
+    let fx = setup(PASS);
+    brief(&fx);
+    fx.bf_stdin(&fx.work("K-1-review"), &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"], "");
+    report(&fx, json!([f("low", "a small thing")]));
+    fs::create_dir_all(fx.root.join("docs")).unwrap();
+    fs::write(fx.root.join("docs/note.txt"), "work on main\n").unwrap();
+    git(&fx.root, &["add", "docs/note.txt"]);
+    git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+    fx.human("Yes, bring main in now.");
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    brief(&fx);
+    let a = actions(&fx);
+    eprintln!("next during round 2: {a:?}");
+    assert!(a.iter().any(|x| x == "review-checkpoint"), "{a:?}");
+    assert!(a.iter().any(|x| x == "decide-low-findings"), "{a:?}");
+    fx.human(NEW);
+    let o = accept(&fx, "r1.1", NEW);
+    say("a3b --accept on words written after the low decision was given", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+// a7: a mark, the fix that changes the content, the fix's abort. The abort brings the mark back: the log holds
+// the hold again before any other command, and words written after the abort stay refused.
+#[test]
+fn a_hold_an_abort_brings_back_is_logged_before_the_next_command() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    eprintln!("next (the fix opens): {:?}", actions(&fx));
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    commit_fix(&fx, "from the unit, changed\n");
+    eprintln!("next after the fix changed the content: {:?}", actions(&fx));
+    let before = hold_events(&fx);
+    assert_eq!(before.last().map(|x| x.1.as_str()), Some(""), "the mark ended with the content: {before:?}");
+    abort_fix(&fx);
+    let abort = last_seq_of(&fx, "checkpoint.fix.abort");
+    let after = hold_events(&fx);
+    eprintln!("holds {after:?}, abort at {abort}");
+    let last = after.last().unwrap();
+    assert!(last.0 > abort && last.1 == "marked", "the abort brought the mark back and the log holds it: {after:?}");
+    fx.human(OLD);
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    refused_before("a7 --accept on words written after the abort, then the verifier's passing run", &accept(&fx, "r1.1", OLD));
+    fx.human(NEW);
+    assert_eq!(accept(&fx, "r1.1", NEW).code, 0);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The closure table against behaviour: for each holding row a scenario in which `bf next` gives the action
+// and a decision is refused with that row's Hold case; for each asking row a scenario in which it is given and
+// a decision is taken.
+// ---------------------------------------------------------------------------------------------------------
+
+/// A plan with a wave check that fails, the first wave landed; a high finding of K-1 filed and its fix aborted.
+fn wave_scenario() -> Fx {
+    let fx = Fx::new();
+    fx.human(OLD0);
+    plan(&fx, PASS);
+    let r = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"wave\"\nhow=\"command\"\ncommand=\"grep -q ok src/a.txt\"\nproves=[]\nscope=\"wave\"\n");
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    fx.commit_all("wave check");
+    fx.must(&["checks", "propose", "checkpoint-review=on", "--scope", "default"]);
+    fx.human("Yes, set the checkpoint review that way.");
+    fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
+    fx.must(&["gate", "open", "plan"]);
+    fx.human("I approve the plan.");
+    fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
+    fx.must(&["run", "start"]);
+    fx.must(&["checks", "wave", "propose", "override", "grep -q ok src/a.txt"]);
+    fx.human("Use that wave check.");
+    fx.must(&["checks", "wave", "set", "--quote", "Use that wave check"]);
+    fx.must(&["checks", "unit", "propose", "none"]);
+    fx.human("No checks for every unit in this run.");
+    fx.must(&["checks", "unit", "set", "--quote", "No checks for every unit"]);
+    let wc = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/a.txt"), "from the unit\n").unwrap();
+    fx.must_in(&wc, &["evidence", "run", "X-1", "--unit", "U-1", "--", "test", "-f", "src/a.txt"]);
+    fx.must(&["report", "U-1", "--result", "built"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
+    fx.must(&["unit", "land", "U-1"]);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    fx
+}
+
+/// The scenario in which `bf next` gives `action`, with the high finding r1.1 of K-1 open.
+fn scenario(action: &str) -> Fx {
+    let fx = match action {
+        "decide-gate" | "open-gate" | "add-records" => {
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            abort_fix(&fx);
+            gate_open_plan(&fx);
+            match action {
+                "open-gate" => {
+                    fx.human("No, not this plan.");
+                    fx.must(&["gate", "reject", "plan", "--quote", "not this plan"]);
+                }
+                "add-records" => fx.set_policy("in_order = false", "in_order = true"),
+                _ => {}
+            }
+            fx
+        }
+        "resolve-sync" | "review-sync" | "decide-sync" => {
+            let fx = setup(PASS);
+            if action == "decide-sync" {
+                fx.set_policy("max_rounds = 3", "max_rounds = 1");
+            }
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            abort_fix(&fx);
+            open_conflicting_sync(&fx);
+            let k = fx.work("K-1");
+            match action {
+                "review-sync" => {
+                    fs::write(k.join("src/a.txt"), "from the unit\nfrom main\n").unwrap();
+                    git(&k, &["add", "src/a.txt"]);
+                    git(&k, &["commit", "-q", "--no-edit"]);
+                    let o = fx.bf_stdin(&k, &["report", "K-1", "--role", "builder", "--result", "built"], "");
+                    assert_eq!(o.code, 0, "{}", o.all());
+                }
+                "decide-sync" => {
+                    let o = fx.bf_stdin(&k, &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "I cannot tell which line is right"], "");
+                    assert_eq!(o.code, 0, "{}", o.all());
+                }
+                _ => {}
+            }
+            fx
+        }
+        "fix-checkpoint" | "review-checkpoint-fix" | "plan-gap" => {
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            actions(&fx);
+            match action {
+                "review-checkpoint-fix" => fix_built(&fx, "from the unit, fixed\n"),
+                "plan-gap" => {
+                    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "gap", "--note", "needs behaviour no record describes"], "");
+                    assert_eq!(o.code, 2, "{}", o.all());
+                }
+                _ => {}
+            }
+            fx
+        }
+        "fix-wave" | "review-wave-fix" | "decide-wave-check" => {
+            let fx = wave_scenario();
+            // A sync of main changes the content, so the aborted fix no longer bars a fix at the new one.
+            fs::create_dir_all(fx.root.join("docs")).unwrap();
+            fs::write(fx.root.join("docs/note.txt"), "work on main\n").unwrap();
+            git(&fx.root, &["add", "docs/note.txt"]);
+            git(&fx.root, &["commit", "-q", "-m", "work on main"]);
+            fx.human("Yes, bring main in now.");
+            let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
+            assert_eq!(o.code, 0, "{}", o.all());
+            let o = fx.bf(&["checkpoint", "wave-check", "K-1", "--wave", "1"]);
+            say("the wave check runs (and fails)", &o);
+            actions(&fx);
+            match action {
+                "review-wave-fix" => fix_built(&fx, "ok\n"),
+                "decide-wave-check" => abort_fix(&fx),
+                _ => {}
+            }
+            fx
+        }
+        "decide-check" => {
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            abort_fix(&fx);
+            let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+            assert_eq!(o.code, 0, "{}", o.all());
+            fx
+        }
+        "answer-question" => {
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            abort_fix(&fx);
+            let o = fx.bf(&["ask", "--unit", "K-1", "--title", "Which of the two should win?"]);
+            assert_eq!(o.code, 0, "{}", o.all());
+            fx
+        }
+        "decide-checkpoint-review" => {
+            let fx = setup(PASS);
+            fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            fx
+        }
+        "decide-checkpoint-fix" => {
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            actions(&fx);
+            abort_fix(&fx);
+            fx
+        }
+        "decide-low-findings" => {
+            let fx = setup(PASS);
+            brief(&fx);
+            fx.bf_stdin(&fx.work("K-1-review"), &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"], "");
+            report(&fx, json!([f("low", "a small thing")]));
+            fx
+        }
+        other => panic!("no scenario for `{other}`: write one for its row of the table"),
+    };
+    let given = actions(&fx);
+    eprintln!("scenario `{action}`: bf next gives {given:?}");
+    assert!(given.iter().any(|a| a == action), "bf next gives {given:?}, not `{action}`");
+    fx
+}
+
+/// What a refusal says for each Hold case.
+fn phrase(case: &str) -> &'static str {
+    match case {
+        "Sync" => "a sync of main into K-1 is open",
+        "Fix" => "a checkpoint fix is at work on K-1",
+        "Marked" => "is marked failed or unreachable",
+        "Question" => "a worker's question on K-1",
+        "Wave" => "a wave check holds the close of K-1",
+        "Run" => "the plan gate of the run is",
+        other => panic!("no wording for the Hold case `{other}`"),
+    }
+}
+
+/// One row of the table against behaviour. A holding row: in its scenario a decision is refused with the row's
+/// Hold case. An asking row: in its scenario a decision is taken. A row of the class "neither" is not judged.
+fn check_row(action: &str) {
+    let class = CLASSES.iter().find(|(a, _)| *a == action).map(|(_, c)| *c).unwrap_or_else(|| panic!("`{action}` is not in the table"));
+    let fx = scenario(action);
+    if let Some(case) = class.strip_prefix("holding:") {
+        fx.human(OLD);
+        let o = accept(&fx, "r1.1", OLD);
+        eprintln!("holding row `{action}` ({case}): --accept on words written while it is given: exit {} | {}", o.code, o.stderr.lines().take(4).collect::<Vec<_>>().join(" | "));
+        assert_eq!(o.code, 2, "`{action}`: {}", o.all());
+        assert!(o.all().contains("the human is not being asked about the findings of K-1"), "`{action}`: {}", o.all());
+        assert!(o.all().contains(phrase(case)), "`{action}` is classified holding:{case}, but the refusal says: {}", o.all());
+        assert!(!fates(&fx).contains("accepted"), "`{action}`: {}", fates(&fx));
+    } else {
+        assert_eq!(class, "asking", "`{action}` is neither asking nor holding: it has no behaviour to check");
+        fx.human(NEW);
+        let ids = if action == "decide-low-findings" { "low" } else { "r1.1" };
+        let o = accept(&fx, ids, NEW);
+        eprintln!("asking row `{action}`: --accept on words written while it is given: exit {}", o.code);
+        assert_eq!(o.code, 0, "`{action}` is classified asking, but a decision is refused: {}", o.all());
+        assert!(fates(&fx).contains("accepted"), "`{action}`: {}", fates(&fx));
+    }
+}
+
+/// The rows that have a test of their own below; every holding and asking row of the table must be here.
+const ROW_TESTS: &[&str] = &[
+    "decide-checkpoint-review", "decide-checkpoint-fix", "decide-low-findings", "decide-sync", "resolve-sync", "review-sync",
+    "fix-checkpoint", "review-checkpoint-fix", "fix-wave", "review-wave-fix", "plan-gap", "decide-check", "answer-question",
+    "decide-wave-check", "decide-gate", "open-gate", "add-records",
+];
+
+macro_rules! row_test {
+    ($name:ident, $action:expr) => {
+        #[test]
+        fn $name() {
+            check_row($action);
+        }
+    };
+}
+
+row_test!(row_decide_checkpoint_review_asks, "decide-checkpoint-review");
+row_test!(row_decide_checkpoint_fix_asks, "decide-checkpoint-fix");
+row_test!(row_decide_low_findings_asks, "decide-low-findings");
+row_test!(row_decide_sync_holds, "decide-sync");
+row_test!(row_resolve_sync_holds, "resolve-sync");
+row_test!(row_review_sync_holds, "review-sync");
+row_test!(row_fix_checkpoint_holds, "fix-checkpoint");
+row_test!(row_review_checkpoint_fix_holds, "review-checkpoint-fix");
+row_test!(row_fix_wave_holds, "fix-wave");
+row_test!(row_review_wave_fix_holds, "review-wave-fix");
+row_test!(row_plan_gap_holds, "plan-gap");
+row_test!(row_decide_check_holds, "decide-check");
+row_test!(row_answer_question_holds, "answer-question");
+row_test!(row_decide_wave_check_holds, "decide-wave-check");
+row_test!(row_decide_gate_holds, "decide-gate");
+row_test!(row_open_gate_holds, "open-gate");
+row_test!(row_add_records_holds, "add-records");
+
+#[test]
+fn every_asking_and_holding_row_of_the_table_has_its_behaviour_test() {
+    for (a, c) in CLASSES {
+        if *c != "neither" {
+            assert!(ROW_TESTS.contains(a), "`{a}` is classified `{c}`: add a scenario for it and a row test, so its class is checked against behaviour");
+        }
+    }
+    for a in ROW_TESTS {
+        assert!(CLASSES.iter().any(|(t, _)| t == a), "{a}");
+    }
+}
+
+// K2R7-7: each decision command observes the holds before it judges. A mark that stood and no longer stands
+// because the content changed with no event (a commit in the checkpoint's copy) is ended in the log only by
+// the command's own look: the words written after the change are then refused as written before the end. A
+// command that did not look would find the old mark and refuse for it instead.
+fn mark_then_change_the_content(fx: &Fx) {
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(hold_events(fx).last().map(|x| x.1.clone()), Some("marked".to_string()));
+    commit_fix(fx, "from the unit, changed\n");
+}
+
+#[test]
+fn accept_decline_and_pick_look_at_the_holds_before_they_judge() {
+    for what in ["accept", "decline", "pick"] {
+        let fx = setup(PASS);
+        report(&fx, json!([f("high", "the answer is wrong")]));
+        abort_fix(&fx);
+        mark_then_change_the_content(&fx);
+        fx.human(OLD);
+        let o = match what {
+            "accept" => accept(&fx, "r1.1", OLD),
+            "decline" => decline(&fx, "r1.1", OLD),
+            _ => pick(&fx, "r1.1", OLD),
+        };
+        eprintln!("{what}: the mark ended with the content, no event logged it");
+        refused_before(&format!("{what} on words written after the content changed"), &o);
+        assert_eq!(hold_events(&fx).last().map(|x| x.1.clone()), Some(String::new()), "the command logged the end: {:?}", hold_events(&fx));
+    }
+}
+
+#[test]
+fn the_review_release_looks_at_the_holds_before_it_judges() {
+    let fx = setup(PASS);
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    mark_then_change_the_content(&fx);
+    fx.human("Release it, please.");
+    refused_before("review --release on words written after the content changed", &release_review(&fx, "Release it, please."));
+}
+
+#[test]
+fn the_fix_release_looks_at_the_holds_before_it_judges() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    actions(&fx);
+    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(actions(&fx), vec!["decide-checkpoint-fix"]);
+    mark_then_change_the_content(&fx);
+    fx.human("Try it again, please.");
+    let o = fx.bf(&["checkpoint", "fix", "K-1", "--release", "--quote", "Try it again, please."]);
+    refused_before("fix --release on words written after the content changed", &o);
+}
+
+// K2R6-3 (own_turn): a review release appended right after a fix that a pick opened on the human's own words
+// is not that release's own fix, so the open fix holds it: ignored, with the fix in the note.
+#[test]
+fn a_review_release_appended_right_after_a_fix_picked_in_the_humans_words_is_ignored() {
+    let fx = setup(PASS);
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    // Both messages are written first, so the release is the very next event after the pick's fix.
+    fx.human(OLD);
+    fx.human("Release it, please.");
+    let t = turn_seq(&fx, OLD);
+    let t2 = turn_seq(&fx, "Release it, please.");
+    bf::events::append(
+        &fx.project(),
+        "checkpoint.fix.open",
+        json!({"checkpoint": "K-1", "source": "review", "findings": [f("high", "the answer is wrong")],
+               "finding_ids": [{"round": 1, "index": 1}], "before": [],
+               "human": {"turn": t, "quote": OLD}}),
+    )
+    .unwrap();
+    bf::events::append(
+        &fx.project(),
+        "checkpoint.review.release",
+        json!({"checkpoint": "K-1", "after_round": 1, "turn": t2, "quote": "Release it, please."}),
+    )
+    .unwrap();
+    let notes = ignored(&fx);
+    eprintln!("ignored: {notes:?}");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("review release") && notes[0].contains("a checkpoint fix was at work"), "{notes:?}");
+}
+
+// The refusal of a review switch-off names the checkpoint whose decision is held, not the first one with an
+// open finding: with two checkpoints open and a hold on the second only, the failing one is the second.
+#[test]
+fn the_review_switch_off_bound_names_the_checkpoint_whose_hold_refuses() {
+    let fx = setup(PASS);
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    abort_fix(&fx);
+    let p = fx.project();
+    bf::events::append(&p, "checkpoint.hold", json!({"checkpoint": "K-2", "cause": "question", "detail": "Q-1"})).unwrap();
+    let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
+    let open = vec!["K-1".to_string(), "K-2".to_string()];
+    let r = bf::events::review_off_bound(&st, &open, 1, u64::MAX);
+    eprintln!("bound over K-1 and K-2 with a hold on K-2: {r:?}");
+    match r {
+        Err((k, h)) => {
+            assert_eq!(k, "K-2");
+            assert_eq!(h.checkpoint(), "K-2");
+            assert!(h.because().contains("K-2"), "{}", h.because());
+        }
+        Ok(b) => panic!("no refusal, bound {b}"),
+    }
+    assert!(bf::events::review_off_bound(&st, &open[..1], 1, u64::MAX).is_ok(), "K-1 alone has no hold");
 }
