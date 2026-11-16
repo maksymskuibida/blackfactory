@@ -87,6 +87,26 @@ fn the_ui_gate_needs_the_design_stage_verification_of_the_ui() {
         "--outcome",
         "met",
         "--says",
+        "S-1 state default: the default state shows every label",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
+        "accessibility: contrast and focus order read at 375px",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
         "I opened the page at 375px and read every label",
     ]);
     fx.must(&["gate", "open", "ui"]);

@@ -133,21 +133,35 @@ fn ui_check(fx: &Fx) {
 fn attach(fx: &Fx, tok: Option<&str>) -> common::Out {
     let f = fx.root.join("shot.txt");
     fs::write(&f, "the screen at 375px\n").unwrap();
-    let mut a = vec![
-        "evidence",
-        "attach",
-        "X-1",
-        f.to_str().unwrap(),
-        "--outcome",
-        "met",
-        "--says",
+    // The screen state and the accessibility result need their own evidence before the whole
+    // verification can be met.
+    let mut last = None;
+    for says in [
+        "S-1 state default: the greeting page at 375px",
+        "accessibility: every label read against the standard",
         "I opened the page at 375px and read every label",
-    ];
-    if let Some(t) = tok {
-        a.push("--token");
-        a.push(t);
+    ] {
+        let mut a = vec![
+            "evidence",
+            "attach",
+            "X-1",
+            f.to_str().unwrap(),
+            "--outcome",
+            "met",
+            "--says",
+            says,
+        ];
+        if let Some(t) = tok {
+            a.push("--token");
+            a.push(t);
+        }
+        let o = fx.bf(&a);
+        if o.code != 0 {
+            return o;
+        }
+        last = Some(o);
     }
-    fx.bf(&a)
+    last.unwrap()
 }
 
 #[test]
