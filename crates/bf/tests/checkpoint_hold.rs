@@ -747,6 +747,7 @@ fn every_directive_action_is_classified_as_asking_holding_or_neither() {
         ("review", "neither"),
         ("land", "neither"),
         ("decide-unit", "neither"),
+        ("reconsider", "neither"),
         ("review-scope", "neither"),
     ];
     let holds = ["Sync", "Fix", "Marked", "Question", "Wave"];

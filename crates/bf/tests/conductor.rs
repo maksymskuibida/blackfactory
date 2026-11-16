@@ -37,6 +37,8 @@ fn next_says_plainly_when_nothing_can_start_and_why() {
     );
     fx.must(&["unit", "start", "U-2"]);
     fx.must(&["report", "U-2", "--result", "blocked"]);
+    // A plain block gets one more look; a plain block from that look goes to the human.
+    fx.must(&["report", "U-2", "--result", "blocked"]);
     let n = fx.must(&["next", "--json"]).json();
     assert_eq!(n["can_start"], false);
     assert!(n["idle_reason"].as_str().unwrap().contains("U-2"), "{n}");

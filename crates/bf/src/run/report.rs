@@ -49,6 +49,13 @@ pub fn report(
         ));
     }
     let cur = st.unit_state(unit).to_string();
+    // A report from a reconsider directive is taken like one from the state the unit was blocked from.
+    let reopen = crate::scope::reconsider::request_from(&st, unit);
+    let eff = if reopen {
+        crate::scope::reconsider::back_state(&st, unit)
+    } else {
+        cur.clone()
+    };
     if crate::scope::open_request(&st, unit).is_some() {
         return Err(refuse(
             format!("report {result} on {unit}"),
@@ -120,7 +127,7 @@ pub fn report(
     };
     let review_required = p.policy.review.required;
     let mut event_kind = "unit.report";
-    let to: String = match (cur.as_str(), result) {
+    let to: String = match (eff.as_str(), result) {
         ("running", "built") | ("fixing", "built") | ("fixing", "fixed") => {
             if review_required {
                 "review".into()
@@ -194,7 +201,7 @@ pub fn report(
             ));
         }
     }
-    if cur == "fixing" {
+    if eff == "fixing" {
         for f in mine.iter().filter(|f| is_open(f)) {
             let mut r = (*f).clone();
             r["outcome"] = json!("fixed");
@@ -226,6 +233,10 @@ pub fn report(
             "the earlier findings and what changed since the round before".to_string()
         });
     }
+    if result == "blocked" && matches!(eff.as_str(), "running" | "fixing") {
+        // A plain block gets one more look; one made from that look is confirmed and goes to the human.
+        ev[if reopen { "confirmed" } else { "reconsider" }] = json!(true);
+    }
     events::append(p, ev_kind, ev)?;
     if to == "parked" {
         events::append(
@@ -238,6 +249,7 @@ pub fn report(
     let note = match to.as_str() {
         "review" => brief::write_brief(p, unit, "reviewer"),
         "fixing" if cur == "review" => brief::write_brief(p, unit, "builder"),
+        "blocked" if !reopen => brief::write_brief(p, unit, "builder"),
         _ => None,
     };
     let mut out = json!({"unit": unit, "result": result, "state": to, "findings": finding_ids});

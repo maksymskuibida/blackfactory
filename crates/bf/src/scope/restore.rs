@@ -82,8 +82,9 @@ pub fn restore(p: &Project, unit: &str, paths: &[String], token: Option<&str>) -
         ));
     };
     let cur = st.unit_state(unit).to_string();
-    if !matches!(cur.as_str(), "running" | "fixing") || paths.is_empty() {
-        let why = format!("{unit} is `{cur}`, or no file is named; the command takes a builder at work (running or fixing) and the files");
+    let again = cur == "blocked" && scope::reconsider::request_from(&st, unit);
+    if !(matches!(cur.as_str(), "running" | "fixing") || again) || paths.is_empty() {
+        let why = format!("{unit} is `{cur}`, or no file is named; the command takes a builder at work (running or fixing, or asked to look again after its block) and the files");
         return Err(no(what, why, vec!["Run `bf unit restore <U> <path>... --token <token>` from the working copy while the unit is running or fixing.".into()]));
     }
     if p.policy.roles.tokens {
@@ -172,11 +173,16 @@ pub fn restore(p: &Project, unit: &str, paths: &[String], token: Option<&str>) -
             gone.push(path);
         }
     }
-    events::append(
-        p,
-        "unit.scope.restore",
-        json!({"unit": unit, "files": done}),
-    )?;
+    let mut data = json!({"unit": unit, "files": done});
+    if again {
+        // The unit goes back to the state it was blocked from.
+        data["to"] = json!(scope::reconsider::back_state(&st, unit));
+    }
+    events::append(p, "unit.scope.restore", data)?;
+    if again {
+        // The blocked report counted as an attempt; the limit still parks a unit that keeps blocking.
+        run::park_if_looping(p, unit)?;
+    }
     let mut parts: Vec<String> = vec![];
     if !put.is_empty() {
         parts.push(format!("{} back to the base", put.join(", ")));
