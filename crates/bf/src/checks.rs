@@ -785,7 +785,37 @@ pub fn run_in(
                 ));
             }
             let q = quote.unwrap_or("");
-            let (turn, _) = events::pick_turn(&st, prop.seq, events::Decide::Approve, q)?;
+            // Switching the checkpoint review off ends the hold of every open finding: its words are bound
+            // like the other decisions (a hold refuses; otherwise no words before the latest hold's end).
+            let mut st = st;
+            let mut bound = prop.seq;
+            if events::ckreview_required_now(&st)
+                && !events::review_required_after(&mut st, &prop.scope, &prop.changes)
+            {
+                crate::run::observe_holds(p)?;
+                st = events::require_chain(p)?;
+                let pl = crate::plan::load(p)?;
+                let mut open: Vec<String> = Vec::new();
+                for k in &pl.checkpoints {
+                    let kid = crate::store::s(k, "id");
+                    if !st.closed.contains_key(kid)
+                        && !crate::ckreview::open_blocking_named(p, &st, kid)?.is_empty()
+                    {
+                        open.push(kid.to_string());
+                    }
+                }
+                bound = match events::review_off_bound(&st, &open, prop.seq, u64::MAX) {
+                    Ok(b) => b,
+                    Err((k, h)) => {
+                        return Err(crate::ckreview::hold_refusal(
+                            "switch the checkpoint review off",
+                            &k,
+                            &h,
+                        ));
+                    }
+                };
+            }
+            let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, q)?;
             events::append(
                 p,
                 "checks.set",

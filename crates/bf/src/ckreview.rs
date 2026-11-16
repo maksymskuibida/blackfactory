@@ -87,7 +87,7 @@ pub fn required(st: &State) -> bool {
 }
 
 /// Whether a finding stops the checkpoint from closing while it is open.
-fn blocking(f: &Value) -> bool {
+pub(crate) fn blocking(f: &Value) -> bool {
     matches!(s(f, "severity"), "critical" | "high" | "medium")
 }
 
@@ -1373,6 +1373,17 @@ pub(crate) fn hold_refusal(what: &str, k: &str, h: &events::Hold) -> crate::refu
         }
         events::Hold::Wave { .. } => {
             "the wave check passing, or the human's decision on it (`bf next` gives what it waits for)".to_string()
+        }
+        events::Hold::Run { gate, .. } => match gate {
+            events::RunHold::Open { .. } => {
+                "the human's decision on the plan gate (`bf gate approve plan --quote \"<their words>\"` or `bf gate reject plan`, as `bf next` gives it)".to_string()
+            }
+            events::RunHold::NotOpen { .. } => {
+                "opening the plan gate again (`bf gate open plan`, as `bf next` gives it), then the human's approval of it".to_string()
+            }
+        },
+        events::Hold::Budget { .. } => {
+            "the human raising `budget.cap` in factory/policy.toml (only they edit it)".to_string()
         }
     };
     refuse(
