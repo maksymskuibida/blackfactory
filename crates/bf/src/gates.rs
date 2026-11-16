@@ -1413,19 +1413,20 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         Some(e) => crate::amend::write_edit(p, e)?,
         None => vec![],
     };
-    if let Err(err) = events::append(
-        p,
-        "amend.approve",
-        json!({"amend": aid, "turn": seq, "quote": quote.trim(),
+    let extra = crate::scope::unblock::approve_fields(p, &st, a, &reopen_units);
+    let mut data = json!({"amend": aid, "turn": seq, "quote": quote.trim(),
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
                "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
-               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()}),
-    ) {
+               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()});
+    let unblocked = extra.get("unblock_units").cloned().unwrap_or(json!([]));
+    crate::scope::merge_fields(&mut data, extra);
+    if let Err(err) = events::append(p, "amend.approve", data) {
         crate::amend::undo_writes(&written);
         return Err(err);
     }
+    crate::scope::wait::resume_waiting(p)?;
     p.write_guard()?;
-    Ok(json!({"amend": aid, "approved": true, "turn": seq}))
+    Ok(json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked}))
 }
 
 /// IDs waived by approved amendments.

@@ -189,6 +189,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
         "unit.land",
         json!({"unit": unit, "repo": repo.name, "checkpoint": k, "hash": content, "merge": tip, "run": run}),
     )?;
+    crate::scope::wait::resume_waiting(p)?;
     p.write_guard()?;
     Ok(
         json!({"unit": unit, "landed": true, "checkpoint": k, "branch": cpb, "merge": tip, "content_hash": content}),

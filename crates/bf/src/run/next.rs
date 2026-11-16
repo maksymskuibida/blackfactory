@@ -219,6 +219,10 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
             ));
             continue;
         }
+        if let Some(line) = super::pause::waiting_line(&st, &id) {
+            waiting.push(line);
+            continue;
+        }
         let wc = p.work_dir().join(&id).to_string_lossy().to_string();
         let rounds = st.units.get(&id).map(|x| x.rounds).unwrap_or(0);
         let brief = |role: &str| {
@@ -246,6 +250,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 if let Some(a) = st.units.get(&id).map(|x| x.reopened_by.clone()).filter(|a| !a.is_empty()) {
                     d["amendment"] = json!(a);
                 }
+                crate::scope::wait::decorate(&st, &id, &mut d);
                 directives.push(d);
             }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
@@ -253,6 +258,24 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 "commands": [format!("bf brief {id} --role reviewer")]})),
             "reviewed" => directives.push(json!({"role": "engine", "action": "land", "unit": id, "command": format!("bf unit land {id}")})),
             "blocked" | "parked" => {
+                use crate::scope::NextEntry;
+                let entry = if state == "blocked" {
+                    crate::scope::reconsider::next_entry(p, &st, &id, limits(rounds))
+                        .or_else(|| crate::scope::wait::next_entry(p, &pl, &st, &id))
+                } else {
+                    None
+                };
+                match entry {
+                    Some(NextEntry::Waiting(line)) => {
+                        waiting.push(line);
+                        continue;
+                    }
+                    Some(NextEntry::Directive(d)) => {
+                        directives.push(d);
+                        continue;
+                    }
+                    None => {}
+                }
                 let mut note = format!("{id} is {state}; the human decides whether to re-plan or release it.");
                 if let Some(r) = st.scope.get(&id).and_then(|sc| sc.refused.last()).filter(|_| state == "blocked") {
                     let files: Vec<String> = r["files"]
