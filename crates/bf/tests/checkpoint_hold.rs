@@ -177,7 +177,7 @@ fn conflict_on_main(fx: &Fx) {
 fn open_conflicting_sync(fx: &Fx) {
     conflict_on_main(fx);
     fx.human("Yes, bring main in now.");
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     say("sync", &o);
     assert_eq!(o.code, 0, "{}", o.all());
     let phase = fx.must(&["status", "--json"]).json()["sync_open"]["phase"].clone();
@@ -653,7 +653,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_open() {
     git(&fx.root, &["add", "docs/note.txt"]);
     git(&fx.root, &["commit", "-q", "-m", "work on main"]);
     fx.human("Yes, bring main in now.");
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     say("z5 sync while the fix is at work", &o);
     assert_eq!(o.code, 2, "{}", o.all());
     let t = o.all();
@@ -661,7 +661,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_open() {
     assert!(t.contains("bf checkpoint fix K-1 --abort") && t.contains("bf next"), "{t}");
     assert!(!fx.work("K-1").join("docs/note.txt").exists());
     abort_fix(&fx);
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     say("z5 sync after the abort", &o);
     assert_eq!(o.code, 0, "{}", o.all());
     assert!(fx.work("K-1").join("docs/note.txt").exists());
@@ -684,7 +684,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_parked() {
     git(&fx.root, &["add", "docs/note.txt"]);
     git(&fx.root, &["commit", "-q", "-m", "work on main"]);
     fx.human("Yes, bring main in now.");
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     say("z5b sync while the fix is parked", &o);
     assert_eq!(o.code, 2, "{}", o.all());
     let t = o.all();
@@ -692,7 +692,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_parked() {
     assert!(t.contains("bf checkpoint fix K-1 --abort") && t.contains("bf next"), "{t}");
     assert!(!fx.work("K-1").join("docs/note.txt").exists());
     abort_fix(&fx);
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "bring main in"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main in"]);
     say("z5b sync after the abort", &o);
     assert_eq!(o.code, 0, "{}", o.all());
 }

@@ -140,6 +140,11 @@ pub fn git_profile(state_dir: &str, root: &str) -> String {
     p
 }
 
+/// The profile with its network denial taken out: for the one git call that fetches the main branch.
+pub fn allow_network(profile: &str) -> String {
+    profile.replace("(deny network*)\n", "")
+}
+
 /// A command that runs `program` under `profile`.
 pub fn command(profile: &str, program: &str) -> Command {
     let mut c = Command::new(SANDBOX_EXEC);

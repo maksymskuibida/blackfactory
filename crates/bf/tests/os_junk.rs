@@ -154,6 +154,7 @@ fn walk(fx: &Fx, repos: &[&str], dirs: &[PathBuf], repeat_after_sync: bool) {
         "checkpoint",
         "sync",
         "K-1",
+        "--local",
         "--quote",
         "bring main in",
         "--json",
