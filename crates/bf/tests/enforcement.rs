@@ -555,7 +555,18 @@ fn an_open_amendment_can_be_withdrawn_and_the_log_keeps_both_facts() {
 fn an_approved_amendment_cannot_be_withdrawn() {
     let fx = Fx::new();
     fx.tiny();
-    let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    // U-19: an amendment is approved only when every design stage is covered and its requirement is linked.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: no screen shows the farewell\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the farewell unit already exists\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let opened = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     narrow_all(&fx, "A-1", &opened);
     fx.human("Yes, approve the change to the second requirement.");
     fx.must(&["amend", "approve", "--quote", "approve the change"]);
