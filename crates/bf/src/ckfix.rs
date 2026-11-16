@@ -306,10 +306,13 @@ fn open_locked(
         strict,
         wave,
         None,
+        None,
     )
 }
 
-/// The same, for a fix the human's words opened: `human` is the turn and the quote the event records.
+/// The same, for a fix of review findings: `opened_by` is the way it was opened (`report`, `release`, `pick`
+/// or `low`) and `human` the turn and the quote the human's words give, when they opened it. The replay
+/// checks each way against the events that justify it.
 #[allow(clippy::too_many_arguments)]
 fn open_locked_by(
     p: &Project,
@@ -322,6 +325,7 @@ fn open_locked_by(
     strict: bool,
     wave: Option<(u32, &[String])>,
     human: Option<(u64, &str)>,
+    opened_by: Option<&str>,
 ) -> R<bool> {
     for (_, wt) in wts(p, pl, k)? {
         if gitx::has_uncommitted(&wt) {
@@ -340,21 +344,22 @@ fn open_locked_by(
     let by = human
         .map(|(t, q)| json!({"turn": t, "quote": q.trim()}))
         .unwrap_or(Value::Null);
-    events::append(
-        p,
-        "checkpoint.fix.open",
-        json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings, "human": by,
+    let mut ev = json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings, "human": by,
                "finding_ids": finding_ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
                "allowed": set.allowed, "test_dirs": set.test_dirs, "units": set.units,
                "before": heads(p, pl, k)?, "content": content,
-               "wave": wave.map(|(w, _)| w).unwrap_or(0)}),
-    )?;
+               "wave": wave.map(|(w, _)| w).unwrap_or(0)});
+    if let Some(how) = opened_by {
+        ev["opened_by"] = json!(how);
+    }
+    events::append(p, "checkpoint.fix.open", ev)?;
     write_overlay(p)?;
     p.write_guard()?;
     Ok(true)
 }
 
 /// Open a fix of `k` for findings the human picked or released. The checkpoint's working copy must be clean.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_chosen(
     p: &Project,
     pl: &Plan,
@@ -363,6 +368,7 @@ pub(crate) fn open_chosen(
     ids: Vec<(u32, u32)>,
     content: &str,
     human: Option<(u64, &str)>,
+    opened_by: &str,
 ) -> R<()> {
     open_locked_by(
         p,
@@ -375,6 +381,7 @@ pub(crate) fn open_chosen(
         true,
         None,
         human,
+        Some(opened_by),
     )?;
     Ok(())
 }
@@ -1030,7 +1037,7 @@ fn open_from_review(
     } else {
         vec![]
     };
-    open_locked(
+    open_locked_by(
         p,
         pl,
         k,
@@ -1040,6 +1047,8 @@ fn open_from_review(
         &content,
         true,
         None,
+        None,
+        Some("report"),
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true}))
 }

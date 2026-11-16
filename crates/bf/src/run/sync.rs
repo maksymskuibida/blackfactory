@@ -782,7 +782,7 @@ fn sync_release(p: &Project, st: &State, k: &str, quote: &str) -> R<Value> {
             "`bf status` shows the sync back at work.",
         ));
     }
-    let (turn, _) = events::pick_turn(st, 0, events::Decide::Approve, quote)?;
+    let (turn, _) = sync_turn(st, events::sync_bound(st, &so, true), "release", quote)?;
     events::append(
         p,
         "checkpoint.sync.release",
@@ -838,8 +838,31 @@ fn sync_hand_resolved(
             "`bf checkpoint sync` records the merge.",
         ));
     }
-    let (turn, _) = events::pick_turn(st, 0, events::Decide::Approve, quote)?;
+    let (turn, _) = sync_turn(st, events::sync_bound(st, so, false), "record", quote)?;
     finish_sync(p, pl, so, Some((turn, quote)))
+}
+
+/// The human's words for a sync that is open: only words written after `bound` (the park of a sync to
+/// release, the opening of a sync resolved by hand, and the latest end of a hold) can decide.
+fn sync_turn(st: &State, bound: u64, what: &str, quote: &str) -> R<(u64, String)> {
+    let q = quote.trim();
+    let candidates = |after: u64| {
+        st.turns
+            .iter()
+            .any(|t| t.seq > after && !t.used && !q.is_empty() && t.text.contains(q))
+    };
+    if bound > 0 && !candidates(bound) && candidates(0) {
+        return Err(refuse(
+            format!("{what} the sync"),
+            format!("those words were written before the sync needed them (log event {bound}): a sync takes only words written after it was parked or opened"),
+            &[
+                "Ask the human in chat for their decision in a new message, written now, in their own words.",
+                "Then run the command again with `--quote` set to the words of that new message.",
+            ],
+            "`bf next` shows what the sync waits for.",
+        ));
+    }
+    events::pick_turn(st, bound, events::Decide::Approve, quote)
 }
 
 /// `bf report <K>` while a sync is open: the resolver says built or blocked; the reviewer says findings

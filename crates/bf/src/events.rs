@@ -562,6 +562,8 @@ pub struct SyncOpen {
     pub reason: String,
     pub findings: Vec<Value>,
     pub open_seq: u64,
+    /// The seq of the event that parked the sync last; 0 while it never parked.
+    pub park_seq: u64,
     /// The newest receipt on file when the sync started: receipts after it count for the joined content.
     pub floor: u64,
     /// The checkpoint checks that failed on the joined content when the sync opened.
@@ -1040,6 +1042,14 @@ pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
     }
 }
 
+/// The one bound of the words that release a parked sync (`release`: the later of its park and the latest
+/// end of a hold) or record a sync resolved by hand (the later of its opening and the latest end). Words
+/// written before it cannot decide. The commands and the replay both use it.
+pub fn sync_bound(st: &State, so: &SyncOpen, release: bool) -> u64 {
+    let from = if release { so.park_seq } else { so.open_seq };
+    from.max(st.ck_end_seq)
+}
+
 /// The `opened_before` of a review release's replay: the fix the release itself opened is the event just
 /// before it, for the same checkpoint, with source `review` and no human turn of its own; only that fix is
 /// set aside. Any other open fix counts.
@@ -1084,7 +1094,15 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
     };
     st.event_count = log.events.len();
     let mut turn_ix: HashMap<u64, usize> = HashMap::new();
-    for ev in &log.events {
+    // The review rounds that ended with findings (their findings), the rounds a report opened a fix for, and
+    // whether the log recorded the way any fix of review findings was opened: tables of this loop only.
+    let mut ck_rounds: HashMap<(String, u32), Vec<Value>> = HashMap::new();
+    let mut report_used: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
+    let mut marked_seen = false;
+    let mut parked_rounds: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
+    for (ix, ev) in log.events.iter().enumerate() {
         let seq = ev["seq"].as_u64().unwrap_or(0);
         let at = ev["at"].as_str().unwrap_or("").to_string();
         let sv = |k: &str| ev.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1640,6 +1658,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     reason: String::new(),
                     findings: vec![],
                     open_seq: seq,
+                    park_seq: 0,
                     floor: ev["receipt_floor"].as_u64().unwrap_or(0),
                     failed: ev["failed"].as_array().cloned().unwrap_or_default(),
                 });
@@ -1653,6 +1672,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.sync_open.as_mut() {
                     o.rounds += 1;
                     o.phase = sv("to");
+                    if o.phase == "parked" {
+                        o.park_seq = seq;
+                    }
                     o.reason = sv("reason");
                     o.findings = ev["findings"].as_array().cloned().unwrap_or_default();
                 }
@@ -1660,14 +1682,28 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.sync.park" => {
                 if let Some(o) = st.sync_open.as_mut() {
                     o.phase = "parked".into();
+                    o.park_seq = seq;
                     o.reason = sv("reason");
                 }
             }
             "checkpoint.sync.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                let bound = st
+                    .sync_open
+                    .as_ref()
+                    .map(|o| sync_bound(&st, o, true))
+                    .unwrap_or(0);
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
-                        "event {seq}: a sync release cites no valid human turn and quote"
+                        "event {seq}: a sync release cites no valid human turn and quote, or words written before the park"
                     ));
                     continue;
                 }
@@ -1707,10 +1743,25 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let via_open = ev["via_open"].as_bool().unwrap_or(false);
                 if !via_open {
                     let tseq = ev["turn"].as_u64().unwrap_or(0);
-                    if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve)
-                    {
+                    // The start of a sync is the human's request itself (no bound); a sync resolved by hand
+                    // takes only words written after it opened.
+                    let bound = st
+                        .sync_open
+                        .as_ref()
+                        .filter(|o| o.checkpoint == sv("checkpoint"))
+                        .map(|o| sync_bound(&st, o, false))
+                        .unwrap_or(0);
+                    if !decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        bound,
+                        seq,
+                        &sv("quote"),
+                        Decide::Approve,
+                    ) {
                         st.ignored.push(format!(
-                            "event {seq}: a checkpoint sync cites no valid human turn and quote"
+                            "event {seq}: a checkpoint sync cites no valid human turn and quote, or words written before the sync opened"
                         ));
                         continue;
                     }
@@ -1740,6 +1791,151 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
             }
             "checkpoint.fix.open" => {
+                let ck = sv("checkpoint");
+                let source = sv("source");
+                let ids_named = id_pairs(&ev["finding_ids"]);
+                let findings_named = ev["findings"].as_array().cloned().unwrap_or_default();
+                let mut report_round: Option<(String, u32)> = None;
+                let why: Option<&str> = if source == "check" || source == "wave" {
+                    if !findings_named.is_empty() || !ids_named.is_empty() {
+                        Some("a fix of a failed check names review findings")
+                    } else {
+                        None
+                    }
+                } else if source == "review" {
+                    match ev.get("opened_by") {
+                        None => {
+                            if marked_seen {
+                                Some("a fix of review findings records no way it was opened, after the log recorded one")
+                            } else {
+                                None
+                            }
+                        }
+                        Some(v) => match v.as_str().unwrap_or("") {
+                            "pick" => {
+                                if ev["human"]["turn"].as_u64().is_some() {
+                                    None
+                                } else {
+                                    Some("a fix opened by a pick cites no human turn")
+                                }
+                            }
+                            "low" => {
+                                // Each finding the event names is looked up in the round the replay recorded.
+                                let recorded_low = |r: u32, i: u32| {
+                                    i >= 1
+                                        && ck_rounds
+                                            .get(&(ck.clone(), r))
+                                            .and_then(|l| l.get(i as usize - 1))
+                                            .map(|f| f["severity"].as_str() == Some("low"))
+                                            .unwrap_or(false)
+                                };
+                                if !findings_named.is_empty()
+                                    && findings_named
+                                        .iter()
+                                        .all(|f| f["severity"].as_str() == Some("low"))
+                                    && !ids_named.is_empty()
+                                    && ids_named.iter().all(|(r, i)| recorded_low(*r, *i))
+                                {
+                                    None
+                                } else {
+                                    Some("a fix opened as low names a finding that is not low")
+                                }
+                            }
+                            "release" => {
+                                let next = log.events.get(ix + 1);
+                                let ok = next
+                                    .filter(|n| {
+                                        n["kind"].as_str() == Some("checkpoint.review.release")
+                                            && n["checkpoint"].as_str() == Some(ck.as_str())
+                                    })
+                                    .map(|n| {
+                                        let base = round_report_seq(
+                                            &st,
+                                            &ck,
+                                            n["after_round"].as_u64().unwrap_or(0) as u32,
+                                        );
+                                        match decision_bound(&st, &ck, base, seq) {
+                                            Ok(b) => decision_turn_ok(
+                                                &st,
+                                                &turn_ix,
+                                                n["turn"].as_u64().unwrap_or(0),
+                                                b,
+                                                n["seq"].as_u64().unwrap_or(0),
+                                                n["quote"].as_str().unwrap_or(""),
+                                                Decide::Approve,
+                                            ),
+                                            Err(_) => false,
+                                        }
+                                    })
+                                    .unwrap_or(false);
+                                if ok {
+                                    None
+                                } else {
+                                    Some("a fix opened as a release is not followed by the human's release of the checkpoint with a valid turn")
+                                }
+                            }
+                            "report" => {
+                                if ids_named.is_empty() {
+                                    if crate::ckreview::required(&st) {
+                                        Some("a fix opened by a report names no review round, and the run requires the checkpoint review")
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    let round = ids_named[0].0;
+                                    let key = (ck.clone(), round);
+                                    if ids_named.iter().any(|i| i.0 != round) {
+                                        Some("a fix opened by a report names findings of more than one round")
+                                    } else {
+                                        match ck_rounds.get(&key) {
+                                            None => Some("a fix opened by a report names a round with no findings"),
+                                            Some(list) if *list != findings_named => {
+                                                Some("a fix opened by a report names findings that differ from its round's")
+                                            }
+                                            Some(_) if report_used.contains(&key) => {
+                                                Some("a report already opened a fix for this round")
+                                            }
+                                            Some(_) if parked_rounds.contains(&key) => {
+                                                Some("a fix opened by a report names a round that parked the checkpoint")
+                                            }
+                                            Some(_)
+                                                if !ix
+                                                    .checked_sub(1)
+                                                    .and_then(|j| log.events.get(j))
+                                                    .map(|d| {
+                                                        d["kind"].as_str()
+                                                            == Some("checkpoint.review.done")
+                                                            && d["checkpoint"].as_str()
+                                                                == Some(ck.as_str())
+                                                            && d["round"].as_u64()
+                                                                == Some(round as u64)
+                                                    })
+                                                    .unwrap_or(false) =>
+                                            {
+                                                Some("a fix opened by a report does not follow its round's report at once")
+                                            }
+                                            Some(_) => {
+                                                report_round = Some(key);
+                                                None
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                Some("a fix of review findings names an unknown way it was opened")
+                            }
+                        },
+                    }
+                } else {
+                    None
+                };
+                if ev.get("opened_by").is_some() {
+                    marked_seen = true;
+                }
+                // The turn an opening cites is judged first (its own notes keep their words); a way that is not
+                // justified then ignores the event before the turn counts as used.
+                let mut cited: Option<u64> = None;
                 if let Some(tseq) = ev["human"]["turn"].as_u64() {
                     let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
                     let ids = id_pairs(&ev["finding_ids"]);
@@ -1760,7 +1956,17 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         ));
                         continue;
                     }
+                    cited = Some(tseq);
+                }
+                if let Some(w) = why {
+                    st.ignored.push(format!("event {seq}: {w}"));
+                    continue;
+                }
+                if let Some(tseq) = cited {
                     st.turns[turn_ix[&tseq]].used = true;
+                }
+                if let Some(key) = report_round {
+                    report_used.insert(key);
                 }
                 let heads: Vec<(String, String)> = ev["before"]
                     .as_array()
@@ -1995,6 +2201,17 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 );
             }
             "checkpoint.review.done" => {
+                let key = (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32);
+                if ev["parked"].as_bool().unwrap_or(false) {
+                    parked_rounds.insert(key.clone());
+                } else {
+                    parked_rounds.remove(&key);
+                }
+                if sv("result") == "findings" {
+                    ck_rounds.insert(key, ev["findings"].as_array().cloned().unwrap_or_default());
+                } else {
+                    ck_rounds.remove(&key);
+                }
                 st.ck_round_done.push((
                     sv("checkpoint"),
                     ev["round"].as_u64().unwrap_or(0) as u32,

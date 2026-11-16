@@ -1135,16 +1135,18 @@ pub fn report(
                 "low_findings": list.len(), "goes_on": true}),
             );
         }
-        events::append(
-            p,
-            "checkpoint.review.done",
-            json!({"checkpoint": k, "round": round.round, "content": content, "result": "findings",
-                   "findings": list, "areas": areas, "probes": probes, "note": note}),
-        )?;
-        remove_copy(p, &pl, k);
         // The number of reviews the policy allows is reached with a high or medium finding open: the
-        // checkpoint parks and the human is asked. No fix opens.
-        if reviews(&st, k, &rs) + 1 >= p.policy.limits.checkpoint_reviews {
+        // checkpoint parks and the human is asked. No fix opens, and the round says so, so that no report
+        // can be taken to have opened a fix for it.
+        let parks = reviews(&st, k, &rs) + 1 >= p.policy.limits.checkpoint_reviews;
+        let mut done = json!({"checkpoint": k, "round": round.round, "content": content, "result": "findings",
+                   "findings": list, "areas": areas, "probes": probes, "note": note});
+        if parks {
+            done["parked"] = json!(true);
+        }
+        events::append(p, "checkpoint.review.done", done)?;
+        remove_copy(p, &pl, k);
+        if parks {
             if p.policy.roles.tokens {
                 run::spend_token(p, &format!("{k}:reviewer"))?;
             }
@@ -1499,6 +1501,7 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         ids,
         &content,
         human.map(|t| (t, quote)),
+        if human.is_some() { "pick" } else { "low" },
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true, "findings": named}))
 }
@@ -1539,7 +1542,7 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
     let ids: Vec<(u32, u32)> = held.iter().map(|x| (x.0, x.1 as u32)).collect();
     let open: Vec<Value> = held.into_iter().map(|x| x.2).collect();
     let content = cp_content(p, k)?;
-    crate::ckfix::open_chosen(p, &pl, k, open, ids, &content, None)?;
+    crate::ckfix::open_chosen(p, &pl, k, open, ids, &content, None, "release")?;
     events::append(
         p,
         "checkpoint.review.release",
