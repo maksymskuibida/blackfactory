@@ -547,6 +547,8 @@ fn a_file_no_grant_can_make_safe_leaves_the_unit_blocked_for_the_human() {
         "protected_extra = [\"docs/secret.md\"]",
     );
     let wc = start(&fx);
+    // U-3 has started: a holder that has not started is put after the asker (A-73), not refused.
+    fx.must(&["unit", "start", "U-3"]);
     for (path, shown, rule) in [
         (
             "factory/policy.toml",

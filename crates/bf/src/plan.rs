@@ -495,6 +495,18 @@ pub fn not_ready(
             return Some(format!("it depends on {d}, which has not landed"));
         }
     }
+    // An order of the run log (A-73) holds a unit back like a dependency: the asker lands first.
+    for o in st.orders.iter().filter(|o| s(o, "unit") == unit) {
+        let asker = s(o, "after");
+        // `order::after` leaves out an order the records overrule, so no cycle can hold a unit back.
+        if st.unit_state(asker) != "landed" && crate::scope::order::after(pl, st, unit, asker) {
+            return Some(format!(
+                "it comes after {asker}, which has not landed: {asker} asked for {} and the engine put it after (event {})",
+                s(o, "path"),
+                o["seq"].as_u64().unwrap_or(0)
+            ));
+        }
+    }
     for h in &pl.handoffs {
         if s(h, "to") != unit {
             continue;
