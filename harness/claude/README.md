@@ -9,6 +9,7 @@ This folder holds everything Black Factory needs inside Claude Code. The engine 
 | `agents/reviewer.md` | Reviews cold: brief, diff and receipts only. |
 | `agents/verifier.md` | Checks a checkpoint against the contract. Outcomes: met, failed, unreachable. |
 | `settings.fragment.json` | The hooks and permission rules a project needs. |
+| `panel/` | The panel for the Claude desktop app, installed as `.claude/skills/factory-panel/`. |
 | `install.sh` | Copies the above into a project's `.claude/` and merges the settings. |
 
 The skill expects the page template at `.claude/skills/factory/page.html`. The installer copies it there from `views/templates/page.html` in this repository.
@@ -21,6 +22,17 @@ harness/claude/install.sh --workspace /path/to/your/workspace
 ```
 
 The first form installs into a project, a git repository that holds the code. The second installs into a workspace, a folder made with `bf init --workspace` that holds only the factory and points at code repositories. The folder is detected by `factory/workspace.toml`; `--workspace` only makes the script refuse a folder that is not one, so a code repository is never picked by mistake. In both forms everything goes into that folder's `.claude/`: nothing is written into a code repository. The script touches nothing outside the folder, makes a `.bak` copy of anything it would change, merges into `.claude/settings.json` without removing anything, and does nothing the second time you run it. `bf` must be on your `PATH` for the hooks to work. In a workspace, start Claude Code in the workspace folder so that `CLAUDE_PROJECT_DIR` is the workspace.
+
+## The panel
+
+`panel/` is a Claude Code mod for the Claude desktop app only. It draws a pane beside the chat that shows where the run stands and what waits on the human, and a status line above the prompt while the pane is closed. The terminal, an editor and a phone get nothing. It reads only through the engine's read commands (`bf status --json`, `bf progress --json`, `bf record list --json`, `bf view <kind> [id] --json`), writes no file and sends nothing on the human's behalf.
+
+- **Install and update.** `install.sh` copies every file of `panel/` except `tests/` and `fixtures/` into `.claude/skills/factory-panel/` of the project or workspace, by the rule it uses for its other files: created when missing, replaced with the old copy kept as `.bak` when different, left when equal. A file the installed folder holds that the panel no longer has is named in the output and left. Run the script again after you update this repository. It refuses a symbolic link at `.claude/skills/factory-panel` or on the way to it, writes nothing outside the folder and changes no setting.
+- **When it loads.** In the next session started in that folder. A session that is already open does not pick it up.
+- **Open it.** In the desktop app, in a factory folder, the panel opens by itself. Its option says `auto`, `command` or `off`; the command `/factory-panel` opens it. A pane you closed stays closed for that session. Where the folder is not a factory or `bf` cannot be run, it opens nothing and the command says which of the two it is.
+- **Options.** The mode above and the poll in seconds (at least 3, `0` for off, `5` by default). The panel keeps nothing beyond what you chose in it, for the session.
+- **Protected.** The guard refuses an agent's write into `.claude/skills/factory-panel/`, as it does for the hook settings. Reading it is allowed. Changes to the installed copy are yours to make, outside an agent's tool call.
+- **Remove.** Delete the folder `.claude/skills/factory-panel/`. Nothing else was changed.
 
 ## The two hooks
 

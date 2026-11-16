@@ -60,7 +60,7 @@ fi
 
 # Never write through a symbolic link: it could lead outside the project.
 for p in "$project/.claude" "$project/.claude/skills" "$project/.claude/skills/factory" \
-         "$project/.claude/agents" "$project/.claude/settings.json"; do
+         "$project/.claude/skills/factory-panel" "$project/.claude/agents" "$project/.claude/settings.json"; do
   if [ -L "$p" ]; then
     echo "refused: $p is a symbolic link; it could point outside the project." >&2
     echo "  1. Replace it with a real folder or file." >&2
@@ -68,6 +68,35 @@ for p in "$project/.claude" "$project/.claude/skills" "$project/.claude/skills/f
     exit 2
   fi
 done
+
+# Check every place the panel would write, and every .bak, for a symbolic link before writing anything.
+panel_check_src="$here/panel"
+panel_check_dst="$project/.claude/skills/factory-panel"
+if [ -d "$panel_check_src" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    d="$panel_check_dst/$(dirname "$f")"
+    while [ "$d" != "$panel_check_dst" ] && [ "$d" != "." ] && [ "$d" != "/" ]; do
+      if [ -L "$d" ]; then
+        echo "refused: $d is a symbolic link; it could point outside the project." >&2
+        echo "  1. Replace it with a real folder." >&2
+        echo "  2. Run this script again." >&2
+        exit 2
+      fi
+      d="$(dirname "$d")"
+    done
+    for p in "$panel_check_dst/$f" "$panel_check_dst/$f.bak"; do
+      if [ -L "$p" ]; then
+        echo "refused: $p is a symbolic link; it could point outside the project." >&2
+        echo "  1. Replace it with a real file or remove it." >&2
+        echo "  2. Run this script again." >&2
+        exit 2
+      fi
+    done
+  done <<EOF_CHECK
+$(cd "$panel_check_src" && find . -type f -not -path './tests/*' -not -path './fixtures/*' | sed 's|^\./||' | LC_ALL=C sort)
+EOF_CHECK
+fi
 
 changed=0
 note() { echo "  $1"; }
@@ -80,6 +109,12 @@ install_file() {
     if cmp -s "$src" "$dst"; then
       note "unchanged  ${dst#$project/}"
       return
+    fi
+    if [ -L "$dst.bak" ]; then
+      echo "refused: $dst.bak is a symbolic link; it could point outside the project." >&2
+      echo "  1. Remove it." >&2
+      echo "  2. Run this script again." >&2
+      exit 2
     fi
     cp "$dst" "$dst.bak"
     cp "$src" "$dst"
@@ -107,6 +142,33 @@ if [ -n "$tpl" ]; then
   install_file "$tpl" "$project/.claude/skills/factory/page.html"
 else
   echo "  warning    no page template found in views/templates/; pages cannot be rendered until .claude/skills/factory/page.html exists" >&2
+fi
+
+# The panel for the Claude desktop app: every file of panel/ but tests/ and fixtures/.
+panel_src="$here/panel"
+panel_dst="$project/.claude/skills/factory-panel"
+if [ -d "$panel_src" ]; then
+  panel_files="$(cd "$panel_src" && find . -type f -not -path './tests/*' -not -path './fixtures/*' | sed 's|^\./||' | LC_ALL=C sort)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    install_file "$panel_src/$f" "$panel_dst/$f"
+  done <<EOF_PANEL
+$panel_files
+EOF_PANEL
+  # A file the installed folder holds that the panel no longer has is named and left.
+  if [ -d "$panel_dst" ]; then
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      case "$g" in *.bak) continue ;; esac
+      if ! printf '%s\n' "$panel_files" | grep -qxF -- "$g"; then
+        note "left       .claude/skills/factory-panel/$g  (the panel no longer has it)"
+      fi
+    done <<EOF_OLD
+$(cd "$panel_dst" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+EOF_OLD
+  fi
+else
+  echo "  warning    no panel found in harness/claude/panel/; the panel is not installed" >&2
 fi
 
 # Merge the hook and permission fragment into settings.json without removing anything.

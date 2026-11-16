@@ -1389,6 +1389,7 @@ impl Project {
             ".bf/".into(),
             ".claude/settings.json".into(),
             ".claude/settings.local.json".into(),
+            ".claude/skills/factory-panel/".into(),
             ".git/hooks/".into(),
             ".git/config".into(),
         ];
