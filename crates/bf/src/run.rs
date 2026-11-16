@@ -19,12 +19,14 @@ mod brief;
 mod checkpoint;
 mod land;
 mod next;
+pub(crate) mod pause;
 mod report;
 mod roles;
 mod status;
 mod sync;
 mod tokens;
 mod unit;
+pub(crate) mod unit_sync;
 
 pub use brief::*;
 pub use checkpoint::*;
@@ -209,7 +211,9 @@ pub fn stuck(p: &Project, dry: bool) -> R<Value> {
     for (id, u) in &st.units {
         if u.state == "parked" {
             listed.push(json!({"unit": id, "reason": u.parked_reason}));
-        } else if matches!(u.state.as_str(), "running" | "review" | "fixing") {
+        } else if matches!(u.state.as_str(), "running" | "review" | "fixing")
+            && !pause::idle_exempt(p, &st, id)
+        {
             let idle = now.saturating_sub(util::parse_rfc3339(&u.last_at));
             if idle > limit {
                 parked

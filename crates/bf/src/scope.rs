@@ -15,6 +15,38 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
+pub mod fmtproof;
+pub mod order;
+pub mod reconsider;
+pub mod restore;
+pub mod unblock;
+pub mod wait;
+
+/// What `bf next` gives for a blocked unit besides the human's decision.
+pub enum NextEntry {
+    Waiting(String),
+    Directive(Value),
+}
+
+/// The refusal of a command whose unit has not landed in this binary yet.
+pub(crate) fn not_built(cmd: &str) -> crate::refusal::Fail {
+    refuse(
+        format!("run `bf unit {cmd}`"),
+        "this command is not built in this binary",
+        &["Use the commands `bf unit start`, `land`, `release` and `scope`, which this binary has."],
+        "The command prints its result in a binary that has it.",
+    )
+}
+
+/// Add the keys of `extra` (an object) to `data`; anything else adds nothing.
+pub(crate) fn merge_fields(data: &mut Value, extra: Value) {
+    if let (Some(d), Value::Object(e)) = (data.as_object_mut(), extra) {
+        for (k, v) in e {
+            d.insert(k, v);
+        }
+    }
+}
+
 /// The one question the reviewer answers for each file.
 pub const QUESTION: &str = "For each requested file: is it needed for the unit's original scope, or is it a scope extension? \
 Needed: a file of any kind without which the behaviour the unit's records describe cannot be built, tested or documented, \
@@ -60,7 +92,7 @@ pub fn open_request<'a>(st: &'a State, unit: &str) -> Option<&'a events::ScopeRe
     st.scope.get(unit).and_then(|sc| sc.open.as_ref())
 }
 
-fn depends_on(pl: &Plan, a: &str, b: &str) -> bool {
+pub(crate) fn depends_on(pl: &Plan, a: &str, b: &str) -> bool {
     let mut seen: Vec<String> = Vec::new();
     let mut todo = vec![a.to_string()];
     while let Some(x) = todo.pop() {
@@ -99,7 +131,7 @@ pub fn holder_beside(p: &Project, pl: &Plan, st: &State, unit: &str, path: &str)
         if repo.is_some() && vrepo.is_some() && repo != vrepo {
             continue;
         }
-        if depends_on(pl, vid, unit) {
+        if order::after(pl, st, vid, unit) {
             continue;
         }
         let lower = path.to_lowercase();
@@ -463,7 +495,9 @@ pub fn request(
         ));
     };
     let cur = st.unit_state(unit).to_string();
-    if !matches!(cur.as_str(), "running" | "fixing") {
+    if !(matches!(cur.as_str(), "running" | "fixing")
+        || (cur == "blocked" && reconsider::request_from(&st, unit)))
+    {
         return Err(refuse(
             format!("ask for files for {unit}"),
             format!(
@@ -509,6 +543,10 @@ pub fn request(
         );
         return run::report(p, unit, "blocked", None, note.trim(), None, cost, token);
     }
+    let mut st = st;
+    if order::place(p, &pl, &st, unit, &paths(&files))? {
+        st = events::replay(p)?;
+    }
     let hard: Vec<Value> = files
         .iter()
         .filter_map(|f| {
@@ -520,11 +558,9 @@ pub fn request(
         run::spend_token(p, k)?;
     }
     if !hard.is_empty() {
-        events::append(
-            p,
-            "unit.scope.refused",
-            json!({"unit": unit, "refusal": "hard", "from": cur, "files": hard, "note": note, "cost": cost}),
-        )?;
+        let mut data = json!({"unit": unit, "refusal": "hard", "from": cur, "files": hard, "note": note, "cost": cost});
+        merge_fields(&mut data, wait::refusal_fields(p, &pl, &st, unit, &hard));
+        events::append(p, "unit.scope.refused", data)?;
         p.write_guard()?;
         run::park_if_looping(p, unit)?;
         let st = events::replay(p)?;
@@ -638,6 +674,10 @@ pub fn verdict(
         run::spend_token(p, k)?;
     }
     // The side-by-side rule is checked again, then each needed file is granted.
+    let mut st = st;
+    if order::place(p, &pl, &st, unit, &wanted)? {
+        st = events::replay(p)?;
+    }
     let before: usize = st
         .scope
         .get(unit)
@@ -1031,6 +1071,10 @@ pub fn landing_check(st: &State, unit: &str, repo: &std::path::Path, range: &str
     for g in sc.grants.iter().filter(|g| g.withdrawn.is_none()) {
         for f in &g.files {
             let path = s(f, "path");
+            if let Some(r) = fmtproof::landing(st, unit, repo, range, f) {
+                r?;
+                continue;
+            }
             if f["new"].as_bool().unwrap_or(false) || !(is_test_path(path) || is_config(path)) {
                 continue;
             }

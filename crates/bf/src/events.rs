@@ -535,6 +535,10 @@ pub struct UnitSt {
     pub notes: Vec<String>,
     /// Every review round: number, the content it judged, its commit and what it covered.
     pub review_rounds: Vec<Value>,
+    /// Paused by the human (`unit.pause`), until `unit.resume`.
+    pub paused: bool,
+    /// Set when a blocked unit is to be reconsidered (A-73).
+    pub reconsider: bool,
 }
 
 /// One repository of an open sync: where the checkpoint branch stood before, the main branch's commit
@@ -846,6 +850,8 @@ pub struct State {
     pub wave_runs: BTreeMap<(String, u32), WaveRun>,
     /// Unit -> its open request, its grants and its refused requests.
     pub scope: BTreeMap<String, ScopeSt>,
+    /// Orders between units set after the plan was made: `{unit, after, path, seq}`.
+    pub orders: Vec<Value>,
 }
 
 impl State {
@@ -1118,7 +1124,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "project.init" | "head.accept" | "policy.accept" => {}
             _ => st.work_events += 1,
         }
-        match ev["kind"].as_str().unwrap_or("") {
+        let kind = ev["kind"].as_str().unwrap_or("");
+        match kind {
             "human.turn" => {
                 turn_ix.insert(seq, st.turns.len());
                 // A turn recorded with a wrapper that marks text written by a program or another session
@@ -1127,7 +1134,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.turns.push(Turn {
                     seq,
                     text: sv("text"),
-                    at,
+                    at: at.clone(),
                     used: machine,
                     transcript: sv("transcript"),
                 });
@@ -1142,7 +1149,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         .map(|s| s.to_string()),
                     round: ev["round"].as_u64().unwrap_or(1) as u32,
                     open_seq: seq,
-                    open_at: at,
+                    open_at: at.clone(),
                     status: "open".into(),
                     simulated: false,
                     decided_seq: None,
@@ -1276,7 +1283,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.runs.push(Run {
                     id: sv("run"),
                     start_seq: seq,
-                    start_at: at,
+                    start_at: at.clone(),
                     test_mode,
                     ended: false,
                     simulated_used: false,
@@ -1481,7 +1488,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 u.base_commit = sv("base_commit");
                 u.started_at = at.clone();
                 u.last_seq = seq;
-                u.last_at = at;
+                u.last_at = at.clone();
             }
             "unit.report" => {
                 let u = st.units.entry(sv("unit")).or_default();
@@ -1513,7 +1520,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }));
                 }
                 u.last_seq = seq;
-                u.last_at = at;
+                u.last_at = at.clone();
             }
             "unit.scope.request" => {
                 let u = st.units.entry(sv("unit")).or_default();
@@ -1525,7 +1532,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.cost += c;
                 st.scope.entry(sv("unit")).or_default().open = Some(ScopeReq {
                     seq,
-                    at,
+                    at: at.clone(),
                     from: sv("from"),
                     files: ev["files"].as_array().cloned().unwrap_or_default(),
                 });
@@ -1549,7 +1556,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(u) = st.units.get_mut(&sv("unit")) {
                     u.cost += c;
                     u.last_seq = seq;
-                    u.last_at = at;
+                    u.last_at = at.clone();
                 }
             }
             "unit.scope.refused" => {
@@ -1573,7 +1580,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     st.cost += c;
                 }
                 u.last_seq = seq;
-                u.last_at = at;
+                u.last_at = at.clone();
             }
             "unit.scope.revert" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
@@ -1599,7 +1606,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         if u.state != "landed" {
                             u.state = to;
                             u.last_seq = seq;
-                            u.last_at = at;
+                            u.last_at = at.clone();
                         }
                     }
                 }
@@ -1618,7 +1625,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 u.landed_hash = sv("hash");
                 u.landed_run = sv("run");
                 u.last_seq = seq;
-                u.last_at = at;
+                u.last_at = at.clone();
             }
             "evidence.run" => {
                 if let Some(u) = st.units.get_mut(&sv("unit")) {
@@ -2308,7 +2315,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         u.attempts = 0;
                         u.parked_reason.clear();
                         u.last_seq = seq;
-                        u.last_at = at;
+                        u.last_at = at.clone();
                     }
                 }
             }
@@ -2320,7 +2327,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 u.state = "parked".into();
                 u.parked_reason = sv("reason");
                 u.last_seq = seq;
-                u.last_at = at;
+                u.last_at = at.clone();
             }
             "checkpoint.close" => {
                 let k = sv("checkpoint");
@@ -2464,6 +2471,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             u.last_at = at.clone();
                         }
                     }
+                    crate::scope::unblock::replay(&mut st, ev, &id, seq, &at);
                     for k in crate::store::str_list(ev, "reopen_checkpoints") {
                         st.closed.remove(&k);
                     }
@@ -2474,6 +2482,10 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                 }
             }
+            "unit.scope.resume" => crate::scope::wait::replay(&mut st, ev, seq, &at),
+            "unit.pause" | "unit.resume" => crate::run::pause::replay(&mut st, ev, seq, &at),
+            "unit.order" => crate::scope::order::replay(&mut st, ev, seq, &at),
+            "unit.sync" => crate::run::unit_sync::replay(&mut st, ev, seq, &at),
             "tokens.reset" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 if decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
@@ -2494,6 +2506,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             _ => {}
         }
+        crate::run::pause::after_event(&mut st, kind, ev);
+        crate::scope::reconsider::after_event(&mut st, kind, ev, seq, &at);
     }
     st
 }
