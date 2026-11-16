@@ -86,8 +86,15 @@ pub fn coverage(p: &Project, a: &Amend) -> R<Vec<StageCover>> {
 
 /// A fingerprint of the records of the amendment's set as they are now. It is written into the
 /// narrowing the human reads, and approval is refused when the records no longer match it (TH-12).
-pub fn set_hash(p: &Project, a: &Amend) -> R<String> {
-    let mut ids: Vec<&String> = a.ids.iter().chain(a.touched.iter()).collect();
+/// The kept impact set (`keep`, the one of the narrowing being written or the one in force) is covered
+/// too: a kept record that changed after the narrowing, by any route, voids the human's reading.
+pub fn set_hash(p: &Project, a: &Amend, keep: &[String]) -> R<String> {
+    let mut ids: Vec<&String> = a
+        .ids
+        .iter()
+        .chain(a.touched.iter())
+        .chain(keep.iter())
+        .collect();
     ids.sort();
     ids.dedup();
     let mut parts = Vec::new();
@@ -109,7 +116,7 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
     let Some(was) = narrowed["set_hash"].as_str() else {
         return Ok(());
     };
-    if was == set_hash(p, a)? {
+    if was == set_hash(p, a, &a.keep)? {
         return Ok(());
     }
     let aid = &a.id;
@@ -117,6 +124,7 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
         format!("approve {aid}"),
         "a record of the amendment was put or replaced after it was narrowed, so the human has not read it".to_string(),
         vec![
+            format!("Run `bf amend revise <ID>...` on {aid}, naming every record that changed (a kept record that must change is named there, in the changed set)."),
             format!("Narrow {aid} again with `bf amend narrow --file <f>`."),
             "Ask the human to read it and say yes after that.".to_string(),
         ],

@@ -521,7 +521,8 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
 
 /// An amendment covers this ID for a change now: one that waits for the human names it among its own
 /// set (its new or changed records and the agent's not affected decisions are put while it waits for the
-/// human, R-39, and the one approval covers them). An approval recorded before the content was kept
+/// human, R-39, and the one approval covers them). A kept record of the impact set is not among them: one
+/// that must change is named with `bf amend revise`, narrowed again and read again. An approval recorded before the content was kept
 /// covers its IDs for ever, as it did. A newer approval covers only the content it approved: a later
 /// change of the record is a change with no amendment (see `approved_entry`).
 pub fn amended(st: &State, id: &str) -> bool {
@@ -540,8 +541,7 @@ fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     st.amends.iter().find(|a| {
         matches!(a.status.as_str(), "open" | "narrowed")
             && (a.ids.iter().any(|k| k == id)
-                || a.touched.iter().any(|k| k == id)
-                || a.keep.iter().any(|k| k == id))
+                || a.touched.iter().any(|k| k == id))
     })
 }
 
@@ -1716,7 +1716,7 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
     }
     // The records of the set as the human reads them now: approval is refused if they change later.
     let set_hash = match st.amends.iter().find(|a| a.id == aid) {
-        Some(a) => crate::amend::set_hash(p, a)?,
+        Some(a) => crate::amend::set_hash(p, a, &keep)?,
         None => String::new(),
     };
     events::append(
