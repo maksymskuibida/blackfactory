@@ -146,6 +146,7 @@ pub fn observe_holds(p: &Project) -> R<()> {
         .filter(|q| !s(q, "unit").is_empty() && q.get("answer").is_none())
         .collect();
     let mut receipts: Option<Vec<Receipt>> = None;
+    let over_budget = budget_reached(p, &st);
     for k in &pl.checkpoints {
         let kid = s(k, "id");
         let after = str_list(k, "after");
@@ -153,6 +154,10 @@ pub fn observe_holds(p: &Project) -> R<()> {
             || after.is_empty()
             || !after.iter().all(|u| st.unit_state(u) == "landed")
         {
+            continue;
+        }
+        if over_budget {
+            want.insert(kid.to_string(), ("budget", String::new()));
             continue;
         }
         let wave = crate::wavecheck::close_blockers(&pl, &st, kid);

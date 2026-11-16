@@ -655,6 +655,32 @@ pub enum Hold {
     Question { checkpoint: String, id: String },
     /// A wave check holds the checkpoint's close.
     Wave { checkpoint: String, reason: String },
+    /// `bf next` returns before its checkpoints: the latest plan gate of the run is open or not approved.
+    Run { checkpoint: String, gate: RunHold },
+    /// The budget cap is reached: `bf next` refuses.
+    Budget { checkpoint: String },
+}
+
+/// The state of the run in which `bf next` returns before it reaches the checkpoints: the latest plan gate of
+/// the active run is not approved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunHold {
+    /// The plan gate is open and waits for the human's decision.
+    Open { gate: String },
+    /// The plan gate is rejected or was never opened.
+    NotOpen { rejected: bool },
+}
+
+/// `Some` while the latest plan gate of the active run is open, rejected or not yet opened. `bf next` returns
+/// before its checkpoint loop exactly then, and `hold` reads the same function.
+pub fn run_hold(st: &State) -> Option<RunHold> {
+    st.active_run()?;
+    match st.latest_gate("plan", None) {
+        Some(g) if g.status == "approved" => None,
+        Some(g) if g.status == "open" => Some(RunHold::Open { gate: g.id.clone() }),
+        Some(_) => Some(RunHold::NotOpen { rejected: true }),
+        None => Some(RunHold::NotOpen { rejected: false }),
+    }
 }
 
 impl Hold {
@@ -665,7 +691,9 @@ impl Hold {
             | Hold::Fix { checkpoint }
             | Hold::Marked { checkpoint, .. }
             | Hold::Question { checkpoint, .. }
-            | Hold::Wave { checkpoint, .. } => checkpoint,
+            | Hold::Wave { checkpoint, .. }
+            | Hold::Run { checkpoint, .. }
+            | Hold::Budget { checkpoint } => checkpoint,
         }
     }
     /// The hold in words, for a refusal ("because ...").
@@ -687,6 +715,18 @@ impl Hold {
             Hold::Wave { checkpoint, reason } => {
                 format!("a wave check holds the close of {checkpoint} ({reason})")
             }
+            Hold::Run { gate, .. } => match gate {
+                RunHold::Open { gate } => {
+                    format!("the plan gate of the run is open again ({gate}) and waits for the human's decision")
+                }
+                RunHold::NotOpen { rejected: true } => {
+                    "the plan gate of the run is rejected and not approved".to_string()
+                }
+                RunHold::NotOpen { rejected: false } => {
+                    "the plan gate of the run is not open and not approved".to_string()
+                }
+            },
+            Hold::Budget { .. } => "the budget cap is reached".to_string(),
         }
     }
     /// The hold in words of the past, for the note of an ignored event.
@@ -704,6 +744,11 @@ impl Hold {
             Hold::Wave { checkpoint, reason } => {
                 format!("a wave check held the close of {checkpoint} ({reason})")
             }
+            Hold::Run { gate, .. } => match gate {
+                RunHold::Open { gate } => format!("the plan gate was open ({gate})"),
+                RunHold::NotOpen { .. } => "the plan gate was not approved".to_string(),
+            },
+            Hold::Budget { .. } => "the budget cap was reached".to_string(),
         }
     }
 }
@@ -1010,8 +1055,16 @@ pub fn decision_bound(st: &State, k: &str, base: u64, opened_before: u64) -> Res
 /// The one predicate for "the human is not being asked about the findings of checkpoint `k`": a sync of main
 /// into any checkpoint is open (every phase); any checkpoint fix opened before `opened_before` is at work
 /// (open and not parked, the gap phase included); or the engine logged a hold of `k` (a check marked, a
-/// worker's question unanswered, a wave check holding the close). `bf next` and the five decisions share it.
+/// worker's question unanswered, a wave check holding the close, the budget cap reached); or the latest plan
+/// gate of the run is not approved (`run_hold`, where `bf next` returns before its checkpoints). `bf next` and
+/// the five decisions share it.
 pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
+    if let Some(gate) = run_hold(st) {
+        return Some(Hold::Run {
+            checkpoint: k.to_string(),
+            gate,
+        });
+    }
     if let Some(so) = st.sync_open.as_ref() {
         return Some(Hold::Sync {
             checkpoint: so.checkpoint.clone(),
@@ -1044,8 +1097,76 @@ pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
             checkpoint,
             reason: h.detail.clone(),
         }),
+        "budget" => Some(Hold::Budget { checkpoint }),
         _ => None,
     }
+}
+
+/// The bound of the words that switch the checkpoint review off for the run: for each checkpoint in `open`
+/// (the checkpoints not closed that have an open critical, high or medium finding) the bound of a decision on
+/// its findings, with the proposal's seq as base. A hold of any of them refuses, naming the checkpoint whose
+/// decision it holds; otherwise the latest bound. The command and the replay both use it.
+pub fn review_off_bound(
+    st: &State,
+    open: &[String],
+    proposal: u64,
+    opened_before: u64,
+) -> Result<u64, (String, Hold)> {
+    let mut bound = proposal;
+    for k in open.iter().filter(|k| !st.closed.contains_key(*k)) {
+        bound = bound.max(
+            decision_bound(st, k, proposal, opened_before).map_err(|h| (k.clone(), h))?,
+        );
+    }
+    Ok(bound)
+}
+
+/// Whether the checkpoint review is required now.
+pub fn ckreview_required_now(st: &State) -> bool {
+    crate::ckreview::required(st)
+}
+
+/// Whether the checkpoint review is required if `changes` were recorded in `scope` now.
+pub fn review_required_after(st: &mut State, scope: &str, changes: &[CheckChange]) -> bool {
+    let old_default = st.checks_default.clone();
+    let old_run = st
+        .runs
+        .iter()
+        .rev()
+        .find(|r| !r.ended)
+        .map(|r| r.checks_off.clone());
+    if scope == "default" || scope == "both" {
+        apply_changes(&mut st.checks_default, changes);
+    }
+    if scope == "run" || scope == "both" {
+        if let Some(r) = st.runs.iter_mut().rev().find(|r| !r.ended) {
+            apply_changes(&mut r.checks_off, changes);
+        }
+    }
+    let after = crate::ckreview::required(st);
+    st.checks_default = old_default;
+    if let (Some(old), Some(r)) = (old_run, st.runs.iter_mut().rev().find(|r| !r.ended)) {
+        r.checks_off = old;
+    }
+    after
+}
+
+/// The checkpoints not closed that have a critical, high or medium finding no one has settled, from the
+/// rounds the replay keeps.
+fn open_blocking_checkpoints(st: &State, rounds: &HashMap<(String, u32), Vec<Value>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ((k, round), findings) in rounds {
+        if st.closed.contains_key(k) || out.contains(k) {
+            continue;
+        }
+        if findings.iter().enumerate().any(|(i, f)| {
+            crate::ckreview::blocking(f) && crate::ckreview::fate(st, k, *round, i, f).is_none()
+        }) {
+            out.push(k.clone());
+        }
+    }
+    out.sort();
+    out
 }
 
 /// The one bound of the words that release a parked sync (`release`: the later of its park and the latest
@@ -1084,8 +1205,15 @@ pub fn can_change_hold(kind: &str) -> bool {
             | "wave.check.run"
             | "unit.land"
             | "checkpoint.fix.done"
+            | "checkpoint.fix.abort"
+            | "checkpoint.fix.open"
             | "checkpoint.sync"
+            | "checkpoint.sync.abort"
+            | "checkpoint.sync.open"
             | "amend.approve"
+            | "gate.open"
+            | "gate.approve"
+            | "gate.reject"
     )
 }
 
@@ -1175,6 +1303,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         .push(format!("event {seq}: gate {gid} was already decided"));
                     continue;
                 }
+                // A run hold that stood just before the approval of the plan gate ends with it.
+                let run_hold_before = run_hold(&st).is_some();
                 if simulated {
                     // Valid only inside a granted test run that is still active, or, for the design
                     // gates, under a test-mode grant that is waiting for its run to start.
@@ -1252,6 +1382,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             refuse: st.words_refuse.clone(),
                         },
                     );
+                }
+                if approve
+                    && run_hold_before
+                    && st.gates[gi].kind == "plan"
+                    && st.gates[gi].status == "approved"
+                {
+                    st.ck_end_seq = seq;
                 }
             }
             "testmode.grant" => {
@@ -1427,6 +1564,25 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let pseq = ev["proposal"].as_u64().unwrap_or(0);
                 let changes = changes_from_json(&ev["changes"]);
                 let prop = st.checks_proposals.iter().find(|x| x.seq == pseq).cloned();
+                // Switching the checkpoint review off ends the hold of every open finding: its words are
+                // bound like the other decisions.
+                let mut bound = pseq;
+                if prop.is_some() && ckreview_required_now(&st) {
+                    let scope = sv("scope");
+                    if !review_required_after(&mut st, &scope, &changes) {
+                        let open = open_blocking_checkpoints(&st, &ck_rounds);
+                        match review_off_bound(&st, &open, pseq, seq) {
+                            Ok(b) => bound = b,
+                            Err((_, h)) => {
+                                st.ignored.push(format!(
+                                    "event {seq}: the checkpoint review was switched off while {}",
+                                    h.during()
+                                ));
+                                continue;
+                            }
+                        }
+                    }
+                }
                 let ok = prop
                     .as_ref()
                     .map(|x| {
@@ -1451,7 +1607,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         &st,
                         &turn_ix,
                         tseq,
-                        pseq,
+                        bound,
                         seq,
                         &sv("quote"),
                         Decide::Approve,

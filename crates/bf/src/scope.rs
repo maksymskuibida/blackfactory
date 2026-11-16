@@ -28,16 +28,6 @@ pub enum NextEntry {
     Directive(Value),
 }
 
-/// The refusal of a command whose unit has not landed in this binary yet.
-pub(crate) fn not_built(cmd: &str) -> crate::refusal::Fail {
-    refuse(
-        format!("run `bf unit {cmd}`"),
-        "this command is not built in this binary",
-        &["Use the commands `bf unit start`, `land`, `release` and `scope`, which this binary has."],
-        "The command prints its result in a binary that has it.",
-    )
-}
-
 /// Add the keys of `extra` (an object) to `data`; anything else adds nothing.
 pub(crate) fn merge_fields(data: &mut Value, extra: Value) {
     if let (Some(d), Value::Object(e)) = (data.as_object_mut(), extra) {
