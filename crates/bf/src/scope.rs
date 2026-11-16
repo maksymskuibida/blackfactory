@@ -52,7 +52,12 @@ pub const MARK_AFTER_THREE: &str = "source file after three";
 
 /// The record's list plus the unit's grants that were not withdrawn (landed or not).
 pub fn unit_files(st: &State, u: &Value) -> Vec<String> {
-    let mut v = str_list(u, "files");
+    // A file list changed by an amendment the human has not approved is a draft: it grants nothing.
+    let mut v = if crate::gates::unapproved_change(st, u).is_some() {
+        Vec::new()
+    } else {
+        str_list(u, "files")
+    };
     for f in granted_files(st, s(u, "id")) {
         if !v.contains(&f) {
             v.push(f);

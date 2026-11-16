@@ -203,6 +203,19 @@ fn a_change_to_a_threat_needs_a_newer_report_of_the_security_expert() {
 }
 
 #[test]
+fn a_report_of_the_security_expert_stays_good_when_only_the_threat_files_times_move() {
+    let fx = Fx::with_checks();
+    design_records(&fx);
+    only_on(&fx, &["threat-model"]);
+    fx.put("threat", THREAT);
+    expert_reports(&fx);
+    // A fresh clone or a branch switch rewrites the file with the same content a second later.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    revise(&fx, "threat", THREAT);
+    fx.must(&["gate", "open", "architecture"]);
+}
+
+#[test]
 fn the_architecture_gate_follows_the_settings_the_other_way_round_too() {
     let fx = Fx::with_checks();
     design_records(&fx);

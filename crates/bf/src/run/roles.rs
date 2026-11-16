@@ -32,11 +32,13 @@ pub(crate) fn role_report(
         let key = check_token(p, subject, r, token)?;
         spend_token(p, &key)?;
     }
-    events::append(
-        p,
-        "unit.role-report",
-        json!({"unit": subject, "result": result, "role": r, "note": note, "cost": cost.max(0.0)}),
-    )?;
+    let mut ev =
+        json!({"unit": subject, "result": result, "role": r, "note": note, "cost": cost.max(0.0)});
+    // The security expert's design report binds to the threat records it read.
+    if r == "security-expert" && subject == crate::roles::DESIGN {
+        ev["threats_hash"] = json!(crate::enforce::threats_hash(p)?);
+    }
+    events::append(p, "unit.role-report", ev)?;
     let state = if outside_run {
         String::new()
     } else {

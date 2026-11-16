@@ -805,13 +805,40 @@ fn literals_for_unnamed_writes(code: &str, dir: &Option<String>) -> Vec<String> 
         // A name after a dot counts as an extension when it holds a letter (`v1.2` and `0.2.1` are
         // version numbers), or when the literal is handed to a file call.
         const FILE_CALLS: &[&str] = &[
-            "open", "opensync", "remove", "unlink", "unlinksync", "rename", "renamesync", "replace",
-            "rmsync", "rmtree", "rmdir", "truncate", "truncatesync", "writefile", "writefilesync",
-            "appendfile", "appendfilesync", "readfile", "readfilesync", "delete", "copy", "copy2",
-            "copyfile", "copyfilesync", "move", "chmod", "chown", "file", "path", "symlink", "link",
+            "open",
+            "opensync",
+            "remove",
+            "unlink",
+            "unlinksync",
+            "rename",
+            "renamesync",
+            "replace",
+            "rmsync",
+            "rmtree",
+            "rmdir",
+            "truncate",
+            "truncatesync",
+            "writefile",
+            "writefilesync",
+            "appendfile",
+            "appendfilesync",
+            "readfile",
+            "readfilesync",
+            "delete",
+            "copy",
+            "copy2",
+            "copyfile",
+            "copyfilesync",
+            "move",
+            "chmod",
+            "chown",
+            "file",
+            "path",
+            "symlink",
+            "link",
         ];
-        let to_file_call = enclosing_call(before)
-            .is_some_and(|w| FILE_CALLS.contains(&w.to_lowercase().as_str()));
+        let to_file_call =
+            enclosing_call(before).is_some_and(|w| FILE_CALLS.contains(&w.to_lowercase().as_str()));
         let path_like = lit.contains('/')
             || (!ext.is_empty()
                 && ext.chars().all(|c| c.is_alphanumeric())
@@ -2440,7 +2467,11 @@ fn writer_args(prog: &str, args: &[String], dir: &Option<String>) -> Vec<String>
                 out.extend(full[i + 1..].iter().filter(|a| !is_flag(a)).cloned());
             }
             if sub == "update-index" {
-                out.extend(cacheinfo_entries(&full[i + 1..]).into_iter().map(|(_, p)| p));
+                out.extend(
+                    cacheinfo_entries(&full[i + 1..])
+                        .into_iter()
+                        .map(|(_, p)| p),
+                );
             }
         }
     } else if prog == "curl" || prog == "wget" {
@@ -4126,6 +4157,7 @@ const BF_KNOWN: &[&str] = &[
     "legal",
     "preset",
     "uiux",
+    "review",
 ];
 
 /// What a working copy may run: (subcommand, the second words allowed; empty = any). A unit's

@@ -799,6 +799,8 @@ pub struct Amend {
     pub withdrawn_why: String,
     /// The log position of its latest narrowing or revision: an approval needs a human message after it.
     pub changed_seq: u64,
+    /// The log position where it was opened: words of the human written before it cannot lift its rule.
+    pub opened_seq: u64,
     /// Opened with the plan repair mark (R-41).
     pub repair: bool,
     /// The checkpoint insertions and splits asked for inside it, in order (R-64). They take effect
@@ -1114,9 +1116,8 @@ pub fn review_off_bound(
 ) -> Result<u64, (String, Hold)> {
     let mut bound = proposal;
     for k in open.iter().filter(|k| !st.closed.contains_key(*k)) {
-        bound = bound.max(
-            decision_bound(st, k, proposal, opened_before).map_err(|h| (k.clone(), h))?,
-        );
+        bound =
+            bound.max(decision_bound(st, k, proposal, opened_before).map_err(|h| (k.clone(), h))?);
     }
     Ok(bound)
 }
@@ -1153,7 +1154,10 @@ pub fn review_required_after(st: &mut State, scope: &str, changes: &[CheckChange
 
 /// The checkpoints not closed that have a critical, high or medium finding no one has settled, from the
 /// rounds the replay keeps.
-fn open_blocking_checkpoints(st: &State, rounds: &HashMap<(String, u32), Vec<Value>>) -> Vec<String> {
+fn open_blocking_checkpoints(
+    st: &State,
+    rounds: &HashMap<(String, u32), Vec<Value>>,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for ((k, round), findings) in rounds {
         if st.closed.contains_key(k) || out.contains(k) {
@@ -1965,7 +1969,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     } else {
                         None
                     }
-                } else if source == "review" {
+                } else {
+                    // Every source that is not a failed check or a wave is a fix of review findings, and is
+                    // judged as one: a source no honest path writes has no way to be justified.
                     match ev.get("opened_by") {
                         None => {
                             if marked_seen {
@@ -2090,8 +2096,6 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             }
                         },
                     }
-                } else {
-                    None
                 };
                 if ev.get("opened_by").is_some() {
                     marked_seen = true;
@@ -2455,6 +2459,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.turns[turn_ix[&tseq]].used = true;
                 st.legal_accepts.push((sv("record"), sv("quote"), seq));
             }
+            // The human's answers to a design review and the designer lift: each uses up the message it
+            // cites, so no other decision can take the same words. One that cites no valid turn and
+            // quote is ignored, as for every other decision of the human.
+            "designer.lift" | "review.finding.accept" | "design-review.release" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                    st.ignored.push(format!(
+                        "event {seq}: {kind} cites no valid human turn and quote"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+            }
             "unit.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
                 if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
@@ -2522,6 +2539,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 status: "open".into(),
                 withdrawn_why: String::new(),
                 changed_seq: seq,
+                opened_seq: seq,
                 repair: ev["repair"].as_bool().unwrap_or(false),
                 ops: vec![],
                 touched: vec![],

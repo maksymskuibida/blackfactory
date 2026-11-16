@@ -529,6 +529,30 @@ pub fn amended(st: &State, id: &str) -> bool {
     })
 }
 
+/// The amendment that holds this plan record as a draft: a unit or a check of the approved plan that an
+/// amendment still waiting for the human names, and whose content is not the content the plan gate
+/// approved. A draft is not the record in force: no evidence run, no scope and no landing rest on it
+/// until the human approves the amendment (R-39).
+pub fn unapproved_change(st: &State, rec: &Value) -> Option<String> {
+    let kind = s(rec, "kind");
+    if !matches!(kind, "unit" | "check") {
+        return None;
+    }
+    let id = s(rec, "id");
+    let a = st.amends.iter().find(|a| {
+        matches!(a.status.as_str(), "open" | "narrowed")
+            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
+    })?;
+    let g = st
+        .latest_gate("plan", None)
+        .filter(|g| g.status == "approved")?;
+    let snap = g.snapshot.as_object()?;
+    match snap.get(id) {
+        Some(old) if old["h"].as_str() == Some(&crate::evidence::record_hash(rec)) => None,
+        _ => Some(a.id.clone()),
+    }
+}
+
 /// Records of a gate that was approved and that no longer match what the human approved: changed,
 /// removed, or new since. An approved amendment covers its IDs. This is how a plan stays frozen, and
 /// how a check record edited by hand after the plan gate is found.
@@ -1222,6 +1246,21 @@ pub fn designer_lift(p: &Project, subject: &str, quote: &str) -> R<Value> {
             "`bf view run --json` shows the words.",
         ));
     }
+    // Only words written after the work they lift: after the amendment was opened, or after the gate
+    // before the stage was approved.
+    let after = match amend {
+        Some(a) => a.opened_seq,
+        None => {
+            let i = DESIGN_ORDER.iter().position(|k| *k == subject).unwrap_or(0);
+            DESIGN_ORDER[..i]
+                .iter()
+                .filter_map(|k| st.latest_gate(k, None))
+                .filter(|g| g.status == "approved")
+                .filter_map(|g| g.decided_seq)
+                .max()
+                .unwrap_or(0)
+        }
+    };
     let mut st = st;
     for e in events::load_log(p)?
         .events
@@ -1234,7 +1273,7 @@ pub fn designer_lift(p: &Project, subject: &str, quote: &str) -> R<Value> {
             }
         }
     }
-    let (seq, message) = events::pick_turn(&st, 0, events::Decide::Approve, quote)?;
+    let (seq, message) = events::pick_turn(&st, after, events::Decide::Approve, quote)?;
     events::append(
         p,
         LIFT_EVENT,

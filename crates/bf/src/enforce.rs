@@ -356,14 +356,31 @@ fn count(p: &Project, kind: &str) -> R<usize> {
     Ok(p.list_records(schema::kind_by_name(kind))?.len())
 }
 
+/// A hash of the threat records as they are now: the security expert's report binds to it, so a report
+/// stays good while the records stay as they were, whatever the files' times say.
+pub fn threats_hash(p: &Project) -> R<String> {
+    let mut recs = p.list_records(schema::kind_by_name("threat"))?;
+    recs.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
+    let mut text = String::new();
+    for r in &recs {
+        text.push_str(s(r, "id"));
+        text.push(' ');
+        text.push_str(&evidence::record_hash(r));
+        text.push('\n');
+    }
+    Ok(crate::util::sha256_hex(text.as_bytes()))
+}
+
 /// The threat model is proven when threats exist and the security expert reported at the design stage
-/// after the last change to any threat record. A report in the same second as a change counts as
-/// before it, like a human message does for a legal record.
+/// on the threat records as they are now: the report's event holds a hash of them (`threats_hash`). A
+/// report of an older log that holds no hash counts when it came after the last change to any threat
+/// record (a report in the same second as a change counts as before it).
 pub fn threat_model_proven(p: &Project) -> R<bool> {
     let recs = p.list_records(schema::kind_by_name("threat"))?;
     if recs.is_empty() {
         return Ok(false);
     }
+    let now = threats_hash(p)?;
     let mut changed_ms = 0u64;
     for r in &recs {
         let ms = p
@@ -382,7 +399,12 @@ pub fn threat_model_proven(p: &Project) -> R<bool> {
             && e["unit"] == crate::roles::DESIGN
             && e["role"] == "security-expert"
             && e["result"] == "built"
-            && crate::util::parse_rfc3339(e["at"].as_str().unwrap_or("")) * 1000 > changed_ms
+            && match e["threats_hash"].as_str() {
+                Some(h) => h == now,
+                None => {
+                    crate::util::parse_rfc3339(e["at"].as_str().unwrap_or("")) * 1000 > changed_ms
+                }
+            }
     }))
 }
 

@@ -151,6 +151,46 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     // put, and only with the token of its review kind.
     if kind.name == "finding" {
         crate::checks::review::may_put_finding(p, &st, &rec, old.as_ref(), args.flag("token"))?;
+        // The finding on file is judged too: a finding of a design review holds its gate or amendment,
+        // and what holds it (the gate, the amendment, a request for a stage review, the severity) is
+        // changed or removed only with the token of the kind that filed it.
+        if let Some(o) = old.as_ref() {
+            let (og, oa) = (s(o, "gate"), s(o, "amendment"));
+            let changed = ["gate", "amendment", "asks", "severity"]
+                .iter()
+                .any(|k| s(o, k) != s(&rec, k));
+            let reviewed = if oa.is_empty() {
+                crate::checks::review::GATES.contains(&og)
+            } else {
+                true
+            };
+            if changed && reviewed && p.policy.roles.tokens {
+                let (subject, kind) = if oa.is_empty() {
+                    (og.to_string(), og.to_string())
+                } else {
+                    (
+                        oa.to_string(),
+                        if og.is_empty() {
+                            "amendment".to_string()
+                        } else {
+                            og.to_string()
+                        },
+                    )
+                };
+                if !crate::run::holds_token(
+                    p,
+                    &crate::checks::review::token_key(&subject, &kind),
+                    args.flag("token"),
+                ) {
+                    return Err(refuse(
+                        format!("change the finding {}", s(&rec, "id")),
+                        format!("it is a finding of the review of {subject}, and its gate, amendment, request for a stage review or severity changes only with the token of its kind ({kind}); none, or the wrong one, was given"),
+                        &["The design reviewer passes the token `bf review token` issued for its kind."],
+                        "`bf record get` shows the finding as it was filed.",
+                    ));
+                }
+            }
+        }
     }
     let mut accepted_by: Option<(u64, String)> = None;
     // A legal record is accepted by the human alone: not by a role that writes it, and from the main

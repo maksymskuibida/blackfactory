@@ -147,7 +147,10 @@ pub fn screens_hash(p: &Project) -> R<String> {
     // The journeys too: a changed journey makes a design-stage UI/UX judgment stale.
     let mut js = p.list_records(crate::schema::kind_by_name("journey"))?;
     js.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
-    text.extend(js.iter().map(|j| format!("{}:{}", s(j, "id"), record_hash(j))));
+    text.extend(
+        js.iter()
+            .map(|j| format!("{}:{}", s(j, "id"), record_hash(j))),
+    );
     Ok(util::sha256_hex(text.join("\n").as_bytes()))
 }
 
@@ -556,6 +559,23 @@ pub fn run_with(
             ],
             "The check's command holds no shell operator, and `bf evidence run` writes a receipt.",
         ));
+    }
+    {
+        let st = events::replay(p)?;
+        let mut drafts = vec![chk.clone()];
+        if let Some(u) = unit {
+            drafts.extend(p.get_record(u)?);
+        }
+        for d in &drafts {
+            if let Some(a) = crate::gates::unapproved_change(&st, d) {
+                return Err(refuse(
+                    format!("run evidence for {check_id}"),
+                    format!("{} is changed by {a}, which the human has not approved; a draft of the plan is not the record in force", s(d, "id")),
+                    &[&format!("Wait for the human's approval of {a} (`bf status` lists it).")],
+                    "`bf status` shows the amendment approved.",
+                ));
+            }
+        }
     }
     let want = command_words(&chk);
     if want != argv {
@@ -1364,6 +1384,20 @@ pub fn unit_landing_needs<'a>(
 ) -> Vec<UnitNeed<'a>> {
     let wt = p.work_dir().join(unit);
     let mut out = Vec::new();
+    // A unit or a check changed by an amendment the human has not approved is a draft: landing waits.
+    for d in pl.unit(unit).into_iter().chain(pl.unit_checks(unit)) {
+        if let Some(a) = crate::gates::unapproved_change(st, d) {
+            out.push(UnitNeed {
+                id: s(d, "id").to_string(),
+                attached: false,
+                met: None,
+                line: format!(
+                    "{}: changed by {a}, which the human has not approved; the draft does not count",
+                    s(d, "id")
+                ),
+            });
+        }
+    }
     for c in pl.unit_checks(unit) {
         let cid = s(c, "id");
         let met = satisfied_unit_at(receipts, cid, content);
@@ -1415,7 +1449,11 @@ pub struct PassAfterFailure {
 }
 
 /// The mark for a check met by `pass`: the latest sealed failing run at that content numbered before it.
-fn pass_after_failure(receipts: &[Receipt], check: &str, pass: &Receipt) -> Option<PassAfterFailure> {
+fn pass_after_failure(
+    receipts: &[Receipt],
+    check: &str,
+    pass: &Receipt,
+) -> Option<PassAfterFailure> {
     let pass_n = receipt_number(pass.id())?;
     receipts
         .iter()
