@@ -196,12 +196,6 @@ fn content_hash(f: &Value, d: &Value) -> String {
     ] {
         v.insert(k.to_string(), f.get(k).cloned().unwrap_or(Value::Null));
     }
-    v.insert(
-        "act".to_string(),
-        f.get(["ac", "tion"].concat())
-            .cloned()
-            .unwrap_or(Value::Null),
-    );
     for k in ["risk", "markets", "researched", "sources"] {
         v.insert(format!("d_{k}"), d.get(k).cloned().unwrap_or(Value::Null));
     }
