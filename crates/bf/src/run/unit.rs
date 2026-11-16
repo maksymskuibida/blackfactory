@@ -96,9 +96,12 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         )?;
     }
     p.write_guard()?;
-    Ok(
-        json!({"unit": unit, "repo": repo.name, "working_copy": path.to_string_lossy(), "branch": ub, "base": cpb, "resumed": !cur.is_empty()}),
-    )
+    let note = brief::write_brief(p, unit, "builder");
+    let mut out = json!({"unit": unit, "repo": repo.name, "working_copy": path.to_string_lossy(), "branch": ub, "base": cpb, "resumed": !cur.is_empty()});
+    if let Some(n) = note {
+        out["brief_note"] = json!(n);
+    }
+    Ok(out)
 }
 
 /// `bf unit release <U> --quote ...`: the human puts a parked or blocked unit back to work. Its round and
