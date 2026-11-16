@@ -15,6 +15,48 @@ pub(crate) fn tier_for(p: &Project, unit: &Value, role: &str) -> String {
     }
 }
 
+/// The tier, the effort and any model named for a kind of work, as the policy in force has them.
+pub fn work_entry(p: &Project, kind: &str) -> Value {
+    let mut e = json!({"tier": p.policy.tiers.get(kind), "effort": p.policy.efforts.get(kind)});
+    if let Some(m) = p.policy.models.get(kind).filter(|m| !m.is_empty()) {
+        e["model"] = json!(m);
+    }
+    e
+}
+
+/// Every kind of work with its entry: what `bf policy` prints beside the rest of the policy.
+pub fn work_policy(p: &Project) -> Value {
+    let mut m = serde_json::Map::new();
+    for k in crate::store::WORK_KINDS {
+        m.insert(k.to_string(), work_entry(p, k));
+    }
+    Value::Object(m)
+}
+
+/// The kind of work a directive asks for.
+fn directive_kind(d: &Value) -> &'static str {
+    match d["role"].as_str().unwrap_or("") {
+        "builder" => "builder",
+        "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
+        "reviewer" => "reviewer",
+        "verifier" => "verifier",
+        _ => "conductor",
+    }
+}
+
+/// Put the tier and the effort of its kind of work (and any model) on a directive. A unit's own tier
+/// on a builder's directive stays.
+fn add_work(p: &Project, d: &mut Value) {
+    let e = work_entry(p, directive_kind(d));
+    if d["tier"].is_null() || d["role"] != "builder" {
+        d["tier"] = e["tier"].clone();
+    }
+    d["effort"] = e["effort"].clone();
+    if !e["model"].is_null() {
+        d["model"] = e["model"].clone();
+    }
+}
+
 pub(crate) fn budget_check(p: &Project, st: &State) -> R<()> {
     let cap = p.policy.budget.cap;
     if cap > 0.0 && st.cost >= cap {
@@ -407,6 +449,11 @@ pub fn next(p: &Project) -> R<Value> {
     let mut v = next_raw(p)?;
     if p.policy.roles.tokens {
         sync_tokens(p, &mut v)?;
+    }
+    if let Some(ds) = v["directives"].as_array_mut() {
+        for d in ds.iter_mut() {
+            add_work(p, d);
+        }
     }
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
