@@ -94,6 +94,18 @@ fn t6_every_kind_of_refusal_has_the_four_parts() {
     assert!(!v["do_this"].as_array().unwrap().is_empty());
 }
 
+/// Every `.rs` file under `dir`, descending into subfolders.
+fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            rs_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
 #[test]
 fn t8_the_engine_has_no_network_code() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -109,8 +121,10 @@ fn t8_the_engine_has_no_network_code() {
         "http://",
         "https://",
     ];
-    for e in fs::read_dir(&src).unwrap().flatten() {
-        let t = fs::read_to_string(e.path()).unwrap();
+    let mut files = Vec::new();
+    rs_files(&src, &mut files);
+    for e in files {
+        let t = fs::read_to_string(&e).unwrap();
         for b in banned {
             // The test module of this very check and doc comments are allowed to mention nothing: scan code only.
             let hits: Vec<&str> = t
@@ -121,7 +135,7 @@ fn t8_the_engine_has_no_network_code() {
             assert!(
                 hits.is_empty(),
                 "{} contains `{b}`: {hits:?}",
-                e.path().display()
+                e.display()
             );
         }
     }
