@@ -102,6 +102,7 @@ pub fn status(p: &Project) -> R<Value> {
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
+        "repairs": st.amends.iter().filter(|a| crate::amend::is_repair(a)).map(|a| a.id.clone()).collect::<Vec<_>>(),
         "checkpoints_closed": st.closed.keys().collect::<Vec<_>>(),
         "spent": st.cost,
         "budget_cap": p.policy.budget.cap,

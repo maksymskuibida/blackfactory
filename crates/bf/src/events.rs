@@ -748,6 +748,13 @@ pub struct Amend {
     pub withdrawn_why: String,
     /// The log position of its latest narrowing or revision: an approval needs a human message after it.
     pub changed_seq: u64,
+    /// Opened with the plan repair mark (R-41).
+    pub repair: bool,
+    /// The checkpoint insertions and splits asked for inside it, in order (R-64). They take effect
+    /// only when the human approves the amendment.
+    pub ops: Vec<Value>,
+    /// The records those operations change or create, with their old and new numbers.
+    pub touched: Vec<String>,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -2135,7 +2142,25 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 status: "open".into(),
                 withdrawn_why: String::new(),
                 changed_seq: seq,
+                repair: ev["repair"].as_bool().unwrap_or(false),
+                ops: vec![],
+                touched: vec![],
             }),
+            "amend.checkpoint" => {
+                let id = sv("amend");
+                if let Some(a) = st
+                    .amends
+                    .iter_mut()
+                    .find(|a| a.id == id && matches!(a.status.as_str(), "open" | "narrowed"))
+                {
+                    if let Some(op) = ev.get("op") {
+                        a.ops.push(op.clone());
+                    }
+                    a.touched = crate::store::str_list(ev, "touched");
+                    a.status = "open".into();
+                    a.changed_seq = seq;
+                }
+            }
             "amend.withdraw" => {
                 let id = sv("amend");
                 if let Some(a) = st

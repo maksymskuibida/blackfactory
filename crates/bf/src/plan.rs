@@ -83,17 +83,52 @@ pub fn load(p: &Project) -> R<Plan> {
         problems: vec![],
         bad,
     };
-    analyse(p, &mut plan, &ids);
+    finish(p, &mut plan, &ids);
+    Ok(plan)
+}
+
+/// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
+/// `load`, on the edited units, handoffs, checkpoints and checks instead of the files (R-64).
+pub fn problems_of_edited(
+    p: &Project,
+    base: &Plan,
+    units: Vec<Value>,
+    checkpoints: Vec<Value>,
+    checks: Vec<Value>,
+) -> R<Vec<String>> {
+    let mut ids: HashSet<String> = HashSet::new();
+    for r in p.list_records(None)? {
+        ids.insert(s(&r, "id").to_string());
+    }
+    for r in units.iter().chain(&checkpoints).chain(&checks) {
+        ids.insert(s(r, "id").to_string());
+    }
+    let mut plan = Plan {
+        units,
+        handoffs: base.handoffs.clone(),
+        checkpoints,
+        checks,
+        designed: base.designed.clone(),
+        wave: HashMap::new(),
+        problems: vec![],
+        bad: base.bad.clone(),
+    };
+    finish(p, &mut plan, &ids);
+    Ok(plan.problems)
+}
+
+fn finish(p: &Project, plan: &mut Plan, ids: &HashSet<String>) {
+    analyse(p, plan, ids);
     // A required named check appears in the plan as a check record that names it.
     if let Ok(st) = crate::events::replay(p) {
         // Decided means the log says so: a recorded setting for the project default or for a run. A
         // run begun before the engine knew the checks does not decide them.
         let decided = crate::checks::decided(&st);
-        let more = crate::enforce::plan_problems(&plan, &st, decided);
+        let more = crate::enforce::plan_problems(plan, &st, decided);
         plan.problems.extend(more);
-        plan.problems.extend(question_problems(&plan, &st));
+        let q = question_problems(plan, &st);
+        plan.problems.extend(q);
     }
-    Ok(plan)
 }
 
 /// The questions every run puts to the human at its plan stage (R-61, R-76): which wave checks it uses,
