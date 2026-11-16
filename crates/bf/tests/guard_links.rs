@@ -332,6 +332,8 @@ fn judge_scope(fx: &Fx, wc: &Path, list: Value) -> Out {
 fn a_case_variant_of_a_file_a_unit_beside_holds_is_refused() {
     let fx = Fx::new();
     let wc = project_with_beside(&fx);
+    // A holder that has not started is put after the asker (A-73); the refusal is for one that has.
+    fx.must(&["unit", "start", "U-3"]);
     let o = ask(&fx, &wc, json!([{"path": "beside/Y.TXT", "why": "R-1", "patch": "--- a\n+++ b\n@@ -1 +1 @@\n-y\n+z\n"}]));
     assert_eq!(o.code, 0, "{}", o.all());
     let v = o.json();
