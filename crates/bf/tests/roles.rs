@@ -17,7 +17,11 @@ fn the_roles_are_listed_with_their_limits() {
     let fx = Fx::new();
     let v = fx.must(&["roles", "list", "--json"]).json();
     let roles = v["roles"].as_array().unwrap();
-    assert_eq!(roles.len(), 5);
+    // The five roles of this file, and the design reviewer and the UI/UX designer.
+    assert_eq!(roles.len(), 7);
+    for n in ["design-reviewer", "uiux-designer"] {
+        assert!(roles.iter().any(|r| r["name"] == n), "{n}");
+    }
     for n in NAMES {
         let r = roles
             .iter()

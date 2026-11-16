@@ -227,7 +227,10 @@ fn the_plan_check_names_each_required_check_that_has_no_check_record() {
     let o = fx.refused(&["plan", "check"]);
     for c in bf::checks::all() {
         // The threat model and the markets statement are proven by their records.
-        let proven_by_record = c.name == "threat-model" || c.name == "markets-statement";
+        // The design reviews are proven by the review of their gate, not by a check record either.
+        let proven_by_record = c.name == "threat-model"
+            || c.name == "markets-statement"
+            || c.name.ends_with("-review") && c.name != "checkpoint-review";
         assert_eq!(
             o.stderr.contains(&format!("`{}`", c.name)),
             !proven_by_record,
@@ -305,7 +308,7 @@ fn a_checkpoint_closes_only_with_a_passing_receipt_for_each_required_check_it_li
     fx.must_in(&wc, &["evidence", "run", "X-5", "--", "true"]);
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true);
-    assert_eq!(c["checks_off"].as_array().unwrap().len(), 8, "{c}");
+    assert_eq!(c["checks_off"].as_array().unwrap().len(), 13, "{c}");
 }
 
 #[test]
