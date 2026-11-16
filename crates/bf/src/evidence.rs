@@ -1398,6 +1398,24 @@ pub fn unit_landing_needs<'a>(
             });
         }
     }
+    // A check of the approved plan that belonged to this unit and that a draft moved away, changed or
+    // deleted still holds the landing: the plan in force is what the human approved, not the draft.
+    for (cid, a) in crate::gates::drafts_off_unit(st, &pl.checks, unit) {
+        if out
+            .iter()
+            .any(|n| n.id == cid && !n.attached && n.met.is_none())
+        {
+            continue;
+        }
+        out.push(UnitNeed {
+            id: cid.clone(),
+            attached: false,
+            met: None,
+            line: format!(
+                "{cid}: changed by {a}, which the human has not approved; the draft does not count"
+            ),
+        });
+    }
     for c in pl.unit_checks(unit) {
         let cid = s(c, "id");
         let met = satisfied_unit_at(receipts, cid, content);

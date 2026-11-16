@@ -808,6 +808,9 @@ pub struct Amend {
     pub ops: Vec<Value>,
     /// The records those operations change or create, with their old and new numbers.
     pub touched: Vec<String>,
+    /// What the human approved, ID -> {h, unit}: the hash of each record of the set as it stood at the
+    /// approval. `None` for an approval recorded before the content was kept.
+    pub approved: Option<BTreeMap<String, Value>>,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -840,6 +843,16 @@ pub struct State {
     pub runs: Vec<Run>,
     pub units: BTreeMap<String, UnitSt>,
     pub amends: Vec<Amend>,
+    /// ID -> (log position of the approval, {h, unit}): the content the latest approved amendment
+    /// covering the ID approved.
+    pub approved_content: BTreeMap<String, (u64, Value)>,
+    /// Log positions of the `designer.lift`, `review.finding.accept` and `design-review.release`
+    /// events that count: each cites a valid, unused message of the human with the quote, written after
+    /// the work it answers (the amendment's opening or the stage's gate before, the park). The readers
+    /// of the design review and of the designer rule take these and no other.
+    pub answers: std::collections::BTreeSet<u64>,
+    /// Review subject -> log position of its latest park.
+    pub review_parks: BTreeMap<String, u64>,
     pub pending_grants: Vec<u64>,
     pub closed: BTreeMap<String, Closed>,
     pub cost: f64,
@@ -2462,15 +2475,53 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             // The human's answers to a design review and the designer lift: each uses up the message it
             // cites, so no other decision can take the same words. One that cites no valid turn and
             // quote is ignored, as for every other decision of the human.
+            "design-review.park" => {
+                st.review_parks.insert(sv("subject"), seq);
+            }
             "designer.lift" | "review.finding.accept" | "design-review.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                if !decision_turn_ok(&st, &turn_ix, tseq, 0, seq, &sv("quote"), Decide::Approve) {
+                // The bound each command applies: a release answers the park, a lift answers the
+                // work it lifts. (The bound of an accept, the latest review of the kind, is read
+                // from the receipts by the review's own readers.)
+                let after = match kind {
+                    "design-review.release" => {
+                        st.review_parks.get(&sv("subject")).copied().unwrap_or(0)
+                    }
+                    "designer.lift" => {
+                        let subject = sv("subject");
+                        match st.amends.iter().find(|a| a.id == subject) {
+                            Some(a) => a.opened_seq,
+                            None => {
+                                let order = crate::gates::DESIGN_ORDER;
+                                let i = order.iter().position(|k| *k == subject).unwrap_or(0);
+                                order[..i]
+                                    .iter()
+                                    .filter_map(|k| st.latest_gate(k, None))
+                                    .filter(|g| g.status == "approved")
+                                    .filter_map(|g| g.decided_seq)
+                                    .max()
+                                    .unwrap_or(0)
+                            }
+                        }
+                    }
+                    _ => 0,
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    after,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(format!(
                         "event {seq}: {kind} cites no valid human turn and quote"
                     ));
                     continue;
                 }
                 st.turns[turn_ix[&tseq]].used = true;
+                st.answers.insert(seq);
             }
             "unit.release" => {
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
@@ -2543,6 +2594,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 repair: ev["repair"].as_bool().unwrap_or(false),
                 ops: vec![],
                 touched: vec![],
+                approved: None,
             }),
             "amend.checkpoint" => {
                 let id = sv("amend");
@@ -2629,6 +2681,14 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     .find(|a| a.id == id && a.status == "narrowed")
                 {
                     a.status = "approved".into();
+                    if let Some(c) = ev.get("content").and_then(|c| c.as_object()) {
+                        let m: BTreeMap<String, Value> =
+                            c.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        for (k, v) in &m {
+                            st.approved_content.insert(k.clone(), (seq, v.clone()));
+                        }
+                        a.approved = Some(m);
+                    }
                     st.turns[turn_ix[&tseq]].used = true;
                     // The approved amendment re-opens what it touches: the units go back to work (what
                     // they landed stays in the log), the checkpoints open again, and the receipts for

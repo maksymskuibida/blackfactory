@@ -298,8 +298,22 @@ impl Review {
     }
 }
 
+/// The events of the log, less the human's answers that do not count: a `review.finding.accept`,
+/// `design-review.release` or `designer.lift` that the replay ignored (no valid turn and quote, or words
+/// written before the work they answer) is no answer, whatever the log holds.
 fn events_of(p: &Project) -> R<Vec<Value>> {
-    Ok(events::load_log(p)?.events)
+    let st = events::replay(p)?;
+    let mut evs = events::load_log(p)?.events;
+    evs.retain(|e| {
+        !matches!(
+            e["kind"].as_str(),
+            Some(RELEASE_EVENT | ACCEPT_EVENT | crate::gates::LIFT_EVENT)
+        ) || e["seq"]
+            .as_u64()
+            .map(|q| st.answers.contains(&q))
+            .unwrap_or(false)
+    });
+    Ok(evs)
 }
 
 fn last_seq(evs: &[Value], kind: &str, subject: &str) -> u64 {
@@ -495,12 +509,35 @@ impl Finding {
 }
 
 fn findings_in(p: &Project, evs: &[Value], subject: &str) -> R<Vec<Finding>> {
-    let mut words: HashMap<String, String> = HashMap::new();
+    // Every accept that counts names its findings: (log position, the message it cites, the words).
+    let mut accepts: HashMap<String, Vec<(u64, u64, String)>> = HashMap::new();
     for e in evs.iter().filter(|e| e["kind"] == ACCEPT_EVENT) {
         for id in str_list(e, "ids") {
-            words.insert(id, e["quote"].as_str().unwrap_or("").to_string());
+            accepts.entry(id).or_default().push((
+                e["seq"].as_u64().unwrap_or(0),
+                e["turn"].as_u64().unwrap_or(0),
+                e["quote"].as_str().unwrap_or("").to_string(),
+            ));
         }
     }
+    let mine_reviews = reviews_in(p, evs, subject)?;
+    // The latest accept of the finding whose message came after the latest review of its kind that had
+    // reported when the accept was made (the bound `bf review finding --accept` applies).
+    let words_of = |id: &str, fk: &str| -> Option<String> {
+        accepts
+            .get(id)?
+            .iter()
+            .rev()
+            .find_map(|(seq, turn, quote)| {
+                let bound = mine_reviews
+                    .iter()
+                    .filter(|r| r.kind == fk && r.counts() && r.seq < *seq)
+                    .map(|r| r.order().0)
+                    .max()
+                    .unwrap_or(0);
+                (*turn > bound).then(|| quote.clone())
+            })
+    };
     let mut out = Vec::new();
     let kind = crate::schema::kind_by_name("finding");
     for f in p.list_records(kind)? {
@@ -518,14 +555,15 @@ fn findings_in(p: &Project, evs: &[Value], subject: &str) -> R<Vec<Finding>> {
             continue;
         }
         let id = s(&f, "id").to_string();
+        let said = words_of(&id, fk);
         let outcome = match s(&f, "outcome") {
             "fixed" => "fixed",
-            "accepted" if words.contains_key(&id) => "accepted",
+            "accepted" if said.is_some() => "accepted",
             _ => "open",
         };
         out.push(Finding {
             words: if outcome == "accepted" {
-                words.get(&id).cloned().unwrap_or_default()
+                said.unwrap_or_default()
             } else {
                 String::new()
             },

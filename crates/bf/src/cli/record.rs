@@ -259,7 +259,11 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     // Once a stage's gate is approved, its records change, and new ones appear, only by amendment.
     if let Some(stage) = gates::stage_of_kind(kind.name) {
         let changes = old.as_ref().map(|o| o != &rec).unwrap_or(true);
-        if st.gate_passed(stage, None) && changes && !gates::amended(&st, &id) {
+        if st.gate_passed(stage, None)
+            && changes
+            && !gates::amended(&st, &id)
+            && !gates::is_approved_content(&st, &rec)
+        {
             return Err(refuse(
                 format!("{} {id}", if old.is_some() { "replace" } else { "add" }),
                 format!("the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"),
