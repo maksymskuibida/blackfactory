@@ -102,9 +102,10 @@ pub fn holder_beside(p: &Project, pl: &Plan, st: &State, unit: &str, path: &str)
         if depends_on(pl, vid, unit) {
             continue;
         }
+        let lower = path.to_lowercase();
         if unit_files(st, v)
             .iter()
-            .any(|g| util::path_matches(g, path))
+            .any(|g| util::path_matches(&g.to_lowercase(), &lower))
         {
             return Some(vid.to_string());
         }
@@ -203,7 +204,7 @@ pub fn hard_rule(p: &Project, pl: &Plan, st: &State, unit: &str, raw: &str) -> O
         return outside();
     }
     if has_ascii_lookalike(raw) {
-        return Some("a path with a character that case-folds to an ASCII letter (a Unicode look-alike) can open a file under another name and is never granted; name the file in plain ASCII".into());
+        return Some("a path with a character that case-folds to an ASCII letter (a Unicode look-alike) can open a file under another name and is never granted; name the file in plain ASCII: rename the file, or ask the human for a plan repair".into());
     }
     let Some(path) = normalize_path(raw) else {
         return outside();
@@ -221,6 +222,15 @@ pub fn hard_rule(p: &Project, pl: &Plan, st: &State, unit: &str, raw: &str) -> O
             .any(|g| util::path_matches(g, path) || util::path_matches(&g.to_lowercase(), &lower))
     {
         return Some("a place the guard protects (the factory's records, the policy, the run's state, the hook settings, the git folders, the installed skill and panel, the policy's extra protected paths) is never granted".into());
+    }
+    // A link in the unit's working copy, or a folder that is one, leads somewhere the name does not say.
+    let wc = p.work_dir().join(unit);
+    let mut at = wc.clone();
+    for c in &comps {
+        at.push(c);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some("a path that is a symbolic link, or lies under a folder that is one, leads to a place the name does not show and is never granted".into());
+        }
     }
     holder_beside(p, pl, st, unit, path).map(|v| {
         format!("{v} holds it and may run beside {unit}: a file held by two units that can be built at the same moment is never granted, and only an order change fixes it")
@@ -480,9 +490,10 @@ pub fn request(
     let files = parse_request(p, unit, list)?;
     for f in &files {
         let path = s(f, "path");
+        let lower = path.to_lowercase();
         if unit_files(&st, u)
             .iter()
-            .any(|g| util::path_matches(g, path))
+            .any(|g| util::path_matches(&g.to_lowercase(), &lower))
         {
             return Err(bad_request(
                 unit,
@@ -1023,7 +1034,8 @@ pub fn landing_check(st: &State, unit: &str, repo: &std::path::Path, range: &str
             if f["new"].as_bool().unwrap_or(false) || !(is_test_path(path) || is_config(path)) {
                 continue;
             }
-            let removed_in_patch: Vec<String> = s(f, "patch")
+            // Each removed line of the patch covers one removed line of the changes, not every equal one.
+            let mut removed_in_patch: Vec<String> = s(f, "patch")
                 .lines()
                 .filter(|l| l.starts_with('-') && !l.starts_with("---"))
                 .map(|l| l[1..].trim_end().to_string())
@@ -1032,7 +1044,9 @@ pub fn landing_check(st: &State, unit: &str, repo: &std::path::Path, range: &str
             for l in d.lines() {
                 if l.starts_with('-') && !l.starts_with("---") {
                     let line = l[1..].trim_end();
-                    if !removed_in_patch.iter().any(|x| x == line) {
+                    if let Some(k) = removed_in_patch.iter().position(|x| x == line) {
+                        removed_in_patch.remove(k);
+                    } else {
                         return Err(refuse_owned(
                             format!("land {unit}"),
                             format!("the changes remove a line of {path}, a granted file, that the grant's patch does not remove: `{}`", line.trim()),
