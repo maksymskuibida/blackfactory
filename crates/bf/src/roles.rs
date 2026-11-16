@@ -12,7 +12,7 @@ use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
 
-mod design;
+pub mod design;
 
 /// One new role and its limits.
 pub struct Role {
@@ -215,9 +215,29 @@ pub const ROLES: &[Role] = &[
         family: "uiux",
         also_design: false,
     },
+    Role {
+        name: "designer",
+        kinds: &[],
+        amendment_kinds: &[],
+        stage: "design",
+        summary: "Writes the records of the design stage or of the amendment its brief names.",
+        reads: &["the brief", "the design records"],
+        writes: &["the records of the design stage or amendment its brief names (`bf record put`)"],
+        runs: &[
+            "bf record put",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "builder",
+        family: "",
+        also_design: false,
+    },
 ];
 
-/// The role named `name`, if it is one of the seven.
+/// The role named `name`, if it is one of the eight.
 pub fn get(name: &str) -> Option<&'static Role> {
     ROLES.iter().find(|r| r.name == name)
 }
@@ -246,8 +266,10 @@ pub fn finding_auditors() -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether `name` is one of the roles. A key's role may carry a suffix after a colon (the kind of a
+/// design review, the stage of a stage agent): the role is the part before it.
 pub fn is_new_role(name: &str) -> bool {
-    get(name).is_some()
+    get(name.split(':').next().unwrap_or(name)).is_some()
 }
 
 fn describe(r: &Role) -> Value {
