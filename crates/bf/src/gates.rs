@@ -1715,14 +1715,13 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
         ));
     }
     // The records of the set as the human reads them now: approval is refused if they change later.
-    let set_hash = match st.amends.iter().find(|a| a.id == aid) {
-        Some(a) => crate::amend::set_hash(p, a, &keep)?,
-        None => String::new(),
-    };
+    // Everything that differs from the last approved content, kept records included, is stored with
+    // the narrowing; the page shows that list and the fingerprint covers exactly it.
+    let (changes, set_hash) = crate::amend::narrowing(p, &st, a, &keep)?;
     events::append(
         p,
         "amend.narrow",
-        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons, "set_hash": set_hash}),
+        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons, "set_hash": set_hash, "changes": changes}),
     )?;
     p.write_guard()?;
     Ok(json!({"amend": aid, "keep": keep, "waive": waive}))

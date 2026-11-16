@@ -84,11 +84,14 @@ pub fn coverage(p: &Project, a: &Amend) -> R<Vec<StageCover>> {
     Ok(out)
 }
 
-/// A fingerprint of the records of the amendment's set as they are now. It is written into the
-/// narrowing the human reads, and approval is refused when the records no longer match it (TH-12).
-/// The kept impact set (`keep`, the one of the narrowing being written or the one in force) is covered
-/// too: a kept record that changed after the narrowing, by any route, voids the human's reading.
-pub fn set_hash(p: &Project, a: &Amend, keep: &[String]) -> R<String> {
+/// Everything of the amendment's set that differs from the content last approved, and the
+/// fingerprint of exactly that. The set is the amendment's own records, the records its operations
+/// touch and the kept impact set (`keep`, the one of the narrowing being written or the one in force).
+/// A record differs when it is new, when its content is not the approved content, or when the approval
+/// has it and it is gone. Each entry holds the record as read now, so the page shows what the
+/// fingerprint covers. The fingerprint also covers every record of the set and the operations, so a
+/// change of any of them after the narrowing, by any route, voids the human's reading (TH-12).
+pub fn narrowing(p: &Project, st: &State, a: &Amend, keep: &[String]) -> R<(Vec<Value>, String)> {
     let mut ids: Vec<&String> = a
         .ids
         .iter()
@@ -101,14 +104,34 @@ pub fn set_hash(p: &Project, a: &Amend, keep: &[String]) -> R<String> {
     for (i, op) in a.ops.iter().enumerate() {
         parts.push(format!("op{i}:{}", crate::evidence::record_hash(op)));
     }
+    let mut changes = Vec::new();
     for id in ids {
-        let h = match p.get_record(id)? {
-            Some(r) => crate::evidence::record_hash(&r),
+        let rec = p.get_record(id)?;
+        let h = match &rec {
+            Some(r) => crate::evidence::record_hash(r),
             None => "missing".to_string(),
         };
         parts.push(format!("{id}:{h}"));
+        let approved = rec
+            .as_ref()
+            .map(|r| s(r, "kind").to_string())
+            .or_else(|| schema::kind_of_id(id).map(|k| k.name.to_string()))
+            .and_then(|k| crate::gates::stage_of_kind(&k))
+            .and_then(|stage| crate::gates::approved_entry(st, stage, id))
+            .map(|(h, _)| h);
+        let how = match (&rec, &approved) {
+            (Some(_), Some(ah)) if *ah == h => continue,
+            (Some(_), Some(ah)) if ah != "missing" => "changed",
+            (Some(_), _) => "new",
+            (None, Some(ah)) if ah != "missing" => "removed",
+            (None, _) => continue,
+        };
+        let kept = keep.contains(id) && !a.ids.contains(id) && !a.touched.contains(id);
+        parts.push(format!("change:{id}:{how}:{h}"));
+        changes.push(json!({"id": id, "how": how, "kept": kept,
+            "record": rec.unwrap_or(Value::Null)}));
     }
-    Ok(crate::evidence::record_hash(&serde_json::json!(parts)))
+    Ok((changes, crate::evidence::record_hash(&json!(parts))))
 }
 
 /// Refuse approval when a record of the set changed after the narrowing the human read.
@@ -116,7 +139,8 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
     let Some(was) = narrowed["set_hash"].as_str() else {
         return Ok(());
     };
-    if was == set_hash(p, a, &a.keep)? {
+    let st = crate::events::replay(p)?;
+    if was == narrowing(p, &st, a, &a.keep)?.1 {
         return Ok(());
     }
     let aid = &a.id;
@@ -124,7 +148,7 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
         format!("approve {aid}"),
         "a record of the amendment was put or replaced after it was narrowed, so the human has not read it".to_string(),
         vec![
-            format!("Run `bf amend revise <ID>...` on {aid}, naming every record that changed (a kept record that must change is named there, in the changed set)."),
+            format!("Run `bf amend revise <the IDs it names now> plus every record that changed` on {aid} (revise replaces the whole set; a kept record that must change is named there)."),
             format!("Narrow {aid} again with `bf amend narrow --file <f>`."),
             "Ask the human to read it and say yes after that.".to_string(),
         ],

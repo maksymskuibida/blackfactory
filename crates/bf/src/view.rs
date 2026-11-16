@@ -1089,11 +1089,59 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
                 "hint": "Its records, or the sentence that says it is not affected",
                 "open": true, "blocks": [], "rows": rows}));
         }
+        // Everything the narrowing recorded as differing from the approved content, kept records
+        // included: the list the fingerprint covers, read from the narrowing, not recomputed.
+        if !a.changes.is_empty() {
+            let rows: Vec<Value> = a.changes.iter().map(change_row).collect();
+            secs.push(json!({"id": format!("{}-changes", a.id),
+                "title": format!("{}: everything that differs from the approved content", a.id),
+                "hint": "What the narrowing recorded; approval binds exactly this",
+                "open": true, "blocks": [], "rows": rows}));
+        }
     }
     secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
     v["amendment_reviews"] = Value::Object(reviews);
     v["sections"] = json!(secs);
     Ok(v)
+}
+
+/// One row of the list a narrowing stored: the record as it was then, with its key fields, marked
+/// as changed, new or removed.
+fn change_row(c: &Value) -> Value {
+    let rec = &c["record"];
+    let how = c["how"].as_str().unwrap_or("changed");
+    let mut row = if rec.is_null() {
+        json!({"id": c["id"], "title": "", "body": []})
+    } else {
+        design_row(rec, None)
+    };
+    row["id"] = c["id"].clone();
+    for (k, label) in [
+        ("unit", "Unit"),
+        ("checkpoint", "Checkpoint"),
+        ("how", "How"),
+        ("scope", "Scope"),
+        ("command", "Command"),
+        ("proves", "Proves"),
+        ("files", "Files"),
+        ("delivers", "Delivers"),
+        ("depends_on", "Depends on"),
+        ("after", "After"),
+        ("checks", "Checks"),
+    ] {
+        let line = match rec.get(k) {
+            Some(Value::String(x)) if !x.is_empty() => x.clone(),
+            Some(Value::Array(_)) => str_list(rec, k).join(", "),
+            _ => String::new(),
+        };
+        if !line.is_empty() {
+            if let Some(b) = row["body"].as_array_mut() {
+                b.push(text(&format!("{label}: {line}")));
+            }
+        }
+    }
+    row["handled"] = json!({"tone": if c["kept"] == true { "open" } else { "accepted" }, "text": how});
+    row
 }
 
 fn strip_event(e: &Value) -> Value {

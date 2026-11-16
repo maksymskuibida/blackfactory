@@ -811,6 +811,9 @@ pub struct Amend {
     /// What the human approved, ID -> {h, unit}: the hash of each record of the set as it stood at the
     /// approval. `None` for an approval recorded before the content was kept.
     pub approved: Option<BTreeMap<String, Value>>,
+    /// Everything that differed from the last approved content when the amendment was narrowed: the
+    /// list the page shows and the fingerprint covers. Empty until it is narrowed.
+    pub changes: Vec<Value>,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -2607,6 +2610,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 ops: vec![],
                 touched: vec![],
                 approved: None,
+                changes: vec![],
             }),
             "amend.checkpoint" => {
                 let id = sv("amend");
@@ -2646,6 +2650,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.keep = crate::store::str_list(ev, "impact_ids");
                     a.waive = vec![];
                     a.reasons = Value::Null;
+                    a.changes = vec![];
                     a.status = "open".into();
                     a.changed_seq = seq;
                 }
@@ -2660,6 +2665,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     a.keep = crate::store::str_list(ev, "keep");
                     a.waive = crate::store::str_list(ev, "waive");
                     a.reasons = ev.get("reasons").cloned().unwrap_or(Value::Null);
+                    a.changes = ev
+                        .get("changes")
+                        .and_then(|c| c.as_array())
+                        .cloned()
+                        .unwrap_or_default();
                     a.status = "narrowed".into();
                     a.changed_seq = seq;
                 }
