@@ -599,6 +599,17 @@ pub fn run_with(
     let top = top.to_path_buf();
     let before = p.content_hash(&top)?;
     refuse_repeat(p, check_id, argv, &before, repeat, unit)?;
+    // A command check whose command is exactly a scan runs in the engine's process: the sandbox keeps
+    // the sealing key from the command a worker passes, so the scan could not write its own receipt there.
+    if let Some(sub) = crate::scan::scan_sub(argv) {
+        let v = crate::scan::run_as_check(p, sub, check_id, unit, argv, &top)?;
+        if v["exit"].as_i64() != Some(0) {
+            if let Some(u) = unit {
+                crate::run::park_if_looping(p, u)?;
+            }
+        }
+        return Ok(v);
+    }
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;

@@ -312,6 +312,37 @@ fn run_tool(
 
 // ---- common: receipt and flags -----------------------------------------------------------------
 
+/// What a scan knows about the run it is part of: the check and unit when `bf evidence run` runs it in
+/// the engine's own process, and the content hash taken before any tool started.
+struct Ctx {
+    check: Option<String>,
+    unit: Option<String>,
+    /// The command as the check record spells it (`licenses` or `licences`), when `bf evidence run` ran it.
+    command: Option<String>,
+    before: String,
+}
+
+impl Ctx {
+    fn new(p: &Project, check: Option<String>, unit: Option<String>) -> R<Ctx> {
+        Ok(Ctx {
+            check,
+            unit,
+            command: None,
+            before: p.content_hash(&p.top)?,
+        })
+    }
+    fn direct(p: &Project) -> R<Ctx> {
+        Ctx::new(p, None, flag("unit"))
+    }
+    /// The check the receipt belongs to: the one `bf evidence run` named, or the one found by command.
+    fn check(&self, p: &Project, sub: &str, fallback: &str) -> R<String> {
+        match &self.check {
+            Some(c) => Ok(c.clone()),
+            None => check_for(p, sub, fallback),
+        }
+    }
+}
+
 fn project_here() -> R<Project> {
     let raw: Vec<String> = std::env::args().collect();
     let dir = match raw.iter().position(|a| a == "-C") {
@@ -380,14 +411,29 @@ fn write_scan_receipt(
     summary: &str,
     secrets: &BTreeSet<String>,
     extra: Value,
+    ctx: &Ctx,
 ) -> R<Value> {
     let top = p.top.clone();
-    let content = p.content_hash(&top)?;
+    // The receipt is for the content the tool read: it is the content before the tool started, and the
+    // receipt is refused when the files changed while the tool ran.
+    let content = ctx.before.clone();
+    if p.content_hash(&top)? != content {
+        return Err(refuse(
+            format!("write the receipt of `{command}`"),
+            "the files of the working copy changed while the scan ran, so a receipt would not describe the content the tool read",
+            &[
+                "Find which files changed during the scan (see `git status`); a report file the tool writes must be ignored by git.",
+                "Leave the files alone while the scan runs.",
+                "Run the same scan command again.",
+            ],
+            "The receipt is written and its content hash equals the one before the tool started.",
+        ));
+    }
     let mut v = json!({
         "type": "run",
         "check": check,
-        "unit": flag("unit"),
-        "command": command,
+        "unit": ctx.unit,
+        "command": ctx.command.clone().unwrap_or_else(|| command.to_string()),
         "program": s(&tool.found, "path"),
         "sandbox": if tool.sandboxed { "sandbox-exec" } else { "none" },
         "program_note": tool.note.clone().unwrap_or_default(),
@@ -428,6 +474,10 @@ fn text_of(v: &Value, keys: &[&str]) -> String {
 }
 
 pub fn scan_secrets(p: &Project) -> R<Value> {
+    scan_secrets_with(p, &Ctx::direct(p)?)
+}
+
+fn scan_secrets_with(p: &Project, ctx: &Ctx) -> R<Value> {
     let mut secrets: BTreeSet<String> = BTreeSet::new();
     let mut leaks: Vec<Value> = Vec::new();
     let mut runs: Vec<ToolRun> = Vec::new();
@@ -522,7 +572,7 @@ pub fn scan_secrets(p: &Project) -> R<Value> {
         t
     };
     let summary = scrub(&summary, &secrets);
-    let check = check_for(p, "secrets", "secret-scan")?;
+    let check = ctx.check(p, "secrets", "secret-scan")?;
     let exit = if pass { 0 } else { 1 };
     let rc = write_scan_receipt(
         p,
@@ -533,6 +583,7 @@ pub fn scan_secrets(p: &Project) -> R<Value> {
         &summary,
         &secrets,
         json!({"findings": findings, "count": findings.len()}),
+        ctx,
     )?;
     let mut out = json!({
         "ok": pass,
@@ -848,6 +899,10 @@ fn existing_finding(p: &Project, title: &str) -> R<Option<String>> {
 }
 
 pub fn scan_licences(p: &Project) -> R<Value> {
+    scan_licences_with(p, &Ctx::direct(p)?)
+}
+
+fn scan_licences_with(p: &Project, ctx: &Ctx) -> R<Value> {
     let rule = load_rule(p)?;
     let mut marks = Vec::new();
     find_markers(&p.top, 4, &mut marks);
@@ -907,7 +962,12 @@ pub fn scan_licences(p: &Project) -> R<Value> {
             e.install,
         )?;
         let text = match &report_file {
-            Some(f) => fs::read_to_string(f).unwrap_or_default(),
+            Some(f) => {
+                let text = fs::read_to_string(f).unwrap_or_default();
+                // The report is the tool's, not the project's: it must not count as a change.
+                let _ = fs::remove_file(f);
+                text
+            }
             None => r.stdout.clone(),
         };
         let parsed = match e.fmt {
@@ -1057,7 +1117,7 @@ pub fn scan_licences(p: &Project) -> R<Value> {
             s(f, "id")
         ));
     }
-    let check = check_for(p, "licences", "dependency-licence-check")?;
+    let check = ctx.check(p, "licences", "dependency-licence-check")?;
     let tool = match last {
         Some(t) => t,
         // Nothing ran: no tool was needed, and no tool is claimed.
@@ -1081,6 +1141,7 @@ pub fn scan_licences(p: &Project) -> R<Value> {
         json!({"projects": ran, "findings": findings,
                "weak_copyleft": weak.iter().collect::<Vec<_>>(),
                "rule": "permissive passes; weak copyleft passes with a note; strong copyleft and unknown become legal findings; factory/licences.toml adds `allow` and `refuse`"}),
+        ctx,
     )?;
     Ok(json!({
         "ok": pass,
@@ -1092,6 +1153,53 @@ pub fn scan_licences(p: &Project) -> R<Value> {
         "findings": findings,
         "weak_copyleft": weak.iter().collect::<Vec<_>>(),
     }))
+}
+
+/// Whether a check's command is exactly a scan: `bf scan secrets|licences|licenses`.
+pub fn scan_sub(argv: &[String]) -> Option<&'static str> {
+    if argv.len() != 3 || argv[0] != "bf" || argv[1] != "scan" {
+        return None;
+    }
+    match argv[2].as_str() {
+        "secrets" => Some("secrets"),
+        "licences" | "licenses" => Some("licences"),
+        _ => None,
+    }
+}
+
+/// `bf evidence run <check> -- bf scan <sub>`: the scan runs in the engine's own process, in `top`, and
+/// writes the one receipt of that check at the content it scanned. The tool it starts is sandboxed; the
+/// engine is not, so it can read the sealing key that the command a worker passes cannot.
+pub fn run_as_check(
+    p: &Project,
+    sub: &str,
+    check: &str,
+    unit: Option<&str>,
+    argv: &[String],
+    top: &Path,
+) -> R<Value> {
+    let mut q = p.clone();
+    q.top = top.to_path_buf();
+    let mut ctx = Ctx::new(&q, Some(check.to_string()), unit.map(|u| u.to_string()))?;
+    ctx.command = Some(argv.join(" "));
+    let done = match sub {
+        "secrets" => scan_secrets_with(&q, &ctx)?,
+        _ => scan_licences_with(&q, &ctx)?,
+    };
+    // The receipt itself, as `bf evidence run` returns it for any other command.
+    let id = s(&done, "receipt").to_string();
+    crate::evidence::load_receipts(p)?
+        .into_iter()
+        .find(|r| r.id() == id)
+        .map(|r| r.v)
+        .ok_or_else(|| {
+            refuse(
+                format!("find the receipt {id}"),
+                "the scan wrote it and it cannot be read back",
+                &["Run `bf evidence verify` to see the state of the receipts."],
+                "The receipt is listed.",
+            )
+        })
 }
 
 /// Entry point of `bf scan <sub> ...`: `secrets` and `licences`.

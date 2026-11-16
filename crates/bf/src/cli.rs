@@ -304,7 +304,7 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
     Err(refuse(
         format!("run `bf {cmd}` from the working copy of {id}"),
         "commands run from inside a working copy are a worker's or a verifier's: they may run evidence, read the status, and (a unit's worker, or an auditor with its token) report and file findings; planning, gates, briefs, landing, the log and the pages belong to the conductor and the human",
-        &["Run the command from the project folder, as the conductor.", "From a working copy use `bf report`, `bf evidence run|verify|fail|unreachable|attach`, `bf scan secrets|licences` (run it in the working copy itself, not through `bf evidence run`: its receipt is for this copy's content), `bf record put finding`, `bf record get|list`, `bf unit restore <U> <path>... --token <token>` or `bf status`."],
+        &["Run the command from the project folder, as the conductor.", "From a working copy use `bf report`, `bf evidence run|verify|fail|unreachable|attach`, `bf scan secrets|licences` (run in the working copy, or as `bf evidence run <check> -- bf scan secrets|licences`: its receipt is for this copy's content), `bf record put finding`, `bf record get|list`, `bf unit restore <U> <path>... --token <token>` or `bf status`."],
         "The command runs from the project folder.",
     ))
 }
