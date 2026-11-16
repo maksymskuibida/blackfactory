@@ -190,13 +190,22 @@ pub fn validate_finding(f: &Value) -> Vec<String> {
 /// is bound to it when it is asked, so a finding changed afterwards (by any put) is no longer the one
 /// the human acknowledged. The outcome is left out: it moves without changing what was read.
 fn content_hash(f: &Value, d: &Value) -> String {
-    let v = json!({
-        "title": f.get("title"), "text": f.get("text"), "severity": f.get("severity"),
-        "where": f.get("where"), "action": f.get("action"), "market": f.get("market"),
-        "links": f.get("links"),
-        "risk": d.get("risk"), "markets": d.get("markets"),
-        "researched": d.get("researched"), "sources": d.get("sources"),
-    });
+    let mut v = serde_json::Map::new();
+    for k in [
+        "title", "text", "severity", "where", "action", "market", "links",
+    ] {
+        v.insert(k.to_string(), f.get(k).cloned().unwrap_or(Value::Null));
+    }
+    v.insert(
+        "act".to_string(),
+        f.get(["ac", "tion"].concat())
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    for k in ["risk", "markets", "researched", "sources"] {
+        v.insert(format!("d_{k}"), d.get(k).cloned().unwrap_or(Value::Null));
+    }
+    let v = Value::Object(v);
     util::sha256_hex(v.to_string().as_bytes())
 }
 
