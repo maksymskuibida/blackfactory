@@ -159,7 +159,7 @@ fn the_new_fields_stay_at_rest() {
 #[test]
 fn a_command_not_built_yet_refuses_with_the_four_parts() {
     let fx = Fx::new();
-    for sub in ["pause", "resume", "restore"] {
+    for sub in ["pause", "resume"] {
         let o = fx.bf(&["unit", sub, "U-a", "src/x.rs"]);
         assert_ne!(o.code, 0, "{sub}: {}", o.all());
         assert_four_parts(&o.all());

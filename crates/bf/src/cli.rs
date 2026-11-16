@@ -290,6 +290,8 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
         // records only with a role's token (the engine checks both).
         ("checkpoint", "report") => true,
         ("unit", "report") => true,
+        // A builder puts a file it changed by mistake back to its base (U-103).
+        ("unit", "unit") => sub == "restore",
         (_, "record") => matches!(sub, "get" | "list" | "put"),
         _ => false,
     };
@@ -299,7 +301,7 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
     Err(refuse(
         format!("run `bf {cmd}` from the working copy of {id}"),
         "commands run from inside a working copy are a worker's or a verifier's: they may run evidence, read the status, and (a unit's worker, or an auditor with its token) report and file findings; planning, gates, briefs, landing, the log and the pages belong to the conductor and the human",
-        &["Run the command from the project folder, as the conductor.", "From a working copy use `bf report`, `bf evidence run|verify|fail|unreachable|attach`, `bf record put finding`, `bf record get|list` or `bf status`."],
+        &["Run the command from the project folder, as the conductor.", "From a working copy use `bf report`, `bf evidence run|verify|fail|unreachable|attach`, `bf record put finding`, `bf record get|list`, `bf unit restore <U> <path>... --token <token>` or `bf status`."],
         "The command runs from the project folder.",
     ))
 }
