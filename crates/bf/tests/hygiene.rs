@@ -94,6 +94,29 @@ fn t6_every_kind_of_refusal_has_the_four_parts() {
     assert!(!v["do_this"].as_array().unwrap().is_empty());
 }
 
+/// The same scan as t8 makes in `src`, for every file in the subfolders below `dir`.
+fn scan_dir_for_banned(dir: &Path, banned: &[&str]) {
+    for e in fs::read_dir(dir).unwrap().flatten() {
+        if e.path().is_dir() {
+            scan_dir_for_banned(&e.path(), banned);
+            continue;
+        }
+        let t = fs::read_to_string(e.path()).unwrap();
+        for b in banned {
+            let hits: Vec<&str> = t
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(b))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "{} contains `{b}`: {hits:?}",
+                e.path().display()
+            );
+        }
+    }
+}
+
 #[test]
 fn t8_the_engine_has_no_network_code() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -110,6 +133,10 @@ fn t8_the_engine_has_no_network_code() {
         "https://",
     ];
     for e in fs::read_dir(&src).unwrap().flatten() {
+        if e.path().is_dir() {
+            scan_dir_for_banned(&e.path(), &banned);
+            continue;
+        }
         let t = fs::read_to_string(e.path()).unwrap();
         for b in banned {
             // The test module of this very check and doc comments are allowed to mention nothing: scan code only.
