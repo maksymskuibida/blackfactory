@@ -27,6 +27,7 @@ mod policy;
 mod record;
 mod repo;
 mod report;
+mod review;
 mod run;
 mod status;
 mod stuck;
@@ -63,6 +64,7 @@ const VALUE_FLAGS: &[&str] = &[
     "says",
     "branch",
     "stage",
+    "subject",
     "title",
     "context",
     "options",
@@ -87,6 +89,8 @@ pub struct Args {
     pub pos: Vec<String>,
     pub flags: HashMap<String, String>,
     pub bools: HashSet<String>,
+    /// Every value of each value flag, in order, for a flag that may be given more than once.
+    pub multi: HashMap<String, Vec<String>>,
     pub rest: Vec<String>,
 }
 
@@ -96,6 +100,7 @@ impl Args {
             pos: vec![],
             flags: HashMap::new(),
             bools: HashSet::new(),
+            multi: HashMap::new(),
             rest: vec![],
         };
         let mut i = 0;
@@ -108,8 +113,13 @@ impl Args {
             if let Some(f) = x.strip_prefix("--") {
                 if let Some((k, v)) = f.split_once('=') {
                     a.flags.insert(k.to_string(), v.to_string());
+                    a.multi.entry(k.to_string()).or_default().push(v.to_string());
                 } else if VALUE_FLAGS.contains(&f) && i + 1 < raw.len() {
                     a.flags.insert(f.to_string(), raw[i + 1].clone());
+                    a.multi
+                        .entry(f.to_string())
+                        .or_default()
+                        .push(raw[i + 1].clone());
                     i += 1;
                 } else {
                     a.bools.insert(f.to_string());
@@ -369,6 +379,7 @@ fn dispatch(args: &Args) -> R<()> {
         "log" => log::cmd_log(args),
         "next" => next::cmd_next(args),
         "report" => report::cmd_report(args),
+        "review" => review::cmd_review(args),
         "brief" => brief::cmd_brief(args),
         "unit" => unit::cmd_unit(args),
         "evidence" => evidence::cmd_evidence(args),
