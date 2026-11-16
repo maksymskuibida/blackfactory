@@ -613,6 +613,16 @@ fn a_file_no_grant_can_make_safe_leaves_the_unit_blocked_for_the_human() {
             .is_empty());
         let n = fx.must(&["next", "--json"]).json();
         assert!(directive(&fx, "U-1", "reviewer").is_none(), "{n}");
+        if rule == "U-3 holds it" {
+            // A file only a unit beside holds: the unit waits, with no turn for the human.
+            let none = n["directives"].as_array().unwrap().iter().all(|d| d["unit"] != "U-1");
+            let line = n["waiting"].to_string();
+            let waits = line.contains("U-1: waiting for") && line.contains(shown);
+            assert!(none && waits, "{n}");
+            fx.human("Release it, please, and carry on.");
+            fx.must(&["unit", "release", "U-1", "--quote", "Release it, please"]);
+            continue;
+        }
         let h = n["directives"]
             .as_array()
             .unwrap()
