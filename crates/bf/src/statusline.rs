@@ -1,10 +1,14 @@
 //! The one-line progress report: a sign per state, the unit IDs in that state, and the review round.
 //! The conductor shows this line as the whole progress report; it does not compose it.
 
-use crate::refusal::R;
+use crate::refusal::{err, R};
 use crate::store::{s, str_list, Project};
-use crate::{events, evidence, plan, run};
+use crate::{events, evidence, plan, run, util};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::io::Read;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// The sign and the words for a state. `None` for states that are not work in progress (planned, ready).
 pub fn sign(state: &str) -> Option<(&'static str, &'static str)> {
@@ -178,5 +182,152 @@ pub fn items(p: &Project) -> R<Vec<Item>> {
 }
 
 pub fn line(p: &Project) -> R<String> {
+    // The harness hands its status line command a JSON object on stdin. Saving it must never spoil
+    // the line, and a caller with no input (a terminal, an open pipe nobody writes to) must not hang.
+    if let Some(text) = stdin_within(Duration::from_millis(300)) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            let _ = save(p, &v);
+        }
+    }
     Ok(render(&items(p)?))
+}
+
+// What the harness gives the status line command, and what it cannot do (checked against the Claude
+// Code documentation of the status line and of hooks; this build had no network, so the names marked
+// "not confirmed here" come from that documentation as last read and are to be checked on a live
+// session by the human before the limits below are relied on):
+//
+// - Status line input (JSON on stdin, refreshed after each assistant message and when the model or
+//   the permission mode changes, at most every 300 ms):
+//     `session_id`                      the session this line belongs to;
+//     `model.id`, `model.display_name`  the model the session runs on (for example "claude-opus-5-5"
+//                                       and "Opus 5.5");
+//     `context_window.used_percentage`  the share of the context window in use, 0 to 100, and null
+//                                       before the first message of a session;
+//     `effort.level`                    the effort the session runs on ("low", "medium", "high",
+//                                       "xhigh", "max"); not confirmed here, and absent for a model
+//                                       with no effort setting. A plain string `effort` is read too.
+//   The engine saves these, with the time, per session in `.bf/session-state.json` of the project.
+// - A hook learns the model and the effort only from that file: the payload of the
+//   `UserPromptSubmit` hook carries `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+//   `hook_event_name` and `prompt`, and no model and no effort. The transcript names the model of
+//   past replies but never the effort, and it is empty before the first reply. So the hook cannot
+//   know the model of a session whose status line has not run yet (a new session before its first
+//   reply), and it then refuses a required-model message and says what it could not read.
+// - A refused message: the hook prints `{"decision":"block","reason":"..."}` on stdout and exits 0.
+//   The harness does not send the prompt to the model and shows the reason to the human. Whether the
+//   harness puts the text back into the input box depends on its version and is not confirmed here:
+//   the engine therefore repeats the whole text of the message in the reason, so the human can paste
+//   it. Exit code 2 would erase the prompt, and the hook never uses it.
+// - Limits: the status line runs only in a session with a status line command in its settings; a
+//   saved share is the share at the last refresh, so a session that has not replied lately is judged
+//   on an old number (older than the policy's `max_age_seconds` it is ignored, and no note is made);
+//   with no share given nothing is claimed; two status lines written at the same moment can lose one
+//   save, which the next refresh repairs.
+
+const STATE_FILE: &str = "session-state.json";
+const KEEP_SECONDS: u64 = 2 * 24 * 3600;
+
+/// What the status line saved about one session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionState {
+    pub share: Option<f64>,
+    pub model_id: String,
+    pub model_name: String,
+    pub effort: String,
+    pub saved_at: u64,
+}
+
+fn stdin_within(limit: Duration) -> Option<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut t = String::new();
+        let _ = std::io::stdin().read_to_string(&mut t);
+        let _ = tx.send(t);
+    });
+    rx.recv_timeout(limit).ok().filter(|t| !t.trim().is_empty())
+}
+
+fn state_path(p: &Project) -> std::path::PathBuf {
+    p.dot_bf().join(STATE_FILE)
+}
+
+fn read_all(p: &Project) -> serde_json::Map<String, Value> {
+    std::fs::read_to_string(state_path(p))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// Save the share, the model and the effort of the session from a status line input.
+pub fn save(p: &Project, input: &Value) -> R<()> {
+    let sid = input
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if sid.is_empty() {
+        return Ok(());
+    }
+    let share = input
+        .pointer("/context_window/used_percentage")
+        .and_then(|v| v.as_f64());
+    let text = |ptr: &str| input.pointer(ptr).and_then(|v| v.as_str()).unwrap_or("");
+    let effort = if text("/effort/level").is_empty() {
+        text("/effort")
+    } else {
+        text("/effort/level")
+    };
+    let now = util::now_secs();
+    let mut all = read_all(p);
+    all.retain(|_, v| v["saved_at"].as_u64().unwrap_or(0) + KEEP_SECONDS > now);
+    all.insert(
+        sid.to_string(),
+        json!({
+            "share": share,
+            "model_id": text("/model/id"),
+            "model_name": text("/model/display_name"),
+            "effort": effort,
+            "saved_at": now,
+        }),
+    );
+    util::atomic_write(
+        &state_path(p),
+        serde_json::to_string_pretty(&Value::Object(all))
+            .unwrap_or_default()
+            .as_bytes(),
+    )
+    .map_err(|e| err(format!("cannot save the session state: {e}")))
+}
+
+/// What was saved for a session, if anything.
+pub fn session_state(p: &Project, session: &str) -> Option<SessionState> {
+    let all = read_all(p);
+    let v = all.get(session)?;
+    let st = |k: &str| v[k].as_str().unwrap_or("").to_string();
+    Some(SessionState {
+        share: v["share"].as_f64(),
+        model_id: st("model_id"),
+        model_name: st("model_name"),
+        effort: st("effort"),
+        saved_at: v["saved_at"].as_u64().unwrap_or(0),
+    })
+}
+
+/// The note for the conductor when the saved share of the session is above the policy's setting and
+/// not old. With no saved share, or an old one, nothing: no note and no claim.
+pub fn context_note(p: &Project, session: &str, now: u64) -> Option<String> {
+    let st = session_state(p, session)?;
+    let share = st.share?;
+    let pol = &p.policy.context;
+    if now.saturating_sub(st.saved_at) > pol.max_age_seconds || share <= pol.max_share {
+        return None;
+    }
+    Some(format!(
+        "Note from the engine: this session's context is {share:.0}% full, above the {:.0}% the policy allows. \
+Finish the step in hand, then ask the human which they want: a new session, compact, or continue here. \
+Do not compact yourself: if the human answers compact, the human runs it. On new session, start it as the model policy says.",
+        pol.max_share
+    ))
 }
