@@ -241,6 +241,42 @@ export function finished(): Scenario {
   return s
 }
 
+// Components that link to one another in three layers, one of them to a component that is no record,
+// and an open amendment naming one component. Pages of the design and of the plan are recorded.
+export function schemes(): Scenario {
+  const s = everyState()
+  s.records = [
+    ...designRecords(),
+    ...planRecords(8),
+    { id: 'C-2', kind: 'component', label: 'main', links: ['C-1'], title: 'The view shows the list.', text: 'See C-1 and U-1. Also Z-99.' },
+    { id: 'C-3', kind: 'component', label: 'minor', links: ['C-1', 'C-2'], title: 'The sync copies the list.' },
+    { id: 'C-4', kind: 'component', label: 'core', links: ['C-3', 'C-9'], title: 'The clock stamps entries.' },
+  ]
+  s.status = {
+    ...s.status,
+    amendments: [{ id: 'A-7', ids: ['C-3'], status: 'open', withdrawn_why: '' }],
+    pages: [
+      ...(s.status.pages as Rec[]),
+      page('gate-architecture-r1', '2026-01-02T08:00:00Z'),
+      page('gate-architecture-r2', '2026-01-02T08:30:00Z'),
+      page('checkpoint-K-1', '2026-01-02T11:00:00Z'),
+      { name: 'gate-ui-r2', at: '2026-01-02T12:00:00Z', url: 'http://example.invalid/not-https' },
+    ],
+  }
+  return s
+}
+
+// A plan of 200 units: too many to draw.
+export function huge(): Scenario {
+  const s = everyState()
+  s.records = [...designRecords(), ...planRecords(200)]
+  s.status = {
+    ...s.status,
+    units: Array.from({ length: 200 }, (_, i) => unit(`U-${i + 1}`, i < 100 ? 'landed' : 'planned')),
+  }
+  return s
+}
+
 // A large factory: 60 units, 30 components and 500 records in all.
 export function large(): Scenario {
   const s = everyState()
@@ -264,7 +300,68 @@ export function large(): Scenario {
   return s
 }
 
-export type Answer = { exitCode: number; stdout: string; stderr: string }
+// What `bf view plan --json` prints for a scenario: five units to a wave, each depending on the one
+// before it in its wave, and the section titles of the plan page.
+export function planView(s: Scenario): Record<string, unknown> {
+  const units = s.records.filter(r => r.kind === 'unit')
+  const stateOf = new Map((s.status.units as { id: string; state: string }[]).map(u => [u.id, u.state]))
+  const waves: Record<string, unknown>[] = []
+  const edges: string[][] = []
+  for (let i = 0; i < units.length; i += 5) {
+    waves.push({
+      n: waves.length + 1,
+      units: units.slice(i, i + 5).map(u => ({ id: u.id, title: u.title, state: stateOf.get(u.id as string) ?? 'planned' })),
+    })
+  }
+  for (let i = 0; i < units.length; i++) {
+    if (i % 5 !== 0) edges.push([units[i - 1]!.id as string, units[i]!.id as string])
+    else if (i >= 5) edges.push([units[i - 5]!.id as string, units[i]!.id as string])
+  }
+  return {
+    kind: 'plan',
+    sections: [
+      { id: 'units', title: 'Units in waves', rows: [], blocks: [{ type: 'waves', waves, edges }] },
+      { id: 'handoffs', title: 'Handoffs between units', rows: [], blocks: [] },
+      { id: 'checkpoints', title: 'Checkpoints to close', rows: [], blocks: [] },
+    ],
+  }
+}
+
+// What `bf view run --json` prints: each unit's latest receipt of each of its checks. Checks of
+// odd units passed, the check of unit 2 failed, the rest never ran.
+export function runView(s: Scenario): Record<string, unknown> {
+  const units = s.records.filter(r => r.kind === 'unit')
+  return {
+    kind: 'run',
+    sections: [
+      {
+        id: 'units',
+        title: 'Units',
+        rows: units.slice(0, 30).map((u, i) => ({
+          id: u.id,
+          body:
+            i % 3 === 2
+              ? []
+              : [{ type: 'evidence', check: `X-${i + 1}`, command: 'cargo test', exit: i === 1 ? 1 : 0, at: '2026-01-02T10:00:00Z' }],
+        })),
+        blocks: [],
+      },
+    ],
+  }
+}
+
+export function gateView(): Record<string, unknown> {
+  return {
+    kind: 'gate',
+    sections: [
+      { id: 'requirement', title: 'What the tool must do', rows: [] },
+      { id: 'screen', title: 'Screens of the tool', rows: [] },
+      { id: 'component', title: 'Parts that hold it together', rows: [] },
+    ],
+  }
+}
+
+export type Answer ={ exitCode: number; stdout: string; stderr: string }
 
 // What the engine prints for an argument list (the engine's name first), or a refusal for any other.
 export function answer(s: Scenario, argv: readonly string[]): Answer {
@@ -274,6 +371,10 @@ export function answer(s: Scenario, argv: readonly string[]): Answer {
   if (args === 'progress --json') return ok({ line: s.progress })
   if (args === 'record list --json') return ok(s.records)
   if (args === 'view index --json') return ok(s.index)
+  if (args === 'view plan --json') return ok(planView(s))
+  if (args === 'view run --json') return ok(runView(s))
+  const gate = /^view gate (\S+) --json$/.exec(args)
+  if (gate) return ok(gateView())
   return { exitCode: 1, stdout: '', stderr: `unexpected: ${args}` }
 }
 

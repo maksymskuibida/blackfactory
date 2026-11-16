@@ -133,6 +133,9 @@ export const register: Register = (on, raw) => {
       now: await $.clock.now(),
       data: (await read($, data)) as FactoryPanelData,
       choices: (await read($, choices)) as FactoryPanelChoices,
+      onSearch: (value: string) => {
+        void safely(() => panelOf($, options).search(value))
+      },
     }
     return pane(ctx)
   })

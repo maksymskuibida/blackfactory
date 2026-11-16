@@ -51,6 +51,37 @@ test('the rest is read once when the event count changed', COMMAND_ONLY, async (
   await ui.unmount()
 })
 
+test('a changed event count reads the plan and run views again for the open tab and record', { ...COMMAND_ONLY, timeoutMs: 30000 }, async ($, on) => {
+  const { world, clock } = await begin($, on)
+  await $.command.run({ command: 'factory-panel', args: '' } as never)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: paneProps(64) })
+  await ui.press({ key: 'tabs:plan' })
+  const count = (what: string) => world.calls.filter(c => c === what).length
+  const plans = count('view plan --json')
+  const runs = count('view run --json')
+  // The count did not change: the views are not read again.
+  await clock.advance(5_000)
+  expect(count('view plan --json')).toBe(plans)
+  if (world.scenario !== 'not-factory' && world.scenario !== 'no-engine') {
+    world.scenario.status = { ...world.scenario.status, events: 999 }
+  }
+  await clock.advance(5_000)
+  expect([plans, count('view plan --json')]).toEqual([plans, plans + 1])
+  expect(count('view run --json')).toBe(runs + 1)
+  await clock.advance(5_000)
+  expect(count('view plan --json')).toBe(plans + 1)
+  // A record open on a unit: its receipts are read again on the next change.
+  const keys = (await ui.findAll({ type: 'Button' })).map((b: { key?: string }) => b.key ?? '')
+  await ui.press({ key: keys.find((k: string) => k.startsWith('open:U-1@'))! })
+  const afterOpen = count('view run --json')
+  if (world.scenario !== 'not-factory' && world.scenario !== 'no-engine') {
+    world.scenario.status = { ...world.scenario.status, events: 1000 }
+  }
+  await clock.advance(5_000)
+  expect(count('view run --json')).toBe(afterOpen + 1)
+  await ui.unmount()
+})
+
 test('a collapsed status line is not polled for', COMMAND_ONLY, async ($, on) => {
   const { world, clock } = await begin($, on)
   const ui = await $.ui.mount({ ...BAND_FOR_TESTS, surface: 'desktop', props: bandProps({ isCollapsed: true }) })

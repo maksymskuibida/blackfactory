@@ -26,6 +26,17 @@ export const EMPTY_DATA: FactoryPanelData = {
   failed: false,
   readAt: 0,
   events: 0,
+  views: {
+    waves: [],
+    edges: [],
+    planState: 'none',
+    runState: 'none',
+    gateStates: {},
+    want: { tab: 'overview', record: null },
+    planSections: {},
+    gateSections: {},
+    receipts: {},
+  },
 }
 
 export type RefreshOutcome = 'read' | 'unchanged' | 'failed' | 'busy'
@@ -69,7 +80,8 @@ export function createRefresh(ports: RefreshPorts) {
     }
     const model = buildModel(raw)
     const at = await ports.now()
-    await ports.data.update(() => ({
+    await ports.data.update(d => ({
+      ...d,
       phase: 'ready',
       folder: 'factory',
       model,

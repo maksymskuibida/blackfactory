@@ -67,3 +67,67 @@ export function meterSource(landed: number, total: number, width: number, height
     `</svg>`
   )
 }
+
+// The tones of the label tags of the pages: critical, high, medium, low, core, main and minor.
+const LABEL_KEY: Record<string, string> = {
+  critical: 'crit',
+  high: 'high',
+  medium: 'med',
+  low: 'low',
+  core: 'core',
+  main: 'main',
+  minor: 'minor',
+}
+
+export function labelColors(label: string): { bg: string; fg: string } | null {
+  const key = LABEL_KEY[label]
+  if (key === undefined) return null
+  const l = tokens.light as Record<string, string>
+  const bg = l[`${key}-bg`]
+  const fg = l[`${key}-fg`]
+  return bg && fg ? { bg, fg } : null
+}
+
+// The unit states the plan map tells apart, each with the pages' colour pair it is filled with.
+export type StateGroup = 'planned' | 'building' | 'review' | 'fixing' | 'landed' | 'parked'
+
+export const STATE_GROUPS: StateGroup[] = ['planned', 'building', 'review', 'fixing', 'landed', 'parked']
+
+const STATE_KEY: Record<StateGroup, string> = {
+  planned: 'minor',
+  building: 'med',
+  review: 'main',
+  fixing: 'high',
+  landed: 'ok',
+  parked: 'crit',
+}
+
+export function groupOfState(state: string): StateGroup {
+  if (state === 'running') return 'building'
+  if (state === 'review' || state === 'reviewed') return 'review'
+  if (state === 'fixing') return 'fixing'
+  if (state === 'landed') return 'landed'
+  if (state === 'parked' || state === 'blocked') return 'parked'
+  return 'planned'
+}
+
+export function stateColors(group: StateGroup, theme: 'light' | 'dark'): { bg: string; fg: string } {
+  const set = tokens[theme] as Record<string, string>
+  const key = STATE_KEY[group]
+  return { bg: set[`${key}-bg`] ?? set['line'] ?? '#888888', fg: set[`${key}-fg`] ?? set['fg'] ?? '#000000' }
+}
+
+// The class names and the colours of a picture, both themes in one style block.
+export function pictureStyle(): string {
+  const rules = (theme: 'light' | 'dark') => {
+    const set = tokens[theme] as Record<string, string>
+    let css = `.line{stroke:${set['muted']};fill:none}.frame{fill:${set['surface']};stroke:${set['line']}}` +
+      `.ink{fill:${set['fg']}}.sub{fill:${set['muted']}}.warn{fill:${set['crit-bg']};stroke:${set['crit-fg']}}`
+    for (const g of STATE_GROUPS) {
+      const c = stateColors(g, theme)
+      css += `.s-${g}{fill:${c.bg};stroke:${c.fg}}`
+    }
+    return css
+  }
+  return `<style>text{font-family:${tokens.fonts.body.replace(/"/g, "'")}}${rules('light')}@media (prefers-color-scheme: dark){${rules('dark')}}</style>`
+}

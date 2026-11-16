@@ -162,6 +162,33 @@ export type FactoryPanelChoices = {
   search: string
 }
 
+// The latest receipt of a check, from `bf view run --json`.
+export type FactoryPanelReceipt = { check: string; exit: number; at: string; command: string }
+
+export type FactoryPanelReadState = 'none' | 'loading' | 'ready' | 'failed'
+
+export type FactoryPanelWave = { n: number; units: { id: string; title: string; state: string }[] }
+
+// What the screens read when a tab or a record opens: the engine's plan and run views and the
+// section titles of the gate pages. Empty until read.
+export type FactoryPanelViews = {
+  // The waves and edges of `bf view plan --json`.
+  waves: FactoryPanelWave[]
+  edges: [string, string][]
+  // Where each read stands: not asked yet, pending, answered, or failed.
+  planState: FactoryPanelReadState
+  runState: FactoryPanelReadState
+  gateStates: Record<string, FactoryPanelReadState>
+  // What the screens want read again on a refresh: the tab and the record that are open.
+  want: { tab: string; record: string | null }
+  // Section titles of the plan page by section ID (units, handoffs, checkpoints).
+  planSections: Record<string, string>
+  // Section titles of each stage's gate page, by stage and then by record kind.
+  gateSections: Record<string, Record<string, string>>
+  // The latest receipt of each check.
+  receipts: Record<string, FactoryPanelReceipt>
+}
+
 export type FactoryPanelFolder = 'unknown' | 'factory' | 'not-factory' | 'no-engine'
 
 // What the last reads left: the model, when it was read and the engine's message when a read failed.
@@ -177,6 +204,7 @@ export type FactoryPanelData = {
   // Milliseconds on the session clock; 0 before the first read.
   readAt: number
   events: number
+  views: FactoryPanelViews
 }
 
 // What the hooks know about the session.

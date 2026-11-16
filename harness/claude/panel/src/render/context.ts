@@ -16,6 +16,8 @@ export type Ctx = {
   now: number
   data: FactoryPanelData
   choices: FactoryPanelChoices
+  // The search field's change: the module keeps the text in the person's choices.
+  onSearch?: (value: string) => void
 }
 
 export type Width = 'narrow' | 'medium' | 'wide'

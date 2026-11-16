@@ -11,6 +11,7 @@ import { VERSION } from '../version'
 import { noop, widthOf } from './context'
 import type { Ctx, Kids } from './context'
 import { button, card, dim, heading, stamp, tag } from './parts'
+import { httpsOnly } from './refs'
 
 const STEP_NAME: Record<string, StringKey> = {
   idea: 'stepIdea',
@@ -70,7 +71,7 @@ function header(ctx: Ctx, m: FactoryPanelModel | null) {
   )
 }
 
-function errorLine(ctx: Ctx) {
+export function errorLine(ctx: Ctx) {
   const { Text } = ctx.ui
   const d = ctx.data
   if (d.folder === 'no-engine') {
@@ -189,9 +190,10 @@ function pagesCard(ctx: Ctx, m: FactoryPanelModel, width?: number) {
   const { Box, Text, Link } = ctx.ui
   const open = ctx.choices.folds['pages'] === true
   const limit = 5
-  const shown = open ? m.pages : m.pages.slice(0, limit)
+  const pages = m.pages.filter(p => httpsOnly(p.url) !== null)
+  const shown = open ? pages : pages.slice(0, limit)
   const rows: Kids = [heading(ctx, t('pages'))]
-  if (m.pages.length === 0) rows.push(dim(ctx, t('pagesEmpty')))
+  if (pages.length === 0) rows.push(dim(ctx, t('pagesEmpty')))
   for (const p of shown) {
     rows.push(
       <Box key={`page-${p.name}`} gap={space(2)} flexWrap="wrap">
@@ -200,7 +202,7 @@ function pagesCard(ctx: Ctx, m: FactoryPanelModel, width?: number) {
       </Box>,
     )
   }
-  if (m.pages.length > limit) {
+  if (pages.length > limit) {
     rows.push(button(ctx, 'fold:pages', open ? t('pagesFewer') : t('pagesAll'), noop))
   }
   void Text

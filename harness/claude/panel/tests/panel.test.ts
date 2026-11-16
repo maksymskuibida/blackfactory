@@ -152,9 +152,13 @@ test('presses choose the tab and fold sections, and nothing else', async () => {
   expect(r.choices.folds['pages']).toBe(false)
   const before = r.log.runs.length
   await r.panel.press('refresh')
-  expect(r.log.runs.length).toBe(before + 4)
+  // the four reads of a refresh, and the plan and run views the open Plan tab draws from
+  expect(r.log.runs.length).toBe(before + 6)
+  const plans = r.log.runs.filter(x => x === 'view plan --json').length
   await r.panel.press('open-panel')
   expect(r.log.opens).toBe(1)
+  // the pane returns on the Plan tab: its views are read again
+  expect(r.log.runs.filter(x => x === 'view plan --json').length).toBe(plans + 1)
 })
 
 test('the interval reads only while the pane is placed or the status line is drawn', async () => {

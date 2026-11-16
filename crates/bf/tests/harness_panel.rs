@@ -254,6 +254,25 @@ fn no_renderer_holds_a_letter_text_between_drawing_tags() {
 }
 
 #[test]
+fn the_stage_record_and_scheme_screens_hold_no_letter_text_between_drawing_tags() {
+    for f in ["tabs.tsx", "record.tsx", "schemes.tsx", "refs.tsx"] {
+        let rel = format!("{PANEL}/src/render/{f}");
+        let text = read(&rel);
+        let found = letter_text_between_tags(&text);
+        assert!(found.is_empty(), "{rel} holds letter text: {found:?}");
+        assert!(!text.contains("localisedOr"), "{rel}");
+    }
+    // The pictures are drawn from data: no drawing tag holds a word of its own.
+    let layout = read(&format!("{PANEL}/src/layout.ts"));
+    assert!(!layout.contains("'closed'") && !layout.contains("'open'"), "layout.ts writes its words itself");
+    // The panel's own words for these screens are in the strings file.
+    let en = read(&format!("{PANEL}/src/strings/en.ts"));
+    for key in ["showMore:", "searchNone:", "notPublished:", "openFullPage:", "tooLarge:", "noComponentLinks:"] {
+        assert!(en.contains(key), "{key} is missing from en.ts");
+    }
+}
+
+#[test]
 fn the_panels_tokens_match_the_tokens_file() {
     let o = Command::new("python3")
         .args(["views/dev/build.py", "--check"])
