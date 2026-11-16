@@ -87,6 +87,26 @@ fn the_ui_gate_needs_the_design_stage_verification_of_the_ui() {
         "--outcome",
         "met",
         "--says",
+        "S-1 state default: the default state shows every label",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
+        "accessibility: contrast and focus order read at 375px",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
         "I opened the page at 375px and read every label",
     ]);
     fx.must(&["gate", "open", "ui"]);
@@ -207,7 +227,10 @@ fn the_plan_check_names_each_required_check_that_has_no_check_record() {
     let o = fx.refused(&["plan", "check"]);
     for c in bf::checks::all() {
         // The threat model and the markets statement are proven by their records.
-        let proven_by_record = c.name == "threat-model" || c.name == "markets-statement";
+        // The design reviews are proven by the review of their gate, not by a check record either.
+        let proven_by_record = c.name == "threat-model"
+            || c.name == "markets-statement"
+            || c.name.ends_with("-review") && c.name != "checkpoint-review";
         assert_eq!(
             o.stderr.contains(&format!("`{}`", c.name)),
             !proven_by_record,
@@ -285,7 +308,7 @@ fn a_checkpoint_closes_only_with_a_passing_receipt_for_each_required_check_it_li
     fx.must_in(&wc, &["evidence", "run", "X-5", "--", "true"]);
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true);
-    assert_eq!(c["checks_off"].as_array().unwrap().len(), 8, "{c}");
+    assert_eq!(c["checks_off"].as_array().unwrap().len(), 13, "{c}");
 }
 
 #[test]
@@ -555,7 +578,18 @@ fn an_open_amendment_can_be_withdrawn_and_the_log_keeps_both_facts() {
 fn an_approved_amendment_cannot_be_withdrawn() {
     let fx = Fx::new();
     fx.tiny();
-    let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    // U-19: an amendment is approved only when every design stage is covered and its requirement is linked.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: no screen shows the farewell\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the farewell unit already exists\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let opened = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     narrow_all(&fx, "A-1", &opened);
     fx.human("Yes, approve the change to the second requirement.");
     fx.must(&["amend", "approve", "--quote", "approve the change"]);

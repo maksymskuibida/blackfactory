@@ -12,6 +12,8 @@ use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
 
+mod design;
+
 /// One new role and its limits.
 pub struct Role {
     pub name: &'static str,
@@ -30,6 +32,10 @@ pub struct Role {
     /// A built-stage role that also works at the design stage (the UI/UX verifier judges the screens
     /// before the plan exists).
     pub also_design: bool,
+    /// The kinds of review this role judges at the gates; empty for a role that judges none.
+    pub kinds: &'static [&'static str],
+    /// The kinds of review this role judges inside an amendment.
+    pub amendment_kinds: &'static [&'static str],
 }
 
 /// The subject of a design-stage brief, token and report: the stage itself, since no unit exists yet.
@@ -45,6 +51,8 @@ impl Role {
 pub const ROLES: &[Role] = &[
     Role {
         name: "uiux-verifier",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Judges the screens and the built interface against the contract, blind.",
         reads: &["the brief", "the contract", "the built result and its screens"],
@@ -63,6 +71,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "security-expert",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "design",
         summary: "Drafts the threats at the design stage: what is protected, the attack, the mitigation.",
         reads: &["the brief", "the design records", "the architecture"],
@@ -81,6 +91,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "security-auditor",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Files findings on the built result against the threat model, the diff and the scan output.",
         reads: &["the brief", "the threat records", "the diff", "the scan output"],
@@ -100,6 +112,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "lawyer",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "design",
         summary: "Reads the design against the markets the product serves and files what the law needs.",
         reads: &[
@@ -108,9 +122,13 @@ pub const ROLES: &[Role] = &[
             "the markets statement",
             "sources fetched on demand",
         ],
-        writes: &["legal records (`bf record put legal`)"],
+        writes: &[
+            "legal records (`bf record put legal`)",
+            "the markets record (`bf record put markets`)",
+        ],
         runs: &[
             "bf record put legal",
+            "bf record put markets",
             "bf report",
             "bf ask",
             "bf record get|list",
@@ -123,6 +141,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "legal-auditor",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Audits the built result against the markets statement and files legal findings.",
         reads: &[
@@ -146,9 +166,58 @@ pub const ROLES: &[Role] = &[
         family: "legal",
         also_design: false,
     },
+    Role {
+        name: "design-reviewer",
+        kinds: &["idea", "requirements", "architecture", "plan"],
+        amendment_kinds: &["amendment", "requirements", "architecture", "legal", "plan"],
+        stage: "design",
+        summary: "Judges the records of a design stage or of an amendment cold, from the records alone, and files findings.",
+        reads: &[
+            "the brief",
+            "the records of the stage it judges",
+            "the approved records of earlier stages they link to",
+            "the stage's questions with the human's answers",
+        ],
+        writes: &["findings (`bf record put finding`)"],
+        runs: &[
+            "bf record put finding",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "reviewer",
+        family: "review",
+        also_design: false,
+    },
+    Role {
+        name: "uiux-designer",
+        kinds: &[],
+        amendment_kinds: &[],
+        stage: "design",
+        summary: "Writes the screens and journeys its brief names.",
+        reads: &["the brief", "the design records", "the approved records they link to"],
+        writes: &[
+            "screens (`bf record put screen`)",
+            "journeys (`bf record put journey`)",
+        ],
+        runs: &[
+            "bf record put screen",
+            "bf record put journey",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "builder",
+        family: "uiux",
+        also_design: false,
+    },
 ];
 
-/// The role named `name`, if it is one of the five.
+/// The role named `name`, if it is one of the seven.
 pub fn get(name: &str) -> Option<&'static Role> {
     ROLES.iter().find(|r| r.name == name)
 }
@@ -170,6 +239,7 @@ pub fn is_new_role(name: &str) -> bool {
 fn describe(r: &Role) -> Value {
     json!({
         "name": r.name, "stage": r.stage, "also_design": r.also_design, "family": r.family, "summary": r.summary, "blind": r.blind, "tier": r.tier,
+        "kinds": r.kinds, "amendment_kinds": r.amendment_kinds,
         "reads": r.reads, "writes": r.writes, "runs": r.runs,
         "may_write_code": false,
     })
