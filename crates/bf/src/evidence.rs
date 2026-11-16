@@ -117,16 +117,28 @@ fn seal_input(v: &Value) -> String {
             h if h.is_empty() => String::new(),
             h => format!("\x1fjudgement={h}"),
         }
+        // A UI/UX journey step (or screen state) receipt seals what it is about and what was seen.
+        + &["journey", "step", "step_outcome"]
+            .iter()
+            .map(|k| match f(k) {
+                h if h.is_empty() => String::new(),
+                h => format!("\x1f{k}={h}"),
+            })
+            .collect::<String>()
 }
 
 /// A hash of the screen records as they are now: what a design-stage UI/UX judgment looked at.
 pub fn screens_hash(p: &Project) -> R<String> {
     let mut recs = p.list_records(crate::schema::kind_by_name("screen"))?;
     recs.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
-    let text: Vec<String> = recs
+    let mut text: Vec<String> = recs
         .iter()
         .map(|r| format!("{}:{}", s(r, "id"), record_hash(r)))
         .collect();
+    // The journeys too: a changed journey makes a design-stage UI/UX judgment stale.
+    let mut js = p.list_records(crate::schema::kind_by_name("journey"))?;
+    js.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
+    text.extend(js.iter().map(|j| format!("{}:{}", s(j, "id"), record_hash(j))));
     Ok(util::sha256_hex(text.join("\n").as_bytes()))
 }
 
@@ -911,6 +923,26 @@ pub fn attach(
             }
         }
     }
+    // A UI/UX verification takes its evidence step by step: a sentence that names a journey step (or a
+    // screen state) makes a step receipt; any other `met` is the verification's own and needs every
+    // step covered first.
+    let uiux_name = matches!(
+        s(&chk, "named"),
+        "design-uiux-verification" | "built-uiux-verification"
+    );
+    let mut step_fields: Option<(String, String)> = None;
+    // TH-6: no outcome of the built-result verification rests on a file from the built result.
+    if s(&chk, "named") == "built-uiux-verification" && j.outcome.is_some() {
+        crate::uiux::refuse_evidence_from_built_result(p, file)?;
+    }
+    if let (true, Some(o)) = (uiux_name, j.outcome) {
+        if let Some((subject, n, _)) = crate::uiux::parse_step(says) {
+            crate::uiux::require_step_exists(p, &subject, &n)?;
+            step_fields = Some((subject, n));
+        } else if o == "met" {
+            crate::uiux::require_covered(p, check_id, s(&chk, "named"))?;
+        }
+    }
     let h = util::sha256_file(file)?;
     fs::create_dir_all(p.evidence_dir())?;
     let dest = p.evidence_dir().join(&h);
@@ -919,11 +951,19 @@ pub fn attach(
     }
     let content = p.content_hash(&p.top)?;
     let screens = if j.outcome.is_some() && s(&chk, "named") == "design-uiux-verification" {
-        screens_hash(p)?
+        crate::uiux::design_hash(p)?
     } else {
         String::new()
     };
+    let kind = if step_fields.is_some() { "step" } else { kind };
+    let (step_journey, step_n, step_outcome) = match (&step_fields, j.outcome) {
+        (Some((a, b)), Some(o)) => (a.as_str(), b.as_str(), o),
+        _ => ("", "", ""),
+    };
     let v = json!({
+        "journey": step_journey,
+        "step": step_n,
+        "step_outcome": step_outcome,
         "type": kind,
         "check": check_id,
         "unit": unit,
