@@ -73,8 +73,9 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
     ensure_checkpoint_worktree(p, &k, &repo)?;
     let ub = p.unit_branch(unit);
     let path = p.work_dir().join(unit);
+    let existed = gitx::branch_exists(&repo.path, &ub);
     if !path.join(".git").exists() {
-        if gitx::branch_exists(&repo.path, &ub) {
+        if existed {
             gitx::must(
                 &repo.path,
                 &["worktree", "add", &path.to_string_lossy(), &ub],
@@ -87,6 +88,13 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         }
     }
     crash_point("unit-start-after-git");
+    // A unit whose branch already exists may have fallen behind: a clean one with no commits of its own
+    // is brought up to the checkpoint branch (cause start); anything else is left as it is.
+    let behind = if existed {
+        unit_sync::auto_ff(p, &st, unit, "start")
+    } else {
+        0
+    };
     if cur.is_empty() {
         let base_commit = gitx::must(&repo.path, &["rev-parse", &ub])?;
         events::append(
@@ -100,6 +108,9 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
     let mut out = json!({"unit": unit, "repo": repo.name, "working_copy": path.to_string_lossy(), "branch": ub, "base": cpb, "resumed": !cur.is_empty()});
     if let Some(n) = note {
         out["brief_note"] = json!(n);
+    }
+    if behind > 0 {
+        out["behind"] = json!(behind);
     }
     Ok(out)
 }
@@ -141,7 +152,15 @@ pub fn unit_release(p: &Project, unit: &str, quote: &str) -> R<Value> {
         json!({"unit": unit, "turn": seq, "quote": quote.trim(), "from": u.state, "to": to, "reason": u.parked_reason}),
     )?;
     p.write_guard()?;
-    Ok(json!({"unit": unit, "state": to, "released": true}))
+    // A blocked or parked unit with no commits of its own and a clean working copy is brought up to the
+    // checkpoint branch (cause release); one with commits is left as it is.
+    let mut out = json!({"unit": unit, "state": to, "released": true});
+    let st = events::replay(p)?;
+    let behind = unit_sync::auto_ff(p, &st, unit, "release");
+    if behind > 0 {
+        out["behind"] = json!(behind);
+    }
+    Ok(out)
 }
 
 /// A builder that keeps failing its checks is parked after `max_attempts` in a row.
