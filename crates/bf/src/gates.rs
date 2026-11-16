@@ -525,7 +525,7 @@ pub fn amended(st: &State, id: &str) -> bool {
     st.amends.iter().any(|a| {
         (a.status == "approved" && a.keep.iter().any(|k| k == id))
             || (matches!(a.status.as_str(), "approved" | "open" | "narrowed")
-                && a.ids.iter().any(|k| k == id))
+                && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id)))
     })
 }
 
@@ -1013,6 +1013,12 @@ fn amend_impact(p: &Project, ids: &[String]) -> R<(Value, Vec<String>)> {
 }
 
 pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
+    amend_open_marked(p, ids, false)
+}
+
+/// Open an amendment; `repair` marks it as a plan repair, which the engine refuses when the set holds
+/// a design part (R-41).
+pub fn amend_open_marked(p: &Project, ids: &[String], repair: bool) -> R<Value> {
     let st = events::require_chain(p)?;
     if ids.is_empty() {
         return Err(refuse(
@@ -1034,15 +1040,49 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
             "The status lists one open amendment.",
         ));
     }
+    if repair {
+        crate::amend::refuse_repair_mark("open an amendment as a plan repair", ids)?;
+    }
     let (imp, all) = amend_impact(p, ids)?;
     let id = format!("A-{}", st.amends.len() + 1);
     events::append(
         p,
         "amend.open",
-        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}),
+        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}),
     )?;
     p.write_guard()?;
-    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}))
+    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}))
+}
+
+/// Inside the open amendment: insert a checkpoint before or after a named one, or split one. The
+/// operation is kept in the amendment and takes effect only when the human approves it (R-64).
+pub fn amend_checkpoint(p: &Project, pos: &[String], title: Option<&str>) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(open) = open_amendment(&st) else {
+        return Err(refuse(
+            "insert or split a checkpoint",
+            "no amendment is open",
+            &["Run `bf amend open <ID>...` (or `bf amend open --repair <ID>...` for a plan repair) first."],
+            "`bf amend open` prints an amendment ID.",
+        ));
+    };
+    let aid = open.id.clone();
+    let op = crate::amend::op_from_args(pos, title)?;
+    let mut ops = open.ops.clone();
+    ops.push(op.clone());
+    let edit = crate::amend::edit_of(p, &st, &ops)?;
+    let touched = edit.touched();
+    let problems = crate::amend::result_problems(p, &edit)?;
+    events::append(
+        p,
+        "amend.checkpoint",
+        json!({"amend": aid, "op": op, "touched": touched, "renamed": edit.renames}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"amend": aid, "op": op,
+        "renamed": edit.renames.iter().map(|(o, n)| json!({"from": o, "to": n})).collect::<Vec<_>>(),
+        "created": edit.created, "touched": touched, "plan_problems": problems,
+        "note": "Nothing is written until the human approves the amendment: narrow it again with `bf amend narrow --file <f>`."}))
 }
 
 /// Change the records the open amendment covers. It keeps its ID, goes back to open (the narrowing
@@ -1065,6 +1105,9 @@ pub fn amend_revise(p: &Project, ids: &[String]) -> R<Value> {
             &["Run `bf amend revise R-1 C-2` with the IDs the amendment should cover."],
             "The command prints the impact set.",
         ));
+    }
+    if open.repair {
+        crate::amend::refuse_repair_mark("revise a plan repair", ids)?;
     }
     let (imp, all) = amend_impact(p, ids)?;
     events::append(
@@ -1140,6 +1183,7 @@ pub fn amendments_json(st: &State) -> Vec<Value> {
         .iter()
         .map(|a| {
             json!({"id": a.id, "ids": a.ids, "status": amend_status(a),
+                "repair": crate::amend::is_repair(a),
                 "withdrawn_why": a.withdrawn_why})
         })
         .collect()
@@ -1288,13 +1332,33 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
     let a = a.unwrap();
     // Every stage covered and every requirement linked, before the approval is written (R-40).
-    crate::amend::refuse_if_uncovered(p, a)?;
+    // A plan repair needs no stage sentences and no links, but it may not hold a design part (R-41).
+    if a.repair {
+        crate::amend::refuse_repair_mark(&format!("approve {aid} as a plan repair"), &a.ids)?;
+    }
+    if !crate::amend::is_repair(a) {
+        crate::amend::refuse_if_uncovered(p, a)?;
+    }
     // And no record of the set changed after the narrowing the human read (TH-12).
     if let Some(e) = last_change {
         crate::amend::refuse_if_changed_since_narrowing(p, a, e)?;
     }
-    // What the amendment re-opens, worked out from the plan now and written into the event.
-    let pl = plan::load(p)?;
+    // The checkpoint operations: the plan they leave must pass the plan check before approval (R-64).
+    let edit = if a.ops.is_empty() {
+        None
+    } else {
+        let e = crate::amend::edit_of(p, &st, &a.ops)?;
+        crate::amend::refuse_if_result_breaks_plan(p, a, &e)?;
+        Some(e)
+    };
+    // What the amendment re-opens, worked out from the plan now (as the operations leave it) and
+    // written into the event.
+    let mut pl = plan::load(p)?;
+    if let Some(e) = &edit {
+        pl.units = e.units.clone();
+        pl.checkpoints = e.cps.clone();
+        pl.checks = e.checks.clone();
+    }
     // What changed is the amendment's IDs and the kept impact set, less what the human waived.
     let changed: Vec<String> = a
         .keep
@@ -1343,13 +1407,23 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     reopen_checks.sort();
     reopen_checks.dedup();
     let receipt_floor = crate::evidence::highest_receipt_number(p);
-    events::append(
+    // The records take their new numbers first, all or none; the approval is recorded last, so a
+    // failure leaves the amendment narrowed and the plan as it was, and approving again works.
+    let written = match &edit {
+        Some(e) => crate::amend::write_edit(p, e)?,
+        None => vec![],
+    };
+    if let Err(err) = events::append(
         p,
         "amend.approve",
         json!({"amend": aid, "turn": seq, "quote": quote.trim(),
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
-               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor}),
-    )?;
+               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
+               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()}),
+    ) {
+        crate::amend::undo_writes(&written);
+        return Err(err);
+    }
     p.write_guard()?;
     Ok(json!({"amend": aid, "approved": true, "turn": seq}))
 }

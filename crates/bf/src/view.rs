@@ -970,27 +970,49 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     if !amends.is_empty() {
         secs.push(json!({"id": "amendments", "title": "Amendments", "hint": "Open, approved or withdrawn", "open": true, "blocks": [],
             "rows": amends.iter().map(|a| json!({"id": a["id"], "title": a["ids"].as_array().map(|x| x.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
-                "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" }, "text": a["status"]},
+                "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" },
+                    "text": if a["repair"] == true { format!("{}, plan repair", a["status"].as_str().unwrap_or("")) } else { a["status"].as_str().unwrap_or("").to_string() }},
                 "body": if a["withdrawn_why"].as_str().unwrap_or("").is_empty() { vec![] } else { vec![text(a["withdrawn_why"].as_str().unwrap_or(""))] }})).collect::<Vec<_>>()}));
     }
     // The amendment page: for each amendment that is not withdrawn, the four stages as sections,
     // each with its records or its not affected sentence.
     for a in st.amends.iter().filter(|a| a.status != "withdrawn") {
+        let repair = crate::amend::is_repair(a);
+        // What its checkpoint operations would leave: a renamed checkpoint shows under its old number,
+        // marked as moved, so the human's read mark follows it.
+        let edit = if a.ops.is_empty() {
+            None
+        } else {
+            crate::amend::edit_of(p, st, &a.ops).ok()
+        };
         for c in crate::amend::coverage(p, a)? {
-            let rows: Vec<Value> = if let Some(d) = &c.sentence {
+            let mut rows: Vec<Value> = if let Some(d) = &c.sentence {
                 vec![json!({"id": s(d, "id"), "title": s(d, "title"),
                     "handled": {"tone": "accepted", "text": "not affected"},
                     "body": [text(if s(d, "text").is_empty() { s(d, "chosen") } else { s(d, "text") })]})]
             } else {
                 c.records.iter().map(|r| design_row(r, None)).collect()
             };
-            let tail = if c.covered() {
+            if let (true, "plan") = (edit.is_some(), c.stage) {
+                if let Some(e) = &edit {
+                    let touched = e.touched();
+                    rows.retain(|r| !touched.iter().any(|t| *t == r["id"]));
+                    for (id, rec, how) in crate::amend::plan_rows(e) {
+                        let mut r = design_row(&rec, None);
+                        r["id"] = json!(id);
+                        r["handled"] = json!({"tone": "accepted", "text": how});
+                        rows.push(r);
+                    }
+                }
+            }
+            let tail = if c.covered() || repair {
                 ""
             } else {
                 " (neither records nor a not affected sentence yet)"
             };
+            let mark = if repair { " (plan repair)" } else { "" };
             secs.push(json!({"id": format!("{}-{}", a.id, c.stage),
-                "title": format!("{}: {}{}", a.id, c.stage, tail),
+                "title": format!("{}: {}{}{}", a.id, c.stage, mark, tail),
                 "hint": "Its records, or the sentence that says it is not affected",
                 "open": true, "blocks": [], "rows": rows}));
         }
