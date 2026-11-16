@@ -39,7 +39,7 @@ Do not install anything globally. The engine makes no network call except `cargo
 | `views/` | Page template and the page data contract |
 | `docs/` | `first-run.md`, `using.md`, `architecture.md`, `engine.md`, `records.md` |
 
-Rules belong in the engine, which refuses. The harness instructions only say how to call it. Target T-7 keeps `harness/claude/skills/**` and `harness/claude/agents/**` under 500 lines in total: count them with `wc -l` before you add to them.
+Rules belong in the engine, which refuses. The harness instructions only say how to call it. Target T-7: each file under `harness/claude/skills` and `harness/claude/agents` stays at most 200 lines, counted with `wc -l` before you add to one.
 
 ## Wording
 

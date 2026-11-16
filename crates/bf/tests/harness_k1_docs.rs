@@ -79,16 +79,15 @@ fn the_skill_forbids_the_conductor_to_use_a_token() {
 
 #[test]
 fn the_harness_text_stays_under_the_line_target() {
-    let mut total = 0;
     for rel in [
         "harness/claude/skills/factory/SKILL.md",
         "harness/claude/agents/builder.md",
         "harness/claude/agents/reviewer.md",
         "harness/claude/agents/verifier.md",
     ] {
-        total += read(rel).lines().count();
+        let n = read(rel).lines().count();
+        assert!(n <= 200, "{rel} has {n} lines");
     }
-    assert!(total < 500, "{total} lines");
 }
 
 #[test]
