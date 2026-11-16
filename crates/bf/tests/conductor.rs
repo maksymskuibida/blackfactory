@@ -257,15 +257,6 @@ fn a_reviewer_with_nothing_to_report_moves_the_unit_on_and_findings_can_be_filed
     fx.start_test_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
-    fx.must(&["report", "U-1", "--result", "built"]);
-    // No finding on file: `findings` is a clean review.
-    let r = fx
-        .must(&[
-            "report", "U-1", "--result", "findings", "--role", "reviewer", "--json",
-        ])
-        .json();
-    assert_eq!(r["state"], "reviewed");
-
     // Land U-1 properly, then do U-2: the reviewer files a finding as a record, from the unit's own working copy.
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/hello.txt"), "hi\n").unwrap();
@@ -283,6 +274,15 @@ fn a_reviewer_with_nothing_to_report_moves_the_unit_on_and_findings_can_be_filed
             "src/hello.txt",
         ],
     );
+    fx.must(&["report", "U-1", "--result", "built"]);
+    // No finding on file: `findings` is a clean review.
+    let r = fx
+        .must(&[
+            "report", "U-1", "--result", "findings", "--role", "reviewer", "--json",
+        ])
+        .json();
+    assert_eq!(r["state"], "reviewed");
+
     fx.must(&["unit", "land", "U-1"]);
     let o = fx.must(&["unit", "start", "U-2", "--json"]);
     let wc2 = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());

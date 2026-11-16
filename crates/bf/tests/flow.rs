@@ -313,6 +313,9 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
             "src/b.txt",
         ],
     );
+    // The edit came after the clean review, so the unit goes back to review before it lands.
+    fx.refused(&["unit", "land", "U-2"]);
+    fx.must(&["report", "U-2", "--result", "built", "--role", "reviewer"]);
     fx.must(&["unit", "land", "U-2"]);
     fx.must_in(
         &fx.work("K-2"),
