@@ -1,0 +1,49 @@
+kind = "impressum"
+language = "en"
+title = "Impressum (legal notice)"
+draft_mark = "DRAFT: this text was made from a preset and is not legal advice. A lawyer must check it before it is used."
+body = """
+## Provider
+
+{{COMPANY_NAME}}
+{{COMPANY_ADDRESS}}
+
+## Represented by
+
+{{REPRESENTATIVE}}
+
+## Contact
+
+E-mail: {{CONTACT_EMAIL}}
+Phone: {{PHONE}}
+
+## Register entry
+
+{{REGISTER_ENTRY}}
+
+## VAT identification number
+
+{{VAT_ID}}
+"""
+
+[[blanks]]
+name = "COMPANY_NAME"
+hint = "The legal name of the provider, with its legal form."
+[[blanks]]
+name = "COMPANY_ADDRESS"
+hint = "The postal address where the provider can be served."
+[[blanks]]
+name = "REPRESENTATIVE"
+hint = "The person or persons authorised to represent the provider."
+[[blanks]]
+name = "CONTACT_EMAIL"
+hint = "An e-mail address for quick contact."
+[[blanks]]
+name = "PHONE"
+hint = "A phone number for direct contact."
+[[blanks]]
+name = "REGISTER_ENTRY"
+hint = "The commercial register and its number."
+[[blanks]]
+name = "VAT_ID"
+hint = "The VAT identification number."

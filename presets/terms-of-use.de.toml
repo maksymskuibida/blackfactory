@@ -1,0 +1,48 @@
+kind = "terms-of-use"
+language = "de"
+title = "Nutzungsbedingungen von {{PRODUCT_NAME}}"
+draft_mark = "ENTWURF: Dieser Text wurde aus einer Vorlage erstellt und ist keine Rechtsberatung. Eine Juristin oder ein Jurist muss ihn prüfen, bevor er verwendet wird."
+body = """
+## 1. Anbieter
+
+{{PRODUCT_NAME}} wird von {{COMPANY_NAME}} bereitgestellt. Fragen zu diesen Bedingungen richten Sie an {{CONTACT_EMAIL}}.
+
+## 2. Der Dienst
+
+{{SERVICE_DESCRIPTION}}
+
+## 3. Nutzung
+
+Sie nutzen den Dienst auf eigene Verantwortung und nur im Rahmen des Gesetzes. Sie missbrauchen ihn nicht, stören seinen Betrieb nicht und versuchen nicht, sich Zugang zu verschaffen, der Ihnen nicht eingeräumt wurde.
+
+## 4. Haftung
+
+Wir haften unbeschränkt bei Vorsatz, grober Fahrlässigkeit und bei Schäden an Leben, Körper oder Gesundheit. In anderen Fällen ist die Haftung beschränkt, soweit das Gesetz es erlaubt.
+
+## 5. Änderungen
+
+Wir können diese Bedingungen oder den Dienst ändern. Betrifft eine Änderung Sie, informieren wir Sie, bevor sie gilt.
+
+## 6. Recht und Gerichtsstand
+
+Diese Bedingungen unterliegen dem Recht von {{GOVERNING_LAW}}. Streitigkeiten entscheiden die Gerichte in {{JURISDICTION}}, soweit das Gesetz diese Wahl erlaubt.
+"""
+
+[[blanks]]
+name = "PRODUCT_NAME"
+hint = "Name des Produkts oder Dienstes."
+[[blanks]]
+name = "COMPANY_NAME"
+hint = "Rechtlicher Name des Anbieters."
+[[blanks]]
+name = "CONTACT_EMAIL"
+hint = "Adresse für Fragen zu diesen Bedingungen."
+[[blanks]]
+name = "SERVICE_DESCRIPTION"
+hint = "Was der Dienst leistet, in wenigen Sätzen."
+[[blanks]]
+name = "GOVERNING_LAW"
+hint = "Das anwendbare Recht."
+[[blanks]]
+name = "JURISDICTION"
+hint = "Die Gerichte, die Streitigkeiten entscheiden."
