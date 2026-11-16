@@ -543,6 +543,24 @@ fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     })
 }
 
+/// An amendment of any state names this ID.
+fn named_ever(st: &State, id: &str) -> bool {
+    st.amends.iter().any(|a| {
+        a.ids.iter().any(|k| k == id)
+            || a.touched.iter().any(|k| k == id)
+            || (a.status == "approved" && a.keep.iter().any(|k| k == id))
+    })
+}
+
+/// The latest approval covering this ID found no record by that ID: the amendment lets the record be
+/// put once, after the approval (`bf record put` binds the content it puts).
+pub fn approved_missing(st: &State, id: &str) -> bool {
+    st.approved_content
+        .get(id)
+        .map(|(_, e)| e["h"] == "missing")
+        .unwrap_or(false)
+}
+
 /// What the human approved for a record: its hash (`missing` for a record the approval removed) and, for
 /// a check, the unit it belonged to. It is the content the stage's gate approved, or the content the
 /// latest approved amendment covering the ID approved when that came after the gate.
@@ -593,7 +611,13 @@ pub fn unapproved_change(st: &State, rec: &Value) -> Option<String> {
             Some(a) => Some(a.id.clone()),
             // An approval from before the content was kept covers its IDs for ever.
             None if amended(st, id) => None,
-            None => Some("an edit that no approved amendment covers".to_string()),
+            // A change after an amendment that was approved or withdrawn named the record is not the
+            // record in force. A change of a record that no amendment ever named is not a draft: its
+            // receipts stop counting and the plan is frozen (`drift`), as before.
+            None if named_ever(st, id) => {
+                Some("an edit that no approved amendment covers".to_string())
+            }
+            None => None,
         },
         None => waiting.map(|a| a.id.clone()),
     }

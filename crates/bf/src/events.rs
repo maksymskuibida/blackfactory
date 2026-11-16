@@ -2475,6 +2475,18 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             // The human's answers to a design review and the designer lift: each uses up the message it
             // cites, so no other decision can take the same words. One that cites no valid turn and
             // quote is ignored, as for every other decision of the human.
+            // A record an approved amendment covered before it existed was put after the approval: the
+            // content put is bound to the approval from here on.
+            "amend.bind" => {
+                let id = sv("id");
+                if crate::gates::approved_missing(&st, &id) {
+                    let mut e = json!({"h": sv("h")});
+                    if !sv("unit").is_empty() {
+                        e["unit"] = json!(sv("unit"));
+                    }
+                    st.approved_content.insert(id, (seq, e));
+                }
+            }
             "design-review.park" => {
                 st.review_parks.insert(sv("subject"), seq);
             }

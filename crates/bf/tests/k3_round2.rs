@@ -375,3 +375,39 @@ fn q9b_words_written_before_the_park_do_not_release_it() {
     );
     let _: Value = json!(null);
 }
+
+/// A record an approved amendment named before it existed is put once after the approval; what is put
+/// is then bound to the approval, and a later change needs an amendment.
+#[test]
+fn a_record_named_before_it_existed_is_bound_when_it_is_put_after_the_approval() {
+    let (fx, _wc) = start();
+    let x9 = |cmd: &str| {
+        format!("id=\"X-9\"\nkind=\"check\"\ntitle=\"Folder\"\nhow=\"command\"\ncommand=\"{cmd}\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n")
+    };
+    let opened = fx
+        .must(&["amend", "open", "--repair", "X-9", "--json"])
+        .json();
+    let keep: Vec<String> = opened["impact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let f = fx.root.join("narrow.json");
+    fs::write(
+        &f,
+        json!({"amend": "A-1", "keep": keep, "waive": []}).to_string(),
+    )
+    .unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+    fx.human("Yes, add the new check.");
+    fx.must(&["amend", "approve", "A-1", "--quote", "add the new check"]);
+    let o = put_x(&fx, &x9("test -d src"));
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = put_x(&fx, &x9("true"));
+    assert!(
+        o.code != 0,
+        "the record changed again with no amendment: {}",
+        o.all()
+    );
+}
