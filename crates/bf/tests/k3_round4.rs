@@ -54,8 +54,7 @@ fn stored_changes(fx: &Fx) -> Vec<Value> {
     let ev: Value = log
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|e| e["kind"] == "amend.narrow")
-        .last()
+        .rfind(|e| e["kind"] == "amend.narrow")
         .expect("a narrowing");
     ev["changes"].as_array().cloned().unwrap_or_default()
 }
