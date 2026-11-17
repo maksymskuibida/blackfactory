@@ -22,10 +22,14 @@ fn read(p: &Project) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// Where a program word is found: a path as given, or the first match on the check PATH.
-fn resolve(p: &Project, word: &str) -> Option<PathBuf> {
+/// Where a program word is found, as it is named on the check PATH (a link is not followed): a path as
+/// given, or the first match. A program that is a link may behave by the name it is started under (the
+/// proxies of a rustup install are links to `rustup`), so this is the path to start it by.
+fn found(p: &Project, word: &str) -> Option<PathBuf> {
     if word.contains('/') {
-        return fs::canonicalize(word).ok().filter(|c| c.is_file());
+        let w = PathBuf::from(word);
+        let whole = fs::canonicalize(w.parent()?).ok()?.join(w.file_name()?);
+        return Some(whole).filter(|c| c.is_file());
     }
     let path = if p.policy.exec.path.is_empty() {
         "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -34,9 +38,13 @@ fn resolve(p: &Project, word: &str) -> Option<PathBuf> {
     };
     path.split(':')
         .filter(|d| !d.is_empty())
-        .map(|d| PathBuf::from(d).join(word))
+        .filter_map(|d| Some(fs::canonicalize(d).ok()?.join(word)))
         .find(|c| c.is_file())
-        .and_then(|c| fs::canonicalize(c).ok())
+}
+
+/// The file `found` leads to, with every link followed.
+fn resolve(p: &Project, word: &str) -> Option<PathBuf> {
+    found(p, word).and_then(|c| fs::canonicalize(c).ok())
 }
 
 fn stat(path: &std::path::Path) -> Option<(u64, u64)> {
@@ -51,17 +59,19 @@ fn stat(path: &std::path::Path) -> Option<(u64, u64)> {
 }
 
 fn entry(p: &Project, word: &str) -> Option<Value> {
-    let path = resolve(p, word)?;
+    let run = found(p, word)?;
+    let path = fs::canonicalize(&run).ok()?;
     let (size, mtime) = stat(&path)?;
     let hash = util::sha256_file(&path).ok()?;
     Some(
-        json!({"word": word, "path": path.to_string_lossy(), "size": size, "mtime": mtime, "hash": hash}),
+        json!({"word": word, "path": path.to_string_lossy(), "run": run.to_string_lossy(), "size": size, "mtime": mtime, "hash": hash}),
     )
 }
 
-/// Where a program is found on the check PATH and a hash of that file: `{word, path, size, mtime,
-/// hash}`, or nothing when the program is not there. The scan runner uses it to refuse a missing tool
-/// and to record where the tool it started was found.
+/// Where a program is found on the check PATH and a hash of that file: `{word, path, run, size, mtime,
+/// hash}` (`path` has every link followed, `run` is the name to start the program by), or nothing when
+/// the program is not there. The scan runner uses it to refuse a missing tool and to record where the
+/// tool it started was found.
 pub fn locate(p: &Project, word: &str) -> Option<Value> {
     entry(p, word)
 }

@@ -269,3 +269,43 @@ fn takes_the_edition_of_a_root_package_that_is_also_the_workspace() {
     let log = fs::read_to_string(fx.project().log_path()).unwrap();
     assert!(log.lines().last().unwrap().contains("2018"));
 }
+
+/// A folder outside the project with an executable `rustfmt` that is a link to a program named
+/// `rustup`, the way a rustup install lays out its proxies. The program does its work only when it is
+/// started under the name `rustfmt`; under any other name it exits with 2 and says nothing.
+fn proxy_dir(real_rustfmt: &str) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    let script = format!(
+        "#!/bin/sh\ncase \"${{0##*/}}\" in\n  rustfmt) exec {real_rustfmt}/rustfmt \"$@\" ;;\n  *) exit 2 ;;\nesac\n"
+    );
+    write(d.path(), "rustup", &script);
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    fs::set_permissions(d.path().join("rustup"), mode).unwrap();
+    std::os::unix::fs::symlink("rustup", d.path().join("rustfmt")).unwrap();
+    d
+}
+
+#[test]
+fn runs_a_formatter_that_is_a_link_under_the_name_it_was_found_by() {
+    let real = rustfmt_dir();
+    let proxy = proxy_dir(&real);
+    let (fx, wc) = setup(Some(&format!("{}:{PATH}", proxy.path().display())));
+    write(&wc, "src/f.rs", NEAT);
+    let o = fx.must(&["unit", "format", "U-1", "src/f.rs", "--json"]);
+    assert!(o.json()["line"].as_str().unwrap().contains("src/f.rs"));
+}
+
+#[test]
+fn says_how_a_formatter_failed_when_it_wrote_no_error() {
+    let d = tempfile::tempdir().unwrap();
+    let script = "#!/bin/sh\nif [ \"$1\" = --version ]; then echo rustfmt 1.0; exit 0; fi\necho boom\nexit 3\n";
+    write(d.path(), "rustfmt", script);
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    fs::set_permissions(d.path().join("rustfmt"), mode).unwrap();
+    let (fx, wc) = setup(Some(&format!("{}:{PATH}", d.path().display())));
+    write(&wc, "src/f.rs", NEAT);
+    let o = fx.refused(&["unit", "format", "U-1", "src/f.rs"]);
+    assert!(o.stderr.contains("exit code 3"), "{}", o.stderr);
+    assert!(o.stderr.contains("boom"), "{}", o.stderr);
+    assert!(!o.stderr.contains("no message"), "{}", o.stderr);
+}

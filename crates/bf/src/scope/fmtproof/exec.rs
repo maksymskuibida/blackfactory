@@ -4,8 +4,9 @@ use crate::programs;
 use crate::store::{s, Project};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// Run a program with no shell, a clean environment, the folder, input on standard input and a
@@ -60,13 +61,33 @@ pub(super) fn exec(
     if st.success() {
         return Ok(out);
     }
-    let e = String::from_utf8_lossy(&err);
-    Err(e
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("no message")
-        .trim()
-        .to_string())
+    Err(failure(st, &out, &err))
+}
+
+/// The first line of text that is not blank.
+fn first_line(b: &[u8]) -> Option<String> {
+    let t = String::from_utf8_lossy(b);
+    let l = t.lines().find(|l| !l.trim().is_empty())?;
+    Some(l.trim().to_string())
+}
+
+/// Why a program failed, in one sentence: the first line of its standard error, or when it wrote none,
+/// how it ended and the first line of its standard output.
+fn failure(st: ExitStatus, out: &[u8], err: &[u8]) -> String {
+    if let Some(e) = first_line(err) {
+        return e;
+    }
+    let how = match (st.code(), st.signal()) {
+        (Some(c), _) => format!("it ended with exit code {c}"),
+        (None, Some(s)) => format!("it was stopped by signal {s}"),
+        _ => "it ended without an exit code".to_string(),
+    };
+    match first_line(out) {
+        Some(o) => {
+            format!("{how}, wrote nothing to standard error, and its standard output began `{o}`")
+        }
+        None => format!("{how} and wrote nothing to standard output or standard error"),
+    }
 }
 
 /// rustfmt from the policy's check PATH: (path, hash, version), unless it is missing or lies inside
@@ -76,18 +97,19 @@ pub(super) fn locate_rustfmt(p: &Project, repo: &Path) -> Result<Value, String> 
         .ok_or("the formatter `rustfmt` is not on the policy's check PATH")?;
     let f = std::fs::canonicalize(s(&l, "path")).map_err(|e| e.to_string())?;
     for d in [p.root.clone(), repo.to_path_buf(), p.work_dir()] {
-        if f.starts_with(std::fs::canonicalize(&d).unwrap_or(d)) {
+        let d = std::fs::canonicalize(&d).unwrap_or(d);
+        if f.starts_with(&d) || Path::new(s(&l, "run")).starts_with(&d) {
             return Err("the formatter `rustfmt` lies inside the project folder or a working copy, which the engine does not run".into());
         }
     }
     let v = exec(
-        s(&l, "path"),
+        s(&l, "run"),
         &p.policy.exec.path,
         &["--version"],
         &p.work_dir(),
         b"",
     )?;
     Ok(
-        json!({"path": s(&l, "path"), "hash": s(&l, "hash"), "version": String::from_utf8_lossy(&v).trim()}),
+        json!({"path": s(&l, "path"), "run": s(&l, "run"), "hash": s(&l, "hash"), "version": String::from_utf8_lossy(&v).trim()}),
     )
 }

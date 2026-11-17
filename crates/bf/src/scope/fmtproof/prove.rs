@@ -53,7 +53,7 @@ pub(super) fn prove(c: &Ctx, path: &str) -> Result<Value, String> {
     let dir_s = dir.to_string_lossy().to_string();
     let out = w.map_err(|e| e.to_string()).and_then(|_| {
         let a = ["--edition", ed.as_str(), "--config-path", dir_s.as_str()];
-        exec(s(&fmt, "path"), &c.p.policy.exec.path, &a, c.wc, &old)
+        exec(s(&fmt, "run"), &c.p.policy.exec.path, &a, c.wc, &old)
     });
     let _ = std::fs::remove_dir_all(&dir);
     if out.map_err(|e| format!("formatter failed: {e}"))? != now {
