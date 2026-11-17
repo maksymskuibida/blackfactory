@@ -264,6 +264,28 @@ impl Fx {
         ]);
     }
 
+    /// Switch the design reviews off, as the human does: the test does not exercise them, and a design
+    /// gate with its review on opens only after the review. The other checks stay as they are.
+    pub fn design_reviews_off(&self) {
+        self.must(&[
+            "checks",
+            "propose",
+            "idea-review=off:the test does not exercise it",
+            "requirements-review=off:the test does not exercise it",
+            "architecture-review=off:the test does not exercise it",
+            "plan-review=off:the test does not exercise it",
+            "--scope",
+            "default",
+        ]);
+        self.human("Yes, switch the design reviews off for this test.");
+        self.must(&[
+            "checks",
+            "set",
+            "--quote",
+            "switch the design reviews off for this test",
+        ]);
+    }
+
     /// Switch every named check off for the active run only, the way the human does, so the run may
     /// be stopped: stopping a run asks for proof of every required check.
     pub fn run_checks_all_off(&self) {

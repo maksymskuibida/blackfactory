@@ -12,6 +12,8 @@ use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
 
+pub mod design;
+
 /// One new role and its limits.
 pub struct Role {
     pub name: &'static str,
@@ -30,6 +32,10 @@ pub struct Role {
     /// A built-stage role that also works at the design stage (the UI/UX verifier judges the screens
     /// before the plan exists).
     pub also_design: bool,
+    /// The kinds of review this role judges at the gates; empty for a role that judges none.
+    pub kinds: &'static [&'static str],
+    /// The kinds of review this role judges inside an amendment.
+    pub amendment_kinds: &'static [&'static str],
 }
 
 /// The subject of a design-stage brief, token and report: the stage itself, since no unit exists yet.
@@ -45,6 +51,8 @@ impl Role {
 pub const ROLES: &[Role] = &[
     Role {
         name: "uiux-verifier",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Judges the screens and the built interface against the contract, blind.",
         reads: &["the brief", "the contract", "the built result and its screens"],
@@ -63,6 +71,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "security-expert",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "design",
         summary: "Drafts the threats at the design stage: what is protected, the attack, the mitigation.",
         reads: &["the brief", "the design records", "the architecture"],
@@ -81,6 +91,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "security-auditor",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Files findings on the built result against the threat model, the diff and the scan output.",
         reads: &["the brief", "the threat records", "the diff", "the scan output"],
@@ -100,6 +112,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "lawyer",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "design",
         summary: "Reads the design against the markets the product serves and files what the law needs.",
         reads: &[
@@ -108,9 +122,13 @@ pub const ROLES: &[Role] = &[
             "the markets statement",
             "sources fetched on demand",
         ],
-        writes: &["legal records (`bf record put legal`)"],
+        writes: &[
+            "legal records (`bf record put legal`)",
+            "the markets record (`bf record put markets`)",
+        ],
         runs: &[
             "bf record put legal",
+            "bf record put markets",
             "bf report",
             "bf ask",
             "bf record get|list",
@@ -123,6 +141,8 @@ pub const ROLES: &[Role] = &[
     },
     Role {
         name: "legal-auditor",
+        kinds: &[],
+        amendment_kinds: &[],
         stage: "built",
         summary: "Audits the built result against the markets statement and files legal findings.",
         reads: &[
@@ -146,9 +166,78 @@ pub const ROLES: &[Role] = &[
         family: "legal",
         also_design: false,
     },
+    Role {
+        name: "design-reviewer",
+        kinds: &["idea", "requirements", "architecture", "plan"],
+        amendment_kinds: &["amendment", "requirements", "architecture", "legal", "plan"],
+        stage: "design",
+        summary: "Judges the records of a design stage or of an amendment cold, from the records alone, and files findings.",
+        reads: &[
+            "the brief",
+            "the records of the stage it judges",
+            "the approved records of earlier stages they link to",
+            "the stage's questions with the human's answers",
+        ],
+        writes: &["findings (`bf record put finding`)"],
+        runs: &[
+            "bf record put finding",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "reviewer",
+        family: "review",
+        also_design: false,
+    },
+    Role {
+        name: "uiux-designer",
+        kinds: &[],
+        amendment_kinds: &[],
+        stage: "design",
+        summary: "Writes the screens and journeys its brief names.",
+        reads: &["the brief", "the design records", "the approved records they link to"],
+        writes: &[
+            "screens (`bf record put screen`)",
+            "journeys (`bf record put journey`)",
+        ],
+        runs: &[
+            "bf record put screen",
+            "bf record put journey",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "builder",
+        family: "uiux",
+        also_design: false,
+    },
+    Role {
+        name: "designer",
+        kinds: &[],
+        amendment_kinds: &[],
+        stage: "design",
+        summary: "Writes the records of the design stage or of the amendment its brief names.",
+        reads: &["the brief", "the design records"],
+        writes: &["the records of the design stage or amendment its brief names (`bf record put`)"],
+        runs: &[
+            "bf record put",
+            "bf report",
+            "bf ask",
+            "bf record get|list",
+            "bf status",
+        ],
+        blind: false,
+        tier: "builder",
+        family: "",
+        also_design: false,
+    },
 ];
 
-/// The role named `name`, if it is one of the five.
+/// The role named `name`, if it is one of the eight.
 pub fn get(name: &str) -> Option<&'static Role> {
     ROLES.iter().find(|r| r.name == name)
 }
@@ -163,13 +252,30 @@ pub fn writers_of(kind: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The built-stage roles that file findings (the auditors), by name.
+pub fn finding_auditors() -> Vec<&'static str> {
+    ROLES
+        .iter()
+        .filter(|r| {
+            r.stage == "built"
+                && r.writes
+                    .iter()
+                    .any(|w| w.contains("`bf record put finding`"))
+        })
+        .map(|r| r.name)
+        .collect()
+}
+
+/// Whether `name` is one of the roles. A key's role may carry a suffix after a colon (the kind of a
+/// design review, the stage of a stage agent): the role is the part before it.
 pub fn is_new_role(name: &str) -> bool {
-    get(name).is_some()
+    get(name.split(':').next().unwrap_or(name)).is_some()
 }
 
 fn describe(r: &Role) -> Value {
     json!({
         "name": r.name, "stage": r.stage, "also_design": r.also_design, "family": r.family, "summary": r.summary, "blind": r.blind, "tier": r.tier,
+        "kinds": r.kinds, "amendment_kinds": r.amendment_kinds,
         "reads": r.reads, "writes": r.writes, "runs": r.runs,
         "may_write_code": false,
     })
@@ -181,6 +287,19 @@ pub fn check_subject(p: &Project, subject: &str, role: &str) -> R<&'static Role>
     let Some(r) = get(role) else {
         return Err(unknown(role));
     };
+    if is_amendment(subject) {
+        // An amendment's general designer: the token key is `<A-n>:designer`.
+        if role != "designer" {
+            return Err(refuse(
+                format!("use the role `{role}` on {subject}"),
+                format!("an amendment is drafted by its designer; `{role}` works on it only as a stage agent, with `bf review token --subject {subject} --stage <stage> --role {role}`"),
+                &["Use `designer`, or issue a stage token."],
+                "The command prints its result.",
+            ));
+        }
+        open_non_repair_amendment(p, subject)?;
+        return Ok(r);
+    }
     if subject == DESIGN {
         if !r.at_design() {
             return Err(refuse(
@@ -214,6 +333,117 @@ pub fn check_subject(p: &Project, subject: &str, role: &str) -> R<&'static Role>
         ));
     }
     Ok(r)
+}
+
+/// Whether `subject` names an amendment (`A-n`).
+pub fn is_amendment(subject: &str) -> bool {
+    crate::schema::parse_id(subject).map(|(k, _)| k) == Some("A")
+}
+
+/// The open amendment `id` when it is not a plan repair; a repair needs no designer.
+fn open_non_repair_amendment(p: &Project, id: &str) -> R<crate::events::Amend> {
+    let st = crate::events::require_chain(p)?;
+    let what = format!("use a designer on {id}");
+    let Some(a) = st.amends.iter().find(|a| a.id == id) else {
+        return Err(refuse(
+            what,
+            "there is no such amendment",
+            &["Use the ID of the open amendment from `bf status`."],
+            "The command prints its result.",
+        ));
+    };
+    if !matches!(a.status.as_str(), "open" | "narrowed") {
+        return Err(refuse(
+            what,
+            format!(
+                "{id} is {}, and a designer works on an open amendment",
+                a.status
+            ),
+            &["Open one with `bf amend open <ID>...`."],
+            "The command prints its result.",
+        ));
+    }
+    if crate::amend::is_repair(a) {
+        return Err(refuse(
+            what,
+            format!("{id} is a plan repair, which needs no designer"),
+            &["A plan repair is judged by the human alone."],
+            "The command prints its result.",
+        ));
+    }
+    Ok(a.clone())
+}
+
+/// The kind of work the policy names for a designer's subject: a design stage or an amendment.
+fn work_kind(subject: &str) -> &'static str {
+    if is_amendment(subject) {
+        "amender"
+    } else {
+        "designer"
+    }
+}
+
+/// The brief's section on the model: the tier, the effort and any model the policy names for the
+/// work, and what the designer reports.
+fn designer_section(p: &Project, subject: &str) -> String {
+    let kind = work_kind(subject);
+    let e = run::work_entry(p, kind);
+    let mut md = format!(
+        "\n## Model\n\nThis is work of the kind `{kind}`: tier {}, effort {}",
+        e["tier"].as_str().unwrap_or(""),
+        e["effort"].as_str().unwrap_or("")
+    );
+    if let Some(m) = e["model"].as_object() {
+        let list: Vec<String> = m
+            .iter()
+            .map(|(h, v)| format!("{h}: {}", v.as_str().unwrap_or("")))
+            .collect();
+        md.push_str(&format!(", model named outright: {}", list.join(", ")));
+    }
+    md.push_str(".\n\nPut every record with `--token <token> --model <the model you run on>`. The model is your own report; the engine keeps it with each record you make and shows the human that the designer agent made it.\n");
+    md
+}
+
+/// The brief of an amendment for its designer: the IDs of its set and what each is now.
+fn amend_brief(p: &Project, amend: &str, r: &Role) -> R<std::path::PathBuf> {
+    let a = open_non_repair_amendment(p, amend)?;
+    let role = r.name;
+    let mut md = format!("# Brief: {amend} as {role}\n\n");
+    md.push_str(&format!(
+        "## Your role\n\n{} Amendment: {amend}. Its set: {}.\n\n## The records of the set\n\n",
+        r.summary,
+        a.ids.join(", ")
+    ));
+    for id in &a.ids {
+        match p.get_record(id)? {
+            Some(rec) => md.push_str(&format!("- {id}: {}\n", s(&rec, "title"))),
+            None => md.push_str(&format!("- {id}: no record yet\n")),
+        }
+    }
+    md.push_str("\n## You may\n\nRead:\n");
+    for x in r.reads {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nWrite:\n");
+    for x in r.writes {
+        md.push_str(&format!("- {x}\n"));
+    }
+    md.push_str("\nRun:\n");
+    for x in r.runs {
+        md.push_str(&format!("- `{x}`\n"));
+    }
+    md.push_str("- `bf review split` with your own token, to hand stages of the amendment to stage agents\n");
+    md.push_str(&designer_section(p, amend));
+    md.push_str(&format!(
+        "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
+        p.policy.limits.max_rounds, p.policy.limits.idle_minutes
+    ));
+    md.push_str(&format!(
+        "\n## Rules\n\n- Report with `bf report {amend} --result built|blocked --role {role} --token <token>`; the report spends your token.\n- Never edit anything under the factory or engine folders.\n- Never run the human's commands (gates, the human's turns), `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\"`.\n- A check counts only when `bf evidence run` ran it.\n"
+    ));
+    let path = p.briefs_dir().join(format!("{amend}-{role}.md"));
+    util::atomic_write(&path, md.as_bytes())?;
+    Ok(path)
 }
 
 /// The brief of the design stage for a design-stage role: no unit exists, so it lists the design records.
@@ -258,6 +488,9 @@ fn design_brief(p: &Project, r: &Role) -> R<std::path::PathBuf> {
     for x in r.runs {
         md.push_str(&format!("- `{x}`\n"));
     }
+    if role == "designer" {
+        md.push_str(&designer_section(p, DESIGN));
+    }
     md.push_str(&format!(
         "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
         p.policy.limits.max_rounds, p.policy.limits.idle_minutes
@@ -276,17 +509,30 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
     if unit == DESIGN {
         return design_brief(p, r);
     }
+    if is_amendment(unit) {
+        return amend_brief(p, unit, r);
+    }
     let pl = plan::load(p)?;
-    let Some(u) = pl.unit(unit) else {
-        return Err(refuse(
-            format!("brief {unit}"),
-            "no such unit",
-            &["Use a unit ID from `bf status`."],
-            "The command prints a path.",
-        ));
+    // A checkpoint is briefed like a unit: what it proves stands where a unit's deliveries stand.
+    let (u, what, ids, label) = match pl.unit(unit) {
+        Some(u) => (u, "unit", str_list(u, "delivers"), "Unit"),
+        None => match pl.checkpoint(unit) {
+            Some(k) => (k, "checkpoint", str_list(k, "proves"), "Checkpoint"),
+            None => {
+                return Err(refuse(
+                    format!("brief {unit}"),
+                    "no such unit or checkpoint",
+                    &["Use a unit or checkpoint ID from `bf status`."],
+                    "The command prints a path.",
+                ));
+            }
+        },
     };
     let wc = p.work_dir().join(unit);
-    let mut md = format!("# Brief: {unit} as {role}\n\nUnit: {}\n\n", s(u, "title"));
+    let mut md = format!(
+        "# Brief: {unit} as {role}\n\n{label}: {}\n\n",
+        s(u, "title")
+    );
     if !s(u, "text").is_empty() {
         md.push_str(&format!("{}\n\n", s(u, "text")));
     }
@@ -294,8 +540,12 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
         "## Your role\n\n{} Stage: {}.\n\n",
         r.summary, r.stage
     ));
-    md.push_str("## What this unit delivers\n\n");
-    for id in str_list(u, "delivers") {
+    if what == "checkpoint" {
+        md.push_str("## What this checkpoint proves\n\n");
+    } else {
+        md.push_str("## What this unit delivers\n\n");
+    }
+    for id in ids {
         if let Some(rec) = p.get_record(&id)? {
             md.push_str(&format!("### {} {}\n\n", id, s(&rec, "title")));
             if !s(&rec, "text").is_empty() {
@@ -337,6 +587,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
     md.push_str(&format!(
         "\n## Rules\n\n- Report with `bf report <unit> --result built|blocked --role {role} --token <token>`; the report spends your token and does not move the unit.\n- Never edit anything under the factory or engine folders.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\"`.\n- A check counts only when `bf evidence run` ran it.\n"
     ));
+    if r.stage == "built" && !r.writes.is_empty() {
+        md.push_str("- Put each record from the working copy with `--token <token>`; a finding names the `unit` it is about, a unit that has started.\n");
+    }
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)
@@ -344,7 +597,16 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
 
 /// Entry point of `bf roles <sub> ...`: `list`, `show <role>`, `token <unit> <role>`.
 pub fn run_in(p: &Project, sub: &str, rest: &[String]) -> R<Value> {
+    run_with(p, sub, rest, None)
+}
+
+/// The same, with the human's words (`--quote`), which `lift` records.
+pub fn run_with(p: &Project, sub: &str, rest: &[String], quote: Option<&str>) -> R<Value> {
     match sub {
+        "lift" => {
+            let subject = rest.first().map(|x| x.as_str()).unwrap_or("");
+            crate::gates::designer_lift(p, subject, quote.unwrap_or(""))
+        }
         "list" => Ok(json!({"roles": ROLES.iter().map(describe).collect::<Vec<_>>()})),
         "show" => {
             let name = rest.first().map(|x| x.as_str()).unwrap_or("");
@@ -363,7 +625,7 @@ pub fn run_in(p: &Project, sub: &str, rest: &[String]) -> R<Value> {
         _ => Err(refuse(
             format!("run `bf roles {sub}`"),
             "unknown subcommand",
-            &["Use `bf roles list`, `bf roles show <role>` or `bf roles token <unit> <role>`."],
+            &["Use `bf roles list`, `bf roles show <role>`, `bf roles token <unit> <role>` or `bf roles lift <stage|A-n> --quote \"<their words>\"`."],
             "The command prints its result.",
         )),
     }

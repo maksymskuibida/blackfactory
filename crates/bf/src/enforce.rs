@@ -356,6 +356,58 @@ fn count(p: &Project, kind: &str) -> R<usize> {
     Ok(p.list_records(schema::kind_by_name(kind))?.len())
 }
 
+/// A hash of the threat records as they are now: the security expert's report binds to it, so a report
+/// stays good while the records stay as they were, whatever the files' times say.
+pub fn threats_hash(p: &Project) -> R<String> {
+    let mut recs = p.list_records(schema::kind_by_name("threat"))?;
+    recs.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
+    let mut text = String::new();
+    for r in &recs {
+        text.push_str(s(r, "id"));
+        text.push(' ');
+        text.push_str(&evidence::record_hash(r));
+        text.push('\n');
+    }
+    Ok(crate::util::sha256_hex(text.as_bytes()))
+}
+
+/// The threat model is proven when threats exist and the security expert reported at the design stage
+/// on the threat records as they are now: the report's event holds a hash of them (`threats_hash`). A
+/// report of an older log that holds no hash counts when it came after the last change to any threat
+/// record (a report in the same second as a change counts as before it).
+pub fn threat_model_proven(p: &Project) -> R<bool> {
+    let recs = p.list_records(schema::kind_by_name("threat"))?;
+    if recs.is_empty() {
+        return Ok(false);
+    }
+    let now = threats_hash(p)?;
+    let mut changed_ms = 0u64;
+    for r in &recs {
+        let ms = p
+            .record_path(s(r, "id"))
+            .ok()
+            .and_then(|f| std::fs::metadata(f).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        changed_ms = changed_ms.max(ms);
+    }
+    let log = crate::events::load_log(p)?;
+    Ok(log.events.iter().any(|e| {
+        e["kind"] == "unit.role-report"
+            && e["unit"] == crate::roles::DESIGN
+            && e["role"] == "security-expert"
+            && e["result"] == "built"
+            && match e["threats_hash"].as_str() {
+                Some(h) => h == now,
+                None => {
+                    crate::util::parse_rfc3339(e["at"].as_str().unwrap_or("")) * 1000 > changed_ms
+                }
+            }
+    }))
+}
+
 /// Design-stage checks switched on after their gate was approved: the ones whose product is missing,
 /// one line each. The gate cannot be opened again by the check alone, so the switch is refused.
 pub fn design_product_gaps(p: &Project, st: &State, on: &[&'static NamedCheck]) -> R<Vec<String>> {
@@ -370,7 +422,7 @@ pub fn design_product_gaps(p: &Project, st: &State, on: &[&'static NamedCheck]) 
                 let receipts = evidence::load_receipts(p)?;
                 ("ui", !design_receipt(p, &pl, &receipts, c.name)?)
             }
-            "threat-model" => ("architecture", count(p, "threat")? == 0),
+            "threat-model" => ("architecture", !threat_model_proven(p)?),
             "markets-statement" => ("architecture", count(p, "markets")? == 0),
             _ => continue,
         };
@@ -400,6 +452,8 @@ pub fn design_blocker(p: &Project, st: &State, kind: &str) -> R<()> {
         "architecture" => {
             if on("threat-model") && count(p, "threat")? == 0 {
                 gaps.push("no threat is recorded and the threat model check is on: put threat records (`bf record put threat`), each naming what is protected, how it is attacked and how the design answers it".into());
+            } else if on("threat-model") && !threat_model_proven(p)? {
+                gaps.push("the security expert has not reported on the threat model since the last change to a threat record: the expert reads the threats and reports `bf report design --result built --role security-expert --token <token>`".into());
             }
             let legal_on = checks::in_family(checks::Family::Legal)
                 .iter()
@@ -487,7 +541,7 @@ pub fn refuse_if_unproven_for(p: &Project, pl: &Plan, act: &str, retry: &str) ->
         let ok = match c.stage {
             Stage::Design => match c.name {
                 "design-uiux-verification" => design_receipt(p, pl, &receipts, c.name)?,
-                "threat-model" => count(p, "threat")? > 0,
+                "threat-model" => threat_model_proven(p)?,
                 "markets-statement" => count(p, "markets")? > 0,
                 _ => true,
             },
@@ -534,6 +588,12 @@ pub fn checkpoint_gaps(
     let listed = str_list(k, "checks");
     let mut gaps = Vec::new();
     let mut unproven: Vec<String> = Vec::new();
+    // A checkpoint record changed by an amendment the human has not approved is a draft: it closes nothing.
+    if let Some(a) = crate::gates::unapproved_change(st, k) {
+        gaps.push(format!(
+            "{kid}: changed by {a}, which the human has not approved; a draft of the plan is not the record in force"
+        ));
+    }
     let is_last = last_checkpoint(pl)
         .map(|l| s(l, "id") == kid)
         .unwrap_or(false);

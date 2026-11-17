@@ -637,10 +637,22 @@ fn the_plan_is_frozen_once_its_gate_is_approved() {
     );
     // An approved amendment is the way in.
     fs::remove_file(fx.root.join("factory/records/U-9.toml")).unwrap();
-    fx.must(&["amend", "open", "U-9"]);
+    // U-19: the other stages are covered by the agent's not affected sentences.
+    for (id, stage) in [("D-91", "requirements"), ("D-92", "ui"), ("D-93", "architecture")] {
+        let t = format!("id=\"{id}\"\nkind=\"decision\"\ntitle=\"The {stage} stage is not affected by a new unit\"\nmaker=\"agent\"\nstage=\"{stage}\"\n");
+        let o = fx.put("decision", &t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let opened = fx
+        .must(&["amend", "open", "U-9", "D-91", "D-92", "D-93", "--json"])
+        .json();
     let tmp = tempfile::tempdir().unwrap();
     let f = tmp.path().join("n.json");
-    fs::write(&f, json!({"keep": ["U-9"], "reasons": {}}).to_string()).unwrap();
+    fs::write(
+        &f,
+        json!({"keep": opened["impact_ids"], "reasons": {}}).to_string(),
+    )
+    .unwrap();
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     fx.human("yes, add that unit");
     fx.must(&["amend", "approve", "--quote", "yes, add that unit"]);

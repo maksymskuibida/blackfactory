@@ -83,17 +83,52 @@ pub fn load(p: &Project) -> R<Plan> {
         problems: vec![],
         bad,
     };
-    analyse(p, &mut plan, &ids);
+    finish(p, &mut plan, &ids);
+    Ok(plan)
+}
+
+/// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
+/// `load`, on the edited units, handoffs, checkpoints and checks instead of the files (R-64).
+pub fn problems_of_edited(
+    p: &Project,
+    base: &Plan,
+    units: Vec<Value>,
+    checkpoints: Vec<Value>,
+    checks: Vec<Value>,
+) -> R<Vec<String>> {
+    let mut ids: HashSet<String> = HashSet::new();
+    for r in p.list_records(None)? {
+        ids.insert(s(&r, "id").to_string());
+    }
+    for r in units.iter().chain(&checkpoints).chain(&checks) {
+        ids.insert(s(r, "id").to_string());
+    }
+    let mut plan = Plan {
+        units,
+        handoffs: base.handoffs.clone(),
+        checkpoints,
+        checks,
+        designed: base.designed.clone(),
+        wave: HashMap::new(),
+        problems: vec![],
+        bad: base.bad.clone(),
+    };
+    finish(p, &mut plan, &ids);
+    Ok(plan.problems)
+}
+
+fn finish(p: &Project, plan: &mut Plan, ids: &HashSet<String>) {
+    analyse(p, plan, ids);
     // A required named check appears in the plan as a check record that names it.
     if let Ok(st) = crate::events::replay(p) {
         // Decided means the log says so: a recorded setting for the project default or for a run. A
         // run begun before the engine knew the checks does not decide them.
         let decided = crate::checks::decided(&st);
-        let more = crate::enforce::plan_problems(&plan, &st, decided);
+        let more = crate::enforce::plan_problems(plan, &st, decided);
         plan.problems.extend(more);
-        plan.problems.extend(question_problems(&plan, &st));
+        let q = question_problems(plan, &st);
+        plan.problems.extend(q);
     }
-    Ok(plan)
 }
 
 /// The questions every run puts to the human at its plan stage (R-61, R-76): which wave checks it uses,
@@ -458,6 +493,18 @@ pub fn not_ready(
     for d in str_list(u, "depends_on") {
         if st.unit_state(&d) != "landed" {
             return Some(format!("it depends on {d}, which has not landed"));
+        }
+    }
+    // An order of the run log (A-73) holds a unit back like a dependency: the asker lands first.
+    for o in st.orders.iter().filter(|o| s(o, "unit") == unit) {
+        let asker = s(o, "after");
+        // `order::after` leaves out an order the records overrule, so no cycle can hold a unit back.
+        if st.unit_state(asker) != "landed" && crate::scope::order::after(pl, st, unit, asker) {
+            return Some(format!(
+                "it comes after {asker}, which has not landed: {asker} asked for {} and the engine put it after (event {})",
+                s(o, "path"),
+                o["seq"].as_u64().unwrap_or(0)
+            ));
         }
     }
     for h in &pl.handoffs {

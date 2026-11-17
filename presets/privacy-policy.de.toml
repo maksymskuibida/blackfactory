@@ -1,0 +1,54 @@
+kind = "privacy-policy"
+language = "de"
+title = "Datenschutzerklärung von {{PRODUCT_NAME}}"
+draft_mark = "ENTWURF: Dieser Text wurde aus einer Vorlage erstellt und ist keine Rechtsberatung. Eine Juristin oder ein Jurist muss ihn prüfen, bevor er verwendet wird."
+body = """
+## 1. Verantwortlicher
+
+{{COMPANY_NAME}}, {{COMPANY_ADDRESS}}, ist verantwortlich für die Verarbeitung personenbezogener Daten in {{PRODUCT_NAME}}. Sie erreichen uns unter {{CONTACT_EMAIL}}.
+
+## 2. Welche Daten wir erheben
+
+{{DATA_COLLECTED}}
+
+## 3. Wofür wir sie verarbeiten
+
+{{PURPOSES}}
+
+## 4. Wer sie erhält
+
+{{THIRD_PARTIES}}
+
+## 5. Wie lange wir sie speichern
+
+{{RETENTION_PERIOD}}
+
+## 6. Ihre Rechte
+
+Sie haben das Recht auf Auskunft, Berichtigung und Löschung Ihrer Daten, auf Einschränkung der Verarbeitung, auf Widerspruch, auf Datenübertragbarkeit und darauf, eine Einwilligung jederzeit zu widerrufen. Außerdem können Sie sich bei einer Datenschutzaufsichtsbehörde beschweren. Um ein Recht auszuüben, schreiben Sie an {{CONTACT_EMAIL}}.
+"""
+
+[[blanks]]
+name = "PRODUCT_NAME"
+hint = "Name des Produkts oder Dienstes."
+[[blanks]]
+name = "COMPANY_NAME"
+hint = "Rechtlicher Name des Verantwortlichen."
+[[blanks]]
+name = "COMPANY_ADDRESS"
+hint = "Postanschrift des Verantwortlichen."
+[[blanks]]
+name = "CONTACT_EMAIL"
+hint = "Adresse für Datenschutzanfragen."
+[[blanks]]
+name = "DATA_COLLECTED"
+hint = "Die erhobenen personenbezogenen Daten, als Liste."
+[[blanks]]
+name = "PURPOSES"
+hint = "Zweck jeder Verarbeitung und die Rechtsgrundlage."
+[[blanks]]
+name = "THIRD_PARTIES"
+hint = "Auftragsverarbeiter und andere Empfänger und ihr Standort."
+[[blanks]]
+name = "RETENTION_PERIOD"
+hint = "Wie lange die Daten gespeichert werden."

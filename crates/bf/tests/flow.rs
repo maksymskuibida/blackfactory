@@ -206,6 +206,20 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
     let fx = Fx::new();
     // Two checkpoints: K-1 has U-1, K-2 has U-2.
     two_checkpoints(&fx);
+    // U-19: the amendment of R-2 covers every design stage and links R-2. Its new parts belong to
+    // U-2 and are proved by X-4, so the ledger closes again at the end.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: none shows the farewell\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the farewell unit exists\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\n");
+    replace_record(&fx, "check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nscope=\"checkpoint\"\n");
+    replace_record(&fx, "checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nchecks=[\"X-4\"]\n");
+    fx.commit_all("records");
     fx.start_test_run();
     fx.build_unit("U-1", "src/a.txt", "X-1", &["test", "-f", "src/a.txt"]);
     fx.must_in(
@@ -233,7 +247,9 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
         "closed before the amendment"
     );
     // The human changes R-2 only.
-    let imp = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    let imp = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     let keep: Vec<String> = imp["impact_ids"]
         .as_array()
         .unwrap()
@@ -297,6 +313,9 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
             "src/b.txt",
         ],
     );
+    // The edit came after the clean review, so the unit goes back to review before it lands.
+    fx.refused(&["unit", "land", "U-2"]);
+    fx.must(&["report", "U-2", "--result", "built", "--role", "reviewer"]);
     fx.must(&["unit", "land", "U-2"]);
     fx.must_in(
         &fx.work("K-2"),
@@ -516,7 +535,6 @@ fn a_product_with_no_interface_skips_the_ui_gate_in_the_humans_words() {
 #[test]
 fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n"),
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
@@ -526,6 +544,7 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     ] {
         assert_eq!(fx.put(k, t).code, 0);
     }
+    fx.set_policy("tokens = false", "tokens = true");
     fx.commit_all("records");
     fx.start_test_run();
     // Build U-1 with the tokens the engine shows.
@@ -1032,8 +1051,14 @@ fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
         d.stdout
     );
     // The refusal at a decision points at the same cause first.
-    fx.must(&["gate", "open", "idea"]);
-    let o = fx.refused(&["gate", "approve", "idea", "--quote", "Approved."]);
+    // A checkpoint-step gate has no design review, and nothing here may record a message of the human.
+    let o = fx.put(
+        "checkpoint",
+        "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[]\nproves=[]\nchecks=[]\n",
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["gate", "open", "checkpoint-step", "--ref", "K-1"]);
+    let o = fx.refused(&["gate", "approve", "checkpoint-step-K-1-r1", "--quote", "Approved."]);
     assert!(
         o.stderr.contains("no human turn was recorded at all"),
         "{}",

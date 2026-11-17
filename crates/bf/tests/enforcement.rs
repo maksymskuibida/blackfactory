@@ -23,6 +23,22 @@ fn revise(fx: &Fx, kind: &str, text: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
+/// The security expert reports on the threat model at the design stage, a second after the last change.
+fn expert_reports(fx: &Fx) {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let o = fx.bf(&[
+        "report",
+        "design",
+        "--result",
+        "built",
+        "--role",
+        "security-expert",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
 fn design_records(fx: &Fx) {
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A greeting exists\"\nacceptance=[\"src/a.txt exists\"]\n"),
@@ -48,6 +64,7 @@ fn only_on(fx: &Fx, keep: &[&str]) {
     fx.human("Yes, switch the others off.");
     fx.must(&["checks", "set", "--quote", "switch the others off"]);
 }
+
 
 // ---- R-5: the design gates ----
 
@@ -87,6 +104,26 @@ fn the_ui_gate_needs_the_design_stage_verification_of_the_ui() {
         "--outcome",
         "met",
         "--says",
+        "S-1 state default: the default state shows every label",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
+        "accessibility: contrast and focus order read at 375px",
+    ]);
+    fx.must(&[
+        "evidence",
+        "attach",
+        "X-1",
+        f.to_str().unwrap(),
+        "--outcome",
+        "met",
+        "--says",
         "I opened the page at 375px and read every label",
     ]);
     fx.must(&["gate", "open", "ui"]);
@@ -105,6 +142,7 @@ fn the_ui_gate_does_not_ask_for_a_check_the_human_switched_off() {
 fn the_architecture_gate_needs_a_threat_and_a_markets_statement() {
     let fx = Fx::with_checks();
     design_records(&fx);
+    fx.design_reviews_off();
     let o = fx.refused(&["gate", "open", "architecture"]);
     assert!(o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(o.stderr.contains("no markets statement"), "{}", o.stderr);
@@ -114,6 +152,11 @@ fn the_architecture_gate_needs_a_threat_and_a_markets_statement() {
     let o = fx.refused(&["gate", "open", "architecture"]);
     assert!(!o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(o.stderr.contains("no markets statement"), "{}", o.stderr);
+    // The threat model stands only after the security expert reports on it.
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(!o.stderr.contains("has not reported"), "{}", o.stderr);
     // A statement of no market counts.
     let o = fx.put(
         "markets",
@@ -133,6 +176,42 @@ fn the_architecture_gate_follows_the_settings_for_the_threat_model_and_the_legal
     assert!(o.stderr.contains("no threat is recorded"), "{}", o.stderr);
     assert!(!o.stderr.contains("markets"), "{}", o.stderr);
     fx.put("threat", THREAT);
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
+    fx.must(&["gate", "open", "architecture"]);
+}
+
+#[test]
+fn a_change_to_a_threat_needs_a_newer_report_of_the_security_expert() {
+    let fx = Fx::with_checks();
+    design_records(&fx);
+    only_on(&fx, &["threat-model"]);
+    fx.put("threat", THREAT);
+    expert_reports(&fx);
+    // The threat changes after the report: the report is older than the change.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    revise(
+        &fx,
+        "threat",
+        &THREAT.replace("read-only files", "files nobody can write"),
+    );
+    let o = fx.refused(&["gate", "open", "architecture"]);
+    assert!(o.stderr.contains("has not reported"), "{}", o.stderr);
+    expert_reports(&fx);
+    fx.must(&["gate", "open", "architecture"]);
+}
+
+#[test]
+fn a_report_of_the_security_expert_stays_good_when_only_the_threat_files_times_move() {
+    let fx = Fx::with_checks();
+    design_records(&fx);
+    only_on(&fx, &["threat-model"]);
+    fx.put("threat", THREAT);
+    expert_reports(&fx);
+    // A fresh clone or a branch switch rewrites the file with the same content a second later.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    revise(&fx, "threat", THREAT);
     fx.must(&["gate", "open", "architecture"]);
 }
 
@@ -207,7 +286,10 @@ fn the_plan_check_names_each_required_check_that_has_no_check_record() {
     let o = fx.refused(&["plan", "check"]);
     for c in bf::checks::all() {
         // The threat model and the markets statement are proven by their records.
-        let proven_by_record = c.name == "threat-model" || c.name == "markets-statement";
+        // The design reviews are proven by the review of their gate, not by a check record either.
+        let proven_by_record = c.name == "threat-model"
+            || c.name == "markets-statement"
+            || c.name.ends_with("-review") && c.name != "checkpoint-review";
         assert_eq!(
             o.stderr.contains(&format!("`{}`", c.name)),
             !proven_by_record,
@@ -285,7 +367,7 @@ fn a_checkpoint_closes_only_with_a_passing_receipt_for_each_required_check_it_li
     fx.must_in(&wc, &["evidence", "run", "X-5", "--", "true"]);
     let c = fx.must(&["checkpoint", "close", "K-1", "--json"]).json();
     assert_eq!(c["closed"], true);
-    assert_eq!(c["checks_off"].as_array().unwrap().len(), 8, "{c}");
+    assert_eq!(c["checks_off"].as_array().unwrap().len(), 13, "{c}");
 }
 
 #[test]
@@ -555,7 +637,18 @@ fn an_open_amendment_can_be_withdrawn_and_the_log_keeps_both_facts() {
 fn an_approved_amendment_cannot_be_withdrawn() {
     let fx = Fx::new();
     fx.tiny();
-    let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
+    // U-19: an amendment is approved only when every design stage is covered and its requirement is linked.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: no screen shows the farewell\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the farewell unit already exists\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let opened = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
     narrow_all(&fx, "A-1", &opened);
     fx.human("Yes, approve the change to the second requirement.");
     fx.must(&["amend", "approve", "--quote", "approve the change"]);

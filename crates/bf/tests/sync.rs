@@ -80,7 +80,7 @@ fn tip(repo: &Path, branch: &str) -> String {
 
 fn walk(fx: &Fx, code: &Path, repo_name: &str) {
     real_run(fx);
-    let sync = |q: &str| fx.bf(&["checkpoint", "sync", "K-1", "--quote", q]);
+    let sync = |q: &str| fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", q]);
     // A unit is between start and landing: refused, naming it.
     fx.must(&["unit", "start", "U-1"]);
     fx.human("Yes, bring main in now.");
@@ -117,6 +117,7 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "bring main in",
             "--json",
@@ -153,7 +154,7 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
         &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
     );
     // The words are needed: a human turn with the quote in it.
-    let o = fx.bf(&["checkpoint", "sync", "K-1", "--quote", "nobody said this"]);
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "nobody said this"]);
     assert_eq!(o.code, 2);
     let before = tip(code, "bf/K-1");
     fx.human("Yes, take main into the first checkpoint.");
@@ -162,6 +163,7 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "take main into the first checkpoint",
             "--json",
@@ -178,11 +180,14 @@ fn walk(fx: &Fx, code: &Path, repo_name: &str) {
     let st = fx.must(&["status", "--json"]).json();
     assert!(st["main_ahead"].as_array().unwrap().is_empty(), "{st}");
     assert_eq!(st["repos"][0]["note"], "", "{st}");
+    // The sync reaches for the remote first, so even a sync with nothing to take in needs the human's words.
+    fx.human("Yes, take main into the checkpoint once more.");
     let o = fx
         .must(&[
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "take main into",
             "--json",
@@ -289,6 +294,7 @@ fn sync_into_conflict(fx: &Fx, code: &Path) -> String {
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "bring main into the checkpoint",
             "--json",
@@ -624,6 +630,7 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
         "checkpoint",
         "sync",
         "K-1",
+        "--local",
         "--quote",
         "try bringing main in again",
     ]);
@@ -716,6 +723,7 @@ fn walk_repair(fx: &Fx, code: &Path) {
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "bring main into the first checkpoint",
             "--json",
@@ -891,6 +899,7 @@ fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "bring main into the first checkpoint",
             "--json",
@@ -912,6 +921,7 @@ fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "bring main in again",
             "--json",
@@ -958,6 +968,7 @@ fn a_sync_leaves_out_a_switched_off_check_and_says_so() {
             "checkpoint",
             "sync",
             "K-1",
+            "--local",
             "--quote",
             "take main into the checkpoint",
             "--json",
@@ -1005,6 +1016,7 @@ fn the_resolvers_brief_leaves_out_a_switched_off_check() {
         "checkpoint",
         "sync",
         "K-1",
+        "--local",
         "--quote",
         "take main into the checkpoint",
         "--json",
@@ -1030,7 +1042,7 @@ fn verified_checks(fx: &Fx, k: &str) -> Vec<String> {
 
 fn sync_k1(fx: &Fx, words: &str) -> Value {
     fx.human(&format!("Yes, {words}."));
-    fx.must(&["checkpoint", "sync", "K-1", "--quote", words, "--json"])
+    fx.must(&["checkpoint", "sync", "K-1", "--local", "--quote", words, "--json"])
         .json()
 }
 

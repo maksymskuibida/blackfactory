@@ -8,6 +8,9 @@ use crate::store::Project;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+pub mod review;
+pub use review::{kind_records, records_hash, ReviewKind, REVIEW_KINDS};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Family {
     Uiux,
@@ -131,7 +134,59 @@ pub static CATALOGUE: &[NamedCheck] = &[
         Stage::Built,
         Proof::Agent,
     ),
+    c(Family::Review, IDEA_REVIEW, Stage::Design, Proof::Agent),
+    c(
+        Family::Review,
+        REQUIREMENTS_REVIEW,
+        Stage::Design,
+        Proof::Agent,
+    ),
+    c(
+        Family::Review,
+        ARCHITECTURE_REVIEW,
+        Stage::Design,
+        Proof::Agent,
+    ),
+    c(Family::Review, PLAN_REVIEW, Stage::Design, Proof::Agent),
+    c(
+        Family::Review,
+        AMENDMENT_REVIEW,
+        Stage::Design,
+        Proof::Agent,
+    ),
 ];
+
+/// The named check of the cold review of the idea records before the idea gate opens (D-74).
+pub const IDEA_REVIEW: &str = "idea-review";
+/// The named check of the cold review of the requirements and journeys.
+pub const REQUIREMENTS_REVIEW: &str = "requirements-review";
+/// The named check of the cold review of the architecture records.
+pub const ARCHITECTURE_REVIEW: &str = "architecture-review";
+/// The named check of the cold review of the plan before its gate opens.
+pub const PLAN_REVIEW: &str = "plan-review";
+/// The named check of the independent review of an amendment (R-98).
+pub const AMENDMENT_REVIEW: &str = "amendment-review";
+
+/// The names the catalogue held before the review checks were added. A check setting decided before
+/// that holds exactly these: a decision made now records the names it holds in its changes (as `on`
+/// for each check added later), and one without them is an old decision. The brief says nine;
+/// the catalogue held ten, with the checkpoint review, and the ten are what is listed here.
+pub const HELD_BEFORE_REVIEW: [&str; 10] = [
+    "design-uiux-verification",
+    "built-uiux-verification",
+    "accessibility",
+    "threat-model",
+    "security-audit",
+    "secret-scan",
+    "dependency-licence-check",
+    "markets-statement",
+    "legal-audit",
+    CHECKPOINT_REVIEW,
+];
+
+/// Why a check the catalogue gained after the settings were decided is off.
+pub const LATE_REASON: &str =
+    "added after the check settings were decided; off until the human switches it on";
 
 /// The named check of the cold review of a whole checkpoint (D-29).
 pub const CHECKPOINT_REVIEW: &str = "checkpoint-review";
@@ -408,7 +463,17 @@ pub fn attached_lines(p: &Project, pl: &crate::plan::Plan, st: &State, unit: &st
 /// Entry point of the list command, which needs no project.
 pub fn run(sub: &str, rest: &[String]) -> R<Value> {
     match sub {
-        "" | "list" => Ok(json!({"checks": all().iter().map(to_json).collect::<Vec<_>>()})),
+        "" | "list" => {
+            // Inside a project the list shows what is off and why; elsewhere, the catalogue as it is.
+            let settled = std::env::current_dir()
+                .ok()
+                .and_then(|d| Project::discover(&d).ok())
+                .and_then(|p| events::replay(&p).ok());
+            Ok(match settled {
+                Some(st) => json!({"checks": rows(&off_now(&st), &[])}),
+                None => json!({"checks": all().iter().map(to_json).collect::<Vec<_>>()}),
+            })
+        }
         _ => Err(unknown(sub, rest)),
     }
 }
@@ -422,14 +487,71 @@ fn unknown(sub: &str, _rest: &[String]) -> crate::refusal::Fail {
     )
 }
 
-/// Handoff H-2: the named checks a run requires. A run that is not known gets the project default.
-pub fn required_in_run(st: &State, run: &str) -> Vec<&'static NamedCheck> {
-    let off = st
+/// The checks the catalogue gained after the settings were decided, which the human has not switched
+/// on, with the reason each is off. `run` is the run the settings are read for; empty for the project
+/// default. Nothing is late while no setting was decided.
+fn late_off(st: &State, run: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if !decided(st) {
+        return out;
+    }
+    let start = st
+        .runs
+        .iter()
+        .find(|r| r.id == run)
+        .map(|r| r.start_seq)
+        .unwrap_or(0);
+    for x in CATALOGUE {
+        if HELD_BEFORE_REVIEW.contains(&x.name) {
+            continue;
+        }
+        // The last decision that touches this check for these settings says whether it is on.
+        let switched_on = st
+            .checks_proposals
+            .iter()
+            .filter(|p| p.used)
+            .filter(|p| {
+                let default_part = matches!(p.scope.as_str(), "default" | "both")
+                    && (run.is_empty() || p.seq < start || p.run == run);
+                let run_part =
+                    matches!(p.scope.as_str(), "run" | "both") && !run.is_empty() && p.run == run;
+                default_part || run_part
+            })
+            .filter_map(|p| p.changes.iter().find(|(n, _)| n == x.name))
+            .next_back()
+            .map(|(_, c)| c.is_none())
+            .unwrap_or(false);
+        if !switched_on {
+            out.insert(x.name.to_string(), LATE_REASON.to_string());
+        }
+    }
+    out
+}
+
+/// The switched-off checks of a run (the project default when the run is not known): what the human
+/// switched off, and the checks added after the settings were decided that are not switched on yet.
+fn effective_off(st: &State, run: &str) -> BTreeMap<String, String> {
+    let mut off = late_off(st, run);
+    let human = st
         .runs
         .iter()
         .find(|r| r.id == run)
         .map(|r| &r.checks_off)
         .unwrap_or(&st.checks_default);
+    for (n, r) in human {
+        off.insert(n.clone(), r.clone());
+    }
+    off
+}
+
+/// The switched-off checks of a run, or of the project default for an empty or unknown run ID.
+pub fn off_in_run(st: &State, run: &str) -> BTreeMap<String, String> {
+    effective_off(st, run)
+}
+
+/// Handoff H-2: the named checks a run requires. A run that is not known gets the project default.
+pub fn required_in_run(st: &State, run: &str) -> Vec<&'static NamedCheck> {
+    let off = effective_off(st, run);
     CATALOGUE
         .iter()
         .filter(|x| x.required && !off.contains_key(x.name))
@@ -460,18 +582,13 @@ pub fn decided(st: &State) -> bool {
 }
 
 /// The switched-off checks of the last run (the close is judged by it), or of the project default.
-pub fn off_closing(st: &State) -> &BTreeMap<String, String> {
-    st.runs
-        .last()
-        .map(|r| &r.checks_off)
-        .unwrap_or(&st.checks_default)
+pub fn off_closing(st: &State) -> BTreeMap<String, String> {
+    effective_off(st, st.runs.last().map(|r| r.id.as_str()).unwrap_or(""))
 }
 
 /// The switched-off checks of the active run, or of the project default when no run is active.
-pub fn off_now(st: &State) -> &BTreeMap<String, String> {
-    st.active_run()
-        .map(|r| &r.checks_off)
-        .unwrap_or(&st.checks_default)
+pub fn off_now(st: &State) -> BTreeMap<String, String> {
+    effective_off(st, st.active_run().map(|r| r.id.as_str()).unwrap_or(""))
 }
 
 fn rows(off: &BTreeMap<String, String>, changes: &[CheckChange]) -> Vec<Value> {
@@ -530,13 +647,26 @@ fn parse_changes(rest: &[String]) -> R<Vec<CheckChange>> {
     Ok(out)
 }
 
+/// A decision records the names the catalogue holds when it is made: every named check the catalogue
+/// gained after the review checks' time and the change does not mention is written as `on`. A decision
+/// recorded before that carries none of these and holds only the names of `HELD_BEFORE_REVIEW`, so the
+/// checks added later are off for it until the human switches them on.
+fn with_catalogue_names(mut changes: Vec<CheckChange>) -> Vec<CheckChange> {
+    for x in CATALOGUE {
+        if !HELD_BEFORE_REVIEW.contains(&x.name) && !changes.iter().any(|(n, _)| n == x.name) {
+            changes.push((x.name.to_string(), None));
+        }
+    }
+    changes
+}
+
 fn state_value(st: &State) -> Value {
     let run = st.active_run();
     json!({
-        "default": rows(&st.checks_default, &[]),
+        "default": rows(&effective_off(st, ""), &[]),
         "run": run.map(|r| r.id.clone()),
-        "run_checks": run.map(|r| rows(&r.checks_off, &[])),
-        "checks": rows(off_now(st), &[]),
+        "run_checks": run.map(|r| rows(&effective_off(st, &r.id), &[])),
+        "checks": rows(&off_now(st), &[]),
         "scope": if run.is_some() { "run" } else { "default" },
     })
 }
@@ -559,7 +689,11 @@ pub fn run_in(
     quote: Option<&str>,
 ) -> R<Value> {
     match sub {
-        "" | "list" => run(sub, rest),
+        "" | "list" => match events::replay(p) {
+            Ok(st) => Ok(json!({"checks": rows(&off_now(&st), &[])})),
+            Err(_) => run(sub, rest),
+        },
+        // (`run` above serves the same list outside a project.)
         "state" => Ok(state_value(&events::replay(p)?)),
         // The wave checks and the checks every unit must pass: decided with the human at the plan stage.
         "wave" => crate::wavecheck::settings(p, rest, scope, quote),
@@ -578,6 +712,8 @@ pub fn run_in(
             let changes = parse_changes(rest)?;
             let scope = pick_scope(&st, scope)?;
             refuse_if_plan_cannot_meet(p, &st, &changes, &scope)?;
+            // The decision names every check the catalogue holds now, so none of them counts as added later.
+            let changes = with_catalogue_names(changes);
             let ev = events::append(
                 p,
                 "checks.propose",
@@ -585,9 +721,9 @@ pub fn run_in(
                     "run": st.active_run().map(|r| r.id.clone())}),
             )?;
             let mut after = if scope == "default" {
-                st.checks_default.clone()
+                effective_off(&st, "")
             } else {
-                off_now(&st).clone()
+                off_now(&st)
             };
             events::apply_changes(&mut after, &changes);
             let mut out = json!({
@@ -598,7 +734,7 @@ pub fn run_in(
                 "checks": rows(&after, &changes),
             });
             if scope == "both" {
-                let mut def = st.checks_default.clone();
+                let mut def = effective_off(&st, "");
                 events::apply_changes(&mut def, &changes);
                 out["default_checks"] = json!(rows(&def, &changes));
             }
@@ -617,7 +753,7 @@ pub fn run_in(
                     "`bf checks state` shows the checks that are on and off.",
                 ));
             };
-            let changes = parse_changes(rest)?;
+            let changes = with_catalogue_names(parse_changes(rest)?);
             if (!rest.is_empty() && changes != prop.changes)
                 || scope.map(|s| s != prop.scope).unwrap_or(false)
             {
@@ -649,7 +785,37 @@ pub fn run_in(
                 ));
             }
             let q = quote.unwrap_or("");
-            let (turn, _) = events::pick_turn(&st, prop.seq, events::Decide::Approve, q)?;
+            // Switching the checkpoint review off ends the hold of every open finding: its words are bound
+            // like the other decisions (a hold refuses; otherwise no words before the latest hold's end).
+            let mut st = st;
+            let mut bound = prop.seq;
+            if events::ckreview_required_now(&st)
+                && !events::review_required_after(&mut st, &prop.scope, &prop.changes)
+            {
+                crate::run::observe_holds(p)?;
+                st = events::require_chain(p)?;
+                let pl = crate::plan::load(p)?;
+                let mut open: Vec<String> = Vec::new();
+                for k in &pl.checkpoints {
+                    let kid = crate::store::s(k, "id");
+                    if !st.closed.contains_key(kid)
+                        && !crate::ckreview::open_blocking_named(p, &st, kid)?.is_empty()
+                    {
+                        open.push(kid.to_string());
+                    }
+                }
+                bound = match events::review_off_bound(&st, &open, prop.seq, u64::MAX) {
+                    Ok(b) => b,
+                    Err((k, h)) => {
+                        return Err(crate::ckreview::hold_refusal(
+                            "switch the checkpoint review off",
+                            &k,
+                            &h,
+                        ));
+                    }
+                };
+            }
+            let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, q)?;
             events::append(
                 p,
                 "checks.set",

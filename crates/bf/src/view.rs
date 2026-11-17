@@ -132,6 +132,61 @@ fn state_map(p: &Project, pl: &Plan, st: &State, rc: &[Receipt]) -> HashMap<Stri
         .collect()
 }
 
+/// What a record's row says about who made it: the designer agent and the model it reported, or the
+/// human's words that lifted the designer rule.
+fn mark_made(rows: &mut [Value], made: &std::collections::BTreeMap<String, Value>) {
+    for row in rows.iter_mut() {
+        let Some(m) = row["id"].as_str().and_then(|id| made.get(id)) else {
+            continue;
+        };
+        let model = m["model"].as_str().unwrap_or("");
+        let lifted = m["lifted"].as_str().unwrap_or("");
+        let (by, line) = if lifted.is_empty() {
+            (
+                "designer agent",
+                format!(
+                    "Made by the designer agent ({}) on the model it reported: {model}.",
+                    m["role"].as_str().unwrap_or("designer")
+                ),
+            )
+        } else {
+            (
+                "conductor",
+                format!("Made without a designer: the human lifted the rule in their words: \"{lifted}\"."),
+            )
+        };
+        row["made_by"] = json!({"by": by, "role": m["role"], "model": model, "subject": m["subject"], "lifted": lifted});
+        if let Some(b) = row["body"].as_array_mut() {
+            b.push(text(&line));
+        }
+    }
+}
+
+/// The policy in force for the run: the tier, the effort and any model of each kind of work.
+fn policy_section(p: &Project) -> Value {
+    let work = run::work_policy(p);
+    let rows: Vec<Value> = crate::store::WORK_KINDS
+        .iter()
+        .map(|k| {
+            let e = &work[*k];
+            let model = e["model"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(h, v)| format!("{h}: {}", v.as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            json!({"id": k, "title": format!("{}: tier {}, effort {}", k.replace('_', " "), e["tier"].as_str().unwrap_or(""), e["effort"].as_str().unwrap_or("")),
+                "tier": e["tier"], "effort": e["effort"], "model": e.get("model").cloned().unwrap_or(Value::Null),
+                "handled": {"tone": "accepted", "text": if model.is_empty() { "tier of the harness".to_string() } else { model }},
+                "body": []})
+        })
+        .collect();
+    json!({"id": "policy", "title": "Policy in force", "hint": "The tier and effort for each kind of work; only the human changes it", "open": false, "blocks": [], "rows": rows})
+}
+
 fn design_row(rec: &Value, round: Option<(&str, String, Option<String>)>) -> Value {
     let mut body = Vec::new();
     if !s(rec, "text").is_empty() {
@@ -214,6 +269,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         .find(|g| g.kind == kind && g.refr == refr && g.round + 1 == round);
     let prev_snap = prev.map(|g| g.snapshot.clone()).unwrap_or(Value::Null);
     let pl = plan::load(p)?;
+    let made = crate::gates::made_by(p)?;
     let mut records: Vec<Value> = Vec::new();
     let mut sections = Vec::new();
     let (mut changed, mut new, mut removed) = (0, 0, 0);
@@ -288,6 +344,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
                 }
             }
         }
+        mark_made(&mut rows, &made);
         sections.push(json!({"id": *k, "title": plural(k), "hint": format!("{} in this gate", plural(k).to_lowercase()), "open": true, "blocks": [], "rows": rows}));
     }
     if kind == "idea" {
@@ -440,6 +497,11 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             ));
         }
     }
+    if crate::checks::review::GATES.contains(&kind.as_str()) {
+        v["review"] = crate::checks::review::page_section(p, st, &kind)?;
+    }
+    sections.push(policy_section(p));
+    v["policy"] = run::work_policy(p);
     v["page"]["round"] = json!({"n": round, "prev": if prev.is_some() { json!(round - 1) } else { Value::Null }, "changed": changed, "new": new, "removed": removed});
     v["sections"] = json!(sections);
     v["records"] = json!(records);
@@ -966,16 +1028,138 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     if let Some(r) = run {
         secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
     }
+    secs.push(policy_section(p));
+    v["policy"] = run::work_policy(p);
+    let made = crate::gates::made_by(p)?;
     let amends = crate::gates::amendments_json(st);
     if !amends.is_empty() {
         secs.push(json!({"id": "amendments", "title": "Amendments", "hint": "Open, approved or withdrawn", "open": true, "blocks": [],
             "rows": amends.iter().map(|a| json!({"id": a["id"], "title": a["ids"].as_array().map(|x| x.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
-                "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" }, "text": a["status"]},
+                "handled": {"tone": match a["status"].as_str() { Some("approved") => "ok", Some("withdrawn") => "accepted", _ => "open" },
+                    "text": if a["repair"] == true { format!("{}, plan repair", a["status"].as_str().unwrap_or("")) } else { a["status"].as_str().unwrap_or("").to_string() }},
                 "body": if a["withdrawn_why"].as_str().unwrap_or("").is_empty() { vec![] } else { vec![text(a["withdrawn_why"].as_str().unwrap_or(""))] }})).collect::<Vec<_>>()}));
     }
+    // The amendment page: for each amendment that is not withdrawn, the four stages as sections,
+    // each with its records or its not affected sentence.
+    let mut reviews = serde_json::Map::new();
+    for a in st.amends.iter().filter(|a| a.status != "withdrawn") {
+        let repair = crate::amend::is_repair(a);
+        if !repair {
+            reviews.insert(
+                a.id.clone(),
+                crate::checks::review::page_section(p, st, &a.id)?,
+            );
+        }
+        // What its checkpoint operations would leave: a renamed checkpoint shows under its old number,
+        // marked as moved, so the human's read mark follows it.
+        let edit = if a.ops.is_empty() {
+            None
+        } else {
+            crate::amend::edit_of(p, st, &a.ops).ok()
+        };
+        for c in crate::amend::coverage(p, a)? {
+            let mut rows: Vec<Value> = if let Some(d) = &c.sentence {
+                vec![json!({"id": s(d, "id"), "title": s(d, "title"),
+                    "handled": {"tone": "accepted", "text": "not affected"},
+                    "body": [text(if s(d, "text").is_empty() { s(d, "chosen") } else { s(d, "text") })]})]
+            } else {
+                c.records.iter().map(|r| design_row(r, None)).collect()
+            };
+            mark_made(&mut rows, &made);
+            if let (true, "plan") = (edit.is_some(), c.stage) {
+                if let Some(e) = &edit {
+                    let touched = e.touched();
+                    rows.retain(|r| !touched.iter().any(|t| *t == r["id"]));
+                    for (id, rec, how) in crate::amend::plan_rows(e) {
+                        let mut r = design_row(&rec, None);
+                        r["id"] = json!(id);
+                        r["handled"] = json!({"tone": "accepted", "text": how});
+                        rows.push(r);
+                    }
+                }
+            }
+            let tail = if c.covered() || repair {
+                ""
+            } else {
+                " (neither records nor a not affected sentence yet)"
+            };
+            let mark = if repair { " (plan repair)" } else { "" };
+            secs.push(json!({"id": format!("{}-{}", a.id, c.stage),
+                "title": format!("{}: {}{}{}", a.id, c.stage, mark, tail),
+                "hint": "Its records, or the sentence that says it is not affected",
+                "open": true, "blocks": [], "rows": rows}));
+        }
+        // Everything the narrowing recorded as differing from the approved content, kept records
+        // included: the list the fingerprint covers, read from the narrowing, not recomputed.
+        if !a.changes.is_empty() {
+            let rows: Vec<Value> = a.changes.iter().map(change_row).collect();
+            secs.push(json!({"id": format!("{}-changes", a.id),
+                "title": format!("{}: everything that differs from the approved content", a.id),
+                "hint": "What the narrowing recorded; approval binds exactly this",
+                "open": true, "blocks": [], "rows": rows}));
+        }
+    }
     secs.push(json!({"id": "events", "title": "Recent events", "hint": "Newest first", "open": false, "blocks": [], "rows": recent}));
+    v["amendment_reviews"] = Value::Object(reviews);
     v["sections"] = json!(secs);
     Ok(v)
+}
+
+/// One value as a line: a string as it is, a list of strings joined, anything else as compact JSON.
+fn field_text(v: &Value) -> String {
+    match v {
+        Value::String(x) => x.clone(),
+        Value::Array(a) if a.iter().all(|i| i.is_string()) => format!(
+            "[{}]",
+            a.iter()
+                .filter_map(|i| i.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        other => other.to_string(),
+    }
+}
+
+/// Every field that differs between the approved content and the content now, as lines: the field,
+/// then the old value, then the new one. A field on one side only shows as added or removed. Walks
+/// the records, so it covers every kind and every field.
+fn diff_lines(was: &Value, now: &Value) -> Vec<String> {
+    let empty = serde_json::Map::new();
+    let (w, n) = (
+        was.as_object().unwrap_or(&empty),
+        now.as_object().unwrap_or(&empty),
+    );
+    let mut keys: Vec<&String> = w.keys().chain(n.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let mut out = Vec::new();
+    for k in keys {
+        match (w.get(k), n.get(k)) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) => {
+                out.push(format!("{k}: was {}, now {}", field_text(a), field_text(b)))
+            }
+            (None, Some(b)) => out.push(format!("{k}: added {}", field_text(b))),
+            (Some(a), None) => out.push(format!("{k}: removed {}", field_text(a))),
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+/// One row of the list a narrowing stored: the record as it was approved and as it is, with every
+/// field that differs, marked as changed, new or removed.
+fn change_row(c: &Value) -> Value {
+    let (rec, was) = (&c["record"], &c["was"]);
+    let how = c["how"].as_str().unwrap_or("changed");
+    let title = if s(rec, "title").is_empty() {
+        s(was, "title")
+    } else {
+        s(rec, "title")
+    };
+    let body: Vec<Value> = diff_lines(was, rec).iter().map(|l| text(l)).collect();
+    json!({"id": c["id"], "title": title, "body": body,
+        "handled": {"tone": if c["kept"] == true { "open" } else { "accepted" }, "text": how}})
 }
 
 fn strip_event(e: &Value) -> Value {

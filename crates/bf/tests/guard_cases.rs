@@ -45,6 +45,7 @@ const fn c(n: u32, place: Place, want: Want, cmd: &'static str) -> Case {
     }
 }
 
+#[allow(dead_code)]
 const fn waiting(n: u32, place: Place, want: Want, unit: &'static str, cmd: &'static str) -> Case {
     Case {
         n,
@@ -131,18 +132,16 @@ fn table() -> Vec<Case> {
         c(22, Wc, Refused, "tar xf /tmp/a.tar"),
         c(23, Wc, Refused, "unzip /tmp/a.zip"),
         c(24, Wc, Refused, "git merge main"),
-        waiting(
+        c(
             25,
             Cpwc,
             Passed,
-            "U-35",
             "bf report K-1 --result built --role security-auditor --token abc",
         ),
-        waiting(
+        c(
             26,
             Cpwc,
             Passed,
-            "U-35",
             "bf record put legal --file /tmp/l.toml --token abc",
         ),
         c(
@@ -493,6 +492,22 @@ fn table() -> Vec<Case> {
             Refused,
             "echo 'rm -f $1' | sh -s factory/policy.toml",
         ),
+        // The design review's commands: the conductor runs them from the main checkout; a working copy runs none.
+        c(117, Root, Passed, "bf review token requirements"),
+        c(118, Wc, Refused, "bf review token requirements"),
+        c(119, Cpwc, Refused, "bf review token requirements"),
+        c(120, Root, Passed, "bf review brief requirements"),
+        c(121, Wc, Refused, "bf review brief requirements"),
+        c(122, Cpwc, Refused, "bf review brief requirements"),
+        c(123, Root, Passed, "bf review split A-1 --stage requirements=R-1 --token abc"),
+        c(124, Wc, Refused, "bf review split A-1 --stage requirements=R-1 --token abc"),
+        c(125, Cpwc, Refused, "bf review split A-1 --stage requirements=R-1 --token abc"),
+        c(126, Root, Passed, "bf review finding requirements --accept F-1 --quote \"fine\""),
+        c(127, Wc, Refused, "bf review finding requirements --accept F-1 --quote \"fine\""),
+        c(128, Cpwc, Refused, "bf review finding requirements --accept F-1 --quote \"fine\""),
+        c(129, Root, Passed, "bf review release requirements --quote \"start over\""),
+        c(130, Wc, Refused, "bf review release requirements --quote \"start over\""),
+        c(131, Cpwc, Refused, "bf review release requirements --quote \"start over\""),
     ]
 }
 

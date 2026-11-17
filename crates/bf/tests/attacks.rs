@@ -133,8 +133,17 @@ fn t4_an_approved_amendment_can_stand_in_for_a_receipt() {
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     fx.refused(&["checkpoint", "close", "K-1"]);
 
+    // U-19: every design stage is covered and each requirement is linked before the approval.
+    for (k, t) in [
+        ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Wording\"\nlinks=[\"R-1\",\"R-2\"]\n"),
+        ("decision", "id=\"D-91\"\nkind=\"decision\"\ntitle=\"The screens are not affected: none shows the wording\"\nmaker=\"agent\"\nstage=\"ui\"\n"),
+        ("decision", "id=\"D-92\"\nkind=\"decision\"\ntitle=\"The plan is not affected: the units already exist\"\nmaker=\"agent\"\nstage=\"plan\"\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
     let o = fx
-        .must(&["amend", "open", "R-1", "R-2", "C-1", "--json"])
+        .must(&["amend", "open", "R-1", "R-2", "C-1", "C-9", "D-91", "D-92", "--json"])
         .json();
     assert_eq!(o["amend"], "A-1");
     assert!(o["impact_ids"]

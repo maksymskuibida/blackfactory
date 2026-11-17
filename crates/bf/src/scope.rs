@@ -15,6 +15,28 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
+pub mod fmtproof;
+pub mod order;
+pub mod reconsider;
+pub mod restore;
+pub mod unblock;
+pub mod wait;
+
+/// What `bf next` gives for a blocked unit besides the human's decision.
+pub enum NextEntry {
+    Waiting(String),
+    Directive(Value),
+}
+
+/// Add the keys of `extra` (an object) to `data`; anything else adds nothing.
+pub(crate) fn merge_fields(data: &mut Value, extra: Value) {
+    if let (Some(d), Value::Object(e)) = (data.as_object_mut(), extra) {
+        for (k, v) in e {
+            d.insert(k, v);
+        }
+    }
+}
+
 /// The one question the reviewer answers for each file.
 pub const QUESTION: &str = "For each requested file: is it needed for the unit's original scope, or is it a scope extension? \
 Needed: a file of any kind without which the behaviour the unit's records describe cannot be built, tested or documented, \
@@ -30,7 +52,12 @@ pub const MARK_AFTER_THREE: &str = "source file after three";
 
 /// The record's list plus the unit's grants that were not withdrawn (landed or not).
 pub fn unit_files(st: &State, u: &Value) -> Vec<String> {
-    let mut v = str_list(u, "files");
+    // A file list changed by an amendment the human has not approved is a draft: it grants nothing.
+    let mut v = if crate::gates::unapproved_change(st, u).is_some() {
+        Vec::new()
+    } else {
+        str_list(u, "files")
+    };
     for f in granted_files(st, s(u, "id")) {
         if !v.contains(&f) {
             v.push(f);
@@ -60,7 +87,7 @@ pub fn open_request<'a>(st: &'a State, unit: &str) -> Option<&'a events::ScopeRe
     st.scope.get(unit).and_then(|sc| sc.open.as_ref())
 }
 
-fn depends_on(pl: &Plan, a: &str, b: &str) -> bool {
+pub(crate) fn depends_on(pl: &Plan, a: &str, b: &str) -> bool {
     let mut seen: Vec<String> = Vec::new();
     let mut todo = vec![a.to_string()];
     while let Some(x) = todo.pop() {
@@ -99,12 +126,13 @@ pub fn holder_beside(p: &Project, pl: &Plan, st: &State, unit: &str, path: &str)
         if repo.is_some() && vrepo.is_some() && repo != vrepo {
             continue;
         }
-        if depends_on(pl, vid, unit) {
+        if order::after(pl, st, vid, unit) {
             continue;
         }
+        let lower = path.to_lowercase();
         if unit_files(st, v)
             .iter()
-            .any(|g| util::path_matches(g, path))
+            .any(|g| util::path_matches(&g.to_lowercase(), &lower))
         {
             return Some(vid.to_string());
         }
@@ -203,7 +231,7 @@ pub fn hard_rule(p: &Project, pl: &Plan, st: &State, unit: &str, raw: &str) -> O
         return outside();
     }
     if has_ascii_lookalike(raw) {
-        return Some("a path with a character that case-folds to an ASCII letter (a Unicode look-alike) can open a file under another name and is never granted; name the file in plain ASCII".into());
+        return Some("a path with a character that case-folds to an ASCII letter (a Unicode look-alike) can open a file under another name and is never granted; name the file in plain ASCII: rename the file, or ask the human for a plan repair".into());
     }
     let Some(path) = normalize_path(raw) else {
         return outside();
@@ -221,6 +249,15 @@ pub fn hard_rule(p: &Project, pl: &Plan, st: &State, unit: &str, raw: &str) -> O
             .any(|g| util::path_matches(g, path) || util::path_matches(&g.to_lowercase(), &lower))
     {
         return Some("a place the guard protects (the factory's records, the policy, the run's state, the hook settings, the git folders, the installed skill and panel, the policy's extra protected paths) is never granted".into());
+    }
+    // A link in the unit's working copy, or a folder that is one, leads somewhere the name does not say.
+    let wc = p.work_dir().join(unit);
+    let mut at = wc.clone();
+    for c in &comps {
+        at.push(c);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some("a path that is a symbolic link, or lies under a folder that is one, leads to a place the name does not show and is never granted".into());
+        }
     }
     holder_beside(p, pl, st, unit, path).map(|v| {
         format!("{v} holds it and may run beside {unit}: a file held by two units that can be built at the same moment is never granted, and only an order change fixes it")
@@ -453,7 +490,9 @@ pub fn request(
         ));
     };
     let cur = st.unit_state(unit).to_string();
-    if !matches!(cur.as_str(), "running" | "fixing") {
+    if !(matches!(cur.as_str(), "running" | "fixing")
+        || (cur == "blocked" && reconsider::request_from(&st, unit)))
+    {
         return Err(refuse(
             format!("ask for files for {unit}"),
             format!(
@@ -480,9 +519,10 @@ pub fn request(
     let files = parse_request(p, unit, list)?;
     for f in &files {
         let path = s(f, "path");
+        let lower = path.to_lowercase();
         if unit_files(&st, u)
             .iter()
-            .any(|g| util::path_matches(g, path))
+            .any(|g| util::path_matches(&g.to_lowercase(), &lower))
         {
             return Err(bad_request(
                 unit,
@@ -498,6 +538,10 @@ pub fn request(
         );
         return run::report(p, unit, "blocked", None, note.trim(), None, cost, token);
     }
+    let mut st = st;
+    if order::place(p, &pl, &st, unit, &paths(&files))? {
+        st = events::replay(p)?;
+    }
     let hard: Vec<Value> = files
         .iter()
         .filter_map(|f| {
@@ -509,11 +553,9 @@ pub fn request(
         run::spend_token(p, k)?;
     }
     if !hard.is_empty() {
-        events::append(
-            p,
-            "unit.scope.refused",
-            json!({"unit": unit, "refusal": "hard", "from": cur, "files": hard, "note": note, "cost": cost}),
-        )?;
+        let mut data = json!({"unit": unit, "refusal": "hard", "from": cur, "files": hard, "note": note, "cost": cost});
+        merge_fields(&mut data, wait::refusal_fields(p, &pl, &st, unit, &hard));
+        events::append(p, "unit.scope.refused", data)?;
         p.write_guard()?;
         run::park_if_looping(p, unit)?;
         let st = events::replay(p)?;
@@ -627,6 +669,10 @@ pub fn verdict(
         run::spend_token(p, k)?;
     }
     // The side-by-side rule is checked again, then each needed file is granted.
+    let mut st = st;
+    if order::place(p, &pl, &st, unit, &wanted)? {
+        st = events::replay(p)?;
+    }
     let before: usize = st
         .scope
         .get(unit)
@@ -1020,10 +1066,15 @@ pub fn landing_check(st: &State, unit: &str, repo: &std::path::Path, range: &str
     for g in sc.grants.iter().filter(|g| g.withdrawn.is_none()) {
         for f in &g.files {
             let path = s(f, "path");
+            if let Some(r) = fmtproof::landing(st, unit, repo, range, f) {
+                r?;
+                continue;
+            }
             if f["new"].as_bool().unwrap_or(false) || !(is_test_path(path) || is_config(path)) {
                 continue;
             }
-            let removed_in_patch: Vec<String> = s(f, "patch")
+            // Each removed line of the patch covers one removed line of the changes, not every equal one.
+            let mut removed_in_patch: Vec<String> = s(f, "patch")
                 .lines()
                 .filter(|l| l.starts_with('-') && !l.starts_with("---"))
                 .map(|l| l[1..].trim_end().to_string())
@@ -1032,7 +1083,9 @@ pub fn landing_check(st: &State, unit: &str, repo: &std::path::Path, range: &str
             for l in d.lines() {
                 if l.starts_with('-') && !l.starts_with("---") {
                     let line = l[1..].trim_end();
-                    if !removed_in_patch.iter().any(|x| x == line) {
+                    if let Some(k) = removed_in_patch.iter().position(|x| x == line) {
+                        removed_in_patch.remove(k);
+                    } else {
                         return Err(refuse_owned(
                             format!("land {unit}"),
                             format!("the changes remove a line of {path}, a granted file, that the grant's patch does not remove: `{}`", line.trim()),

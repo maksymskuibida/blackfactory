@@ -461,10 +461,13 @@ pub fn snapshot(p: &Project, kind: &str, refr: Option<&str>) -> R<Value> {
     let mut m = serde_json::Map::new();
     let mut add = |rec: &Value| {
         let canon = serde_json::to_string(rec).unwrap_or_default();
-        m.insert(
-            s(rec, "id").to_string(),
-            json!({"h": util::sha256_hex(canon.as_bytes()), "title": s(rec, "title")}),
-        );
+        let mut e = json!({"h": util::sha256_hex(canon.as_bytes()), "title": s(rec, "title"),
+            "rec": rec});
+        // The unit a check belongs to, so a landing can tell which checks the record in force holds.
+        if !s(rec, "unit").is_empty() {
+            e["unit"] = json!(s(rec, "unit"));
+        }
+        m.insert(s(rec, "id").to_string(), e);
     };
     for k in snapshot_kinds(kind) {
         for rec in p.list_records(schema::kind_by_name(k))? {
@@ -517,16 +520,183 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
     }
 }
 
-/// An approved amendment covers this ID.
+/// An amendment covers this ID for a change now: one that waits for the human names it among its own
+/// set (its new or changed records and the agent's not affected decisions are put while it waits for the
+/// human, R-39, and the one approval covers them). A kept record of the impact set is not among them: one
+/// that must change is named with `bf amend revise`, narrowed again and read again. An approval recorded before the content was kept
+/// covers its IDs for ever, as it did. A newer approval covers only the content it approved: a later
+/// change of the record is a change with no amendment (see `approved_entry`).
 pub fn amended(st: &State, id: &str) -> bool {
-    st.amends.iter().any(|a| {
-        a.status == "approved" && (a.keep.iter().any(|k| k == id) || a.ids.iter().any(|k| k == id))
+    named_by_waiting(st, id).is_some()
+        || st.amends.iter().any(|a| {
+            a.status == "approved"
+                && a.approved.is_none()
+                && (a.keep.iter().any(|k| k == id)
+                    || a.ids.iter().any(|k| k == id)
+                    || a.touched.iter().any(|k| k == id))
+        })
+}
+
+/// The amendment still waiting for the human that names this ID.
+fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
+    st.amends.iter().find(|a| {
+        matches!(a.status.as_str(), "open" | "narrowed")
+            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
     })
 }
 
+/// An amendment of any state names this ID.
+fn named_ever(st: &State, id: &str) -> bool {
+    st.amends.iter().any(|a| {
+        a.ids.iter().any(|k| k == id)
+            || a.touched.iter().any(|k| k == id)
+            || (a.status == "approved" && a.keep.iter().any(|k| k == id))
+    })
+}
+
+/// The latest approval covering this ID found no record by that ID: the amendment lets the record be
+/// put once, after the approval (`bf record put` binds the content it puts).
+pub fn approved_missing(st: &State, id: &str) -> bool {
+    st.approved_content
+        .get(id)
+        .map(|(_, e)| e["h"] == "missing")
+        .unwrap_or(false)
+}
+
+/// What the human approved for a record: its hash (`missing` for a record the approval removed) and, for
+/// a check, the unit it belonged to. It is the content the stage's gate approved, or the content the
+/// latest approved amendment covering the ID approved when that came after the gate.
+pub fn approved_entry(st: &State, stage: &str, id: &str) -> Option<(String, Option<String>)> {
+    let g = st
+        .latest_gate(stage, None)
+        .filter(|g| g.status == "approved")?;
+    if let Some((seq, e)) = st.approved_content.get(id) {
+        if g.decided_seq.map(|d| d < *seq).unwrap_or(true) {
+            return Some((
+                e["h"].as_str().unwrap_or_default().to_string(),
+                e["unit"].as_str().map(|x| x.to_string()),
+            ));
+        }
+    }
+    let e = g.snapshot.as_object()?.get(id)?;
+    Some((
+        e["h"].as_str().unwrap_or_default().to_string(),
+        e["unit"].as_str().map(|x| x.to_string()),
+    ))
+}
+
+/// The content the human approved for a record, when the approval kept it: the same entry
+/// `approved_entry` reads, so the old content and its hash always belong together.
+pub fn approved_record(st: &State, stage: &str, id: &str) -> Option<Value> {
+    let g = st
+        .latest_gate(stage, None)
+        .filter(|g| g.status == "approved")?;
+    if let Some((seq, e)) = st.approved_content.get(id) {
+        if g.decided_seq.map(|d| d < *seq).unwrap_or(true) {
+            return e.get("rec").cloned();
+        }
+    }
+    g.snapshot.as_object()?.get(id)?.get("rec").cloned()
+}
+
+/// Whether this record is, byte for byte, the content the human approved for its ID.
+pub fn is_approved_content(st: &State, rec: &Value) -> bool {
+    let Some(stage) = stage_of_kind(s(rec, "kind")) else {
+        return false;
+    };
+    approved_entry(st, stage, s(rec, "id"))
+        .map(|(h, _)| h == crate::evidence::record_hash(rec))
+        .unwrap_or(false)
+}
+
+/// The plan records a draft holds back: a unit, a check, a checkpoint or a handoff of the approved plan
+/// whose content is not the content the human approved, with the amendment that waits for the human and
+/// names it. A change that no amendment names (an edit by hand, or what a withdrawn amendment left) is a
+/// draft as well: it is not the record in force. A draft has no force: no evidence run, no scope, no
+/// landing and no checkpoint close rest on it until the human approves it (R-39).
+pub fn unapproved_change(st: &State, rec: &Value) -> Option<String> {
+    let kind = s(rec, "kind");
+    if !matches!(kind, "unit" | "check" | "checkpoint" | "handoff") {
+        return None;
+    }
+    let id = s(rec, "id");
+    let waiting = named_by_waiting(st, id);
+    match approved_entry(st, "plan", id) {
+        Some((h, _)) if h == crate::evidence::record_hash(rec) => None,
+        Some(_) => match waiting {
+            Some(a) => Some(a.id.clone()),
+            // An approval from before the content was kept covers its IDs for ever.
+            None if amended(st, id) => None,
+            // A change after an amendment that was approved or withdrawn named the record is not the
+            // record in force. A change of a record that no amendment ever named is not a draft: its
+            // receipts stop counting and the plan is frozen (`drift`), as before.
+            None if named_ever(st, id) => {
+                Some("an edit that no approved amendment covers".to_string())
+            }
+            None => None,
+        },
+        None => waiting.map(|a| a.id.clone()),
+    }
+}
+
+/// The checks of the approved plan that belonged to `unit` and are not, as they stand now, the content
+/// the human approved: moved to another unit or to checkpoint scope, changed or deleted by a draft. A
+/// landing of the unit waits for each, with the amendment that holds it.
+pub fn drafts_off_unit(st: &State, plan_checks: &[Value], unit: &str) -> Vec<(String, String)> {
+    let Some(g) = st
+        .latest_gate("plan", None)
+        .filter(|g| g.status == "approved")
+    else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = g
+        .snapshot
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    ids.extend(st.approved_content.keys().cloned());
+    ids.sort();
+    ids.dedup();
+    let mut out = Vec::new();
+    for id in ids {
+        let Some((_, Some(u))) = approved_entry(st, "plan", &id) else {
+            continue;
+        };
+        if u != unit {
+            continue;
+        }
+        match plan_checks.iter().find(|c| s(c, "id") == id) {
+            Some(c) => {
+                if let Some(a) = unapproved_change(st, c) {
+                    out.push((id, a));
+                }
+            }
+            None => {
+                if st
+                    .approved_content
+                    .get(&id)
+                    .map(|(_, e)| e["h"] != "missing")
+                    .unwrap_or(true)
+                {
+                    let a = st
+                        .amends
+                        .iter()
+                        .find(|a| matches!(a.status.as_str(), "open" | "narrowed"))
+                        .map(|a| a.id.clone())
+                        .unwrap_or_else(|| "an edit that no approved amendment covers".into());
+                    out.push((id, a));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Records of a gate that was approved and that no longer match what the human approved: changed,
-/// removed, or new since. An approved amendment covers its IDs. This is how a plan stays frozen, and
-/// how a check record edited by hand after the plan gate is found.
+/// removed, or new since. A record that an amendment waiting for the human names is a draft in the
+/// making and waits for that amendment; an approved amendment covers the content it approved and no
+/// other. This is how a plan stays frozen, and how a check record edited by hand after the plan gate is
+/// found.
 pub fn drift(p: &Project, st: &State) -> R<Vec<String>> {
     let mut out = Vec::new();
     for stage in events::DESIGN_GATES {
@@ -547,13 +717,13 @@ pub fn drift(p: &Project, st: &State) -> R<Vec<String>> {
                 if amended(st, &id) {
                     continue;
                 }
-                match snap.get(&id) {
+                match approved_entry(st, stage, &id) {
                     None => out.push(format!(
                         "{id} is new since the {stage} gate ({}) was approved",
                         g.id
                     )),
-                    Some(old) => {
-                        if old["h"].as_str() != Some(&crate::evidence::record_hash(&rec)) {
+                    Some((h, _)) => {
+                        if h != crate::evidence::record_hash(&rec) {
                             out.push(format!(
                                 "{id} was changed after the {stage} gate ({}) was approved",
                                 g.id
@@ -564,7 +734,13 @@ pub fn drift(p: &Project, st: &State) -> R<Vec<String>> {
             }
         }
         for id in snap.keys() {
-            if !seen.contains(id) && !amended(st, id) && id != "idea.md" {
+            if seen.contains(id) || amended(st, id) || id == "idea.md" {
+                continue;
+            }
+            let gone = approved_entry(st, stage, id)
+                .map(|(h, _)| h == "missing")
+                .unwrap_or(false);
+            if !gone {
                 out.push(format!(
                     "{id} was removed after the {stage} gate ({}) was approved",
                     g.id
@@ -641,6 +817,19 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     }
     // A required check's design-stage product comes before its gate.
     crate::enforce::design_blocker(p, &st, kind)?;
+    // A design gate with its review check on opens after the review of its records as they are now.
+    let held = crate::checks::review::gate_blocker(p, &st, kind)?;
+    if !held.is_empty() {
+        return Err(refuse_owned(
+            format!("open the `{kind}` gate"),
+            format!("its review holds it: {}", held.join("; ")),
+            vec![
+                "Have the design reviewer judge the records: `bf review token {kind}`, then its findings and receipt.".replace("{kind}", kind),
+                "Open the gate again once the review is clean.".to_string(),
+            ],
+            format!("`bf gate status` lists the {kind} gate as open."),
+        ));
+    }
     // Decision D-19: a stage's questions come before its gate.
     let open_q: Vec<String> = p
         .list_records(schema::kind_by_name("question"))?
@@ -682,7 +871,19 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
 /// or `None` when it would open. `bf next` uses it so that no directive carries a command the engine
 /// would refuse.
 pub fn open_blocker(p: &Project, st: &State, kind: &str) -> Option<String> {
-    let product = crate::enforce::design_blocker(p, st, kind);
+    let product = crate::enforce::design_blocker(p, st, kind).and_then(|_| {
+        let held = crate::checks::review::gate_blocker(p, st, kind)?;
+        if held.is_empty() {
+            Ok(())
+        } else {
+            Err(refuse(
+                format!("open the `{kind}` gate"),
+                format!("its review holds it: {}", held.join("; ")),
+                &["Have the design reviewer judge the records."],
+                "`bf gate status` lists the gate as open.",
+            ))
+        }
+    });
     match check_order_and_content(p, st, kind).and(product) {
         Ok(()) => None,
         Err(crate::refusal::Fail::Refused(r)) => {
@@ -718,7 +919,7 @@ pub fn first_unpassed_design_gate(st: &State) -> &'static str {
 }
 
 /// The design gates, in the order they are approved.
-const DESIGN_ORDER: &[&str] = &["idea", "requirements", "ui", "architecture", "plan"];
+pub const DESIGN_ORDER: &[&str] = &["idea", "requirements", "ui", "architecture", "plan"];
 
 /// A design gate opens when the earlier ones are approved (a rejected gate's next round is not held by
 /// that), and when the stage has something to approve.
@@ -979,6 +1180,263 @@ pub fn grant(p: &Project, quote: &str) -> R<Value> {
     )
 }
 
+// ---- the designer's token (R-67) ----
+
+/// The log event of a record the engine accepted from a designer (or, lifted, from the conductor).
+pub const MADE_EVENT: &str = "design.made";
+/// The log event of the human's words that lift the designer rule for one stage or one amendment.
+pub const LIFT_EVENT: &str = "designer.lift";
+
+/// The roles whose tokens put a record of this kind at the design stage: the designer for every kind,
+/// and each role that writes the kind.
+fn design_writers(kind: &str) -> Vec<&'static str> {
+    let needle = format!("`bf record put {kind}`");
+    crate::roles::ROLES
+        .iter()
+        .filter(|r| {
+            r.at_design()
+                && r.stage == "design"
+                && (r.name == "designer" || r.writes.iter().any(|w| w.contains(&needle)))
+        })
+        .map(|r| r.name)
+        .collect()
+}
+
+/// What the designer rule says about a record put now.
+#[derive(Clone, Debug)]
+pub struct Made {
+    /// The stage (`requirements`...) or the amendment ID the record belongs to.
+    pub subject: String,
+    /// The role whose token was given; empty when the human lifted the rule.
+    pub role: String,
+    pub model: String,
+    /// The human's words, when the rule was lifted.
+    pub lifted: String,
+}
+
+/// The subject a design record belongs to: the open amendment that holds it when it is not a plan
+/// repair, else the stage while its gate is not approved. `None` when the record is no design record, or belongs to a plan
+/// repair or to an approved amendment, which need no designer.
+fn designer_subject(st: &State, kind: &str, id: &str) -> Option<(String, bool)> {
+    let stage = stage_of_kind(kind)?;
+    let open = st.amends.iter().find(|a| {
+        matches!(a.status.as_str(), "open" | "narrowed")
+            && (a.ids.iter().any(|k| k == id) || a.touched.iter().any(|k| k == id))
+    });
+    if let Some(a) = open {
+        if crate::amend::is_repair(a) {
+            return None;
+        }
+        return Some((a.id.clone(), true));
+    }
+    if st.gate_passed(stage, None) {
+        return None;
+    }
+    Some((stage.to_string(), false))
+}
+
+/// The words with which the human lifted the rule for `subject`, if they did.
+fn lifted_words(p: &Project, subject: &str) -> R<Option<String>> {
+    let st = events::replay(p)?;
+    let log = events::load_log(p)?;
+    Ok(log
+        .events
+        .iter()
+        .rev()
+        .filter(|e| {
+            e["seq"]
+                .as_u64()
+                .map(|q| st.answers.contains(&q))
+                .unwrap_or(false)
+        })
+        .find(|e| e["kind"] == LIFT_EVENT && e["subject"] == subject)
+        .map(|e| e["quote"].as_str().unwrap_or("").to_string()))
+}
+
+/// Accept or refuse a design record put with `token` and the `model` the agent reports. `Ok(None)`
+/// when the rule does not apply: role tokens are off, the record is no design record, or it belongs to
+/// a plan repair. The caller writes the record and then calls [`design_made`] with the result.
+pub fn designer_accept(
+    p: &Project,
+    st: &State,
+    kind: &str,
+    id: &str,
+    token: Option<&str>,
+    model: Option<&str>,
+) -> R<Option<Made>> {
+    if !p.policy.roles.tokens {
+        return Ok(None);
+    }
+    let Some((subject, amendment)) = designer_subject(st, kind, id) else {
+        return Ok(None);
+    };
+    let model = model.map(|m| m.trim()).unwrap_or("");
+    let mut role = String::new();
+    if amendment {
+        if crate::run::holds_token(p, &format!("{subject}:designer"), token) {
+            role = "designer".into();
+        } else {
+            for stage in crate::roles::design::STAGES {
+                for r in crate::roles::ROLES
+                    .iter()
+                    .filter(|r| r.at_design() && !r.writes.is_empty())
+                {
+                    if crate::run::holds_token(p, &format!("{subject}:{}:{stage}", r.name), token)
+                        && crate::roles::design::stage_may_put(p, &subject, stage, id)
+                    {
+                        role = r.name.to_string();
+                    }
+                }
+            }
+        }
+    } else {
+        for r in design_writers(kind) {
+            if crate::run::holds_token(p, &format!("{}:{r}", crate::roles::DESIGN), token) {
+                role = r.to_string();
+                break;
+            }
+        }
+    }
+    if role.is_empty() {
+        if let Some(words) = lifted_words(p, &subject)? {
+            return Ok(Some(Made {
+                subject,
+                role,
+                model: model.to_string(),
+                lifted: words,
+            }));
+        }
+        let what = if amendment {
+            format!("the amendment {subject}")
+        } else {
+            format!("the {subject} stage")
+        };
+        return Err(refuse(
+            format!("put the {kind} {id}"),
+            format!(
+                "a record of {what} is accepted only with the designer's token that the engine issued for it; none, or another one, was given. The conductor drafts no design record itself"
+            ),
+            &[
+                &format!(
+                    "Start a designer agent on the model the policy names (`bf policy` prints it) and issue its token: `bf roles token {} designer`.",
+                    if amendment { subject.as_str() } else { crate::roles::DESIGN }
+                ),
+                "The designer puts the record with `--token <token> --model <the model it runs on>`.",
+                &format!("Only the human lifts this, for {what} alone: `bf roles lift {subject} --quote \"<their words>\"`."),
+            ],
+            format!("`bf record get {id}` shows the record, made by the designer agent."),
+        ));
+    }
+    if model.is_empty() {
+        return Err(refuse(
+            format!("put the {kind} {id}"),
+            "the designer reports the model it ran on with every record, and none was given",
+            &["Put the record again with `--model <the model you run on>`; it is your own report, and the engine keeps it with the record."],
+            format!("`bf record get {id}` shows the record."),
+        ));
+    }
+    Ok(Some(Made {
+        subject,
+        role,
+        model: model.to_string(),
+        lifted: String::new(),
+    }))
+}
+
+/// Keep with the record who made it: the log event the pages read.
+pub fn design_made(p: &Project, id: &str, kind: &str, m: &Made) -> R<()> {
+    events::append(
+        p,
+        MADE_EVENT,
+        json!({"record": id, "record_kind": kind, "subject": m.subject, "role": m.role,
+            "model": m.model, "lifted": m.lifted}),
+    )?;
+    p.write_guard()?;
+    Ok(())
+}
+
+/// Who made each record, by ID: the latest `design.made` event of each.
+pub fn made_by(p: &Project) -> R<BTreeMap<String, Value>> {
+    let log = events::load_log(p)?;
+    let mut out = BTreeMap::new();
+    for e in log.events.iter().filter(|e| e["kind"] == MADE_EVENT) {
+        if let Some(id) = e["record"].as_str() {
+            out.insert(id.to_string(), e.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// `bf roles lift <stage|A-n> --quote "..."`: the human lifts the designer rule for one stage or one
+/// amendment. The words are recorded with the quote; a message lifts once.
+pub fn designer_lift(p: &Project, subject: &str, quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let what = format!("lift the designer rule for {subject}");
+    let is_stage = DESIGN_ORDER.contains(&subject);
+    let amend = st.amends.iter().find(|a| a.id == subject);
+    if !is_stage && amend.is_none() {
+        return Err(refuse(
+            what,
+            "the rule is lifted for one design stage (idea, requirements, ui, architecture or plan) or one amendment (A-n)",
+            &["Name the stage or the amendment: `bf roles lift requirements --quote \"<their words>\"`."],
+            "The command prints the words recorded.",
+        ));
+    }
+    if let Some(a) = amend {
+        if !matches!(a.status.as_str(), "open" | "narrowed") || crate::amend::is_repair(a) {
+            return Err(refuse(
+                what,
+                format!("{subject} is {}, and only an open amendment that is not a plan repair has the rule", if crate::amend::is_repair(a) { "a plan repair".to_string() } else { a.status.clone() }),
+                &["A plan repair needs no designer; nothing to lift."],
+                "The command prints the words recorded.",
+            ));
+        }
+    }
+    if lifted_words(p, subject)?.is_some() {
+        return Err(refuse(
+            what,
+            "it was lifted already",
+            &["Nothing more to do: the records of it are accepted without the designer's token."],
+            "`bf view run --json` shows the words.",
+        ));
+    }
+    // Only words written after the work they lift: after the amendment was opened, or after the gate
+    // before the stage was approved.
+    let after = match amend {
+        Some(a) => a.opened_seq,
+        None => {
+            let i = DESIGN_ORDER.iter().position(|k| *k == subject).unwrap_or(0);
+            DESIGN_ORDER[..i]
+                .iter()
+                .filter_map(|k| st.latest_gate(k, None))
+                .filter(|g| g.status == "approved")
+                .filter_map(|g| g.decided_seq)
+                .max()
+                .unwrap_or(0)
+        }
+    };
+    let mut st = st;
+    for e in events::load_log(p)?
+        .events
+        .iter()
+        .filter(|e| e["kind"] == LIFT_EVENT)
+    {
+        if let Some(t) = e["turn"].as_u64() {
+            if let Some(x) = st.turns.iter_mut().find(|x| x.seq == t) {
+                x.used = true;
+            }
+        }
+    }
+    let (seq, message) = events::pick_turn(&st, after, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        LIFT_EVENT,
+        json!({"subject": subject, "turn": seq, "message": message, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"lifted": subject, "quote": quote.trim()}))
+}
+
 // ---- amendments ----
 
 /// The amendment that is open now (not approved, not withdrawn), if any.
@@ -1008,6 +1466,12 @@ fn amend_impact(p: &Project, ids: &[String]) -> R<(Value, Vec<String>)> {
 }
 
 pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
+    amend_open_marked(p, ids, false)
+}
+
+/// Open an amendment; `repair` marks it as a plan repair, which the engine refuses when the set holds
+/// a design part (R-41).
+pub fn amend_open_marked(p: &Project, ids: &[String], repair: bool) -> R<Value> {
     let st = events::require_chain(p)?;
     if ids.is_empty() {
         return Err(refuse(
@@ -1029,15 +1493,49 @@ pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
             "The status lists one open amendment.",
         ));
     }
+    if repair {
+        crate::amend::refuse_repair_mark("open an amendment as a plan repair", ids)?;
+    }
     let (imp, all) = amend_impact(p, ids)?;
     let id = format!("A-{}", st.amends.len() + 1);
     events::append(
         p,
         "amend.open",
-        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}),
+        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}),
     )?;
     p.write_guard()?;
-    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all}))
+    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}))
+}
+
+/// Inside the open amendment: insert a checkpoint before or after a named one, or split one. The
+/// operation is kept in the amendment and takes effect only when the human approves it (R-64).
+pub fn amend_checkpoint(p: &Project, pos: &[String], title: Option<&str>) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let Some(open) = open_amendment(&st) else {
+        return Err(refuse(
+            "insert or split a checkpoint",
+            "no amendment is open",
+            &["Run `bf amend open <ID>...` (or `bf amend open --repair <ID>...` for a plan repair) first."],
+            "`bf amend open` prints an amendment ID.",
+        ));
+    };
+    let aid = open.id.clone();
+    let op = crate::amend::op_from_args(pos, title)?;
+    let mut ops = open.ops.clone();
+    ops.push(op.clone());
+    let edit = crate::amend::edit_of(p, &st, &ops)?;
+    let touched = edit.touched();
+    let problems = crate::amend::result_problems(p, &edit)?;
+    events::append(
+        p,
+        "amend.checkpoint",
+        json!({"amend": aid, "op": op, "touched": touched, "renamed": edit.renames}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"amend": aid, "op": op,
+        "renamed": edit.renames.iter().map(|(o, n)| json!({"from": o, "to": n})).collect::<Vec<_>>(),
+        "created": edit.created, "touched": touched, "plan_problems": problems,
+        "note": "Nothing is written until the human approves the amendment: narrow it again with `bf amend narrow --file <f>`."}))
 }
 
 /// Change the records the open amendment covers. It keeps its ID, goes back to open (the narrowing
@@ -1060,6 +1558,9 @@ pub fn amend_revise(p: &Project, ids: &[String]) -> R<Value> {
             &["Run `bf amend revise R-1 C-2` with the IDs the amendment should cover."],
             "The command prints the impact set.",
         ));
+    }
+    if open.repair {
+        crate::amend::refuse_repair_mark("revise a plan repair", ids)?;
     }
     let (imp, all) = amend_impact(p, ids)?;
     events::append(
@@ -1135,6 +1636,7 @@ pub fn amendments_json(st: &State) -> Vec<Value> {
         .iter()
         .map(|a| {
             json!({"id": a.id, "ids": a.ids, "status": amend_status(a),
+                "repair": crate::amend::is_repair(a),
                 "withdrawn_why": a.withdrawn_why})
         })
         .collect()
@@ -1226,10 +1728,14 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             "The command prints the narrowed set.",
         ));
     }
+    // The records of the set as the human reads them now: approval is refused if they change later.
+    // Everything that differs from the last approved content, kept records included, is stored with
+    // the narrowing; the page shows that list and the fingerprint covers exactly it.
+    let (changes, set_hash) = crate::amend::narrowing(p, &st, a, &keep)?;
     events::append(
         p,
         "amend.narrow",
-        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons}),
+        json!({"amend": aid, "keep": keep, "waive": waive, "reasons": reasons, "set_hash": set_hash, "changes": changes}),
     )?;
     p.write_guard()?;
     Ok(json!({"amend": aid, "keep": keep, "waive": waive}))
@@ -1270,20 +1776,41 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
             "`bf amend approve` prints the approved set.",
         ));
     }
-    let narrow_seq = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| {
-            matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
-                && e["amend"] == aid.as_str()
-        })
-        .and_then(|e| e["seq"].as_u64())
-        .unwrap_or(0);
+    let last_change = log.events.iter().rev().find(|e| {
+        matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
+            && e["amend"] == aid.as_str()
+    });
+    let narrow_seq = last_change.and_then(|e| e["seq"].as_u64()).unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
-    // What the amendment re-opens, worked out from the plan now and written into the event.
     let a = a.unwrap();
-    let pl = plan::load(p)?;
+    // Every stage covered and every requirement linked, before the approval is written (R-40).
+    // A plan repair needs no stage sentences and no links, but it may not hold a design part (R-41).
+    if a.repair {
+        crate::amend::refuse_repair_mark(&format!("approve {aid} as a plan repair"), &a.ids)?;
+    }
+    if !crate::amend::is_repair(a) {
+        crate::amend::refuse_if_uncovered(p, a)?;
+    }
+    // And no record of the set changed after the narrowing the human read (TH-12).
+    if let Some(e) = last_change {
+        crate::amend::refuse_if_changed_since_narrowing(p, a, e)?;
+    }
+    // The checkpoint operations: the plan they leave must pass the plan check before approval (R-64).
+    let edit = if a.ops.is_empty() {
+        None
+    } else {
+        let e = crate::amend::edit_of(p, &st, &a.ops)?;
+        crate::amend::refuse_if_result_breaks_plan(p, a, &e)?;
+        Some(e)
+    };
+    // What the amendment re-opens, worked out from the plan now (as the operations leave it) and
+    // written into the event.
+    let mut pl = plan::load(p)?;
+    if let Some(e) = &edit {
+        pl.units = e.units.clone();
+        pl.checkpoints = e.cps.clone();
+        pl.checks = e.checks.clone();
+    }
     // What changed is the amendment's IDs and the kept impact set, less what the human waived.
     let changed: Vec<String> = a
         .keep
@@ -1332,15 +1859,42 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     reopen_checks.sort();
     reopen_checks.dedup();
     let receipt_floor = crate::evidence::highest_receipt_number(p);
-    events::append(
-        p,
-        "amend.approve",
-        json!({"amend": aid, "turn": seq, "quote": quote.trim(),
+    // The records take their new numbers first, all or none; the approval is recorded last, so a
+    // failure leaves the amendment narrowed and the plan as it was, and approving again works.
+    let written = match &edit {
+        Some(e) => crate::amend::write_edit(p, e)?,
+        None => vec![],
+    };
+    let extra = crate::scope::unblock::approve_fields(p, &st, a, &reopen_units);
+    // The content the human approves, bound to the approval: a later change of any of these records is
+    // a change with no amendment.
+    let mut content = serde_json::Map::new();
+    for id in a.keep.iter().chain(a.ids.iter()).chain(a.touched.iter()) {
+        let e = match p.get_record(id) {
+            Ok(Some(r)) => {
+                let mut e = json!({"h": crate::evidence::record_hash(&r), "rec": r});
+                if !s(&r, "unit").is_empty() {
+                    e["unit"] = json!(s(&r, "unit"));
+                }
+                e
+            }
+            _ => json!({"h": "missing"}),
+        };
+        content.insert(id.clone(), e);
+    }
+    let mut data = json!({"amend": aid, "turn": seq, "quote": quote.trim(), "content": content,
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
-               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor}),
-    )?;
+               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
+               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()});
+    let unblocked = extra.get("unblock_units").cloned().unwrap_or(json!([]));
+    crate::scope::merge_fields(&mut data, extra);
+    if let Err(err) = events::append(p, "amend.approve", data) {
+        crate::amend::undo_writes(&written);
+        return Err(err);
+    }
+    crate::scope::wait::resume_waiting(p)?;
     p.write_guard()?;
-    Ok(json!({"amend": aid, "approved": true, "turn": seq}))
+    Ok(json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked}))
 }
 
 /// IDs waived by approved amendments.

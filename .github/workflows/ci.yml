@@ -22,11 +22,14 @@ jobs:
           git config --global user.name "ci"
           git config --global user.email "ci@example.invalid"
           git config --global init.defaultBranch main
-      - name: Harness instructions stay under 500 lines
+      - name: Each harness instruction file stays at most 200 lines
         run: |
-          lines=$(find harness/claude/skills harness/claude/agents -type f -exec cat {} + | wc -l)
-          echo "harness instruction lines: $lines"
-          test "$lines" -le 500
+          over=$(find harness/claude/skills harness/claude/agents -type f -exec wc -l {} + | awk '$2 != "total" && $1 > 200 {print $1, $2}')
+          if [ -n "$over" ]; then
+            echo "files over 200 lines:"
+            echo "$over"
+            exit 1
+          fi
       - name: Format
         run: cargo fmt --check
       - name: Lint
@@ -41,3 +44,13 @@ jobs:
         run: cargo test --locked --doc
       - name: Timing tests
         run: "cargo nextest run --locked --profile extended --no-fail-fast -E 'test(/^timing::/) | test(/(^|::)timing_/) | test(=controls::the_sandbox_costs_a_little_and_the_policy_can_switch_it_off)' --no-capture"
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Desktop panel (validate, test, tokens in step)
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.323
+          claude plugin validate harness/claude/panel
+          claude plugin test harness/claude/panel
+          python3 views/dev/build.py --check

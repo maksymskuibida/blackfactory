@@ -99,6 +99,7 @@ fn the_close_is_judged_by_the_choice_of_the_last_run_after_the_run_stops() {
     let fx = Fx::with_checks();
     fx.tiny();
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     fx.run_checks_all_off();
     fx.must(&["run", "stop"]);
@@ -114,6 +115,7 @@ fn a_run_cannot_be_stopped_while_a_required_check_has_no_proof() {
     let fx = Fx::with_checks();
     fx.tiny();
     fx.name_every_check("R-1");
+    fx.design_reviews_off();
     fx.start_test_run();
     let o = fx.refused(&["run", "stop"]);
     assert!(

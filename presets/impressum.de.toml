@@ -1,0 +1,49 @@
+kind = "impressum"
+language = "de"
+title = "Impressum"
+draft_mark = "ENTWURF: Dieser Text wurde aus einer Vorlage erstellt und ist keine Rechtsberatung. Eine Juristin oder ein Jurist muss ihn prüfen, bevor er verwendet wird."
+body = """
+## Angaben gemäß § 5 DDG
+
+{{COMPANY_NAME}}
+{{COMPANY_ADDRESS}}
+
+## Vertreten durch
+
+{{REPRESENTATIVE}}
+
+## Kontakt
+
+E-Mail: {{CONTACT_EMAIL}}
+Telefon: {{PHONE}}
+
+## Registereintrag
+
+{{REGISTER_ENTRY}}
+
+## Umsatzsteuer-Identifikationsnummer
+
+{{VAT_ID}}
+"""
+
+[[blanks]]
+name = "COMPANY_NAME"
+hint = "Rechtlicher Name des Anbieters mit Rechtsform."
+[[blanks]]
+name = "COMPANY_ADDRESS"
+hint = "Ladungsfähige Anschrift des Anbieters."
+[[blanks]]
+name = "REPRESENTATIVE"
+hint = "Vertretungsberechtigte Person oder Personen."
+[[blanks]]
+name = "CONTACT_EMAIL"
+hint = "E-Mail-Adresse für schnelle Kontaktaufnahme."
+[[blanks]]
+name = "PHONE"
+hint = "Telefonnummer für direkte Kontaktaufnahme."
+[[blanks]]
+name = "REGISTER_ENTRY"
+hint = "Handelsregister und Registernummer."
+[[blanks]]
+name = "VAT_ID"
+hint = "Umsatzsteuer-Identifikationsnummer."

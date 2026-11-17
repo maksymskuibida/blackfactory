@@ -165,7 +165,7 @@ Each becomes a checkpoint criterion with its own check.
 | T-4 | A checkpoint cannot close without a receipt or an approved amendment for each ID | Attack test |
 | T-5 | A receipt for other content is rejected | Attack test |
 | T-6 | Every refusal has the four parts of P5 | Test over all refusals |
-| T-7 | Harness instructions total under 500 lines | Count in CI |
+| T-7 | Each harness instruction file stays at most 200 lines | Checked in CI and by a test |
 | T-8 | Core commands make no network call | Test with the network denied |
 | T-9 | Outside a granted test run a simulated approval satisfies nothing; inside one the whole run completes with simulated approvals and cannot land on the main branch | Attack test, and a full run in test mode |
 | T-10 | The engine refuses to run with an unapproved plugin set | Attack test |

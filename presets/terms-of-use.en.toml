@@ -1,0 +1,48 @@
+kind = "terms-of-use"
+language = "en"
+title = "Terms of use of {{PRODUCT_NAME}}"
+draft_mark = "DRAFT: this text was made from a preset and is not legal advice. A lawyer must check it before it is used."
+body = """
+## 1. Who we are
+
+{{PRODUCT_NAME}} is provided by {{COMPANY_NAME}}. Questions about these terms go to {{CONTACT_EMAIL}}.
+
+## 2. The service
+
+{{SERVICE_DESCRIPTION}}
+
+## 3. Using the service
+
+You use the service at your own responsibility and only within the law. You do not misuse it, disturb its operation or try to get access you were not given.
+
+## 4. Liability
+
+We are liable without limit for intent, for gross negligence and for harm to life, body or health. In other cases liability is limited as far as the law allows.
+
+## 5. Changes
+
+We may change these terms or the service. When a change affects you, we tell you before it applies.
+
+## 6. Law and courts
+
+These terms are governed by the law of {{GOVERNING_LAW}}. Disputes are decided by the courts of {{JURISDICTION}}, as far as the law allows this choice.
+"""
+
+[[blanks]]
+name = "PRODUCT_NAME"
+hint = "The name of the product or service."
+[[blanks]]
+name = "COMPANY_NAME"
+hint = "The legal name of the provider."
+[[blanks]]
+name = "CONTACT_EMAIL"
+hint = "Where people send questions about these terms."
+[[blanks]]
+name = "SERVICE_DESCRIPTION"
+hint = "What the service does, in a few sentences."
+[[blanks]]
+name = "GOVERNING_LAW"
+hint = "The law that governs these terms."
+[[blanks]]
+name = "JURISDICTION"
+hint = "The courts that decide disputes."

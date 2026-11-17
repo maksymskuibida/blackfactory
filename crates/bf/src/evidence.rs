@@ -117,16 +117,40 @@ fn seal_input(v: &Value) -> String {
             h if h.is_empty() => String::new(),
             h => format!("\x1fjudgement={h}"),
         }
+        // A UI/UX journey step (or screen state) receipt seals what it is about and what was seen.
+        + &["journey", "step", "step_outcome"]
+            .iter()
+            .map(|k| match f(k) {
+                h if h.is_empty() => String::new(),
+                h => format!("\x1f{k}={h}"),
+            })
+            .collect::<String>()
+        // A design review receipt seals the kind of review, the amendment it is for and the hash of
+        // the records it judged, each only when present.
+        + &["review_kind", "review_amendment", "records_hash", "review_round"]
+            .iter()
+            .map(|k| match f(k) {
+                h if h.is_empty() => String::new(),
+                h => format!("\x1f{k}={h}"),
+            })
+            .collect::<String>()
 }
 
 /// A hash of the screen records as they are now: what a design-stage UI/UX judgment looked at.
 pub fn screens_hash(p: &Project) -> R<String> {
     let mut recs = p.list_records(crate::schema::kind_by_name("screen"))?;
     recs.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
-    let text: Vec<String> = recs
+    let mut text: Vec<String> = recs
         .iter()
         .map(|r| format!("{}:{}", s(r, "id"), record_hash(r)))
         .collect();
+    // The journeys too: a changed journey makes a design-stage UI/UX judgment stale.
+    let mut js = p.list_records(crate::schema::kind_by_name("journey"))?;
+    js.sort_by(|a, b| s(a, "id").cmp(s(b, "id")));
+    text.extend(
+        js.iter()
+            .map(|j| format!("{}:{}", s(j, "id"), record_hash(j))),
+    );
     Ok(util::sha256_hex(text.join("\n").as_bytes()))
 }
 
@@ -536,6 +560,23 @@ pub fn run_with(
             "The check's command holds no shell operator, and `bf evidence run` writes a receipt.",
         ));
     }
+    {
+        let st = events::replay(p)?;
+        let mut drafts = vec![chk.clone()];
+        if let Some(u) = unit {
+            drafts.extend(p.get_record(u)?);
+        }
+        for d in &drafts {
+            if let Some(a) = crate::gates::unapproved_change(&st, d) {
+                return Err(refuse(
+                    format!("run evidence for {check_id}"),
+                    format!("{} is changed by {a}, which the human has not approved; a draft of the plan is not the record in force", s(d, "id")),
+                    &[&format!("Wait for the human's approval of {a} (`bf status` lists it).")],
+                    "`bf status` shows the amendment approved.",
+                ));
+            }
+        }
+    }
     let want = command_words(&chk);
     if want != argv {
         return Err(refuse(
@@ -558,6 +599,17 @@ pub fn run_with(
     let top = top.to_path_buf();
     let before = p.content_hash(&top)?;
     refuse_repeat(p, check_id, argv, &before, repeat, unit)?;
+    // A command check whose command is exactly a scan runs in the engine's process: the sandbox keeps
+    // the sealing key from the command a worker passes, so the scan could not write its own receipt there.
+    if let Some(sub) = crate::scan::scan_sub(argv) {
+        let v = crate::scan::run_as_check(p, sub, check_id, unit, argv, &top)?;
+        if v["exit"].as_i64() != Some(0) {
+            if let Some(u) = unit {
+                crate::run::park_if_looping(p, u)?;
+            }
+        }
+        return Ok(v);
+    }
     let tail_bytes = p.policy.evidence.tail_bytes;
     let started = std::time::Instant::now();
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;
@@ -772,6 +824,9 @@ pub struct Judgment<'a> {
     pub outcome: Option<&'a str>,
     pub says: &'a str,
     pub token: Option<&'a str>,
+    /// The amendment and the kind of review an outcome on a design review is for, when no token says.
+    pub amendment: Option<&'a str>,
+    pub kind: Option<&'a str>,
 }
 
 pub fn attach(
@@ -818,6 +873,7 @@ pub fn attach(
         ));
     }
     let says = j.says.trim();
+    let mut review: Option<crate::checks::review::Attach> = None;
     let kind = match j.outcome {
         None => "support",
         Some("met") => "attach",
@@ -854,7 +910,18 @@ pub fn attach(
         let design_stage = named
             .map(|c| c.stage == crate::checks::Stage::Design)
             .unwrap_or(false);
-        if p.policy.roles.tokens {
+        // A design review has its own rules for the token, the hold of open findings and the park.
+        let st = events::replay(p)?;
+        review = crate::checks::review::on_attach(
+            p,
+            &st,
+            &chk,
+            j.outcome.unwrap_or(""),
+            j.token,
+            j.amendment,
+            j.kind,
+        )?;
+        if p.policy.roles.tokens && review.is_none() {
             // A design-stage named check is settled with the token of a design-stage role of its
             // family (`design:<role>`), issued by `bf roles token design <role>`. Any other check:
             // the verifier's token for a checkpoint check; the reviewer's for a unit's own check; the
@@ -911,6 +978,26 @@ pub fn attach(
             }
         }
     }
+    // A UI/UX verification takes its evidence step by step: a sentence that names a journey step (or a
+    // screen state) makes a step receipt; any other `met` is the verification's own and needs every
+    // step covered first.
+    let uiux_name = matches!(
+        s(&chk, "named"),
+        "design-uiux-verification" | "built-uiux-verification"
+    );
+    let mut step_fields: Option<(String, String)> = None;
+    // TH-6: no outcome of the built-result verification rests on a file from the built result.
+    if s(&chk, "named") == "built-uiux-verification" && j.outcome.is_some() {
+        crate::uiux::refuse_evidence_from_built_result(p, file)?;
+    }
+    if let (true, Some(o)) = (uiux_name, j.outcome) {
+        if let Some((subject, n, _)) = crate::uiux::parse_step(says) {
+            crate::uiux::require_step_exists(p, &subject, &n)?;
+            step_fields = Some((subject, n));
+        } else if o == "met" {
+            crate::uiux::require_covered(p, check_id, s(&chk, "named"))?;
+        }
+    }
     let h = util::sha256_file(file)?;
     fs::create_dir_all(p.evidence_dir())?;
     let dest = p.evidence_dir().join(&h);
@@ -919,11 +1006,19 @@ pub fn attach(
     }
     let content = p.content_hash(&p.top)?;
     let screens = if j.outcome.is_some() && s(&chk, "named") == "design-uiux-verification" {
-        screens_hash(p)?
+        crate::uiux::design_hash(p)?
     } else {
         String::new()
     };
+    let kind = if step_fields.is_some() { "step" } else { kind };
+    let (step_journey, step_n, step_outcome) = match (&step_fields, j.outcome) {
+        (Some((a, b)), Some(o)) => (a.as_str(), b.as_str(), o),
+        _ => ("", "", ""),
+    };
     let v = json!({
+        "journey": step_journey,
+        "step": step_n,
+        "step_outcome": step_outcome,
         "type": kind,
         "check": check_id,
         "unit": unit,
@@ -935,12 +1030,25 @@ pub fn attach(
         "content_hash": content,
         "at": util::now(),
     });
+    let mut v = v;
+    if let Some(a) = &review {
+        for (k, x) in a.fields().as_object().into_iter().flatten() {
+            v[k] = x.clone();
+        }
+    }
     let v = write_receipt(p, v)?;
     events::append(
         p,
         "evidence.attach",
         json!({"receipt": v["id"], "check": check_id, "unit": unit}),
     )?;
+    if let Some(a) = review.as_ref().filter(|a| a.park) {
+        events::append(
+            p,
+            crate::checks::review::PARK_EVENT,
+            json!({"subject": a.subject, "round": a.round}),
+        )?;
+    }
     Ok(v)
 }
 
@@ -1263,6 +1371,148 @@ fn refuse_review_check(chk: &Value, what: &str) -> R<()> {
     Ok(())
 }
 
+/// One check a unit's landing requires: its own check records and the checks every unit must pass.
+pub struct UnitNeed<'a> {
+    pub id: String,
+    /// One of the checks every unit must pass, not a check record of the unit.
+    pub attached: bool,
+    /// The passing receipt at the content asked for, when there is one.
+    pub met: Option<&'a Receipt>,
+    /// The line landing prints when the check is not met.
+    pub line: String,
+}
+
+/// Every check the landing of `unit` requires at `content`, each with whether it is met: the unit's own
+/// check records, then the checks every unit must pass (R-76). Landing and `bf evidence verify --unit`
+/// both take their list from here.
+pub fn unit_landing_needs<'a>(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &crate::events::State,
+    receipts: &'a [Receipt],
+    unit: &str,
+    content: &str,
+) -> Vec<UnitNeed<'a>> {
+    let wt = p.work_dir().join(unit);
+    let mut out = Vec::new();
+    // A unit or a check changed by an amendment the human has not approved is a draft: landing waits.
+    for d in pl.unit(unit).into_iter().chain(pl.unit_checks(unit)) {
+        if let Some(a) = crate::gates::unapproved_change(st, d) {
+            out.push(UnitNeed {
+                id: s(d, "id").to_string(),
+                attached: false,
+                met: None,
+                line: format!(
+                    "{}: changed by {a}, which the human has not approved; the draft does not count",
+                    s(d, "id")
+                ),
+            });
+        }
+    }
+    // A check of the approved plan that belonged to this unit and that a draft moved away, changed or
+    // deleted still holds the landing: the plan in force is what the human approved, not the draft.
+    for (cid, a) in crate::gates::drafts_off_unit(st, &pl.checks, unit) {
+        if out
+            .iter()
+            .any(|n| n.id == cid && !n.attached && n.met.is_none())
+        {
+            continue;
+        }
+        out.push(UnitNeed {
+            id: cid.clone(),
+            attached: false,
+            met: None,
+            line: format!(
+                "{cid}: changed by {a}, which the human has not approved; the draft does not count"
+            ),
+        });
+    }
+    for c in pl.unit_checks(unit) {
+        let cid = s(c, "id");
+        let met = satisfied_unit_at(receipts, cid, content);
+        let stale = receipts.iter().any(|r| r.check() == cid && r.passes());
+        out.push(UnitNeed {
+            id: cid.to_string(),
+            attached: false,
+            met,
+            line: format!(
+                "{cid}: {} - run `bf evidence run {cid} --unit {unit} -- <its command>` inside {}",
+                if stale {
+                    "the receipts on file are for other content"
+                } else {
+                    "no passing sealed receipt"
+                },
+                wt.display()
+            ),
+        });
+    }
+    for a in crate::checks::attached_for_unit(p, pl, st, unit).0 {
+        let met = crate::checks::attached_receipt(receipts, &a, content);
+        let stale = receipts.iter().any(|r| r.check() == a.id() && r.passes());
+        out.push(UnitNeed {
+            id: a.id(),
+            attached: true,
+            met,
+            line: format!(
+                "{}: {} - run `bf evidence run {} --unit {unit} -- {}` inside {}",
+                a.id(),
+                if stale {
+                    "the receipts on file are for other content or another command"
+                } else {
+                    "no passing sealed receipt"
+                },
+                a.id(),
+                a.command_line(),
+                wt.display()
+            ),
+        });
+    }
+    out
+}
+
+/// A check in scope whose counting pass followed a failing run of the same check at the same content.
+pub struct PassAfterFailure {
+    pub check: String,
+    pub failing: String,
+    pub passing: String,
+}
+
+/// The mark for a check met by `pass`: the latest sealed failing run at that content numbered before it.
+fn pass_after_failure(
+    receipts: &[Receipt],
+    check: &str,
+    pass: &Receipt,
+) -> Option<PassAfterFailure> {
+    let pass_n = receipt_number(pass.id())?;
+    receipts
+        .iter()
+        .filter(|r| {
+            r.check() == check
+                && r.content() == pass.content()
+                && r.is_run()
+                && r.seal_ok
+                && r.v["exit"].as_i64() != Some(0)
+        })
+        .filter_map(|r| Some((receipt_number(r.id())?, r)))
+        .filter(|(n, _)| *n < pass_n)
+        .max_by_key(|(n, _)| *n)
+        .map(|(_, r)| PassAfterFailure {
+            check: check.to_string(),
+            failing: r.id().to_string(),
+            passing: pass.id().to_string(),
+        })
+}
+
+/// What `verify` found beyond the rows.
+pub struct Verified {
+    pub rows: Vec<VerifyRow>,
+    pub ok: bool,
+    /// With `--unit`: the checks whose pass followed a failure at the same content.
+    pub pass_after_failure: Vec<PassAfterFailure>,
+    /// With `--unit`: the lines of the checks landing would refuse.
+    pub unmet: Vec<(String, String)>,
+}
+
 pub struct VerifyRow {
     pub receipt: String,
     pub check: String,
@@ -1277,18 +1527,31 @@ pub fn verify(
     unit: Option<&str>,
     checkpoint: Option<&str>,
 ) -> R<(Vec<VerifyRow>, bool)> {
+    let v = verify_full(p, unit, checkpoint)?;
+    Ok((v.rows, v.ok))
+}
+
+pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) -> R<Verified> {
+    // A checkpoint's scope wins when both are given.
+    let unit = if checkpoint.is_some() { None } else { unit };
     let receipts = load_receipts(p)?;
     let mut current: Option<(String, Vec<String>)> = None; // content hash and the checks in scope
-    let checks = p.list_records(crate::schema::kind_by_name("check"))?;
+    let mut pass_marks: Vec<PassAfterFailure> = Vec::new();
+    let mut unmet: Vec<(String, String)> = Vec::new();
     if let Some(u) = unit {
         let dir = p.work_dir().join(u);
         let top = if dir.is_dir() { dir } else { p.top.clone() };
-        let ids = checks
-            .iter()
-            .filter(|c| s(c, "unit") == u)
-            .map(|c| s(c, "id").to_string())
-            .collect();
-        current = Some((p.content_hash(&top)?, ids));
+        let content = p.content_hash(&top)?;
+        let pl = crate::plan::load(p)?;
+        let st = crate::events::replay(p)?;
+        let needs = unit_landing_needs(p, &pl, &st, &receipts, u, &content);
+        for n in &needs {
+            match n.met {
+                Some(pass) => pass_marks.extend(pass_after_failure(&receipts, &n.id, pass)),
+                None => unmet.push((n.id.clone(), n.line.clone())),
+            }
+        }
+        current = Some((content, needs.iter().map(|n| n.id.clone()).collect()));
     }
     if let Some(k) = checkpoint {
         let rec = p.require_record(k)?;
@@ -1352,19 +1615,23 @@ pub fn verify(
         }
     }
     // With a scope, every check in scope must have at least one passing receipt at the current content.
-    if let Some((h, ids)) = &current {
+    if unit.is_some() {
+        // Landing's own list: a check it would refuse fails the verification too.
+        if !unmet.is_empty() {
+            all_ok = false;
+        }
+    } else if let Some((h, ids)) = &current {
         for id in ids {
-            // A unit's checks land by the unit rule, so verification asks the same; a checkpoint's
-            // checks also need the judgement of a pass that followed a failure.
-            let met = if checkpoint.is_some() {
-                satisfied_at(&receipts, id, h)
-            } else {
-                satisfied_unit_at(&receipts, id, h)
-            };
-            if met.is_none() {
+            // A checkpoint's checks also need the judgement of a pass that followed a failure.
+            if satisfied_at(&receipts, id, h).is_none() {
                 all_ok = false;
             }
         }
     }
-    Ok((rows, all_ok))
+    Ok(Verified {
+        rows,
+        ok: all_ok,
+        pass_after_failure: pass_marks,
+        unmet,
+    })
 }

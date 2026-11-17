@@ -18,10 +18,32 @@ idle_minutes = 60     # a running unit with no event for this long is stuck
 max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
 checkpoint_reviews = 3 # reviews a checkpoint may have before it parks with a high or medium finding open
 
-[tiers]               # model tier by role: cheap, standard or strong
-builder = "standard"
-reviewer = "strong"
-verifier = "standard"
+[context]
+max_share = 40        # percent of the context window a conductor's session may fill before the hook says so
+max_age_seconds = 900 # a saved share older than this is not used: no note is made
+
+[tiers]               # model tier by kind of work: cheap, standard or strong
+conductor = "standard"          # conducting the build loop
+designer = "strong"             # a design stage
+amender = "strong"              # an amendment
+advisor = "strong"              # advising the conductor on a question that needs judgment
+builder = "standard"            # building
+reviewer = "strong"             # reviewing a unit
+checkpoint_reviewer = "strong"  # reviewing a checkpoint
+verifier = "standard"           # verifying
+
+[efforts]             # effort by kind of work: low, medium or high
+conductor = "medium"
+designer = "high"
+amender = "high"
+advisor = "high"
+builder = "medium"
+reviewer = "high"
+checkpoint_reviewer = "high"
+verifier = "low"
+
+# A model named outright for a harness replaces the harness's choice for the tier. Optional, one table
+# per kind of work, for example a [models.builder] table holding claude = "a-model-name".
 
 [budget]
 cap = 0.0             # 0 means no cap; with a cap, every `bf report` must carry --cost
@@ -114,19 +136,114 @@ impl Default for Limits {
         }
     }
 }
+/// How full a conductor's session may let its context get, and how old a saved share may be.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct ContextPol {
+    /// Percent of the context window; above it the hook adds a note for the conductor.
+    pub max_share: f64,
+    /// A share saved longer ago than this many seconds is not used.
+    pub max_age_seconds: u64,
+}
+impl Default for ContextPol {
+    fn default() -> Self {
+        ContextPol {
+            max_share: 40.0,
+            max_age_seconds: 900,
+        }
+    }
+}
+/// The kinds of work in the factory, in the order the policy lists them. Each has a tier, an effort
+/// and optionally a model per harness.
+pub const WORK_KINDS: [&str; 8] = [
+    "conductor",
+    "designer",
+    "amender",
+    "advisor",
+    "builder",
+    "reviewer",
+    "checkpoint_reviewer",
+    "verifier",
+];
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Tiers {
+    pub conductor: String,
+    pub designer: String,
+    pub amender: String,
+    pub advisor: String,
     pub builder: String,
     pub reviewer: String,
+    pub checkpoint_reviewer: String,
     pub verifier: String,
 }
 impl Default for Tiers {
     fn default() -> Self {
         Tiers {
+            conductor: "standard".into(),
+            designer: "strong".into(),
+            amender: "strong".into(),
+            advisor: "strong".into(),
             builder: "standard".into(),
             reviewer: "strong".into(),
+            checkpoint_reviewer: "strong".into(),
             verifier: "standard".into(),
+        }
+    }
+}
+impl Tiers {
+    pub fn get(&self, kind: &str) -> &str {
+        match kind {
+            "conductor" => &self.conductor,
+            "designer" => &self.designer,
+            "amender" => &self.amender,
+            "advisor" => &self.advisor,
+            "reviewer" => &self.reviewer,
+            "checkpoint_reviewer" => &self.checkpoint_reviewer,
+            "verifier" => &self.verifier,
+            _ => &self.builder,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Efforts {
+    pub conductor: String,
+    pub designer: String,
+    pub amender: String,
+    pub advisor: String,
+    pub builder: String,
+    pub reviewer: String,
+    pub checkpoint_reviewer: String,
+    pub verifier: String,
+}
+impl Default for Efforts {
+    fn default() -> Self {
+        Efforts {
+            conductor: "medium".into(),
+            designer: "high".into(),
+            amender: "high".into(),
+            advisor: "high".into(),
+            builder: "medium".into(),
+            reviewer: "high".into(),
+            checkpoint_reviewer: "high".into(),
+            verifier: "low".into(),
+        }
+    }
+}
+impl Efforts {
+    pub fn get(&self, kind: &str) -> &str {
+        match kind {
+            "conductor" => &self.conductor,
+            "designer" => &self.designer,
+            "amender" => &self.amender,
+            "advisor" => &self.advisor,
+            "reviewer" => &self.reviewer,
+            "checkpoint_reviewer" => &self.checkpoint_reviewer,
+            "verifier" => &self.verifier,
+            _ => &self.builder,
         }
     }
 }
@@ -399,7 +516,11 @@ pub struct Policy {
     pub roles: RolesPol,
     pub exec: ExecPol,
     pub limits: Limits,
+    pub context: ContextPol,
     pub tiers: Tiers,
+    pub efforts: Efforts,
+    /// A model named outright, by kind of work and then by harness.
+    pub models: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub budget: Budget,
     pub review: Review,
     pub ledger: LedgerPol,
@@ -1268,6 +1389,7 @@ impl Project {
             ".bf/".into(),
             ".claude/settings.json".into(),
             ".claude/settings.local.json".into(),
+            ".claude/skills/factory-panel/".into(),
             ".git/hooks/".into(),
             ".git/config".into(),
         ];

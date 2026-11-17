@@ -2,7 +2,8 @@
 //!
 //! It reads the tool call from stdin and the project's guard table, `.bf/guard.json`, and, to check the
 //! table's signature, the key in the project's state folder. It starts no process and calls no git.
-//! Paths are resolved against the disk only with `canonicalize`, so a symlink cannot hide a target.
+//! Paths are resolved against the disk: each symbolic link is read and followed, one whose target does
+//! not exist included, and the part that exists is then put in its canonical form.
 //!
 //! The guard stops mistakes, drift and casual cheating and makes deliberate cheating visible. It cannot
 //! stop an agent that has an unrestricted shell under the same account: see "What the engine does not
@@ -76,9 +77,49 @@ fn absolutize(p: &str, cwd: &str) -> String {
     }
 }
 
-/// Absolute, normalised, and with symlinks resolved for the part of the path that exists.
+/// How many links in a row are followed before the path is judged where it stands.
+const LINK_BOUND: usize = 40;
+
+/// Follow symbolic links in an absolute, normalised path by reading each one, from the outermost folder
+/// inwards, so a link whose target does not exist is followed too. A relative target is taken from the
+/// folder that holds the link. Stops after `LINK_BOUND` links.
+fn follow_links(lex: &str) -> String {
+    let mut cur = lex.to_string();
+    for _ in 0..LINK_BOUND {
+        let parts: Vec<&str> = cur.split('/').filter(|s| !s.is_empty()).collect();
+        let mut prefix = String::new();
+        let mut hit: Option<(usize, String, String)> = None;
+        for (i, seg) in parts.iter().enumerate() {
+            let folder = prefix.clone();
+            prefix.push('/');
+            prefix.push_str(seg);
+            let is_link = fs::symlink_metadata(&prefix)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_link {
+                if let Ok(t) = fs::read_link(&prefix) {
+                    hit = Some((i, folder, t.to_string_lossy().to_string()));
+                    break;
+                }
+            }
+        }
+        let Some((i, folder, target)) = hit else {
+            return cur;
+        };
+        let tail = parts[i + 1..].join("/");
+        let base = if target.starts_with('/') {
+            target
+        } else {
+            format!("{folder}/{target}")
+        };
+        cur = normalize(&format!("{base}/{tail}"));
+    }
+    cur
+}
+
+/// Absolute, normalised, and with symlinks followed, an unresolved one included.
 fn resolve(p: &str, cwd: &str) -> String {
-    let lex = absolutize(p, cwd);
+    let lex = follow_links(&absolutize(p, cwd));
     let mut base = lex.clone();
     let mut rest: Vec<String> = Vec::new();
     loop {
@@ -761,8 +802,47 @@ fn literals_for_unnamed_writes(code: &str, dir: &Option<String>) -> Vec<String> 
         // A printed word (`'done'`, `'ok.'`) is not a path: it holds a `/`, a name after a dot (a file
         // extension), or names an entry on disk.
         let ext = lit.rsplit_once('.').map_or("", |x| x.1);
+        // A name after a dot counts as an extension when it holds a letter (`v1.2` and `0.2.1` are
+        // version numbers), or when the literal is handed to a file call.
+        const FILE_CALLS: &[&str] = &[
+            "open",
+            "opensync",
+            "remove",
+            "unlink",
+            "unlinksync",
+            "rename",
+            "renamesync",
+            "replace",
+            "rmsync",
+            "rmtree",
+            "rmdir",
+            "truncate",
+            "truncatesync",
+            "writefile",
+            "writefilesync",
+            "appendfile",
+            "appendfilesync",
+            "readfile",
+            "readfilesync",
+            "delete",
+            "copy",
+            "copy2",
+            "copyfile",
+            "copyfilesync",
+            "move",
+            "chmod",
+            "chown",
+            "file",
+            "path",
+            "symlink",
+            "link",
+        ];
+        let to_file_call =
+            enclosing_call(before).is_some_and(|w| FILE_CALLS.contains(&w.to_lowercase().as_str()));
         let path_like = lit.contains('/')
-            || (!ext.is_empty() && ext.chars().all(|c| c.is_alphanumeric()))
+            || (!ext.is_empty()
+                && ext.chars().all(|c| c.is_alphanumeric())
+                && (ext.chars().any(|c| c.is_alphabetic()) || to_file_call))
             || target_abs(lit, dir).is_some_and(|a| std::path::Path::new(&a).exists());
         path_like && {
             let b = before.trim_end().trim_end_matches('(').trim_end();
@@ -875,6 +955,7 @@ fn write_through_variable(code: &str) -> bool {
         "writefile",
         "appendfile",
         "createwritestream",
+        "truncatesync",
     ];
     let c: Vec<char> = code.chars().collect();
     let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
@@ -915,6 +996,23 @@ fn write_through_variable(code: &str) -> bool {
                 .next()
                 .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
             {
+                return true;
+            }
+        }
+        // `os.replace(src, dst)` renames like `os.rename`: either argument given as a name is a path held
+        // in a variable.
+        if w == "replace" && before.ends_with("os.") {
+            let end = c[i + 1..]
+                .iter()
+                .position(|ch| *ch == ')')
+                .map_or(c.len(), |e| i + 1 + e);
+            let args: String = c[i + 1..end].iter().collect();
+            if args.split(',').any(|a| {
+                a.trim()
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+            }) {
                 return true;
             }
         }
@@ -2171,6 +2269,40 @@ fn chmod_only_removes(args: &[String]) -> bool {
         })
 }
 
+/// Is `arg` (without a value after `=`) the long option `full`, written whole or shortened to at least
+/// `min` characters? Git accepts a shortened long option when it is unambiguous.
+fn long_option(arg: &str, full: &str, min: usize) -> bool {
+    let name = arg.split('=').next().unwrap_or(arg);
+    name.len() >= min && full.starts_with(name)
+}
+
+/// The `(mode, path)` entries `git update-index --cacheinfo` is given: `mode,object,path` or three words.
+fn cacheinfo_entries(rest: &[String]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if long_option(&rest[i], "--cacheinfo", 4) {
+            if let Some(v) = rest.get(i + 1) {
+                if v.contains(',') {
+                    let mut it = v.splitn(3, ',');
+                    let mode = it.next().unwrap_or("").to_string();
+                    let _object = it.next();
+                    out.push((mode, it.next().unwrap_or("").to_string()));
+                    i += 2;
+                    continue;
+                }
+                if let (Some(_), Some(p)) = (rest.get(i + 2), rest.get(i + 3)) {
+                    out.push((v.clone(), p.clone()));
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Does `git` with these arguments only change the index? `restore --staged` without `--worktree`, and
 /// `rm --cached`, leave the files in the working tree alone.
 fn git_index_only(sub: &str, rest: &[String]) -> bool {
@@ -2330,6 +2462,16 @@ fn writer_args(prog: &str, args: &[String], dir: &Option<String>) -> Vec<String>
                 && !git_index_only(sub, &full[i + 1..])
             {
                 out.extend(full[i + 1..].iter().filter(|a| !is_flag(a)).cloned());
+            }
+            if sub == "checkout-index" {
+                out.extend(full[i + 1..].iter().filter(|a| !is_flag(a)).cloned());
+            }
+            if sub == "update-index" {
+                out.extend(
+                    cacheinfo_entries(&full[i + 1..])
+                        .into_iter()
+                        .map(|(_, p)| p),
+                );
             }
         }
     } else if prog == "curl" || prog == "wget" {
@@ -3819,6 +3961,7 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         zone_of(table, &d).kind.to_string()
     };
     let in_unit = target == "unit";
+    let in_wc = in_unit || target == "checkpoint";
     let rest: Vec<&str> = w[i + 1..].iter().map(|s| s.as_str()).collect();
     let why = |s: &str| {
         deny(
@@ -3919,6 +4062,40 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         {
             return why("switching to or committing onto the engine's branches would change them behind its back")
         }
+        // Git plumbing that writes the index or the working tree without a name the scope can judge, or
+        // that turns a file into a symbolic link.
+        "update-index" | "checkout-index" if in_wc => {
+            let owned: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
+            let link = |s: &str| {
+                deny(
+                    &format!("run `git {sub}` that {s}"),
+                    "a file of a working copy made into a symbolic link, or written without a name, can lead a later write to a place outside the unit's scope or to a protected place",
+                    &[
+                        "Change files with the editing tools, inside the unit's files.",
+                        "Name each path on the command line; `git hash-object -w` and `git add <file>` stay open.",
+                    ],
+                    "The command names only paths inside your unit's files and makes no link.",
+                )
+            };
+            if sub == "update-index" {
+                if owned.iter().any(|a| long_option(a, "--index-info", 5)) {
+                    return link("reads index entries from the input");
+                }
+                for (mode, _) in cacheinfo_entries(&owned) {
+                    if u32::from_str_radix(mode.trim(), 8).map_or(true, |m| m & 0o170000 == 0o120000) {
+                        return link("records a symbolic link (mode 120000)");
+                    }
+                }
+            } else if owned.iter().any(|a| {
+                (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('a'))
+                    || long_option(a, "--all", 4)
+                    || long_option(a, "--stdin", 5)
+                    || long_option(a, "--prefix", 4)
+                    || long_option(a, "--temp", 4)
+            }) {
+                return link("writes files that it does not name");
+            }
+        }
         "branch" => {
             let force = rest.iter().any(|x| {
                 matches!(
@@ -3980,6 +4157,7 @@ const BF_KNOWN: &[&str] = &[
     "legal",
     "preset",
     "uiux",
+    "review",
 ];
 
 /// What a working copy may run: (subcommand, the second words allowed; empty = any). A unit's
@@ -3993,6 +4171,8 @@ const UNIT_BF: &[(&str, &[&str])] = &[
         &["run", "verify", "fail", "unreachable", "attach"],
     ),
     ("record", &["get", "list", "put"]),
+    ("unit", &["restore"]),
+    ("scan", &["secrets", "licences", "licenses"]),
 ];
 /// The record kinds a working copy may put: a finding (builders' reviewers and the security and legal
 /// auditors), a threat (the security expert) and a legal record (the lawyer and the legal auditor).
@@ -4004,7 +4184,8 @@ const CP_BF: &[(&str, &[&str])] = &[
         "evidence",
         &["run", "verify", "fail", "unreachable", "attach"],
     ),
-    ("record", &["get", "list"]),
+    ("record", &["get", "list", "put"]),
+    ("scan", &["secrets", "licences", "licenses"]),
 ];
 
 fn human_turn_denial() -> Decision {
@@ -4166,6 +4347,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     || matches!(sub, "help" | "version")
                     // The resolver of an open sync reports from the checkpoint's working copy.
                     || (in_cp && sub == "report" && here.sync)
+                    // A built-stage role (an auditor) reports on a checkpoint with its own token.
+                    || (in_cp
+                        && sub == "report"
+                        && w.windows(2)
+                            .any(|x| x[0] == "--role" && crate::roles::is_new_role(&x[1])))
                     || list.iter().any(|(c, subs)| *c == sub && (subs.is_empty() || subs.contains(&second)))
                     // Of `record put`, only a finding.
                     && !(sub == "record"
@@ -4177,7 +4363,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         if in_worker {
                             "a worker may report, file a finding, run evidence and read the status, and put a threat or a legal record with the token of a role that writes it; nothing else"
                         } else {
-                            "a checkpoint's working copy is for running its checks and reading state"
+                            "a checkpoint's working copy is for running its checks, reading state, and an auditor's report and records with its token"
                         },
                         &["Use `bf report`, `bf evidence run|verify|fail|unreachable`, `bf record put finding|threat|legal`, `bf record get|list` or `bf status`.", "Ask the conductor for anything else."],
                         "The command you need is on that list.",
@@ -5389,8 +5575,13 @@ mod tests {
             "/p/.bf/work/U-1"
         ));
         assert!(bash("bf record put legal --file f.toml", "/p/.bf/work/U-1"));
-        assert!(!bash(
+        // A checkpoint's copy may put a record too; the engine asks for the role's token.
+        assert!(bash(
             "bf record put threat --file f.toml",
+            "/p/.bf/work/K-1"
+        ));
+        assert!(!bash(
+            "bf record put requirement --file f.toml",
             "/p/.bf/work/K-1"
         ));
         assert!(

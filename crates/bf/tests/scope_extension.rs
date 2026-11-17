@@ -547,6 +547,8 @@ fn a_file_no_grant_can_make_safe_leaves_the_unit_blocked_for_the_human() {
         "protected_extra = [\"docs/secret.md\"]",
     );
     let wc = start(&fx);
+    // U-3 has started: a holder that has not started is put after the asker (A-73), not refused.
+    fx.must(&["unit", "start", "U-3"]);
     for (path, shown, rule) in [
         (
             "factory/policy.toml",
@@ -613,6 +615,16 @@ fn a_file_no_grant_can_make_safe_leaves_the_unit_blocked_for_the_human() {
             .is_empty());
         let n = fx.must(&["next", "--json"]).json();
         assert!(directive(&fx, "U-1", "reviewer").is_none(), "{n}");
+        if rule == "U-3 holds it" {
+            // A file only a unit beside holds: the unit waits, with no turn for the human.
+            let none = n["directives"].as_array().unwrap().iter().all(|d| d["unit"] != "U-1");
+            let line = n["waiting"].to_string();
+            let waits = line.contains("U-1: waiting for") && line.contains(shown);
+            assert!(none && waits, "{n}");
+            fx.human("Release it, please, and carry on.");
+            fx.must(&["unit", "release", "U-1", "--quote", "Release it, please"]);
+            continue;
+        }
         let h = n["directives"]
             .as_array()
             .unwrap()
@@ -953,6 +965,9 @@ fn landing_accepts_a_removed_line_that_the_patch_removes_and_a_changed_configura
             "src/a.rs",
         ],
     );
+    // The edit came after the clean review, so the unit goes back to review before it lands.
+    fx.refused(&["unit", "land", "U-1"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
     fx.must(&["unit", "land", "U-1"]);
     assert_eq!(unit(&fx, "U-1")["state"], "landed");
 }
@@ -1125,14 +1140,13 @@ fn the_role_files_and_the_conductors_skill_hold_the_rules_of_a_scope_request() {
     ] {
         assert!(skill.contains(part), "SKILL.md lacks `{part}`");
     }
-    let total: usize = [
+    for f in [
         "harness/claude/agents/builder.md",
         "harness/claude/agents/reviewer.md",
         "harness/claude/agents/verifier.md",
         "harness/claude/skills/factory/SKILL.md",
-    ]
-    .iter()
-    .map(|f| harness_text(f).lines().count())
-    .sum();
-    assert!(total < 500, "{total} lines");
+    ] {
+        let n = harness_text(f).lines().count();
+        assert!(n <= 200, "{f} has {n} lines");
+    }
 }

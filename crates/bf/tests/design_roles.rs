@@ -55,8 +55,8 @@ fn a_design_role_has_a_brief_and_a_token_before_any_plan_exists() {
 #[test]
 fn a_design_role_reports_outside_a_run_and_the_token_is_spent() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     design_records(&fx);
+    fx.set_policy("tokens = false", "tokens = true");
     let t = token(&fx, "design", "security-expert");
     assert!(report(&fx, "design", "security-expert", "nope").code != 0);
     let ok = report(&fx, "design", "security-expert", &t);
@@ -100,8 +100,8 @@ fn a_role_works_only_at_its_stage() {
 #[test]
 fn a_token_ends_with_the_run_it_was_issued_in() {
     let fx = Fx::new();
-    fx.set_policy("tokens = false", "tokens = true");
     fx.tiny();
+    fx.set_policy("tokens = false", "tokens = true");
     let before_run = token(&fx, "design", "lawyer");
     fx.start_test_run();
     let r = report(&fx, "design", "lawyer", &before_run);
@@ -133,29 +133,43 @@ fn ui_check(fx: &Fx) {
 fn attach(fx: &Fx, tok: Option<&str>) -> common::Out {
     let f = fx.root.join("shot.txt");
     fs::write(&f, "the screen at 375px\n").unwrap();
-    let mut a = vec![
-        "evidence",
-        "attach",
-        "X-1",
-        f.to_str().unwrap(),
-        "--outcome",
-        "met",
-        "--says",
+    // The screen state and the accessibility result need their own evidence before the whole
+    // verification can be met.
+    let mut last = None;
+    for says in [
+        "S-1 state default: the greeting page at 375px",
+        "accessibility: every label read against the standard",
         "I opened the page at 375px and read every label",
-    ];
-    if let Some(t) = tok {
-        a.push("--token");
-        a.push(t);
+    ] {
+        let mut a = vec![
+            "evidence",
+            "attach",
+            "X-1",
+            f.to_str().unwrap(),
+            "--outcome",
+            "met",
+            "--says",
+            says,
+        ];
+        if let Some(t) = tok {
+            a.push("--token");
+            a.push(t);
+        }
+        let o = fx.bf(&a);
+        if o.code != 0 {
+            return o;
+        }
+        last = Some(o);
     }
-    fx.bf(&a)
+    last.unwrap()
 }
 
 #[test]
 fn an_outcome_on_a_design_stage_check_needs_the_token_of_a_role_of_its_family() {
     let fx = Fx::with_checks();
-    fx.set_policy("tokens = false", "tokens = true");
     design_records(&fx);
     ui_check(&fx);
+    fx.set_policy("tokens = false", "tokens = true");
     let o = attach(&fx, None);
     assert!(o.code != 0 && o.all().contains("token"), "{}", o.all());
     assert!(attach(&fx, Some("0123456789abcdef01234567")).code != 0);
@@ -207,6 +221,7 @@ fn the_design_stage_receipt_is_tied_to_the_screens_it_judged() {
 fn the_markets_statement_belongs_to_the_architecture_stage() {
     let fx = Fx::with_checks();
     design_records(&fx);
+    fx.design_reviews_off();
     fx.put(
         "threat",
         "id=\"TH-1\"\nkind=\"threat\"\ntitle=\"A visitor changes a text\"\nprotects=\"The texts\"\nattack=\"A visitor edits a file by hand\"\nmitigation=\"The texts are read-only files\"\n",
@@ -216,6 +231,19 @@ fn the_markets_statement_belongs_to_the_architecture_stage() {
         "id=\"M-1\"\nkind=\"markets\"\ntitle=\"Served markets\"\nmarkets=[\"Norway\"]\n",
     );
     assert_eq!(o.code, 0, "{}", o.all());
+    // The threat model stands once the security expert has reported after the last threat change.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let o = fx.bf(&[
+        "report",
+        "design",
+        "--result",
+        "built",
+        "--role",
+        "security-expert",
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    std::thread::sleep(std::time::Duration::from_millis(50));
     fx.must(&["gate", "open", "architecture"]);
     let snap = bf::gates::snapshot(&fx.project(), "architecture", None).unwrap();
     assert!(snap.get("M-1").is_some(), "{snap}");
