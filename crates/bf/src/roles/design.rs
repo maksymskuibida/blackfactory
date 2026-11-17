@@ -59,7 +59,12 @@ fn what_to_draft(stage: &str) -> &'static str {
 }
 
 fn bad_amend(what: &str, because: String, step: &str) -> Fail {
-    refuse(what.to_string(), because, &[step], "The command prints its result.")
+    refuse(
+        what.to_string(),
+        because,
+        &[step],
+        "The command prints its result.",
+    )
 }
 
 /// The amendment `id`, when it is open (not approved, not withdrawn) and not a plan repair.
@@ -178,7 +183,11 @@ fn splits(p: &Project, amend: &str) -> R<BTreeMap<String, Vec<String>>> {
 /// design records calls it). False when there is no split, the stage was not named or the ID is not its.
 pub fn stage_may_put(p: &Project, amend: &str, stage: &str, id: &str) -> bool {
     splits(p, amend)
-        .map(|m| m.get(stage).map(|ids| ids.iter().any(|i| i == id)).unwrap_or(false))
+        .map(|m| {
+            m.get(stage)
+                .map(|ids| ids.iter().any(|i| i == id))
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
 }
 
@@ -270,7 +279,10 @@ pub fn split(p: &Project, amend: &str, stages: &[String], token: Option<&str>) -
         if !STAGES.contains(&stage) {
             return Err(bad_amend(
                 &what,
-                format!("`{stage}` is not a stage; the stages are {}", STAGES.join(", ")),
+                format!(
+                    "`{stage}` is not a stage; the stages are {}",
+                    STAGES.join(", ")
+                ),
                 "Use one of the stages.",
             ));
         }
@@ -334,7 +346,8 @@ fn kind_rule(kind: &str) -> String {
     for line in ROLE_FILE.lines() {
         if line.starts_with(&head) {
             on = true;
-        } else if on && (line.starts_with("- **") || line.starts_with('#') || line.trim().is_empty())
+        } else if on
+            && (line.starts_with("- **") || line.starts_with('#') || line.trim().is_empty())
         {
             break;
         }
@@ -431,7 +444,10 @@ pub fn brief_kind(p: &Project, kind: &str, subject: Option<&str>) -> R<PathBuf> 
         md.push_str("None yet.\n\n");
     }
     for (name, content) in &recs {
-        md.push_str(&format!("### {name}\n\n```\n{}\n```\n\n", pretty_record(content)));
+        md.push_str(&format!(
+            "### {name}\n\n```\n{}\n```\n\n",
+            pretty_record(content)
+        ));
     }
     if let (Some(a), Some(set)) = (&amend, &set) {
         md.push_str(&format!(
@@ -566,7 +582,11 @@ pub fn brief_kind(p: &Project, kind: &str, subject: Option<&str>) -> R<PathBuf> 
                 s(f, "id"),
                 s(f, "severity"),
                 s(f, "title"),
-                if s(f, "outcome").is_empty() { "open" } else { s(f, "outcome") }
+                if s(f, "outcome").is_empty() {
+                    "open"
+                } else {
+                    s(f, "outcome")
+                }
             ));
         }
         if !any {
@@ -611,7 +631,10 @@ pub fn brief_stage(p: &Project, stage: &str, amend: &str, role: Option<&str>) ->
         _ => {
             return Err(bad_amend(
                 &format!("brief the stage `{stage}`"),
-                format!("the stage is one of {}, worked by its own role", STAGES.join(", ")),
+                format!(
+                    "the stage is one of {}, worked by its own role",
+                    STAGES.join(", ")
+                ),
                 "Give `--role` with the role of the stage.",
             ))
         }
@@ -649,7 +672,11 @@ pub fn brief_stage(p: &Project, stage: &str, amend: &str, role: Option<&str>) ->
         "\nYou may put only these IDs; the engine refuses any other. The amendment's set is: {}.\n\n## The records now\n\n",
         a.ids.join(", ")
     ));
-    for id in ids.iter().chain(if ids.is_empty() { a.ids.iter() } else { [].iter() }) {
+    for id in ids.iter().chain(if ids.is_empty() {
+        a.ids.iter()
+    } else {
+        [].iter()
+    }) {
         match p.get_record(id)? {
             Some(rec) => md.push_str(&format!(
                 "### {id}\n\n```\n{}\n```\n\n",

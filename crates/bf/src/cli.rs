@@ -114,7 +114,10 @@ impl Args {
             if let Some(f) = x.strip_prefix("--") {
                 if let Some((k, v)) = f.split_once('=') {
                     a.flags.insert(k.to_string(), v.to_string());
-                    a.multi.entry(k.to_string()).or_default().push(v.to_string());
+                    a.multi
+                        .entry(k.to_string())
+                        .or_default()
+                        .push(v.to_string());
                 } else if VALUE_FLAGS.contains(&f) && i + 1 < raw.len() {
                     a.flags.insert(f.to_string(), raw[i + 1].clone());
                     a.multi

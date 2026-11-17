@@ -53,7 +53,11 @@ pub fn parse_step(says: &str) -> Option<(String, String, String)> {
         if text.trim().is_empty() {
             return None;
         }
-        return Some((A11Y.to_string(), "check".to_string(), text.trim().to_string()));
+        return Some((
+            A11Y.to_string(),
+            "check".to_string(),
+            text.trim().to_string(),
+        ));
     }
     let words: Vec<&str> = head.split_whitespace().collect();
     if words.len() < 3 || text.trim().is_empty() {
@@ -252,7 +256,8 @@ pub fn coverage_of(p: &Project, check_id: &str, named: &str) -> R<Coverage> {
     let mut astatus = ar.map(|r| s(&r.v, "step_outcome")).unwrap_or("missing");
     if let Some(r) = ar.filter(|_| astatus != "met") {
         for c in criteria(s(&r.v, "reason")) {
-            cov.failed_criteria.push(json!({"criterion": c, "where": "accessibility check", "receipt": r.id()}));
+            cov.failed_criteria
+                .push(json!({"criterion": c, "where": "accessibility check", "receipt": r.id()}));
         }
     }
     if astatus == "met" && !cov.failed_criteria.is_empty() {

@@ -107,7 +107,11 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
             let mut j = json!({"ok": ok, "receipts": rows.iter().map(|r| json!({"receipt": r.receipt, "check": r.check, "seal_ok": r.seal_ok, "content_ok": r.content_ok, "exit": r.exit})).collect::<Vec<_>>()});
             if args.flag("unit").is_some() && args.flag("checkpoint").is_none() {
                 j["pass_after_failure"] = json!(marks);
-                j["unmet"] = json!(v.unmet.iter().map(|(c, l)| json!({"check": c, "line": l})).collect::<Vec<_>>());
+                j["unmet"] = json!(v
+                    .unmet
+                    .iter()
+                    .map(|(c, l)| json!({"check": c, "line": l}))
+                    .collect::<Vec<_>>());
             }
             if args.has("json") {
                 println!("{}", pretty(&j));

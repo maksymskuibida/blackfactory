@@ -355,7 +355,10 @@ fn open_non_repair_amendment(p: &Project, id: &str) -> R<crate::events::Amend> {
     if !matches!(a.status.as_str(), "open" | "narrowed") {
         return Err(refuse(
             what,
-            format!("{id} is {}, and a designer works on an open amendment", a.status),
+            format!(
+                "{id} is {}, and a designer works on an open amendment",
+                a.status
+            ),
             &["Open one with `bf amend open <ID>...`."],
             "The command prints its result.",
         ));

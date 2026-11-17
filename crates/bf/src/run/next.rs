@@ -107,7 +107,11 @@ fn run_hold_directives(p: &Project, st: &State, open_gate: Option<&str>) -> Vec<
         return directives;
     }
     // The run's two plan questions come first: the plan gate does not open until both are answered.
-    if let Some(r) = st.active_run().filter(|_| plan::load(p).map(|pl| !pl.units.is_empty()).unwrap_or(false)) {
+    if let Some(r) = st.active_run().filter(|_| {
+        plan::load(p)
+            .map(|pl| !pl.units.is_empty())
+            .unwrap_or(false)
+    }) {
         if r.wave.is_none() {
             directives.push(json!({"role": "human", "action": "answer-wave-checks", "command": "bf checks wave question",
                 "note": "Ask the human which wave checks this run uses (the project default, an override or none), then record the answer with `bf checks wave propose` and `bf checks wave set --quote`."}));
@@ -135,10 +139,14 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
     // The latest plan gate not approved: `bf next` returns before its checkpoints, and the predicate holds.
     match events::run_hold(&st) {
         Some(events::RunHold::Open { gate }) => {
-            return Ok(json!({"run": run, "directives": run_hold_directives(p, &st, Some(&gate)), "waiting": waiting}));
+            return Ok(
+                json!({"run": run, "directives": run_hold_directives(p, &st, Some(&gate)), "waiting": waiting}),
+            );
         }
         Some(events::RunHold::NotOpen { .. }) => {
-            return Ok(json!({"run": run, "directives": run_hold_directives(p, &st, None), "waiting": waiting}));
+            return Ok(
+                json!({"run": run, "directives": run_hold_directives(p, &st, None), "waiting": waiting}),
+            );
         }
         None => {
             // A run that has not answered a plan question is asked it now; no unit starts until then.
