@@ -1,0 +1,4 @@
+acceptance = ["src/bye.txt exists"]
+id = "R-2"
+kind = "requirement"
+title = "A farewell exists"

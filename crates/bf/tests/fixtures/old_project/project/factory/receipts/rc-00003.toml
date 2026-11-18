@@ -1,0 +1,21 @@
+at = "2026-11-18T18:29:17Z"
+bytes = 26
+check = "X-3"
+check_hash = "317797c88cd4a0b68d784c9d821ec6a47f8a5557314c9c6c77d18c409cbee986"
+command = "ls src/hello.txt src/bye.txt"
+content_hash = "010cc60e7c16531543e5f669e8cbd252811cb19f"
+exit = 0
+id = "rc-00003"
+output_hash = "788574b7808c9f8b65cc417c6a237d943d150f5c1e00274b8ffd7e72efc0bbda"
+output_tail = """
+src/bye.txt
+src/hello.txt
+"""
+program = "/bin/sh"
+program_note = ""
+reason = ""
+sandbox = "sandbox-exec"
+seal = "ae5e82f717cb6e465e72c64b426415a13863f030571500be7e6060f7ea44db24"
+seconds = 0.233936042
+type = "run"
+working_copy = ".bf/work/K-1"

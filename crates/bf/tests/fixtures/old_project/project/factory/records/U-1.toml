@@ -1,0 +1,10 @@
+checkpoint = "K-1"
+delivers = [
+    "R-1",
+    "C-1",
+]
+estimate = 2
+files = ["src/hello.txt"]
+id = "U-1"
+kind = "unit"
+title = "Greeting"

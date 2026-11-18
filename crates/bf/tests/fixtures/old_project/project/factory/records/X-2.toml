@@ -1,0 +1,8 @@
+command = "test -f src/bye.txt"
+how = "command"
+id = "X-2"
+kind = "check"
+proves = ["R-2"]
+scope = "unit"
+title = "Farewell file"
+unit = "U-2"

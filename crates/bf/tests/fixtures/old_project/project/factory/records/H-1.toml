@@ -1,0 +1,6 @@
+contract = "Same tone as the greeting."
+from = "U-1"
+id = "H-1"
+kind = "handoff"
+thing = "the greeting wording"
+to = "U-2"

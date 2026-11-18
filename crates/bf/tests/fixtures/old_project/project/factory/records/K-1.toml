@@ -1,0 +1,14 @@
+after = [
+    "U-1",
+    "U-2",
+]
+checks = ["X-3"]
+id = "K-1"
+kind = "checkpoint"
+proves = [
+    "R-1",
+    "R-2",
+    "C-1",
+]
+stop_why = "Test fixture."
+title = "Both messages"
