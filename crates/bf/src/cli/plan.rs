@@ -17,19 +17,24 @@ pub(crate) fn cmd_plan(args: &Args) -> R<()> {
     }
     let pl = plan::load(&p)?;
     let waves = pl.waves();
-    let v = json!({"ok": pl.problems.is_empty(), "problems": pl.problems, "waves": waves});
+    let v = json!({"ok": pl.problems.is_empty(), "problems": pl.problems, "waves": waves, "notes": pl.notes});
     if args.has("json") && !pl.problems.is_empty() {
         println!("{}", pretty(&v));
         std::process::exit(2);
     }
     plan::check_or_refuse(&pl)?;
     out(args, &v, || {
-        format!(
+        let mut line = format!(
             "plan ok: {} units in {} waves, {} checkpoints",
             pl.units.len(),
             waves.len(),
             pl.checkpoints.len()
-        )
+        );
+        for n in &pl.notes {
+            line.push('\n');
+            line.push_str(n);
+        }
+        line
     });
     Ok(())
 }
