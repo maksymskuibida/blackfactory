@@ -51,6 +51,7 @@
 "cli.amend.withdraw_lost.worked_when" = "`bf amend withdraw {amend}` prints each record it put back."
 
 # R-45: a refusal for a draft of the plan.
+"cli.amend.draft_what.run_evidence" = "run evidence for {check}"
 "cli.amend.draft_waits.refused" = "{what} rests on a draft of the plan"
 "cli.amend.draft_waits.because" = "{draft} is changed by {amend}, which waits for the human; a draft of the plan is not the record in force"
 "cli.amend.draft_waits.do_this.1" = "Ask the human about {amend} (`bf status` lists it); the draft takes force when they approve it."

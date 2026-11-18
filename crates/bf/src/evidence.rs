@@ -591,7 +591,7 @@ pub fn run_with(
             if let Some(a) = crate::gates::unapproved_change(&st, d) {
                 return Err(crate::gates::draft_refusal(
                     &st,
-                    &format!("run evidence for {check_id}"),
+                    &crate::strings::t("cli.amend.draft_what.run_evidence", &[("check", check_id)]),
                     s(d, "id"),
                     &a,
                 ));
