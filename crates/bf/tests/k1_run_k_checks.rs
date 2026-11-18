@@ -92,3 +92,41 @@ fn run_k_checks_runs_a_check_again_when_the_content_changed() {
     fx.must_in(&k, &["report", "K-1", "--role", "builder", "--result", "built"]);
     assert_eq!(x2_runs_in_log(&fx), before + 1, "the report did not run X-2 on a new content");
 }
+
+#[test]
+fn run_k_checks_runs_a_check_again_when_its_record_changed_and_its_command_did_not() {
+    let fx = Fx::new();
+    plan(&fx);
+    land_unit(&fx);
+    let k = fx.work("K-1");
+    fx.bf_in(&k, &["evidence", "run", "X-2", "--", "grep", "-q", "fixed", "src/a.txt"]);
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    git(&k, &["add", "-A"]);
+    git(&k, &["commit", "-q", "-m", "the fix"]);
+    fx.must_in(&k, &["evidence", "run", "X-2", "--", "grep", "-q", "fixed", "src/a.txt"]);
+    // The check record changes (its title), its command text stays the same: the receipt is stale (R-32).
+    let opened = fx.must(&["amend", "open", "--repair", "X-2", "--json"]).json();
+    let rec = fx.root.join("x2-changed.toml");
+    fs::write(
+        &rec,
+        format!("id=\"X-2\"\nkind=\"check\"\ntitle=\"c2 changed\"\nhow=\"command\"\ncommand=\"{K_CHECK}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
+    )
+    .unwrap();
+    fx.must(&["record", "put", "check", "--file", rec.to_str().unwrap(), "--replace"]);
+    let keep: Vec<String> = opened["impact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let f = fx.root.join("narrow.json");
+    fs::write(&f, serde_json::json!({"amend": "A-1", "keep": keep, "waive": []}).to_string()).unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+    fx.human("Yes, approve the change to the check.");
+    fx.must(&["amend", "approve", "A-1", "--quote", "approve the change"]);
+    let before = x2_runs_in_log(&fx);
+    fx.must_in(&k, &["report", "K-1", "--role", "builder", "--result", "built"]);
+    assert_eq!(x2_runs_in_log(&fx), before + 1, "the report skipped X-2 on a stale receipt");
+}

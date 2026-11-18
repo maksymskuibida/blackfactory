@@ -470,7 +470,7 @@ pub fn passed_on_content(p: &Project, check_id: &str, argv: &[String], top: &Pat
     let receipts = load_receipts(p)?;
     Ok(earlier_runs(&receipts, check_id, &argv.join(" "), &content)
         .iter()
-        .any(|r| r.v["exit"].as_i64() == Some(0)))
+        .any(|r| r.passes()))
 }
 
 /// The number the next run of this command has on the content now in `top`: the runs recorded plus one.
