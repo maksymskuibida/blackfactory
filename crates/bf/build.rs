@@ -17,6 +17,68 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     test_modules(&manifest, &out_dir);
     strings_table(&manifest, &out_dir);
+    adapter_data(&manifest, &out_dir);
+}
+
+/// `harness/claude/adapter.toml` compiled into `adapter::DATA` (C-24): the build fails, naming the
+/// key, for a missing or empty one.
+fn adapter_data(manifest: &Path, out_dir: &Path) {
+    let path = manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(manifest)
+        .join("harness")
+        .join("claude")
+        .join("adapter.toml");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| fail(format!("cannot read {}: {e}", path.display())));
+    let table: toml::Table = text
+        .parse()
+        .unwrap_or_else(|e| fail(format!("adapter.toml is not valid TOML: {e}")));
+    let text_of = |k: &str| -> String {
+        match table.get(k).and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => fail(format!("adapter.toml: key `{k}` is missing or not a text")),
+        }
+    };
+    let list_of = |k: &str| -> Vec<String> {
+        let items: Vec<String> = table
+            .get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if items.is_empty() {
+            fail(format!(
+                "adapter.toml: key `{k}` is missing or has no texts"
+            ));
+        }
+        items
+    };
+    let mut out = String::from("pub static DATA: Data = Data {\n");
+    for k in [
+        "session_dir",
+        "session_file",
+        "key_pid",
+        "key_proc_start",
+        "key_session_id",
+        "fallback_variable",
+        "config_variable",
+        "transcript_dir",
+    ] {
+        writeln!(out, "    {k}: {:?},", text_of(k)).unwrap();
+    }
+    for k in ["subagent_fields", "programs"] {
+        writeln!(out, "    {k}: &{:?},", list_of(k)).unwrap();
+    }
+    out.push_str("};\n");
+    std::fs::write(out_dir.join("adapter_data.rs"), out).unwrap();
 }
 
 fn test_modules(manifest: &Path, out_dir: &Path) {
@@ -219,7 +281,15 @@ fn check_callers(manifest: &Path, table: &BTreeMap<String, String>) {
     }
 }
 
+/// The keys that only a build with the test seam carries.
+fn is_seam_key(k: &str) -> bool {
+    k == "cli.version.test_seam_build"
+        || k == "cli.doctor.test_seam_build"
+        || k.starts_with("cli.refuse.test_seam_real_project.")
+}
+
 fn strings_table(manifest: &Path, out_dir: &Path) {
+    let seam = std::env::var_os("CARGO_FEATURE_TEST_SEAM").is_some();
     let dir = manifest.join("strings").join("en");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| fail(format!("cannot read {}: {e}", dir.display())))
@@ -238,6 +308,11 @@ fn strings_table(manifest: &Path, out_dir: &Path) {
             .parse()
             .unwrap_or_else(|e| fail(format!("{name} is not valid TOML: {e}")));
         for (k, v) in table {
+            // A build without the test seam carries neither of its lines nor any text of its
+            // refusal (C-3, TH-5): the keys are left out before anything reads them.
+            if !seam && is_seam_key(&k) {
+                continue;
+            }
             let Some(s) = v.as_str() else {
                 fail(format!("key `{k}` in {name}: the value is not a text"));
             };
@@ -286,6 +361,15 @@ fn strings_table(manifest: &Path, out_dir: &Path) {
     }
 
     check_callers(manifest, &table);
+
+    // The build of the test seam fails when either of its texts is empty (TH-5).
+    if seam {
+        for k in ["cli.version.test_seam_build", "cli.doctor.test_seam_build"] {
+            if table.get(k).is_none_or(|v| v.trim().is_empty()) {
+                fail(format!("key `{k}`: the test seam build needs a text"));
+            }
+        }
+    }
 
     let mut out = String::from("pub(crate) static TABLE: &[(&str, &str)] = &[\n");
     for (k, v) in &table {

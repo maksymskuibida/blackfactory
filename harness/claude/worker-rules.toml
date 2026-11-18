@@ -1,0 +1,224 @@
+# The worker rules of the first run that hold for any project, one row each.
+# `files` are paths below `harness/claude/`; every file named must hold the rule's `text` word for word.
+# A test (`harness_worker_rules`) reads this file against the role files and the conductor's skill.
+# A rule of one project or one machine is not here: the human writes it into the space's own rules.
+
+[[rule]]
+key = "WR-1"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "Send design work to a designer agent on the model the policy names; when that agent is refused, stop and tell the human, and never fall back to a weaker model."
+
+[[rule]]
+key = "WR-2"
+roles = ["conductor"]
+files = ["skills/factory/design-stages.md"]
+text = "When you present a gate or an amendment, list the calls the designer made without asking, each with the other option."
+
+[[rule]]
+key = "WR-3"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "Never do a step for a worker that the guard or a permission refused that worker; tell the human."
+
+[[rule]]
+key = "WR-4"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "Do everything without asking, except the acts the engine takes from the human alone."
+
+[[rule]]
+key = "WR-5"
+roles = ["conductor"]
+files = ["skills/factory/asking.md"]
+text = "Write a longer report only when you hand back or need the human, in the order needs you, done, next, risks, and put everything the human needs before a question."
+
+[[rule]]
+key = "WR-6"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "Run no verification yourself; send a claim that needs checking to a reviewer, and relay an advisor's answer word for word with its model."
+
+[[rule]]
+key = "WR-7"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "Never report the state of a stage, a unit, a wave, a checkpoint or anything else on an agent's words or on your own judging; read it from `bf next`, `bf status` or `bf progress` first."
+
+[[rule]]
+key = "WR-8"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md", "skills/factory/amendments.md"]
+text = "The step right after `bf amend approve` is the commit of the factory's records; you neither judge whether to commit nor ask the human."
+
+[[rule]]
+key = "WR-9"
+roles = ["conductor"]
+files = ["skills/factory/build-loop.md"]
+text = "Wait for a worker only through the notice that the worker's agent ended, start no background command that waits in a loop, and stop a background command of your own when its unit is reported, blocked, parked or landed."
+
+[[rule]]
+key = "WR-10"
+roles = ["conductor"]
+files = ["skills/factory/checkpoint.md"]
+text = "Aborting a fix that has a built round is the human's choice; never abort it yourself."
+
+[[rule]]
+key = "WR-11"
+roles = ["conductor"]
+files = ["skills/factory/SKILL.md"]
+text = "A session you start begins with the required-model line for the model the policy names."
+
+[[rule]]
+key = "WR-12"
+roles = ["conductor"]
+files = ["skills/factory/build-loop.md"]
+text = "Never tell a cold reviewer what to leave out, and add no instruction of your own to a worker's prompt."
+
+[[rule]]
+key = "WR-13"
+roles = ["conductor"]
+files = ["skills/factory/build-loop.md"]
+text = "Keep the cap of units in flight the human gave by pausing units with `bf unit pause`, and resume a paused unit with `bf unit resume` before the idle limit."
+
+[[rule]]
+key = "WR-14"
+roles = ["conductor", "every role"]
+files = [
+  "skills/factory/SKILL.md",
+  "agents/builder.md",
+  "agents/reviewer.md",
+  "agents/verifier.md",
+  "agents/uiux-verifier.md",
+  "agents/security-expert.md",
+  "agents/security-auditor.md",
+  "agents/lawyer.md",
+  "agents/legal-auditor.md",
+  "agents/design-reviewer.md",
+  "agents/designer.md",
+  "agents/uiux-designer.md",
+  "agents/fix-designer.md",
+  "agents/knowledge-writer.md",
+  "agents/rule-proposer.md",
+]
+text = "Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused."
+
+[[rule]]
+key = "WR-15"
+roles = ["every role"]
+files = [
+  "agents/builder.md",
+  "agents/design-reviewer.md",
+  "agents/designer.md",
+  "agents/fix-designer.md",
+  "agents/knowledge-writer.md",
+  "agents/lawyer.md",
+  "agents/legal-auditor.md",
+  "agents/reviewer.md",
+  "agents/rule-proposer.md",
+  "agents/security-auditor.md",
+  "agents/security-expert.md",
+  "agents/uiux-designer.md",
+  "agents/uiux-verifier.md",
+  "agents/verifier.md",
+]
+text = "Write files with the file tools; with only a shell, write a file with a plain redirect of one printed text, never with shell heredocs, scripts or in-place stream edits."
+
+[[rule]]
+key = "WR-16"
+roles = ["builder"]
+files = ["agents/builder.md"]
+text = "Run the formatter only on the files the unit may change."
+
+[[rule]]
+key = "WR-17"
+roles = ["every role"]
+files = [
+  "agents/builder.md",
+  "agents/reviewer.md",
+  "agents/verifier.md",
+  "agents/uiux-verifier.md",
+  "agents/security-expert.md",
+  "agents/security-auditor.md",
+  "agents/lawyer.md",
+  "agents/legal-auditor.md",
+  "agents/design-reviewer.md",
+  "agents/designer.md",
+  "agents/uiux-designer.md",
+  "agents/fix-designer.md",
+  "agents/knowledge-writer.md",
+  "agents/rule-proposer.md",
+]
+text = "Run long commands in the foreground, start no background command that waits in a loop, and never wait with a machine-wide process search."
+
+[[rule]]
+key = "WR-18"
+roles = ["builder"]
+files = ["agents/builder.md"]
+text = "Run the required checks only through the engine, as the last thing after every file is final."
+
+[[rule]]
+key = "WR-19"
+roles = ["every role"]
+files = [
+  "agents/builder.md",
+  "agents/reviewer.md",
+  "agents/verifier.md",
+  "agents/uiux-verifier.md",
+  "agents/security-expert.md",
+  "agents/security-auditor.md",
+  "agents/lawyer.md",
+  "agents/legal-auditor.md",
+  "agents/design-reviewer.md",
+  "agents/designer.md",
+  "agents/uiux-designer.md",
+  "agents/fix-designer.md",
+  "agents/knowledge-writer.md",
+  "agents/rule-proposer.md",
+]
+text = "End with a closing message of a few lines: the result, the receipts and anything the human must decide."
+
+[[rule]]
+key = "WR-20"
+roles = ["builder"]
+files = ["agents/builder.md"]
+text = "Check a path with `bf unit owns <path>` before you say a file is outside the list."
+
+[[rule]]
+key = "WR-21"
+roles = ["reviewer"]
+files = ["agents/reviewer.md"]
+text = "Read the receipts and do not run the suite again; when the guard refuses a findings report, keep the names of protected folders out of the findings' text."
+
+[[rule]]
+key = "WR-22"
+roles = ["designer"]
+files = ["agents/designer.md"]
+text = "A designer designs and does not measure: build no prototype and run no suite, and write for each unit the cheap measures its reviewer runs as a sentence that begins `The reviewer measures`."
+
+[[rule]]
+key = "WR-23"
+roles = ["designer"]
+files = ["agents/designer.md"]
+text = "End with a closing message that lists every call you made without asking, each with the other option."
+
+[[rule]]
+key = "WR-24"
+roles = ["every role"]
+files = [
+  "agents/builder.md",
+  "agents/reviewer.md",
+  "agents/verifier.md",
+  "agents/uiux-verifier.md",
+  "agents/security-expert.md",
+  "agents/security-auditor.md",
+  "agents/lawyer.md",
+  "agents/legal-auditor.md",
+  "agents/design-reviewer.md",
+  "agents/designer.md",
+  "agents/uiux-designer.md",
+  "agents/fix-designer.md",
+  "agents/knowledge-writer.md",
+  "agents/rule-proposer.md",
+]
+text = "A required check runs only through the engine; never run one in a shell of your own."

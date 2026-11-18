@@ -1095,6 +1095,22 @@ fn a_withdrawal_after_landing_is_refused_and_a_checkpoint_fix_holds_a_landed_gra
     );
 }
 
+/// Every markdown file of the factory skill, joined.
+fn skill_all() -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/claude/skills/factory");
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn harness_text(rel: &str) -> String {
     fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1129,7 +1145,7 @@ fn the_role_files_and_the_conductors_skill_hold_the_rules_of_a_scope_request() {
     ] {
         assert!(reviewer.contains(part), "reviewer.md lacks `{part}`");
     }
-    let skill = harness_text("harness/claude/skills/factory/SKILL.md");
+    let skill = skill_all();
     for part in [
         "review-scope",
         "never the unit's builder",

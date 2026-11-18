@@ -1168,7 +1168,7 @@ fn a_new_session_finds_the_pages_an_earlier_one_published() {
     two_units_in_one_checkpoint(&fx2);
     fx2.start_test_run();
     fx2.must(&["unit", "start", "U-1"]);
-    fx2.must(&["page", "set", "questions", "https://example.com/p/q9"]);
+    fx2.must(&["page", "set", "questions-U-1", "https://example.com/p/q9"]);
     fx2.must(&["ask", "--unit", "U-1", "--title", "Which colour?"]);
     let n = fx2.must(&["next", "--json"]).json();
     let d = n["directives"]

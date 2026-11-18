@@ -372,39 +372,22 @@ pub fn threats_hash(p: &Project) -> R<String> {
 }
 
 /// The threat model is proven when threats exist and the security expert reported at the design stage
-/// on the threat records as they are now: the report's event holds a hash of them (`threats_hash`). A
-/// report of an older log that holds no hash counts when it came after the last change to any threat
-/// record (a report in the same second as a change counts as before it).
+/// on the threat records as they are now: the report's event holds a hash of them (`threats_hash`), and
+/// the proof compares that hash with the hash of the records today. No file time counts, so a clone or a
+/// switch of branch keeps the proof, and a change to the content of a threat record undoes it (R-49).
 pub fn threat_model_proven(p: &Project) -> R<bool> {
     let recs = p.list_records(schema::kind_by_name("threat"))?;
     if recs.is_empty() {
         return Ok(false);
     }
     let now = threats_hash(p)?;
-    let mut changed_ms = 0u64;
-    for r in &recs {
-        let ms = p
-            .record_path(s(r, "id"))
-            .ok()
-            .and_then(|f| std::fs::metadata(f).ok())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        changed_ms = changed_ms.max(ms);
-    }
     let log = crate::events::load_log(p)?;
     Ok(log.events.iter().any(|e| {
         e["kind"] == "unit.role-report"
             && e["unit"] == crate::roles::DESIGN
             && e["role"] == "security-expert"
             && e["result"] == "built"
-            && match e["threats_hash"].as_str() {
-                Some(h) => h == now,
-                None => {
-                    crate::util::parse_rfc3339(e["at"].as_str().unwrap_or("")) * 1000 > changed_ms
-                }
-            }
+            && e["threats_hash"].as_str() == Some(now.as_str())
     }))
 }
 

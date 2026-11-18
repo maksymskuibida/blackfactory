@@ -99,11 +99,18 @@ EOF_CHECK
 fi
 
 changed=0
+not_installed=0
 note() { echo "  $1"; }
 
 # install_file <source> <destination>: copy when missing or different; keep a .bak of a replaced file.
 install_file() {
   local src="$1" dst="$2"
+  if [ -L "$dst" ]; then
+    echo "refused: $dst is a symbolic link; it could point outside the project." >&2
+    echo "  1. Replace it with a real file or remove it." >&2
+    echo "  2. Run this script again." >&2
+    exit 2
+  fi
   mkdir -p "$(dirname "$dst")"
   if [ -f "$dst" ]; then
     if cmp -s "$src" "$dst"; then
@@ -116,21 +123,126 @@ install_file() {
       echo "  2. Run this script again." >&2
       exit 2
     fi
-    cp "$dst" "$dst.bak"
-    cp "$src" "$dst"
-    note "updated    ${dst#$project/}  (old copy: ${dst#$project/}.bak)"
+    if cp "$dst" "$dst.bak" && cp "$src" "$dst"; then
+      note "updated    ${dst#$project/}  (old copy: ${dst#$project/}.bak)"
+    else
+      echo "  not installed  ${dst#$project/}  (the copy failed)" >&2
+      not_installed=$((not_installed + 1))
+      return
+    fi
   else
-    cp "$src" "$dst"
-    note "created    ${dst#$project/}"
+    if cp "$src" "$dst"; then
+      note "created    ${dst#$project/}"
+    else
+      echo "  not installed  ${dst#$project/}  (the copy failed)" >&2
+      not_installed=$((not_installed + 1))
+      return
+    fi
   fi
   changed=1
 }
 
+# render_rules <relative path below harness/claude> <source> <output>: write the source with the bullets of its
+# "## Worker rules" section (or "## Worker rules of the conductor") taken from worker-rules.toml, the rows that name the file.
+# A line of prose in that section is kept after the bullets.
+render_rules() {
+  python3 - "$here/worker-rules.toml" "$1" "$2" "$3" <<'PYR'
+import sys, json, re
+data, rel, src, out = sys.argv[1:5]
+# worker-rules.toml has a fixed shape: [[rule]] tables of key = "string" and key = ["string", ...] (an array may span
+# lines), plus # comment lines. Read it with the standard library only, so that Python 3.9 works.
+def value(v):
+    return json.loads(re.sub(r",\s*\]", "]", v))
+rules, cur, pending = [], None, None
+for raw in open(data).read().split("\n"):
+    line = raw.strip()
+    if pending is not None:
+        pending[1] += " " + line
+        if pending[1].count("[") == pending[1].count("]"):
+            cur[pending[0]] = value(pending[1])
+            pending = None
+        continue
+    if not line or line.startswith("#"):
+        continue
+    if line == "[[rule]]":
+        cur = {}
+        rules.append(cur)
+        continue
+    k, _, v = line.partition("=")
+    k, v = k.strip(), v.strip()
+    if cur is None or not k:
+        sys.exit("worker-rules.toml: unexpected line: " + raw)
+    if v.startswith("[") and v.count("[") != v.count("]"):
+        pending = [k, v]
+    else:
+        cur[k] = value(v)
+bullets = ["- " + r["text"] for r in rules if rel in r["files"]]
+lines = open(src).read().split("\n")
+res, i = [], 0
+while i < len(lines):
+    line = lines[i]
+    res.append(line)
+    i += 1
+    if line in ("## Worker rules", "## Worker rules of the conductor"):
+        j = i
+        while j < len(lines) and not lines[j].startswith("## "):
+            j += 1
+        prose = [l for l in lines[i:j] if l.strip() and not l.startswith("- ")]
+        res.append("")
+        res.extend(bullets)
+        if prose:
+            res.append("")
+            res.extend(prose)
+        res.append("")
+        i = j
+text = "\n".join(res)
+if not text.endswith("\n"):
+    text += "\n"
+text = text.replace("\n\n\n", "\n\n")
+open(out, "w").write(text)
+PYR
+}
+
+rendered="$(mktemp -d)"
+trap 'rm -rf "$rendered"' EXIT
+
 echo "Installing into $project ($mode)"
-install_file "$here/skills/factory/SKILL.md" "$project/.claude/skills/factory/SKILL.md"
-for a in builder reviewer verifier; do
-  install_file "$here/agents/$a.md" "$project/.claude/agents/$a.md"
+# The conductor's skill and the reference files beside it: every .md file of skills/factory/.
+for s in "$here"/skills/factory/*.md; do
+  if [ ! -f "$s" ]; then
+    echo "  not installed  skills/factory/*.md  (no skill file found in the harness folder)" >&2
+    not_installed=$((not_installed + 1))
+    break
+  fi
+  if [ "$(basename "$s")" = "SKILL.md" ]; then
+    render_rules "skills/factory/SKILL.md" "$s" "$rendered/SKILL.md"
+    install_file "$rendered/SKILL.md" "$project/.claude/skills/factory/SKILL.md"
+  else
+    install_file "$s" "$project/.claude/skills/factory/$(basename "$s")"
+  fi
 done
+# Every role file of the harness folder.
+agent_names=""
+for a in "$here"/agents/*.md; do
+  if [ ! -f "$a" ]; then
+    echo "  not installed  agents/*.md  (no role file found in the harness folder)" >&2
+    not_installed=$((not_installed + 1))
+    break
+  fi
+  agent_names="$agent_names$(basename "$a")
+"
+  render_rules "agents/$(basename "$a")" "$a" "$rendered/$(basename "$a")"
+  install_file "$rendered/$(basename "$a")" "$project/.claude/agents/$(basename "$a")"
+done
+# A role file the project holds that the harness no longer has (for example one that was renamed) is named and left.
+if [ -d "$project/.claude/agents" ]; then
+  for g in "$project"/.claude/agents/*.md; do
+    [ -f "$g" ] || continue
+    if ! printf '%s' "$agent_names" | grep -qxF -- "$(basename "$g")"; then
+      note "left       .claude/agents/$(basename "$g")  (the harness no longer has it; remove it by hand if you do not use it)"
+    fi
+  done
+fi
 
 # The page template the skill renders pages with.
 tpl="$repo_root/views/templates/page.html"
@@ -287,13 +399,19 @@ for a in added:
 PY
 
 echo
+if [ "$not_installed" -gt 0 ]; then
+  echo "warning: $not_installed file(s) could not be installed; each is named above as 'not installed'." >&2
+fi
 if command -v bf >/dev/null 2>&1; then
   echo "bf found at $(command -v bf)."
 else
   echo "warning: 'bf' is not on your PATH. The hooks call it by name. Build it with 'cargo build --release' and put target/release/bf on your PATH." >&2
 fi
 if [ "$mode" = "workspace" ]; then
-  echo "Next: commit the new files in the workspace, start Claude Code in the workspace folder (not in a code repository) and type /factory."
+  echo "Next: commit the new files in the workspace, start Claude Code in the workspace folder (not in a code repository) and type /factory, then say what you want built."
 else
-  echo "Next: cd into the project, run 'bf init --name <project>', commit the new files, start Claude Code there and type /factory."
+  echo "Next: cd into the project, run 'bf init --name <project>', commit the new files, start Claude Code there, type /factory, then say what you want built."
+fi
+if [ "$not_installed" -gt 0 ]; then
+  exit 1
 fi

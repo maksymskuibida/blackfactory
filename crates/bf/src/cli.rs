@@ -222,7 +222,33 @@ pub(crate) fn pretty(v: &Value) -> String {
 pub fn main_with(raw: Vec<String>) -> i32 {
     let args = Args::parse(&raw);
     let json_mode = args.has("json");
-    match dispatch(&args) {
+    // Every command asks the account database once, through the resolver, whatever its path (T-16).
+    let _ = crate::session::home::account_home();
+    let code = run_command(&args, json_mode);
+    #[cfg(feature = "test_seam")]
+    seam_stats();
+    code
+}
+
+/// A test build writes the count of calls to the account database and the time of the call to the
+/// file `BF_TEST_ACCOUNT_STATS` names, for the timing test of T-16.
+#[cfg(feature = "test_seam")]
+fn seam_stats() {
+    use crate::session::home;
+    let Some(path) = std::env::var_os("BF_TEST_ACCOUNT_STATS") else {
+        return;
+    };
+    let home_given = home::account_home().map(|h| h.to_string_lossy().into_owned());
+    let v = json!({
+        "lookups": home::lookup_count(),
+        "lookup_ns": home::lookup_nanos(),
+        "home": home_given,
+    });
+    let _ = fs::write(path, v.to_string());
+}
+
+fn run_command(args: &Args, json_mode: bool) -> i32 {
+    match dispatch(args) {
         Ok(()) => 0,
         Err(Fail::Refused(r)) => {
             // The hook commands must never block the human's prompt with exit 2.
@@ -250,6 +276,22 @@ pub fn main_with(raw: Vec<String>) -> i32 {
 }
 
 pub(crate) fn out(args: &Args, v: &Value, human: impl FnOnce() -> String) {
+    #[cfg(feature = "test_seam")]
+    if let Some((v, line)) = seam_doctor(args, v) {
+        if args.has("json") {
+            println!("{}", pretty(&v));
+        } else {
+            let t = human();
+            let text = [t.trim_end_matches('\n'), line.as_str()]
+                .iter()
+                .filter(|x| !x.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            println!("{text}");
+        }
+        return;
+    }
     if args.has("json") {
         println!("{}", pretty(v));
     } else {
@@ -364,8 +406,76 @@ fn require_policy(p: &Project) -> R<()> {
     ))
 }
 
+/// Whether this build is the test build of C-3 (the cargo feature `test_seam`).
+pub const TEST_SEAM: bool = cfg!(feature = "test_seam");
+
+/// `bf --version` and `bf version`: the version, and in `--json` the fixed field `test_seam`. A test
+/// build says so to the human too (TH-5).
+fn print_version(args: &Args) {
+    if args.has("json") {
+        println!(
+            "{}",
+            pretty(&json!({"version": env!("CARGO_PKG_VERSION"), "test_seam": TEST_SEAM}))
+        );
+        return;
+    }
+    println!("bf {}", env!("CARGO_PKG_VERSION"));
+    // The line and its key exist only in a build with the feature (C-3, TH-5).
+    #[cfg(feature = "test_seam")]
+    println!("{}", crate::strings::t("cli.version.test_seam_build", &[]));
+}
+
+/// The test build acts on no project that has a folder in the real state folder (C-3), and only
+/// while `BF_TEST_ACCOUNT_HOME` is set. The real state folder is the one the resolver's single
+/// lookup gave; nothing here asks the account database again.
+#[cfg(feature = "test_seam")]
+fn seam_refuse_real_project(args: &Args) -> R<()> {
+    use crate::session::home;
+    if !home::seam_set() {
+        return Ok(());
+    }
+    let Some(state) = home::real_state_folder() else {
+        return Ok(());
+    };
+    let Ok(p) = Project::discover(&start_dir(args)) else {
+        return Ok(());
+    };
+    if home::state_folder_holds_project(&state, &p.config.project_id) {
+        return Err(crate::refusal::from_key(
+            "cli.refuse.test_seam_real_project",
+            &[],
+        ));
+    }
+    Ok(())
+}
+
+/// What `bf doctor` of a test build adds to its answer: the field `test_seam_checked_state_folder`
+/// and, for the human, the line `cli.doctor.test_seam_build` (C-3, TH-5). The doctor's own output is
+/// the engine's, not copied.
+#[cfg(feature = "test_seam")]
+fn seam_doctor(args: &Args, v: &Value) -> Option<(Value, String)> {
+    if args.pos.first().map(|x| x.as_str()) != Some("doctor") || args.has("perf") {
+        return None;
+    }
+    let mut v = v.clone();
+    let checked = crate::session::home::real_state_folder()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    v["test_seam_checked_state_folder"] = json!(checked);
+    Some((v, crate::strings::t("cli.doctor.test_seam_build", &[])))
+}
+
 fn dispatch(args: &Args) -> R<()> {
     let cmd = args.pos.first().map(|x| x.as_str()).unwrap_or("");
+    // `bf --version` is the one command a test build answers anywhere.
+    if args.has("version") && args.pos.is_empty() {
+        print_version(args);
+        return Ok(());
+    }
+    #[cfg(feature = "test_seam")]
+    {
+        seam_refuse_real_project(args)?;
+    }
     // `--help` and `-h` anywhere print the usage.
     if args.has("help") || args.pos.iter().any(|x| x == "-h") {
         println!("{}", help::HELP);
@@ -377,7 +487,7 @@ fn dispatch(args: &Args) -> R<()> {
             Ok(())
         }
         "version" => {
-            println!("bf {}", env!("CARGO_PKG_VERSION"));
+            print_version(args);
             Ok(())
         }
         "guard" => guard::cmd_guard(args),

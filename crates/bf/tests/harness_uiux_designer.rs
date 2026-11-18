@@ -21,7 +21,7 @@ fn has(text: &str, needles: &[&str]) {
 fn the_file_has_its_name_and_tools() {
     let t = text();
     assert!(t.starts_with("---\nname: uiux-designer\n"));
-    has(&t, &["model: sonnet", "tools:"]);
+    has(&t, &["model: opus", "tools:"]);
 }
 
 #[test]

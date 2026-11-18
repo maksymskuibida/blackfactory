@@ -134,6 +134,14 @@ fn seal_input(v: &Value) -> String {
                 h => format!("\x1f{k}={h}"),
             })
             .collect::<String>()
+        // R-32: what makes two runs the same run, and the receipt a counted one stands for.
+        + &["repos", "folder", "counted_from"]
+            .iter()
+            .map(|k| match f(k) {
+                h if h.is_empty() => String::new(),
+                h => format!("\x1f{k}={h}"),
+            })
+            .collect::<String>()
 }
 
 /// A hash of the screen records as they are now: what a design-stage UI/UX judgment looked at.
@@ -411,7 +419,9 @@ fn attached_record(p: &Project, check_id: &str, unit: Option<&str>) -> R<Value> 
         return Err(refuse(
             format!("run evidence for {check_id}"),
             "a check every unit must pass is run for one unit: name it with `--unit`",
-            &["Run `bf evidence run <check> --unit <U> -- <its command>`; the unit's brief gives the exact line."],
+            &[
+                "Run `bf evidence run <check> --unit <U> -- <its command>`; the unit's brief gives the exact line.",
+            ],
             "The command prints a receipt with exit 0.",
         ));
     };
@@ -419,10 +429,12 @@ fn attached_record(p: &Project, check_id: &str, unit: Option<&str>) -> R<Value> 
     let pl = crate::plan::load(p)?;
     match crate::checks::attached_by_id(p, &pl, &st, u, check_id) {
         Some(a) => Ok(json!({"id": check_id, "kind": "check", "how": "command",
-            "command": a.command})),
+            "command": a.command, "heavy": a.heavy})),
         None => Err(refuse(
             format!("run evidence for {check_id}"),
-            format!("no check of that name applies to {u}: the list that applies to it does not hold it"),
+            format!(
+                "no check of that name applies to {u}: the list that applies to it does not hold it"
+            ),
             &["The unit's brief lists the checks that apply to it and where they come from."],
             "`bf brief <U> --role builder` lists the check.",
         )),
@@ -480,10 +492,14 @@ fn refuse_repeat(
         None if n == 0 => Ok(()),
         None => Err(refuse(
             format!("run `{command}` for {check_id} again"),
-            format!("it already ran {n} time(s) on this same content, and a run again on the same content is a repeat that must be stated"),
+            format!(
+                "it already ran {n} time(s) on this same content, and a run again on the same content is a repeat that must be stated"
+            ),
             &[
                 "A run on changed content is not a repeat; if nothing changed, the earlier receipt already says what happened.",
-                &format!("To repeat on purpose, give the number of the attempt and a reason: `{how}`."),
+                &format!(
+                    "To repeat on purpose, give the number of the attempt and a reason: `{how}`."
+                ),
             ],
             "The command writes a receipt that records the attempt number and the reason.",
         )),
@@ -491,7 +507,10 @@ fn refuse_repeat(
             if a != n + 1 {
                 return Err(refuse(
                     format!("run `{command}` for {check_id} as attempt {a}"),
-                    format!("it ran {n} time(s) on this content, so the next attempt is {}", n + 1),
+                    format!(
+                        "it ran {n} time(s) on this content, so the next attempt is {}",
+                        n + 1
+                    ),
                     &[&format!("Run it as `{how}`.")],
                     "The command writes a receipt that records the attempt number and the reason.",
                 ));
@@ -521,7 +540,9 @@ pub fn run_with(
         return Err(refuse(
             "run evidence",
             "no command was given after `--`",
-            &["Put the check's command after `--`, for example `bf evidence run X-1 -- cargo test`."],
+            &[
+                "Put the check's command after `--`, for example `bf evidence run X-1 -- cargo test`.",
+            ],
             "The command prints a receipt with exit 0.",
         ));
     }
@@ -570,8 +591,13 @@ pub fn run_with(
             if let Some(a) = crate::gates::unapproved_change(&st, d) {
                 return Err(refuse(
                     format!("run evidence for {check_id}"),
-                    format!("{} is changed by {a}, which the human has not approved; a draft of the plan is not the record in force", s(d, "id")),
-                    &[&format!("Wait for the human's approval of {a} (`bf status` lists it).")],
+                    format!(
+                        "{} is changed by {a}, which the human has not approved; a draft of the plan is not the record in force",
+                        s(d, "id")
+                    ),
+                    &[&format!(
+                        "Wait for the human's approval of {a} (`bf status` lists it)."
+                    )],
                     "`bf status` shows the amendment approved.",
                 ));
             }
@@ -581,8 +607,14 @@ pub fn run_with(
     if want != argv {
         return Err(refuse(
             format!("run `{}` as evidence for {check_id}", argv.join(" ")),
-            format!("the check defines its own command: `{}`; a receipt for another command would prove nothing about this check", want.join(" ")),
-            &["Run exactly the command stored in the check record, after `--`.", "To change what the check runs, change the record (the human's step)."],
+            format!(
+                "the check defines its own command: `{}`; a receipt for another command would prove nothing about this check",
+                want.join(" ")
+            ),
+            &[
+                "Run exactly the command stored in the check record, after `--`.",
+                "To change what the check runs, change the record (the human's step).",
+            ],
             "The receipt's command equals the check's command.",
         ));
     }
@@ -598,6 +630,7 @@ pub fn run_with(
     }
     let top = top.to_path_buf();
     let before = p.content_hash(&top)?;
+    refuse_out_of_order(p, &chk, check_id, unit, &before)?;
     refuse_repeat(p, check_id, argv, &before, repeat, unit)?;
     // A command check whose command is exactly a scan runs in the engine's process: the sandbox keeps
     // the sealing key from the command a worker passes, so the scan could not write its own receipt there.
@@ -610,15 +643,40 @@ pub fn run_with(
         }
         return Ok(v);
     }
+    // R-32: one command runs once on one content. A run of the same command in the same repositories,
+    // folder and sandbox, for any check of this intent, counts here too, a failing one as well.
+    let key = run_key(p, argv, &before, &top);
+    if repeat.is_none() {
+        let receipts = load_receipts(p)?;
+        if let Some(src) = find_run(&receipts, &key) {
+            let src = src.v.clone();
+            return counted_receipt(p, check_id, unit, &src, &key);
+        }
+    }
     let tail_bytes = p.policy.evidence.tail_bytes;
-    let started = std::time::Instant::now();
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;
     if let Some(n) = &program_note {
         eprintln!("note: {n}");
     }
-    let (exit, tail, out_hash, total, sandboxed) = exec_capture(p, &top, argv, tail_bytes)?;
+    // R-63: a heavy check takes a place first and waits its turn; the wait is no attempt.
+    let _place = if chk["heavy"].as_bool() == Some(true) {
+        take_place(p, check_id, unit)?
+    } else {
+        None
+    };
+    let started = std::time::Instant::now();
+    // TH-11: a heavy check runs under the time limit of a check; its place is freed when it ends.
+    let limit = (chk["heavy"].as_bool() == Some(true)).then(|| heavy_time_limit(p));
+    fs::create_dir_all(p.receipts_dir())?;
+    let pending = p
+        .receipts_dir()
+        .join(format!(".output-{}.txt", std::process::id()));
+    let (exit, tail, out_hash, total, sandboxed) =
+        exec_capture_keep(p, &top, argv, tail_bytes, Some(&pending), limit)?;
+    drop(_place);
     let after = p.content_hash(&top)?;
     if before != after {
+        let _ = fs::remove_file(&pending);
         return Err(refuse(
             format!("write a receipt for {check_id}"),
             "the command changed the files of the working copy while it ran, so the receipt would not describe the content it started on",
@@ -629,6 +687,20 @@ pub fn run_with(
             ],
             "The receipt is written and its content hash equals the one before the command.",
         ));
+    }
+    // R-31: a failed run keeps its whole output and names every failing test.
+    let (mut failing, mut output_file) = (Vec::new(), String::new());
+    if exit != 0 {
+        let whole = fs::read(&pending).unwrap_or_default();
+        failing = failing_tests(&String::from_utf8_lossy(&whole));
+        let name = format!("output-{out_hash}.txt");
+        if fs::rename(&pending, p.receipts_dir().join(&name)).is_ok() {
+            // Stored relative to the project root, so a committed receipt names no home folder.
+            output_file = format!("factory/receipts/{name}");
+            keep_outputs_bounded(p);
+        }
+    } else {
+        let _ = fs::remove_file(&pending);
     }
     let (attempt, repeat_reason) = match repeat {
         Some((a, r)) => (json!(a), r.trim().to_string()),
@@ -649,9 +721,13 @@ pub fn run_with(
         "output_hash": out_hash,
         "bytes": total,
         "output_tail": tail,
+        "output_file": output_file,
+        "failing_tests": failing.iter().map(|(n, h)| json!({"name": n, "head": h})).collect::<Vec<_>>(),
         "at": util::now(),
         "seconds": started.elapsed().as_secs_f64(),
-        "working_copy": top.strip_prefix(&p.root).map(|r| r.to_string_lossy().to_string()).unwrap_or_default(),
+        "working_copy": key.folder,
+        "repos": key.repos,
+        "folder": key.folder,
     });
     let v = write_receipt(p, v)?;
     events::append(
@@ -660,11 +736,528 @@ pub fn run_with(
         json!({"receipt": v["id"], "check": check_id, "unit": unit, "exit": exit}),
     )?;
     if exit != 0 {
+        print_failure(p, check_id, &v);
         if let Some(u) = unit {
             crate::run::park_if_looping(p, u)?;
         }
     }
     Ok(v)
+}
+
+/// What makes two runs the same run (TH-13): the command text, the content, the repositories, the
+/// folder the command ran in and whether it ran in the sandbox.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunKey {
+    pub command: String,
+    pub content: String,
+    pub repos: String,
+    pub folder: String,
+    pub sandbox: String,
+}
+
+/// The key a run of `argv` in `top` at `content` has now.
+pub fn run_key(p: &Project, argv: &[String], content: &str, top: &Path) -> RunKey {
+    let sandboxed = p.policy.exec.sandbox && crate::sandbox::available();
+    RunKey {
+        command: argv.join(" "),
+        content: content.to_string(),
+        repos: p
+            .repos
+            .iter()
+            .map(|r| match r.path.strip_prefix(&p.root) {
+                Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+                Ok(rel) => rel.to_string_lossy().to_string(),
+                // A repository outside the project root is named, never given by its absolute path.
+                Err(_) => r.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        folder: top
+            .strip_prefix(&p.root)
+            .map(|r| r.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        sandbox: if sandboxed { "sandbox-exec" } else { "none" }.to_string(),
+    }
+}
+
+/// H-15: the newest sealed run receipt of a command on a content in the same repositories, folder and
+/// sandbox, passing or failing, whatever check it was written under.
+pub fn find_run<'a>(receipts: &'a [Receipt], key: &RunKey) -> Option<&'a Receipt> {
+    receipts.iter().rev().find(|r| {
+        r.is_run()
+            && r.seal_ok
+            && !r.stale
+            && r.v.get("repos").is_some()
+            && r.content() == key.content
+            && s(&r.v, "command") == key.command
+            && s(&r.v, "repos") == key.repos
+            && s(&r.v, "folder") == key.folder
+            && s(&r.v, "sandbox") == key.sandbox
+    })
+}
+
+/// A receipt for a check that stands for the run of another check with the same command on the same
+/// content: no command runs, and no attempt is counted.
+fn counted_receipt(
+    p: &Project,
+    check_id: &str,
+    unit: Option<&str>,
+    src: &Value,
+    key: &RunKey,
+) -> R<Value> {
+    let v = json!({
+        "type": "run",
+        "check": check_id,
+        "unit": unit,
+        "command": key.command,
+        "program": CHECK_SHELL,
+        "sandbox": key.sandbox,
+        "program_note": "",
+        "exit": src["exit"],
+        "content_hash": key.content,
+        "output_hash": src["output_hash"],
+        "bytes": src["bytes"],
+        "output_tail": src["output_tail"],
+        "output_file": src["output_file"],
+        "failing_tests": src["failing_tests"],
+        "at": util::now(),
+        "seconds": 0.0,
+        "working_copy": key.folder,
+        "repos": key.repos,
+        "folder": key.folder,
+        "counted_from": src["id"],
+    });
+    let v = write_receipt(p, v)?;
+    events::append(
+        p,
+        "evidence.counted",
+        json!({"receipt": v["id"], "check": check_id, "unit": unit, "from": src["id"], "exit": src["exit"]}),
+    )?;
+    eprintln!(
+        "{}",
+        crate::strings::t(
+            "cli.evidence.counted",
+            &[
+                ("check", check_id),
+                ("from", s(src, "id")),
+                ("source", s(src, "check")),
+            ]
+        )
+    );
+    if v["exit"].as_i64() != Some(0) {
+        print_failure(p, check_id, &v);
+    }
+    Ok(v)
+}
+
+/// R-33: a check every unit must pass is refused while one before it in the list has no passing
+/// receipt on the content; a check that `needs` others is refused while one of them has none.
+fn refuse_out_of_order(
+    p: &Project,
+    chk: &Value,
+    check_id: &str,
+    unit: Option<&str>,
+    content: &str,
+) -> R<()> {
+    let needs = str_list(chk, "needs");
+    let attached = check_id.starts_with(crate::checks::ATTACHED_PREFIX);
+    if needs.is_empty() && !attached {
+        return Ok(());
+    }
+    let receipts = load_receipts(p)?;
+    let earlier: Option<String> = if attached {
+        match unit {
+            Some(u) => {
+                let st = events::replay(p)?;
+                let pl = crate::plan::load(p)?;
+                crate::checks::earlier_unpassed(p, &pl, &st, &receipts, u, check_id, content)
+                    .map(|a| a.id())
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let earlier = earlier.or_else(|| {
+        needs
+            .into_iter()
+            .find(|n| satisfied_unit_at(&receipts, n, content).is_none())
+    });
+    match earlier {
+        None => Ok(()),
+        Some(e) => Err(crate::refusal::from_key(
+            "cli.evidence.order",
+            &[("check", check_id), ("earlier", &e)],
+        )),
+    }
+}
+
+/// The failing tests in the whole output of a run, each with the first lines of its own output. Reads
+/// the lines of `cargo nextest` and of `cargo test`.
+pub fn failing_tests(output: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = output.lines().collect();
+    let mut names: Vec<String> = Vec::new();
+    for l in &lines {
+        let t = l.trim();
+        let name = if t.starts_with("FAIL [")
+            || t.starts_with("TIMEOUT [")
+            || t.starts_with("SIGABRT [")
+        {
+            t.split_once("] ")
+                .and_then(|(_, rest)| rest.split_whitespace().last())
+                .map(|n| n.to_string())
+        } else if t.starts_with("test ") && t.ends_with("... FAILED") {
+            t.strip_prefix("test ")
+                .and_then(|r| r.strip_suffix("... FAILED"))
+                .map(|n| n.trim().to_string())
+        } else {
+            None
+        };
+        if let Some(n) = name {
+            if !n.is_empty() && !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|n| {
+            let at = lines.iter().position(|l| {
+                let t = l.trim();
+                t.starts_with("---")
+                    && t.contains(&n)
+                    && (t.contains("STDERR") || t.contains("STDOUT") || t.contains("stdout"))
+            });
+            let head = at
+                .map(|i| {
+                    lines[i + 1..]
+                        .iter()
+                        .take_while(|l| !l.trim().starts_with("---") && !l.trim().is_empty())
+                        .take(6)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            (n, head)
+        })
+        .collect()
+}
+
+/// The time limit of a heavy check: the idle limit of the policy, so a hung run frees its place. The
+/// seconds in `BF_HEAVY_LIMIT_SECONDS` can only shorten it (for a test), never lengthen or lift it.
+fn heavy_time_limit(p: &Project) -> std::time::Duration {
+    let policy = p.policy.limits.idle_minutes.max(1) * 60;
+    let env = std::env::var("BF_HEAVY_LIMIT_SECONDS").ok();
+    std::time::Duration::from_secs(shortened_limit(policy, env.as_deref()))
+}
+
+/// The policy's limit, or the shorter one a test asked for; a longer or unusable value changes nothing.
+fn shortened_limit(policy: u64, asked: Option<&str>) -> u64 {
+    asked
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n >= 1)
+        .map_or(policy, |n| n.min(policy))
+}
+
+#[cfg(test)]
+mod heavy_limit_tests {
+    use super::shortened_limit;
+
+    #[test]
+    fn the_variable_only_shortens_the_limit() {
+        assert_eq!(shortened_limit(3600, None), 3600);
+        assert_eq!(shortened_limit(3600, Some("5")), 5);
+        assert_eq!(shortened_limit(3600, Some("999999")), 3600);
+        assert_eq!(shortened_limit(3600, Some("0")), 3600);
+        assert_eq!(shortened_limit(3600, Some("x")), 3600);
+    }
+}
+
+/// How many whole-output files of failed runs stay in the receipts folder.
+const KEPT_OUTPUTS: usize = 40;
+
+/// The whole outputs are local files, not part of a commit: the folder ignores them, and only the newest
+/// ones stay.
+fn keep_outputs_bounded(p: &Project) {
+    let dir = p.receipts_dir();
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        let _ = fs::write(&ignore, "output-*.txt\n.output-*.txt\n");
+    }
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("output-") && n.ends_with(".txt")
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort();
+    let extra = files.len().saturating_sub(KEPT_OUTPUTS);
+    for (_, f) in files.into_iter().take(extra) {
+        let _ = fs::remove_file(f);
+    }
+}
+
+/// What a failed run prints: every failing test with the first lines of its output, and the path of the
+/// whole output (R-31).
+fn print_failure(p: &Project, check_id: &str, v: &Value) {
+    let tests = v["failing_tests"].as_array().cloned().unwrap_or_default();
+    if !tests.is_empty() {
+        eprintln!(
+            "{}",
+            crate::strings::t(
+                "cli.evidence.failed.tests",
+                &[("check", check_id), ("count", &tests.len().to_string())]
+            )
+        );
+        for t in &tests {
+            eprintln!(
+                "{}",
+                crate::strings::t("cli.evidence.failed.test", &[("name", s(t, "name"))])
+            );
+            for l in s(t, "head").lines() {
+                eprintln!("      {l}");
+            }
+        }
+    }
+    let file = s(v, "output_file");
+    if !file.is_empty() {
+        eprintln!(
+            "{}",
+            crate::strings::t(
+                "cli.evidence.failed.output",
+                &[("path", &p.root.join(file).to_string_lossy())]
+            )
+        );
+    }
+}
+
+// R-63, D-59: the places of heavy checks.
+
+/// A place held by this process for a heavy check; freed when dropped, or when the process dies.
+pub struct Place {
+    _file: fs::File,
+    path: std::path::PathBuf,
+}
+
+// The place file is not unlinked when the place is freed: unlocking frees it. A path unlinked while
+// another process under the gate has opened it would let that process lock a file nobody counts.
+impl Place {
+    /// The file that names the holder.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+/// The folder of the places, counted for the whole workspace on the machine: next to the state folders
+/// of every project.
+pub fn places_dir(p: &Project) -> std::path::PathBuf {
+    p.state_dir()
+        .parent()
+        .map(|d| d.join("places"))
+        .unwrap_or_else(|| p.state_dir().join("places"))
+}
+
+fn holder_line(path: &Path) -> String {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    crate::strings::t(
+        "cli.evidence.heavy.holder",
+        &[
+            ("pid", &v["pid"].to_string()),
+            ("intent", s(&v, "intent")),
+            ("check", s(&v, "check")),
+        ],
+    )
+}
+
+fn held(path: &Path) -> bool {
+    match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(f) => matches!(f.try_lock(), Err(fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
+}
+
+fn write_holder(file: &mut fs::File, p: &Project, check_id: &str, extra: Value) {
+    use std::io::{Seek, Write};
+    let mut v =
+        json!({"pid": std::process::id(), "intent": p.config.project_id, "check": check_id});
+    if let Value::Object(m) = extra {
+        for (k, x) in m {
+            v[k] = x;
+        }
+    }
+    let _ = file.set_len(0);
+    let _ = file.rewind();
+    let _ = file.write_all(v.to_string().as_bytes());
+}
+
+fn epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Take a place for a heavy check, waiting in turn when the plan's limit is reached. None when the plan
+/// states no limit. A waiting check is served before one that came later.
+pub fn take_place(p: &Project, check_id: &str, unit: Option<&str>) -> R<Option<Place>> {
+    let Some(limit) = crate::plan::load(p)?.heavy_limit() else {
+        return Ok(None);
+    };
+    let dir = places_dir(p);
+    fs::create_dir_all(&dir)?;
+    let gate_path = dir.join(".gate");
+    // Our turn: a ticket named by the time we came, held until we are served.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ticket_name = format!("wait-{nanos:030}-{}", std::process::id());
+    let ticket_path = dir.join(&ticket_name);
+    let mut ticket = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&ticket_path)?;
+    let _ = ticket.try_lock();
+    write_holder(&mut ticket, p, check_id, json!({"since": epoch()}));
+    let mut told = false;
+    let mut told_long = false;
+    let began = std::time::Instant::now();
+    // The time spent waiting is no idle time: a waiting event now and then is a sign of life of the unit.
+    let beat = std::time::Duration::from_secs((p.policy.limits.idle_minutes * 60 / 4).max(1));
+    let mut last_beat: Option<std::time::Instant> = None;
+    loop {
+        // A short lock around the count and the take.
+        let gate = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&gate_path)?;
+        while !matches!(gate.try_lock(), Ok(())) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut places: Vec<std::path::PathBuf> = vec![];
+        let mut tickets: Vec<std::path::PathBuf> = vec![];
+        for e in fs::read_dir(&dir)?.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with("place-") {
+                places.push(e.path());
+            } else if n.starts_with("wait-") && n < ticket_name {
+                tickets.push(e.path());
+            }
+        }
+        let busy: Vec<&std::path::PathBuf> = places.iter().filter(|x| held(x)).collect();
+        let earlier_waiting = tickets.iter().any(|t| held(t));
+        if (busy.len() as u64) < limit && !earlier_waiting {
+            let mut i = 1;
+            loop {
+                let path = dir.join(format!("place-{i}"));
+                let mut f = fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(&path)?;
+                if f.try_lock().is_ok() {
+                    write_holder(&mut f, p, check_id, json!({"since": epoch()}));
+                    drop(gate);
+                    drop(ticket);
+                    let _ = fs::remove_file(&ticket_path);
+                    return Ok(Some(Place { _file: f, path }));
+                }
+                i += 1;
+            }
+        }
+        let holder = busy.first().map(|h| holder_line(h)).unwrap_or_else(|| {
+            tickets
+                .iter()
+                .find(|t| held(t))
+                .map(|t| holder_line(t))
+                .unwrap_or_default()
+        });
+        drop(gate);
+        if !told {
+            eprintln!(
+                "{}",
+                crate::strings::t(
+                    "cli.evidence.heavy.waits",
+                    &[
+                        ("check", check_id),
+                        ("limit", &limit.to_string()),
+                        ("holder", &holder)
+                    ]
+                )
+            );
+            told = true;
+        }
+        if !told_long && began.elapsed().as_secs() >= LONG_WAIT_SECONDS {
+            eprintln!(
+                "{}",
+                crate::strings::info(&crate::strings::t(
+                    "cli.evidence.heavy.waits_long",
+                    &[("check", check_id), ("holder", &holder)]
+                ))
+            );
+            told_long = true;
+        }
+        if let Some(u) = unit {
+            if last_beat.map_or(true, |t| t.elapsed() >= beat) {
+                events::append(
+                    p,
+                    "evidence.wait",
+                    json!({"unit": u, "check": check_id, "limit": limit}),
+                )?;
+                last_beat = Some(std::time::Instant::now());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A heavy check that has waited this long is told as an information line (D-59).
+pub const LONG_WAIT_SECONDS: u64 = 600;
+
+/// The information lines for the heavy checks that have waited longer than ten minutes, read live from
+/// the ticket files, with the holder named. Given as data for `bf status`, `bf waiting` and `bf doctor`.
+pub fn long_waits(p: &Project) -> Vec<String> {
+    let dir = places_dir(p);
+    let now = epoch();
+    let mut holders: Vec<String> = vec![];
+    let mut waiting: Vec<(String, u64)> = vec![];
+    for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if !held(&e.path()) {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&fs::read_to_string(e.path()).unwrap_or_default())
+            .unwrap_or(Value::Null);
+        if n.starts_with("place-") {
+            holders.push(holder_line(&e.path()));
+        } else if n.starts_with("wait-") {
+            waiting.push((
+                s(&v, "check").to_string(),
+                v["since"].as_u64().unwrap_or(now),
+            ));
+        }
+    }
+    let holder = holders.join(", ");
+    waiting
+        .into_iter()
+        .filter(|(_, since)| now.saturating_sub(*since) >= LONG_WAIT_SECONDS)
+        .map(|(check, _)| {
+            crate::strings::info(&crate::strings::t(
+                "cli.evidence.heavy.waits_long",
+                &[("check", &check), ("holder", &holder)],
+            ))
+        })
+        .collect()
 }
 
 /// Run a command with stdout and stderr merged. Keep a bounded tail and hash all of it.
@@ -696,6 +1289,22 @@ pub(crate) fn exec_capture(
     argv: &[String],
     tail_bytes: usize,
 ) -> R<(i64, String, String, u64, bool)> {
+    exec_capture_keep(p, dir, argv, tail_bytes, None, None)
+}
+
+/// The same, and the whole output is also written to `keep` when one is given (R-31).
+pub(crate) fn exec_capture_keep(
+    p: &Project,
+    dir: &Path,
+    argv: &[String],
+    tail_bytes: usize,
+    keep: Option<&Path>,
+    limit: Option<std::time::Duration>,
+) -> R<(i64, String, String, u64, bool)> {
+    let mut keep_file = match keep {
+        Some(k) => Some(fs::File::create(k)?),
+        None => None,
+    };
     let (mut reader, writer) = std::io::pipe().map_err(|e| err(format!("pipe: {e}")))?;
     let w2 = writer.try_clone().map_err(|e| err(format!("pipe: {e}")))?;
     let path = if p.policy.exec.path.is_empty() {
@@ -732,6 +1341,10 @@ pub(crate) fn exec_capture(
     } else {
         Command::new(CHECK_SHELL)
     };
+    if limit.is_some() {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.arg("-c")
         .arg(&line)
         .current_dir(dir)
@@ -759,6 +1372,27 @@ pub(crate) fn exec_capture(
         )
     })?;
     drop(cmd);
+    // The limit: a watcher stops the whole process group of the command when the time is up.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher = limit.map(|lim| {
+        let (done, timed_out, pid) = (done.clone(), timed_out.clone(), child.id());
+        std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                if began.elapsed() >= lim {
+                    timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = Command::new("/bin/kill")
+                        .args(["-KILL", "--", &format!("-{pid}")])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    });
     let mut hasher = sha2::Sha256::default();
     use sha2::Digest;
     let mut tail: Vec<u8> = Vec::new();
@@ -770,6 +1404,10 @@ pub(crate) fn exec_capture(
             break;
         }
         hasher.update(&buf[..n]);
+        if let Some(f) = keep_file.as_mut() {
+            use std::io::Write;
+            f.write_all(&buf[..n])?;
+        }
         total += n as u64;
         tail.extend_from_slice(&buf[..n]);
         if tail.len() > tail_bytes * 2 {
@@ -778,11 +1416,32 @@ pub(crate) fn exec_capture(
         }
     }
     let status = child.wait()?;
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(w) = watcher {
+        let _ = w.join();
+    }
+    if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+        let note = crate::strings::t(
+            "cli.evidence.heavy.timeout",
+            &[(
+                "seconds",
+                &limit
+                    .map(|l| l.as_secs_f64().ceil() as u64)
+                    .unwrap_or(0)
+                    .to_string(),
+            )],
+        );
+        tail.extend_from_slice(format!("\n{note}\n").as_bytes());
+    }
     if tail.len() > tail_bytes {
         let cut = tail.len() - tail_bytes;
         tail.drain(..cut);
     }
-    let exit = status.code().map(|c| c as i64).unwrap_or(-1);
+    let exit = if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+        124
+    } else {
+        status.code().map(|c| c as i64).unwrap_or(-1)
+    };
     Ok((
         exit,
         String::from_utf8_lossy(&tail).to_string(),
@@ -867,8 +1526,14 @@ pub fn attach(
     if meta.len() > p.policy.evidence.max_attach_bytes {
         return Err(refuse(
             format!("attach {}", file.display()),
-            format!("the file is {} bytes; the policy limit is {}", meta.len(), p.policy.evidence.max_attach_bytes),
-            &["Attach a smaller file, or ask the human to raise `evidence.max_attach_bytes` in factory/policy.toml."],
+            format!(
+                "the file is {} bytes; the policy limit is {}",
+                meta.len(),
+                p.policy.evidence.max_attach_bytes
+            ),
+            &[
+                "Attach a smaller file, or ask the human to raise `evidence.max_attach_bytes` in factory/policy.toml.",
+            ],
             "The command prints a receipt.",
         ));
     }
@@ -885,7 +1550,7 @@ pub fn attach(
                 "that is not an outcome",
                 &["Use `--outcome met`, `--outcome failed` or `--outcome unreachable`."],
                 "The command prints a receipt.",
-            ))
+            ));
         }
     };
     if j.outcome.is_some() {
@@ -902,7 +1567,9 @@ pub fn attach(
             return Err(refuse(
                 format!("give {check_id} an outcome"),
                 "an outcome needs one sentence saying what was looked at (`--says \"...\"`, one line)",
-                &["Say what you looked at and what you saw: `--says \"I opened the page at 375px and read every label\"`."],
+                &[
+                    "Say what you looked at and what you saw: `--says \"I opened the page at 375px and read every label\"`.",
+                ],
                 "The command prints a receipt.",
             ));
         }
@@ -1197,7 +1864,9 @@ pub fn judge(p: &Project, check_id: &str, judgement: &str, reason: &str, top: &P
         return Err(refuse(
             format!("judge {check_id} as `{judgement}`"),
             "that is not a judgement",
-            &["Use `flaky` (acceptable flakiness), `failure` (the failure stands) or `other` (another cause, such as an interrupted run)."],
+            &[
+                "Use `flaky` (acceptable flakiness), `failure` (the failure stands) or `other` (another cause, such as an interrupted run).",
+            ],
             "The command prints a receipt.",
         ));
     }
@@ -1232,7 +1901,9 @@ pub fn judge(p: &Project, check_id: &str, judgement: &str, reason: &str, top: &P
         return Err(refuse(
             format!("judge {check_id}"),
             "it has no failing run followed by a passing run at this content, so there is nothing to judge",
-            &["Judge only a check that failed and then passed on a deliberate repeat at the same content (`--attempt <n> --reason ...`)."],
+            &[
+                "Judge only a check that failed and then passed on a deliberate repeat at the same content (`--attempt <n> --reason ...`).",
+            ],
             "The command prints a receipt.",
         ));
     }
@@ -1268,7 +1939,9 @@ pub fn probe(p: &Project, checkpoint: &str, argv: &[String], top: &Path) -> R<Va
         return Err(refuse(
             "run a probe",
             "no command was given after `--`",
-            &["Put the command after `--`, for example `bf evidence run --probe K-1 -- cargo test probe_`."],
+            &[
+                "Put the command after `--`, for example `bf evidence run --probe K-1 -- cargo test probe_`.",
+            ],
             "The command prints a probe receipt.",
         ));
     }
@@ -1364,7 +2037,9 @@ fn refuse_review_check(chk: &Value, what: &str) -> R<()> {
         return Err(refuse(
             format!("{what} for {}", s(chk, "id")),
             "the checkpoint review is settled only by the checkpoint reviewer's own report; no verifier or auditor settles it, and the reviewer settles no other check",
-            &["The checkpoint reviewer reports with `bf report <K> --result findings --role reviewer --token <token>`."],
+            &[
+                "The checkpoint reviewer reports with `bf report <K> --result findings --role reviewer --token <token>`.",
+            ],
             "`bf evidence verify` lists the review's receipt after a clean report.",
         ));
     }
