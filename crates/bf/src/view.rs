@@ -660,8 +660,18 @@ fn proof_row(p: &Project, pl: &Plan, rc: &[Receipt], id: &str, content: Option<&
     json!({"id": id, "title": title, "needs_you": !proven && !marked.is_empty(), "handled": {"tone": if proven { "ok" } else { "open" }, "text": if proven { "Proven".to_string() } else if marked.is_empty() { "No proof at this content".to_string() } else { "A check failed or is unreachable".to_string() }}, "body": body})
 }
 
+/// The design stages a questions page is built for, in their order.
+fn is_stage(name: &str) -> bool {
+    crate::gates::DESIGN_ORDER.contains(&name)
+}
+
+/// The page of the questions of one stage (or of every question when no stage is named, the old page).
+/// A time is shown only where the engine recorded the answer's (R-53): the page data holds no time of
+/// its own, not even a build time.
 fn questions_view(p: &Project, arg: Option<&str>) -> R<Value> {
+    use crate::strings::t;
     let qs = p.list_records(schema::kind_by_name("question"))?;
+    let stage = arg.filter(|a| is_stage(a));
     let mut out = Vec::new();
     for q in qs.iter().filter(|q| {
         arg.map(|a| s(q, "stage") == a || s(q, "id") == a)
@@ -687,21 +697,78 @@ fn questions_view(p: &Project, arg: Option<&str>) -> R<Value> {
         if s(q, "answer_kind") != "text" {
             item["other"] = json!(crate::store::question_takes_other(q));
         }
+        // The time the engine recorded for the answer, and no other.
+        if q.get("answer").is_some() && !s(q, "answered_at").is_empty() {
+            item["answered_at"] = json!(s(q, "answered_at"));
+        }
         out.push(item);
     }
     let open = out.iter().filter(|q| q["answer"].is_null()).count();
+    let intent = p.config.project.clone();
+    let mut crumbs = vec![
+        t("cli.design.questions.crumb.all", &[]),
+        p.config.project.clone(),
+        t("cli.design.questions.crumb.questions", &[]),
+    ];
+    if let Some(st) = stage {
+        crumbs.push(st.to_string());
+    }
+    let status = if out.is_empty() && stage.is_some() {
+        (t("cli.design.questions.none", &[]), "ok")
+    } else if open > 0 {
+        (t("cli.design.questions.status.open", &[]), "wait")
+    } else {
+        (t("cli.design.questions.status.answered", &[]), "ok")
+    };
+    let (title, lede) = match stage {
+        Some(st) => (
+            t(
+                "cli.design.questions.title",
+                &[("stage", st), ("intent", &intent)],
+            ),
+            t("cli.design.questions.lede", &[]),
+        ),
+        None => (
+            t("cli.design.questions.title_all", &[]),
+            t("cli.design.questions.lede_all", &[]),
+        ),
+    };
+    let id = match stage {
+        Some(st) => format!("questions-{st}"),
+        None => arg.unwrap_or("all").to_string(),
+    };
     let mut v = base(
         p,
         "questions",
-        arg.unwrap_or("all"),
-        vec!["All pages".into(), p.config.project.clone(), "Questions".into()],
-        (if open > 0 { "Questions · answer in the form" } else { "All answered" }, if open > 0 { "wait" } else { "ok" }),
-        "Questions before the approval",
-        "Answer these first. The approval page is built after the answers and holds no open question.",
-        vec![fact("Open", open, "still to answer"), fact("Answered", out.len() - open, "so far")],
+        &id,
+        crumbs,
+        (&status.0, status.1),
+        &title,
+        &lede,
+        vec![
+            fact(
+                &t("cli.design.questions.fact.open", &[]),
+                open,
+                &t("cli.design.questions.fact.open_sub", &[]),
+            ),
+            fact(
+                &t("cli.design.questions.fact.answered", &[]),
+                out.len() - open,
+                &t("cli.design.questions.fact.answered_sub", &[]),
+            ),
+        ],
     );
+    if let Some(o) = v.as_object_mut() {
+        o.remove("built_at");
+    }
+    if stage.is_some() {
+        v["intent"] = json!(intent);
+        v["stage"] = json!(stage);
+        v["back"] =
+            json!({"text": t("cli.design.questions.other_stages", &[]), "href": "index.html"});
+    }
     v["questions"] = json!(out);
-    v["answer"] = json!({"how": "form", "prompt": "Fill in the form; the answers are copied into the records."});
+    v["answer"] = json!({"how": "form", "prompt": t("cli.design.questions.answer_prompt", &[])});
     Ok(v)
 }
 
@@ -1509,9 +1576,11 @@ fn page_row(id: &str, title: &str, href: &str, meta: &str, note: &str) -> Value 
     json!({"id": id, "title": title, "href": href, "meta": meta, "body": [text(note)]})
 }
 
-/// The list of pages. File names follow one convention: `gate-<gate id>.html`, `questions.html`,
+/// The list of pages. File names follow one convention: `gate-<gate id>.html`, `questions-<stage>.html` (one for each stage that has questions; `questions.html`
+/// only for a page recorded under the old name),
 /// `plan.html`, `run.html`, `ledger.html`, `coverage.html` and `checkpoint-<K>.html`.
 fn index_view(p: &Project, st: &State) -> R<Value> {
+    use crate::strings::t;
     let pl = plan::load(p)?;
     let rc = evidence::load_receipts(p)?;
     let states = state_map(p, &pl, st, &rc);
@@ -1532,16 +1601,96 @@ fn index_view(p: &Project, st: &State) -> R<Value> {
     }
     let all_q = p.list_records(schema::kind_by_name("question"))?;
     let open_q = all_q.iter().filter(|q| q.get("answer").is_none()).count();
-    if open_q > 0 {
-        let mut r = page_row(
-            "questions",
-            &format!("{open_q} question(s) to answer before the next approval"),
-            "questions.html",
-            &when(&now),
-            "Answer them in the form",
-        );
-        r["needs_you"] = json!(true);
-        waiting.push(r);
+    // One row for each stage that has questions, in the order of the stages (R-29, D-36). A project
+    // whose only questions page is under the old name has one row for it, without a stage.
+    let mut stages: Vec<String> = crate::gates::DESIGN_ORDER
+        .iter()
+        .map(|x| x.to_string())
+        .collect();
+    for q in &all_q {
+        let sg = s(q, "stage");
+        if !sg.is_empty() && !stages.iter().any(|x| x == sg) {
+            stages.push(sg.to_string());
+        }
+    }
+    let counts = |sg: &str| -> (usize, usize) {
+        let mine: Vec<&Value> = all_q.iter().filter(|q| s(q, "stage") == sg).collect();
+        let open = mine.iter().filter(|q| q.get("answer").is_none()).count();
+        (open, mine.len() - open)
+    };
+    // A unit's page `questions-U-n` is no stage page: only the design stages' pages count.
+    let old_only = st.pages.contains_key("questions")
+        && !crate::gates::DESIGN_ORDER
+            .iter()
+            .any(|sg| st.pages.contains_key(&format!("questions-{sg}")));
+    let mut question_rows = Vec::new();
+    if old_only {
+        let open = open_q;
+        if !all_q.is_empty() {
+            let mut r = page_row(
+                "questions",
+                &t("cli.design.index.row.old", &[]),
+                "questions.html",
+                &t(
+                    "cli.design.index.row.old_counts",
+                    &[
+                        ("open", &open.to_string()),
+                        ("total", &all_q.len().to_string()),
+                    ],
+                ),
+                "",
+            );
+            let tag = if open > 0 { "open" } else { "answered" };
+            r["handled"] = json!({"tone": if open > 0 { "open" } else { "ok" }, "text": t(&format!("cli.design.index.tag.{tag}"), &[])});
+            if open > 0 {
+                let mut w = r.clone();
+                w["title"] = json!(t(
+                    "cli.design.index.waiting.old",
+                    &[("open", &open.to_string())]
+                ));
+                w["needs_you"] = json!(true);
+                waiting.push(w);
+            }
+            question_rows.push(r);
+        }
+    } else {
+        for sg in &stages {
+            let (open, answered) = counts(sg);
+            if open + answered == 0 {
+                continue;
+            }
+            let href = format!("questions-{sg}.html");
+            let mut r = page_row(
+                &format!("questions-{sg}"),
+                &t("cli.design.index.row.title", &[("stage", sg)]),
+                &href,
+                &t(
+                    "cli.design.index.row.counts",
+                    &[
+                        ("open", &open.to_string()),
+                        ("answered", &answered.to_string()),
+                    ],
+                ),
+                "",
+            );
+            let tag = if open > 0 { "open" } else { "answered" };
+            r["handled"] = json!({"tone": if open > 0 { "open" } else { "ok" }, "text": t(&format!("cli.design.index.tag.{tag}"), &[])});
+            if open > 0 {
+                let mut w = page_row(
+                    &format!("questions-{sg}"),
+                    &t(
+                        "cli.design.index.waiting.title",
+                        &[("open", &open.to_string()), ("stage", sg)],
+                    ),
+                    &href,
+                    "",
+                    &t("cli.design.index.waiting.note", &[]),
+                );
+                w["needs_you"] = json!(true);
+                waiting.push(w);
+            }
+            question_rows.push(r);
+        }
     }
     for (id, state) in states
         .iter()
@@ -1608,15 +1757,6 @@ fn index_view(p: &Project, st: &State) -> R<Value> {
             "No interface in this product, by the human's word",
         ));
     }
-    if !all_q.is_empty() {
-        state_rows.push(page_row(
-            "questions-all",
-            &format!("{} question(s) asked, {} still open", all_q.len(), open_q),
-            "questions.html",
-            &when(&st.last_at),
-            "The form and its answers",
-        ));
-    }
     for k in &pl.checkpoints {
         let kid = s(k, "id");
         state_rows.push(page_row(
@@ -1648,7 +1788,7 @@ fn index_view(p: &Project, st: &State) -> R<Value> {
             r
         })
         .collect();
-    let n_pages = waiting.len() + state_rows.len() + history.len();
+    let n_pages = waiting.len() + state_rows.len() + history.len() + question_rows.len();
     let mut v = base(
         p,
         "index",
@@ -1677,6 +1817,9 @@ fn index_view(p: &Project, st: &State) -> R<Value> {
     let mut sections = Vec::new();
     if !waiting.is_empty() {
         sections.push(json!({"id": "open", "title": "Waiting for you", "hint": "Open these first", "open": true, "rows": waiting}));
+    }
+    if !question_rows.is_empty() {
+        sections.push(json!({"id": "questions", "title": t("cli.design.index.section.title", &[]), "hint": t("cli.design.index.section.hint", &[]), "open": true, "rows": question_rows}));
     }
     sections.push(json!({"id": "state", "title": "Project state", "hint": "Live views", "open": true, "rows": state_rows}));
     if !history.is_empty() {

@@ -35,6 +35,11 @@ pub fn work_policy(p: &Project) -> Value {
 
 /// The kind of work a directive asks for.
 fn directive_kind(d: &Value) -> &'static str {
+    match d["work"].as_str() {
+        Some("designer") => return "designer",
+        Some("amender") => return "amender",
+        _ => {}
+    }
     match d["role"].as_str().unwrap_or("") {
         "builder" => "builder",
         "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
@@ -76,34 +81,86 @@ pub(crate) fn budget_check(p: &Project, st: &State) -> R<()> {
     Ok(())
 }
 
+/// The kind of work the records of a design step are: a designer's, or an amender's while an amendment
+/// is open (R-46).
+fn add_records_work(st: &State) -> &'static str {
+    if st
+        .amends
+        .iter()
+        .any(|a| !crate::amend::is_repair(a) && matches!(a.status.as_str(), "open" | "narrowed"))
+    {
+        "amender"
+    } else {
+        "designer"
+    }
+}
+
+/// The open questions of one design stage, by ID.
+fn open_stage_questions(p: &Project, stage: &str) -> Vec<String> {
+    let mut ids: Vec<String> = p
+        .list_records(schema::kind_by_name("question"))
+        .unwrap_or_default()
+        .iter()
+        .filter(|q| s(q, "stage") == stage && q.get("answer").is_none())
+        .map(|q| s(q, "id").to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The directives of a design stage, while the plan gate is not approved. The first design gate that is
+/// neither approved nor skipped is the one to offer: decide it if it is open; answer the stage's open
+/// questions, which come before its gate; add the records it lacks; or open it (R-46).
+pub(crate) fn design_directives(p: &Project, st: &State) -> Vec<Value> {
+    let kind = gates::first_unpassed_design_gate(st);
+    if let Some(g) = st.latest_gate(kind, None).filter(|g| g.status == "open") {
+        return vec![
+            json!({"role": "human", "action": "decide-gate", "gate": g.id, "gate_kind": kind,
+            "note": crate::strings::t("cli.design.next.decide_gate", &[("kind", kind)])}),
+        ];
+    }
+    let open_q = open_stage_questions(p, kind);
+    if !open_q.is_empty() {
+        let ids = open_q.join(", ");
+        return vec![
+            json!({"role": "human", "action": "answer-question", "stage": kind,
+            "question": open_q[0], "questions": open_q,
+            "note": crate::strings::t("cli.design.next.answer_questions", &[("stage", kind), ("ids", &ids)])}),
+        ];
+    }
+    if let Some(why) = gates::open_blocker(p, st, kind) {
+        let mut d = json!({"role": "conductor", "action": "add-records", "work": add_records_work(st), "gate_kind": kind, "missing": why,
+            "note": crate::strings::t("cli.design.next.add_records", &[("kind", kind), ("why", &why)])});
+        if kind == "ui" {
+            // A product with no interface needs no screen: the human can skip the gate.
+            d["skip_command"] = json!("bf gate skip ui --quote \"<the human's words>\"");
+            d["note"] = json!(crate::strings::t(
+                "cli.design.next.add_records_ui",
+                &[("why", &why)]
+            ));
+        }
+        return vec![d];
+    }
+    vec![
+        json!({"role": "human", "action": "open-gate", "gate_kind": kind, "command": format!("bf gate open {kind}")}),
+    ]
+}
+
+/// `bf next` before a run, while the plan gate is not approved: the design directives, no run.
+fn design_raw(p: &Project, st: &State) -> Value {
+    json!({"run": Value::Null, "directives": design_directives(p, st), "waiting": Vec::<String>::new()})
+}
+
 /// The directives while the latest plan gate of the run is not approved (`open_gate` is its ID when it is
 /// open). With the gates in order, the one to offer is the first that is not approved or skipped: decide it
 /// if it is open, otherwise open it, or say which record is missing for it to open.
 fn run_hold_directives(p: &Project, st: &State, open_gate: Option<&str>) -> Vec<Value> {
     let mut directives: Vec<Value> = Vec::new();
     if p.policy.gates.in_order {
-        let kind = gates::first_unpassed_design_gate(st);
-        if let Some(g) = st.latest_gate(kind, None).filter(|g| g.status == "open") {
-            directives.push(
-                json!({"role": "human", "action": "decide-gate", "gate": g.id, "gate_kind": kind,
-                "note": format!("Ask the human to approve or reject the {kind} gate in chat.")}),
-            );
-        } else if let Some(why) = gates::open_blocker(p, st, kind) {
-            let mut d = json!({"role": "conductor", "action": "add-records", "gate_kind": kind, "missing": why,
-                "note": format!("The {kind} gate cannot open yet: {why}. Write what it needs, then ask again.")});
-            if kind == "ui" {
-                // A product with no interface needs no screen: the human can skip the gate.
-                d["skip_command"] = json!("bf gate skip ui --quote \"<the human's words>\"");
-                d["note"] = json!(format!("The ui gate cannot open yet: {why}. Write a screen or journey, or, for a product with no interface, ask the human whether to skip the ui gate and record their words with the skip command."));
-            }
-            directives.push(d);
-        } else {
-            directives.push(json!({"role": "human", "action": "open-gate", "gate_kind": kind, "command": format!("bf gate open {kind}")}));
-        }
-        return directives;
+        return design_directives(p, st);
     }
     if let Some(g) = open_gate {
-        directives.push(json!({"role": "human", "action": "decide-gate", "gate": g, "note": "Ask the human to approve or reject the plan in chat."}));
+        directives.push(json!({"role": "human", "action": "decide-gate", "gate": g, "note": crate::strings::t("cli.design.next.decide_gate", &[("kind", "plan")])}));
         return directives;
     }
     // The run's two plan questions come first: the plan gate does not open until both are answered.
@@ -499,8 +556,14 @@ pub fn next(p: &Project) -> R<Value> {
         // A wave check that failed gets a fix too, held to the units that landed since the last pass.
         crate::wavecheck::maybe_open(p)?;
     }
-    let mut v = next_raw(p)?;
-    if p.policy.roles.tokens {
+    let st0 = events::require_chain(p)?;
+    let design_only = st0.active_run().is_none() && !st0.gate_passed("plan", None);
+    let mut v = if design_only {
+        design_raw(p, &st0)
+    } else {
+        next_raw(p)?
+    };
+    if p.policy.roles.tokens && !design_only {
         sync_tokens(p, &mut v)?;
     }
     if let Some(ds) = v["directives"].as_array_mut() {
@@ -569,12 +632,22 @@ pub fn next(p: &Project) -> R<Value> {
             if d["role"] != "human" {
                 continue;
             }
-            let page = match d["action"].as_str().unwrap_or("") {
-                "decide-gate" => d["gate"].as_str().map(|g| format!("gate-{g}")),
-                "answer-question" => Some("questions".to_string()),
-                _ => None,
+            // The names a page may be recorded under, best first. A question of a stage has the page of
+            // its stage (or the page of the old name); a worker's question has the page of its unit.
+            let names: Vec<String> = match d["action"].as_str().unwrap_or("") {
+                "decide-gate" => d["gate"]
+                    .as_str()
+                    .map(|g| format!("gate-{g}"))
+                    .into_iter()
+                    .collect(),
+                "answer-question" => match (d["stage"].as_str(), d["unit"].as_str()) {
+                    (Some(stage), _) => vec![format!("questions-{stage}"), "questions".to_string()],
+                    (None, Some(unit)) if !unit.is_empty() => vec![format!("questions-{unit}")],
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
             };
-            if let Some((url, _)) = page.and_then(|n| st.pages.get(&n)) {
+            if let Some((url, _)) = names.iter().find_map(|n| st.pages.get(n)) {
                 d["page_url"] = json!(url);
             }
         }

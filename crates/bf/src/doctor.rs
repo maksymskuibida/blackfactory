@@ -213,11 +213,23 @@ pub fn doctor(p: &Project) -> R<Value> {
                 .join("; ")
         },
     );
-    add(
-        "plan",
-        pl.problems.is_empty(),
-        format!("{} problem(s)", pl.problems.len()),
-    );
+    // Before the plan gate is approved no plan is expected: a part without a unit is no problem yet.
+    if st.gate_passed("plan", None) {
+        add(
+            "plan",
+            pl.problems.is_empty(),
+            crate::strings::t(
+                "cli.design.doctor.plan_problems",
+                &[("n", &pl.problems.len().to_string())],
+            ),
+        );
+    } else {
+        add(
+            "plan",
+            true,
+            crate::strings::t("cli.design.doctor.plan_not_expected", &[]),
+        );
+    }
     // A checkpoint's working copy with changes nobody committed: a landing that stopped half way.
     let mut dirty: Vec<String> = Vec::new();
     for c in &pl.checkpoints {

@@ -1,2 +1,42 @@
 # Strings of the group `design`: keys are quoted and flat, `"cli.design.some.key" = "text"`.
 # Filled by the unit that owns this group (D-62).
+
+# The questions page of one design stage (S-5, D-36).
+"cli.design.questions.crumb.all" = "All pages"
+"cli.design.questions.crumb.questions" = "Questions"
+"cli.design.questions.title" = "Questions of the {stage} stage in {intent}"
+"cli.design.questions.title_all" = "Questions before the approval"
+"cli.design.questions.lede" = "Answer these first. The gate of this stage opens after the answers and holds no open question."
+"cli.design.questions.lede_all" = "Answer these first. The approval page is built after the answers and holds no open question."
+"cli.design.questions.status.open" = "Questions · answer in the form"
+"cli.design.questions.status.answered" = "All answered"
+"cli.design.questions.none" = "This stage has no question."
+"cli.design.questions.fact.open" = "Open"
+"cli.design.questions.fact.open_sub" = "still to answer"
+"cli.design.questions.fact.answered" = "Answered"
+"cli.design.questions.fact.answered_sub" = "so far"
+"cli.design.questions.answer_prompt" = "Fill in the form; the answers are copied into the records."
+"cli.design.questions.other_stages" = "The questions of the other stages are listed on the index page."
+
+# The index page's section for the questions of each stage (D-36).
+"cli.design.index.section.title" = "Questions"
+"cli.design.index.section.hint" = "One page for each stage"
+"cli.design.index.row.title" = "Questions of the {stage} stage"
+"cli.design.index.row.old" = "Questions"
+"cli.design.index.row.counts" = "{open} open, {answered} answered"
+"cli.design.index.row.old_counts" = "{open} open of {total}"
+"cli.design.index.tag.open" = "open"
+"cli.design.index.tag.answered" = "answered"
+"cli.design.index.waiting.title" = "{open} question(s) of the {stage} stage to answer before its approval"
+"cli.design.index.waiting.old" = "{open} question(s) to answer before the next approval"
+"cli.design.index.waiting.note" = "Answer them in the form"
+
+# What `bf next` says during the design stages (R-46).
+"cli.design.next.decide_gate" = "Ask the human to approve or reject the {kind} gate in chat."
+"cli.design.next.answer_questions" = "Put the open questions of the {stage} stage to the human: {ids}. Record each answer with `bf answer <Q> --file <answer>`. The {stage} gate does not open until they are answered."
+"cli.design.next.add_records" = "The {kind} gate cannot open yet: {why}. Write what it needs, then ask again."
+"cli.design.next.add_records_ui" = "The ui gate cannot open yet: {why}. Write a screen or journey, or, for a product with no interface, ask the human whether to skip the ui gate and record their words with the skip command."
+
+# What `bf doctor` says in a design stage (R-46).
+"cli.design.doctor.plan_problems" = "{n} problem(s)"
+"cli.design.doctor.plan_not_expected" = "no plan is expected yet: the plan gate is not approved, so a part without a unit is not a problem"

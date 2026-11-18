@@ -546,6 +546,8 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
         let stem = h.trim_end_matches(".html");
         let args: Vec<&str> = if let Some(g) = stem.strip_prefix("gate-") {
             vec!["gate", g]
+        } else if let Some(k) = stem.strip_prefix("questions-") {
+            vec!["questions", k]
         } else if let Some(k) = stem.strip_prefix("checkpoint-") {
             vec!["checkpoint", k]
         } else {
@@ -555,7 +557,7 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
         assert!(fx.root.join(".bf/pages").join(h).exists(), "{h}");
     }
     for h in [
-        "questions.html",
+        "questions-requirements.html",
         "plan.html",
         "run.html",
         "ledger.html",
