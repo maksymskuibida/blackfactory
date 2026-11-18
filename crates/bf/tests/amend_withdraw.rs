@@ -196,3 +196,36 @@ fn amend_withdraw_draft_refusal_with_an_amendment_names_it() {
     ]);
     assert!(o.stderr.contains("A-1"), "{}", o.stderr);
 }
+
+/// R-45: the checkpoint gap of a draft checkpoint with no amendment open, in the note of `bf next`,
+/// names the steps that work and never says the human has not approved.
+#[test]
+fn amend_withdraw_checkpoint_gap_note_names_steps_without_an_approval_to_wait_for() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
+    fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
+    fx.must_in(
+        &fx.work("K-1"),
+        &["evidence", "run", "X-3", "--", "ls", "src/hello.txt", "src/bye.txt"],
+    );
+    fx.must(&["amend", "open", "--repair", "K-1"]);
+    fx.must(&["amend", "withdraw", "A-1", "--reason", "not needed"]);
+    let f = fx.root.join("factory/records/K-1.toml");
+    let text = fs::read_to_string(&f).unwrap();
+    fs::write(&f, text.replace("Both messages", "Both messages, edited")).unwrap();
+    let n = fx.must(&["next", "--json"]).json();
+    let d = n["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["action"] == "fix-checkpoint-gaps")
+        .unwrap_or_else(|| panic!("{n}"));
+    let note = d["note"].as_str().unwrap();
+    assert!(note.contains("K-1"), "{note}");
+    assert!(!note.contains("has not approved"), "{note}");
+    assert!(note.contains("bf amend open K-1"), "{note}");
+    let plain = fx.must(&["next"]).all();
+    assert!(!plain.contains("has not approved"), "{plain}");
+}
