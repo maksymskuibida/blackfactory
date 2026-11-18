@@ -35,6 +35,13 @@ mod test_mode;
 mod unit;
 mod view;
 
+mod audit;
+mod intent;
+mod knowledge;
+mod rules;
+mod space;
+mod waiting;
+
 use crate::events;
 use crate::refusal::{refuse, Fail, R};
 use crate::schema;
@@ -235,7 +242,7 @@ pub fn main_with(raw: Vec<String>) -> i32 {
             if json_mode {
                 println!("{}", pretty(&json!({"ok": false, "error": e})));
             } else {
-                eprintln!("error: {e}");
+                eprintln!("{} {e}", crate::strings::t("cli.error.prefix", &[]));
             }
             1
         }
@@ -407,6 +414,12 @@ fn dispatch(args: &Args) -> R<()> {
         "policy" => policy::cmd_policy(args),
         "head" => head::cmd_head(args),
         "doctor" => doctor::cmd_doctor(args),
+        "intent" => intent::cmd_intent(args),
+        "space" => space::cmd_space(args),
+        "waiting" => waiting::cmd_waiting(args),
+        "knowledge" => knowledge::cmd_knowledge(args),
+        "rules" => rules::cmd_rules(args),
+        "audit" => audit::cmd_audit(args),
         other => Err(refuse(
             format!("run `bf {other}`"),
             "there is no such command",
@@ -414,6 +427,11 @@ fn dispatch(args: &Args) -> R<()> {
             "`bf help` prints the usage.",
         )),
     }
+}
+
+/// The answer of a command group this version names and does not build: one refusal, one key.
+pub(crate) fn not_built(command: &str) -> Fail {
+    crate::refusal::from_key("cli.not_built", &[("command", command)])
 }
 
 pub(crate) fn kind_arg(name: &str) -> R<&'static schema::Kind> {

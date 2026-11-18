@@ -4,6 +4,8 @@
 //! judges it, rounds and parking work as for a unit, and the engine then runs the checkpoint's checks
 //! again on the new content. The engine records which units' files each fix touched.
 
+pub mod design;
+
 use crate::events::{self, CkFixOpen, State};
 use crate::evidence::{self, Receipt};
 use crate::gitx;

@@ -5,6 +5,9 @@
 //! edit or deletion of a past line breaks the chain and is reported.
 //! State is never stored: it is always replayed from the log.
 
+pub mod head;
+pub mod workspace;
+
 use crate::refusal::{err, refuse, R};
 use crate::store::Project;
 use crate::util;

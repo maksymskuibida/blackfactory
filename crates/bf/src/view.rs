@@ -1,5 +1,7 @@
 //! Page data in the view contract (version 1) and the template renderer.
 
+pub mod workspace;
+
 use crate::events::{self, Gate, State};
 use crate::evidence::{self, Receipt};
 use crate::gates::GATE_KINDS;
