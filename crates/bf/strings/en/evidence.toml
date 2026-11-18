@@ -23,3 +23,5 @@
 "cli.schema.list.bad_kind" = "an entry of `{list}` has a `kind` that is not format, lint or suite"
 "cli.schema.list.bad_heavy" = "an entry of `{list}` has a `heavy` that is not true or false"
 "cli.schema.list.two_suites" = "at most one entry of `{list}` is the suite"
+"cli.evidence.brief.rule.checks_engine" = "Never run the command of a required check by hand: run it only through `bf evidence run`. Use a narrow command by hand only to debug a failing test the engine run named. A unit that names its tests runs them in the suite's place."
+"cli.evidence.brief.rule.reviewer_receipts" = "You read the receipts and do not run the suite again."

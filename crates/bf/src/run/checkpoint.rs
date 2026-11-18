@@ -676,6 +676,11 @@ pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
             continue;
         }
         let argv = evidence::command_words(c);
+        // A check that already passed on this very content (the fix builder ran it through the engine)
+        // is not run again: its receipt stands (R-32).
+        if evidence::passed_on_content(p, &cid, &argv, &top)? {
+            continue;
+        }
         // The engine runs the checks again on content they may already have run on: that is a deliberate
         // repeat, stated as one.
         let attempt = evidence::next_attempt(p, &cid, &argv, &top)?;

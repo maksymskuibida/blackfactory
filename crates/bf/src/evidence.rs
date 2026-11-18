@@ -463,6 +463,16 @@ fn earlier_runs<'a>(
         .collect()
 }
 
+/// True when the command already ran for the check on the content now in `top` and passed: the engine
+/// need not run it again (R-32).
+pub fn passed_on_content(p: &Project, check_id: &str, argv: &[String], top: &Path) -> R<bool> {
+    let content = p.content_hash(top)?;
+    let receipts = load_receipts(p)?;
+    Ok(earlier_runs(&receipts, check_id, &argv.join(" "), &content)
+        .iter()
+        .any(|r| r.v["exit"].as_i64() == Some(0)))
+}
+
 /// The number the next run of this command has on the content now in `top`: the runs recorded plus one.
 pub fn next_attempt(p: &Project, check_id: &str, argv: &[String], top: &Path) -> R<u64> {
     let content = p.content_hash(top)?;
