@@ -8,6 +8,8 @@ A plan repair (a check's command, a unit's files or order, moving a unit, or `bf
 3. The review runs in the shape the design took: one review for each stage of a split, then the review that the stages agree; for a design with no split, the solo reviewer (`bf review token amendment --subject <A-n>`), and any stage review it asks for. Rounds, parking, accepting and releasing are as in the design review of `design-stages.md`, with the amendment ID.
 4. Narrow it (`bf amend narrow --file <f>`), put the designer's calls made without asking, each with the other option, before the human, and only the human's words approve it: `bf amend approve --quote "<their words>"`. The human may lift the designer rule for one stage or one amendment in their own words: `bf roles lift <stage|A-n> --quote "<their words>"`.
 
+An amendment names its new records: a record that does not exist yet is named in `bf amend open` like any other, and is put while the amendment waits for the human.
+
 A kept record that must change goes in this order, the order the engine accepts: `bf amend revise` naming the IDs it names now and every record that changed, put the records, narrow, the human's yes, approve.
 
 ## After `bf amend approve`

@@ -646,6 +646,8 @@ fn the_plan_is_frozen_once_its_gate_is_approved() {
     let opened = fx
         .must(&["amend", "open", "U-9", "D-91", "D-92", "D-93", "--json"])
         .json();
+    // The amendment names the new unit: it is put while the amendment waits.
+    assert_eq!(fx.put("unit", new_unit).code, 0);
     let tmp = tempfile::tempdir().unwrap();
     let f = tmp.path().join("n.json");
     fs::write(

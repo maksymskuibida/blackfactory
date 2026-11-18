@@ -252,7 +252,7 @@ fn a_finding_with_a_gate_and_no_unit_is_put_and_one_with_neither_is_refused() {
 #[test]
 fn amend_stages_the_conductor_instructions_say_an_amendment_names_its_new_records() {
     let skill = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../harness/claude/skills/factory/SKILL.md");
+        .join("../../harness/claude/skills/factory/amendments.md");
     let text = fs::read_to_string(skill).unwrap();
     assert!(
         text.contains("An amendment names its new records"),

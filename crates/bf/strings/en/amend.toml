@@ -44,7 +44,7 @@
 "cli.amend.draft_no_amendment.refused" = "{what}"
 "cli.amend.draft_no_amendment.because" = "{draft} is not the content the human approved, and no amendment is open for it, so no approval is coming"
 "cli.amend.draft_no_amendment.do_this.1" = "Put back the approved content of {draft}: `bf record get {draft}` shows what is there now, and the page of the approving amendment or the plan gate shows what was approved."
-"cli.amend.draft_no_amendment.do_this.2" = "Or open an amendment that names the record, `bf amend open {draft}`, put the change while it waits, narrow it, and let the human read it."
+"cli.amend.draft_no_amendment.do_this.2" = "Or open an amendment that names the record, `bf amend open {draft}`, put the change, narrow the amendment, and let the human read it."
 "cli.amend.draft_no_amendment.worked_when" = "`bf doctor` names no draft."
 
 # R-52, S-26: `bf log` and the recent events view leave out record contents of amendment events.

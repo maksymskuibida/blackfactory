@@ -376,10 +376,10 @@ fn q9b_words_written_before_the_park_do_not_release_it() {
     let _: Value = json!(null);
 }
 
-/// A record an approved amendment named before it existed is put once after the approval; what is put
-/// is then bound to the approval, and a later change needs an amendment.
+/// A record an amendment named before it existed is put while the amendment waits; the approval then
+/// binds what was put, and a later change needs an amendment.
 #[test]
-fn a_record_named_before_it_existed_is_bound_when_it_is_put_after_the_approval() {
+fn a_record_named_before_it_existed_is_put_while_the_amendment_waits() {
     let (fx, _wc) = start();
     let x9 = |cmd: &str| {
         format!("id=\"X-9\"\nkind=\"check\"\ntitle=\"Folder\"\nhow=\"command\"\ncommand=\"{cmd}\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n")
@@ -387,6 +387,9 @@ fn a_record_named_before_it_existed_is_bound_when_it_is_put_after_the_approval()
     let opened = fx
         .must(&["amend", "open", "--repair", "X-9", "--json"])
         .json();
+    // The record is put while the amendment waits for the human.
+    let o = put_x(&fx, &x9("test -d src"));
+    assert_eq!(o.code, 0, "{}", o.all());
     let keep: Vec<String> = opened["impact_ids"]
         .as_array()
         .unwrap()
@@ -402,9 +405,7 @@ fn a_record_named_before_it_existed_is_bound_when_it_is_put_after_the_approval()
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     fx.human("Yes, add the new check.");
     fx.must(&["amend", "approve", "A-1", "--quote", "add the new check"]);
-    let o = put_x(&fx, &x9("test -d src"));
-    assert_eq!(o.code, 0, "{}", o.all());
-    // The put binds the content: the run is not frozen, a unit starts, and the same content is put again.
+    // The approval binds the content: the run is not frozen, a unit starts, and the same content is put again.
     let d = fx.bf(&["doctor"]);
     assert!(
         !d.all().contains("frozen records: PROBLEM"),
