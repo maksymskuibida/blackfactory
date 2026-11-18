@@ -1,0 +1,122 @@
+{
+ "contract": 1,
+ "kind": "gate",
+ "id": "gate-links-r1",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "intent": "Billing export",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Billing",
+   "Billing export",
+   "Gate"
+  ],
+  "title": "Gate: links, decisions and questions",
+  "lede": "What this intent shares with others.",
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   },
+   {
+    "label": "Intent",
+    "value": "Billing export"
+   },
+   {
+    "label": "State",
+    "value": "Waiting",
+    "tone": "wait"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "links",
+   "title": "Links to other intents",
+   "rows": [
+    {
+     "id": "l-1",
+     "title": "This intent builds on Invoice layout",
+     "tags": [
+      {
+       "text": "Merged",
+       "tone": "ok"
+      }
+     ],
+     "refs_label": "Other intents",
+     "refs": [
+      {
+       "label": "Invoice layout",
+       "target": "invoice-layout.html"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Its template is reused."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "decisions",
+   "title": "Decisions",
+   "rows": [
+    {
+     "id": "d-1",
+     "title": "Which currency do exports use?",
+     "needs_you": true,
+     "tags": [
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "picks": [
+      {
+       "key": "A",
+       "text": "One currency"
+      },
+      {
+       "key": "B",
+       "text": "Per space"
+      }
+     ],
+     "body": [
+      {
+       "type": "note",
+       "label": "Why you are asked",
+       "text": "The requirement leaves it open."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "questions",
+   "title": "Questions",
+   "rows": [
+    {
+     "id": "q-1",
+     "title": "Does the export include refunds?",
+     "tags": [
+      {
+       "text": "Waiting",
+       "tone": "info"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Asked in the chat."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

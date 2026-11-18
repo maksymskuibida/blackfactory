@@ -1,0 +1,95 @@
+{
+ "contract": 1,
+ "kind": "rules",
+ "id": "rules-billing",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Workspace",
+   "Billing",
+   "Rules"
+  ],
+  "title": "Rules of Billing",
+  "lede": "The whole text of each rule, with its lean.",
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "rules",
+   "title": "Rules",
+   "rows": [
+    {
+     "id": "r-1",
+     "title": "Every export names its currency in the first line",
+     "needs_you": true,
+     "tags": [
+      {
+       "text": "Proposed",
+       "tone": "info"
+      },
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "body": [
+      {
+       "type": "note",
+       "label": "Why you are asked",
+       "text": "Two exports last month left the currency out."
+      },
+      {
+       "type": "code",
+       "wrap": true,
+       "text": "Rule R-31: an export file starts with the line `currency: <code>` and never holds <script>window.__pwn = 1</script> as a value; a long line follows to show that the whole text wraps instead of running off the card at a narrow width."
+      }
+     ],
+     "refs_label": "Findings",
+     "refs": [
+      {
+       "label": "F-12"
+      },
+      {
+       "label": "F-14"
+      }
+     ],
+     "picks": [
+      {
+       "key": "A",
+       "text": "Accept"
+      },
+      {
+       "key": "B",
+       "text": "Reject"
+      }
+     ]
+    },
+    {
+     "id": "r-2",
+     "title": "A rule already in force <b>stays as text</b>",
+     "tags": [
+      {
+       "text": "In force",
+       "tone": "ok"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "It holds no markup either: <img src=x onerror=alert(1)>."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

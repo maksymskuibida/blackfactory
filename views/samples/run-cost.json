@@ -1,0 +1,68 @@
+{
+ "contract": 1,
+ "kind": "run",
+ "id": "run-1",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "intent": "Billing export",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Billing",
+   "Billing export",
+   "Run"
+  ],
+  "title": "Run 1: the cost so far",
+  "lede": "Spend against the cap.",
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   },
+   {
+    "label": "Intent",
+    "value": "Billing export"
+   },
+   {
+    "label": "State",
+    "value": "Running",
+    "tone": "info"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "cost",
+   "title": "Cost",
+   "blocks": [
+    {
+     "type": "meter",
+     "label": "Spent against the cap",
+     "value": 620000,
+     "max": 1000000,
+     "unit": "tokens"
+    }
+   ],
+   "rows": [
+    {
+     "id": "c-1",
+     "title": "Wave 2 cost the most",
+     "tags": [
+      {
+       "text": "Running",
+       "tone": "info"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Two builders ran in parallel."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

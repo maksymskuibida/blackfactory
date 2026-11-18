@@ -1,0 +1,102 @@
+{
+ "contract": 1,
+ "kind": "space",
+ "id": "space-billing",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Workspace",
+   "Billing"
+  ],
+  "title": "Billing",
+  "lede": "The intents and rules of one space.",
+  "status": {
+   "text": "1 waits",
+   "tone": "wait"
+  },
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "intents",
+   "title": "Intents",
+   "rows": [
+    {
+     "id": "in-1",
+     "title": "Billing export is running and waits for you",
+     "needs_you": true,
+     "tags": [
+      {
+       "text": "Running",
+       "tone": "info"
+      },
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Open its gate page to answer."
+      }
+     ]
+    },
+    {
+     "id": "in-2",
+     "title": "Invoice layout is merged",
+     "tags": [
+      {
+       "text": "Merged",
+       "tone": "ok"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Settled."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "rules",
+   "title": "Rules",
+   "rows": [
+    {
+     "id": "r-1",
+     "title": "Every export names its currency",
+     "tags": [
+      {
+       "text": "In force",
+       "tone": "ok"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Found in the rules page of this space."
+      }
+     ],
+     "refs_label": "Records",
+     "refs": [
+      {
+       "label": "R-31",
+       "tip": "The record of the rule"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -162,6 +162,22 @@ h2 .hint { margin-left: 8px; font-weight: 400; font-size: var(--fs-md); color: v
 .tag.rt-new { background: var(--new-bg); color: var(--new-fg); }
 .tag.rt-removed { background: var(--rem-bg); color: var(--rem-fg); }
 .tag.need { background: var(--warn-bg); color: var(--warn-fg); }
+.tag.t-wait { background: var(--warn-bg); color: var(--warn-fg); }
+.tag.t-ok { background: var(--ok-bg); color: var(--ok-fg); }
+.tag.t-info { background: var(--accent-soft); color: var(--accent); }
+.tag.t-none { background: var(--low-bg); color: var(--low-fg); }
+.rtags { flex-wrap: wrap; }
+/* context strip: labelled values under the crumbs; wraps, never cut */
+.ctx { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0; padding: 0; list-style: none; }
+.ctx li { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; max-width: 100%; padding: 4px 10px; border-radius: var(--r-box); background: var(--raised); border: 1px solid var(--line-soft); font-size: var(--fs-md); }
+.ctx .cl { color: var(--muted); font-size: var(--fs-sm); }
+.ctx .cv { color: var(--fg); font-weight: 500; overflow-wrap: anywhere; }
+.ctx li.t-wait { background: var(--warn-bg); border-color: transparent; } .ctx li.t-wait .cl, .ctx li.t-wait .cv { color: var(--warn-fg); }
+.ctx li.t-ok { background: var(--ok-bg); border-color: transparent; } .ctx li.t-ok .cl, .ctx li.t-ok .cv { color: var(--ok-fg); }
+.ctx li.t-info { background: var(--accent-soft); border-color: transparent; } .ctx li.t-info .cl, .ctx li.t-info .cv { color: var(--accent); }
+/* marked note: a label and a text */
+.noteb { margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); border-radius: var(--r-ctl); background: var(--accent-tint); color: var(--fg); font-size: var(--fs-md); line-height: 1.5; }
+.noteb b { display: block; font-size: var(--fs-sm); font-weight: 600; color: var(--accent-strong); margin-bottom: 2px; }
 .handled { display: inline-flex; align-items: center; gap: 4px; max-width: 190px; font-size: var(--fs-sm); font-weight: 500; padding: 2px 8px; border-radius: var(--r-tag); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .handled.ok { background: var(--ok-bg); color: var(--ok-fg); } .handled.accepted { background: var(--warn-bg); color: var(--warn-fg); } .handled.open { background: var(--crit-bg); color: var(--crit-fg); }
 .lab { min-width: 66px; text-align: center; font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 3px 6px; border-radius: var(--r-tag); }
@@ -188,6 +204,7 @@ h2 .hint { margin-left: 8px; font-weight: 400; font-size: var(--fs-md); color: v
 .tbl th { text-align: left; font-weight: 600; color: var(--fg-2); background: var(--raised); }
 .tbl th, .tbl td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; min-width: 110px; }
 .tbl tr:last-child td { border-bottom: 0; }
+pre.code.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 pre.code { margin: 0; padding: 10px 12px; border-radius: var(--r-box); background: var(--raised); border: 1px solid var(--line); font: var(--fs-md)/1.5 var(--mono); overflow-x: auto; max-width: 100%; white-space: pre; }
 .evid { border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); overflow: hidden; }
 .evid .eh { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; background: var(--raised); font-size: var(--fs-md); }
@@ -388,6 +405,11 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     return e;
   }
   function T(s) { return document.createTextNode(s == null ? '' : String(s)); }
+  /* a value from the data is drawn as text; a link from the data must be a page link, a relative link or an http(s) or mailto link */
+  function safeHref(h) { h = String(h == null ? '' : h).trim(); return /^(#|\/|\.|[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*([?#\/].*)?$|https?:|mailto:)/.test(h) && !/^\s*(javascript|data|vbscript):/i.test(h) ? h : null; }
+  function has(s) { return s != null && String(s).trim() !== ''; }
+  var TONES = { wait: 1, ok: 1, info: 1, none: 1 };
+  function toneOf(t) { return TONES[t] ? t : 'info'; }
   var CHEV = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 2.5 9.5 7 5 11.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   function twist(open, label) { var b = el('button', 'twist', null, { type: 'button', 'aria-expanded': String(!!open), 'aria-label': label || 'Open' }); b.innerHTML = CHEV; return b; }
   function seg(s) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9._~:@+-]/g, '_').slice(0, 120); }
@@ -559,7 +581,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     ]);
     return el('div', 'tbl', t);
   };
-  B.code = function (b) { return el('pre', 'code', b.text || ''); };
+  B.code = function (b) { return el('pre', 'code' + (b.wrap ? ' wrap' : ''), b.text || ''); };
+  /* a marked note: a label (hidden when empty) and a text */
+  B.note = function (b) { return has(b.text) ? el('p', 'noteb', [has(b.label) ? el('b', null, b.label) : null, inline(b.text)]) : null; };
   B.evidence = function (b) {
     /* outcome: passed, failed or unreachable. Absent: passed when exit is 0, failed when exit is another number. */
     var oc = b.outcome || (b.exit === 0 ? 'passed' : (b.exit !== undefined && b.exit !== null ? 'failed' : ''));
@@ -581,7 +605,8 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     img.onerror = function () { var p = el('p', 'was', [el('b', null, 'Image'), (b.alt || '') + ' (' + b.path + ')']); if (img.parentNode) img.parentNode.replaceChild(p, img); };
     return img;
   };
-  function renderBody(blocks) { return (blocks || []).map(function (b) { var f = B[b.type]; return f ? f(b) : el('p', 'was', 'Unknown block: ' + b.type); }); }
+  /* a block of a type the template has never seen is drawn from its text, if it has one, and from nothing else */
+  function renderBody(blocks) { return (blocks || []).map(function (b) { var f = B[b.type]; return f ? f(b) : (b && has(b.text) ? el('p', null, inline(b.text)) : null); }).filter(function (n) { return n; }); }
 
   var VERD = { holds: 'Holds', fails: 'Fails', partly: 'Partly', na: 'Not applicable' };
   var SB = {};
@@ -681,16 +706,22 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     app.appendChild(el('div', 'foot', ['Contract ' + (D.contract || 1), D.built_at ? ' · built ' + fmt(D.built_at) : '', D.project ? ' · ' + D.project : '']));
   }
 
+  /* the context strip: labelled values (the space, the intent, the intent's state); an item with an empty label or value is left out */
+  function buildContext(list) {
+    var items = (Array.isArray(list) ? list : []).filter(function (c) { return c && has(c.label) && has(c.value); });
+    if (!items.length) return null;
+    return el('ul', 'ctx', items.map(function (c) { return el('li', c.tone ? 't-' + toneOf(c.tone) : null, [el('span', 'cl', c.label), el('span', 'cv', c.value)]); }), { 'aria-label': has(P.context_label) ? P.context_label : null });
+  }
   function buildHead() {
     var crumbs = P.crumbs || [], hrefs = P.crumb_hrefs || [];
     var cr = el('div', 'crumbs');
     crumbs.forEach(function (c, i) {
       if (i) cr.appendChild(el('span', 'sep', '›'));
       var last = i === crumbs.length - 1;
-      cr.appendChild(hrefs[i] ? el('a', null, c, { href: hrefs[i] }) : el('span', last ? 'here' : null, c));
+      cr.appendChild(safeHref(hrefs[i]) ? el('a', null, c, { href: safeHref(hrefs[i]) }) : el('span', last ? 'here' : null, c));
     });
     if (P.status) cr.appendChild(el('span', 'status ' + (P.status.tone || 'wait'), [el('i'), P.status.text]));
-    var cards = [cr, el('div', null, [el('h1', null, P.title), P.lede ? el('p', 'lede', inline(P.lede)) : null])];
+    var cards = [cr, buildContext(P.context), el('div', null, [el('h1', null, P.title), P.lede ? el('p', 'lede', inline(P.lede)) : null])];
     if (P.facts && P.facts.length) cards.push(el('div', 'facts', P.facts.map(function (f) { return el('div', 'fact', [el('span', null, f.label), el('b', null, f.value), f.sub ? el('small', null, f.sub) : null]); })));
     var rd = P.round;
     if (rd && (rd.prev || rd.n > 1 || (rd.changed || rd.new || rd.removed) || sections.some(function (x) { return (x.rows || []).some(function (r) { return r.round; }); }))) {
@@ -762,7 +793,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     body.hidden = !so.open;
     so.root = root; so.body = body; so.counts = counts; so.shown = shown; so.dot = dot; so.toggle = toggle; so.tw = tw;
     // blocks
-    if ((s.blocks || []).length) body.appendChild(el('div', 'blocks', s.blocks.map(function (b) { var f = SB[b.type]; return f ? f(b) : el('p', 'was', 'Unknown block: ' + b.type); })));
+    if ((s.blocks || []).length) body.appendChild(el('div', 'blocks', s.blocks.map(function (b) { var f = SB[b.type]; return f ? f(b) : (b && has(b.text) ? el('p', null, inline(b.text)) : null); })));
     var rows = s.rows || [];
     if (kind === 'index') {
       rows.forEach(function (r) { body.appendChild(buildIndexRow(r)); });
@@ -786,7 +817,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     var sub = (r.body || []).filter(function (b) { return b.type === 'text'; })[0];
     var kids = [el('span', 'lt', [el('b', null, inline(r.title, true)), sub ? el('small', null, inline(sub.text, true)) : null]),
       el('span', 'end', [r.round ? el('span', 'tag rt-' + r.round, r.round) : null, r.handled ? el('span', 'handled ' + (r.handled.tone || 'open'), r.handled.text) : null, r.label ? el('span', 'lab l-' + r.label, r.label) : null, r.meta ? el('span', null, r.meta) : null])];
-    return r.href ? el('a', 'lrow', kids, { href: r.href }) : el('div', 'lrow', kids);
+    return safeHref(r.href) ? el('a', 'lrow', kids, { href: safeHref(r.href) }) : el('div', 'lrow', kids);
   }
 
   function buildRow(so, row, idx) {
@@ -801,6 +832,7 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
     if (row.needs_you) { ro.doneTag = el('span', 'tag handled ok', '✓ Read'); ro.doneTag.hidden = true; tags.appendChild(ro.doneTag); }
     if (row.handled) tags.appendChild(el('span', 'handled ' + (row.handled.tone || 'open'), (row.handled.tone === 'ok' ? '✓ ' : '') + row.handled.text));
     if (row.label) tags.appendChild(el('span', 'lab l-' + row.label, row.label));
+    (Array.isArray(row.tags) ? row.tags : []).forEach(function (t) { if (t && has(t.text)) tags.appendChild(el('span', 'tag t-' + toneOf(t.tone), t.text)); });
     var dot = el('button', 'dot', el('i'), { type: 'button', 'aria-pressed': 'false', title: 'Mark read' });
     var head = el('div', 'rowhead', [tw, el('span', 'rid', row.id || ''), titleBtn, tags, dot]);
     var body = el('div', 'rowbody'); body.hidden = true;
@@ -813,9 +845,9 @@ textarea.in { width: 100%; resize: vertical; min-height: 64px; padding: 8px 10px
         body.appendChild(el('div', 'revnote ' + row.round, [el('b', null, lead + ': '), inline(row.round_note)]));
       }
       renderBody(row.body).forEach(function (n) { body.appendChild(n); });
-      if (row.refs && row.refs.length) body.appendChild(el('div', 'refs', [el('span', null, row.refs_label || 'Linked'), row.refs.map(function (r) {
+      if (row.refs && row.refs.length) body.appendChild(el('div', 'refs', [has(row.refs_label) ? el('span', null, row.refs_label) : null, row.refs.map(function (r) {
         var tgt = r.target || (ROWBYID[r.label] ? r.label : null);
-        return tgt ? el('a', 'ref', r.label, { href: tgt.indexOf('#') === 0 || /^[a-z]+:/.test(tgt) || tgt.indexOf('.') > -1 ? tgt : '#' + encodeURIComponent(tgt), title: r.tip || (ROWBYID[tgt] ? plain(ROWBYID[tgt].title) : ''), 'data-go': tgt }) : el('span', 'ref', r.label, { title: r.tip || '' });
+        return tgt ? el('a', 'ref', r.label, { href: tgt.indexOf('#') === 0 || /^[a-z]+:/.test(tgt) || tgt.indexOf('.') > -1 ? safeHref(tgt) : '#' + encodeURIComponent(tgt), title: r.tip || (ROWBYID[tgt] ? plain(ROWBYID[tgt].title) : ''), 'data-go': tgt }) : el('span', 'ref', r.label, { title: r.tip || '' });
       })]));
       var foot = el('div', 'rowfoot');
       if (row.picks && row.picks.length) {

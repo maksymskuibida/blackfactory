@@ -7,9 +7,11 @@
   "required": ["contract", "kind", "id", "page", "sections"],
   "properties": {
     "contract": { "const": 1 },
-    "kind": { "enum": ["index", "gate", "questions", "ledger", "plan", "run", "checkpoint", "coverage", "report"] },
+    "kind": { "enum": ["index", "gate", "questions", "ledger", "plan", "run", "checkpoint", "coverage", "report", "workspace", "space", "rules"] },
     "id": { "type": "string", "minLength": 1, "description": "Stable id of the page. Used as the key for stored marks, notes and answers." },
     "project": { "type": "string" },
+    "space": { "type": "string", "description": "Optional addition (D-42). The space the page belongs to; a page of the workspace leaves it out." },
+    "intent": { "type": "string", "description": "Optional addition (D-42). The intent the page belongs to; a page of a space or of the workspace leaves it out." },
     "built_at": { "type": "string", "format": "date-time" },
     "page": { "$ref": "#/$defs/page" },
     "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } },
@@ -38,6 +40,16 @@
           "type": "object",
           "required": ["text"],
           "properties": { "text": { "type": "string" }, "tone": { "$ref": "#/$defs/tone" } }
+        },
+        "context_label": { "type": "string", "description": "Optional addition (D-42). The accessible name of the context strip, a key's text; empty or absent leaves it unnamed." },
+        "context": {
+          "type": "array",
+          "description": "Optional addition (D-42). The context strip under the crumbs: labelled values for the space, the intent and the intent's state. An item with an empty label or value is not drawn.",
+          "items": {
+            "type": "object",
+            "required": ["label", "value"],
+            "properties": { "label": { "type": "string" }, "value": { "type": "string" }, "tone": { "$ref": "#/$defs/tone" } }
+          }
         },
         "title": { "type": "string" },
         "lede": { "type": "string" },
@@ -86,6 +98,11 @@
         "needs_you": { "type": "boolean" },
         "round": { "$ref": "#/$defs/roundMark" },
         "round_note": { "type": "string", "description": "Why the row changed in this round. Shown as 'New in v2: ...' above the body." },
+        "tags": {
+          "type": "array",
+          "description": "Optional addition (D-42). Several tags on a row, each with a tone and a word, beside the one tag a row has today. A tag with empty text is not drawn. The tone is never the only sign: the text always says it.",
+          "items": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" }, "tone": { "enum": ["wait", "ok", "info", "none"] } } }
+        },
         "handled": {
           "type": "object",
           "required": ["text"],
@@ -116,7 +133,8 @@
         { "type": "object", "required": ["type", "items"], "properties": { "type": { "const": "list" }, "items": { "type": "array", "items": { "type": "string" } } } },
         { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "was" }, "text": { "type": "string" }, "label": { "type": "string", "description": "Optional addition. Default 'Before'." } } },
         { "type": "object", "required": ["type", "rows"], "properties": { "type": { "const": "table" }, "head": { "type": "array", "items": { "type": "string" } }, "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } } } },
-        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "code" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "code" }, "text": { "type": "string" }, "wrap": { "type": "boolean", "description": "Optional addition (D-42). Wrap long lines, for the whole text of a proposed rule." } } },
+        { "type": "object", "required": ["type", "text"], "properties": { "type": { "const": "note" }, "label": { "type": "string", "description": "Optional addition (D-42). A marked note: the label is a key's text; empty hides the label." }, "text": { "type": "string" } } },
         { "type": "object", "required": ["type"], "properties": { "type": { "const": "evidence" }, "check": { "type": "string" }, "command": { "type": "string" }, "exit": { "type": ["integer", "null"] }, "outcome": { "enum": ["passed", "failed", "unreachable"], "description": "Optional addition. Absent: passed when exit is 0, failed when exit is another number. unreachable means the check could not run, which is not a failure of the thing checked." }, "reason": { "type": "string", "description": "Optional addition. Why the check failed or could not run; shown under the header." }, "commit": { "type": "string" }, "at": { "type": "string" }, "output_tail": { "type": "string" } } },
         { "type": "object", "required": ["type", "path"], "properties": { "type": { "const": "image" }, "path": { "type": "string" }, "alt": { "type": "string" } } }
       ]
