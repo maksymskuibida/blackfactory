@@ -6,6 +6,7 @@ use common::*;
 use serde_json::Value;
 use std::process::Command;
 
+#[allow(clippy::module_inception)]
 mod questions {
     use super::*;
 

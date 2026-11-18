@@ -27,6 +27,7 @@ fn ask(fx: &Fx, stage: &str, title: &str) {
     fx.must(&["ask", "--stage", stage, "--title", title]);
 }
 
+#[allow(clippy::module_inception)]
 mod design_advice {
     use super::*;
 
