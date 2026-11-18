@@ -183,3 +183,206 @@ fn render_with_the_real_template_keeps_valid_json_and_sets_the_title() {
         "data must not add a closing script tag"
     );
 }
+
+fn sample(name: &str) -> serde_json::Value {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../views/samples")
+        .join(format!("{name}.json"));
+    serde_json::from_str(&fs::read_to_string(p).unwrap_or_else(|_| panic!("sample {name}")))
+        .unwrap()
+}
+
+#[test]
+fn each_new_page_kind_has_a_sample_that_validates() {
+    for kind in ["workspace", "space", "rules"] {
+        let v = sample(kind);
+        assert_eq!(v["kind"], kind);
+        assert_contract(kind, &v);
+    }
+    // the workspace page leaves out what it has not; a space page has a space and no intent
+    assert!(
+        sample("workspace").get("space").is_none() && sample("workspace").get("intent").is_none()
+    );
+    assert!(sample("space").get("space").is_some() && sample("space").get("intent").is_none());
+    for n in ["checkpoint-fix", "run-cost", "plan-tests", "gate-links"] {
+        let v = sample(n);
+        assert_contract(n, &v);
+        assert!(v["intent"].is_string() && v["space"].is_string(), "{n}");
+        assert!(
+            v["page"]["context"]
+                .as_array()
+                .map(|c| c.len() == 3)
+                .unwrap_or(false),
+            "{n}: the strip holds the space, the intent and the state"
+        );
+    }
+}
+
+#[test]
+fn the_contract_grows_by_additions_only_and_an_old_page_validates_unchanged() {
+    let schema = view_schema();
+    assert_eq!(schema["properties"]["contract"]["const"], 1);
+    let kinds: Vec<&str> = schema["properties"]["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    for k in [
+        "index",
+        "gate",
+        "questions",
+        "ledger",
+        "plan",
+        "run",
+        "checkpoint",
+        "coverage",
+        "report",
+    ] {
+        assert!(kinds.contains(&k), "kind {k} was removed");
+    }
+    assert_eq!(
+        schema["required"],
+        serde_json::json!(["contract", "kind", "id", "page", "sections"])
+    );
+    let row = &schema["$defs"]["row"]["properties"];
+    for f in [
+        "id",
+        "title",
+        "label",
+        "look_first",
+        "needs_you",
+        "round",
+        "round_note",
+        "handled",
+        "body",
+        "refs",
+        "picks",
+        "refs_label",
+        "note",
+        "href",
+        "meta",
+    ] {
+        assert!(row.get(f).is_some(), "row field {f} was removed");
+    }
+    // a page of an old project: none of the new fields, still valid
+    for n in [
+        "index",
+        "gate",
+        "questions",
+        "ledger",
+        "plan",
+        "run",
+        "checkpoint",
+        "coverage",
+        "plan-gate",
+    ] {
+        let v = sample(n);
+        assert!(
+            v.get("space").is_none() && v["page"].get("context").is_none(),
+            "{n} is an old page"
+        );
+        assert_contract(n, &v);
+    }
+    // a page of a new kind built without the new fields is valid too
+    let bare = serde_json::json!({"contract": 1, "kind": "rules", "id": "r", "page": {"title": "t"}, "sections": []});
+    assert_contract("bare rules page", &bare);
+    // the new parts are checked: a tag needs its text, a context item its label and value, a tone is one of the set
+    let mut v = sample("space");
+    v["sections"][0]["rows"][0]["tags"] = serde_json::json!([{"tone": "ok"}]);
+    assert!(!schema::validate(&schema, &v).is_empty());
+    let mut v = sample("space");
+    v["page"]["context"] = serde_json::json!([{"value": "x"}]);
+    assert!(!schema::validate(&schema, &v).is_empty());
+    let mut v = sample("rules");
+    v["sections"][0]["rows"][0]["tags"][0]["tone"] = serde_json::json!("purple");
+    assert!(!schema::validate(&schema, &v).is_empty());
+}
+
+/// D-37, D-62: a label in a new sample is the text of a key of the unit's own strings file.
+#[test]
+fn every_label_in_the_new_samples_is_a_key_text_of_the_strings_file() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../views");
+    let strings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("contract/strings.json")).unwrap())
+            .unwrap();
+    let known: Vec<&str> = strings
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(known.iter().all(|t| !t.is_empty()));
+    let mut seen = 0;
+    for n in [
+        "workspace",
+        "space",
+        "rules",
+        "checkpoint-fix",
+        "run-cost",
+        "plan-tests",
+        "gate-links",
+    ] {
+        let v = sample(n);
+        let mut labels: Vec<String> = Vec::new();
+        let mut add = |x: &serde_json::Value| {
+            if let Some(s) = x.as_str() {
+                labels.push(s.to_string())
+            }
+        };
+        add(&v["page"]["context_label"]);
+        add(&v["page"]["status"]["text"]);
+        // crumbs: a name of the invented data (a space, an intent, a checkpoint) is not a label
+        let names: Vec<String> = v["page"]["context"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["value"].as_str().map(String::from))
+            .collect();
+        for c in v["page"]["crumbs"].as_array().into_iter().flatten() {
+            let t = c.as_str().unwrap_or("");
+            let is_name = names.iter().any(|x| x == t) || t.starts_with("K-") || t == "Billing";
+            if !is_name {
+                add(c);
+            }
+        }
+        for c in v["page"]["context"].as_array().into_iter().flatten() {
+            add(&c["label"]);
+        }
+        for s in v["sections"].as_array().unwrap() {
+            add(&s["title"]);
+            for b in s["blocks"].as_array().into_iter().flatten() {
+                add(&b["label"]);
+                add(&b["unit"]);
+            }
+            for r in s["rows"].as_array().into_iter().flatten() {
+                add(&r["refs_label"]);
+                for t in r["tags"].as_array().into_iter().flatten() {
+                    if t["text"] != "Unheard-of kind" {
+                        add(&t["text"]);
+                    }
+                }
+                // the pick texts of a decision (gate-links) are invented data
+                if n != "gate-links" {
+                    for p in r["picks"].as_array().into_iter().flatten() {
+                        add(&p["text"]);
+                    }
+                }
+                for b in r["body"].as_array().into_iter().flatten() {
+                    add(&b["label"]);
+                    for h in b["head"].as_array().into_iter().flatten() {
+                        add(h);
+                    }
+                }
+            }
+        }
+        for l in labels {
+            assert!(
+                known.contains(&l.as_str()),
+                "{n}: the label {l:?} is not in views/contract/strings.json"
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 40, "{seen}");
+}

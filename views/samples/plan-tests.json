@@ -1,0 +1,73 @@
+{
+ "contract": 1,
+ "kind": "plan",
+ "id": "plan-1",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "intent": "Billing export",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Billing",
+   "Billing export",
+   "Plan"
+  ],
+  "title": "Plan: the tests and the heavy limit",
+  "lede": "How much testing the plan holds.",
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   },
+   {
+    "label": "Intent",
+    "value": "Billing export"
+   },
+   {
+    "label": "State",
+    "value": "Planning",
+    "tone": "info"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "tests",
+   "title": "Tests and the heavy limit",
+   "rows": [
+    {
+     "id": "t-1",
+     "title": "Four tests are heavy and run once at the checkpoint",
+     "tags": [
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "needs_you": true,
+     "body": [
+      {
+       "type": "table",
+       "head": [
+        "Test",
+        "Weight"
+       ],
+       "rows": [
+        [
+         "export::totals",
+         "light"
+        ],
+        [
+         "export::large_file",
+         "heavy"
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

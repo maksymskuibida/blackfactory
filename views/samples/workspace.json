@@ -1,0 +1,169 @@
+{
+ "contract": 1,
+ "kind": "workspace",
+ "id": "workspace",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Workspace"
+  ],
+  "title": "Everything in the workspace",
+  "lede": "What waits for you comes first, then proposals, spaces and intents.",
+  "status": {
+   "text": "1 waits for you",
+   "tone": "wait"
+  },
+  "facts": [
+   {
+    "label": "Waiting",
+    "value": "1"
+   },
+   {
+    "label": "Spaces",
+    "value": "1"
+   },
+   {
+    "label": "Intents",
+    "value": "3"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "waiting",
+   "title": "Waiting for you",
+   "hint": "Open these first",
+   "open": true,
+   "rows": [
+    {
+     "id": "ask-1",
+     "title": "Intent billing-export asks which currency the export uses",
+     "needs_you": true,
+     "tags": [
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      },
+      {
+       "text": "Waiting",
+       "tone": "info"
+      }
+     ],
+     "body": [
+      {
+       "type": "note",
+       "label": "Why you are asked",
+       "text": "The requirement names no currency, and two spaces use different ones."
+      },
+      {
+       "type": "text",
+       "text": "Answer in the chat."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "proposals",
+   "title": "Proposals",
+   "rows": [
+    {
+     "id": "prop-1",
+     "title": "A proposed rule: every export names its currency",
+     "tags": [
+      {
+       "text": "Proposed",
+       "tone": "info"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Lives in the rules of the billing space once you accept it."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "spaces",
+   "title": "Spaces",
+   "rows": [
+    {
+     "id": "sp-billing",
+     "title": "Billing holds two intents and four rules",
+     "tags": [
+      {
+       "text": "Holds no work",
+       "tone": "info"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Nothing in this space is running."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "intents",
+   "title": "Intents",
+   "rows": [
+    {
+     "id": "in-1",
+     "title": "Billing export is running its second wave",
+     "tags": [
+      {
+       "text": "Running",
+       "tone": "info"
+      },
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Two units are built, one is ready."
+      }
+     ]
+    },
+    {
+     "id": "in-2",
+     "title": "Invoice layout is merged and settled",
+     "tags": [
+      {
+       "text": "Merged",
+       "tone": "ok"
+      },
+      {
+       "text": "Settled",
+       "tone": "ok"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "Nothing further to do."
+      }
+     ]
+    },
+    {
+     "id": "in-3",
+     "title": "An entry of a kind no list knows still shows its sentence",
+     "tags": [
+      {
+       "text": "Unheard-of kind",
+       "tone": "none"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
