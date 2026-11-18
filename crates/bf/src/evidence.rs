@@ -589,16 +589,11 @@ pub fn run_with(
         }
         for d in &drafts {
             if let Some(a) = crate::gates::unapproved_change(&st, d) {
-                return Err(refuse(
-                    format!("run evidence for {check_id}"),
-                    format!(
-                        "{} is changed by {a}, which the human has not approved; a draft of the plan is not the record in force",
-                        s(d, "id")
-                    ),
-                    &[&format!(
-                        "Wait for the human's approval of {a} (`bf status` lists it)."
-                    )],
-                    "`bf status` shows the amendment approved.",
+                return Err(crate::gates::draft_refusal(
+                    &st,
+                    &crate::strings::t("cli.amend.draft_what.run_evidence", &[("check", check_id)]),
+                    s(d, "id"),
+                    &a,
                 ));
             }
         }
@@ -2077,10 +2072,7 @@ pub fn unit_landing_needs<'a>(
                 id: s(d, "id").to_string(),
                 attached: false,
                 met: None,
-                line: format!(
-                    "{}: changed by {a}, which the human has not approved; the draft does not count",
-                    s(d, "id")
-                ),
+                line: crate::gates::draft_line(st, s(d, "id"), &a),
             });
         }
     }
@@ -2097,9 +2089,7 @@ pub fn unit_landing_needs<'a>(
             id: cid.clone(),
             attached: false,
             met: None,
-            line: format!(
-                "{cid}: changed by {a}, which the human has not approved; the draft does not count"
-            ),
+            line: crate::gates::draft_line(st, &cid, &a),
         });
     }
     for c in pl.unit_checks(unit) {

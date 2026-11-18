@@ -263,17 +263,16 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             && changes
             && !gates::amended(&st, &id)
             && !gates::is_approved_content(&st, &rec)
-            && !(old.is_none() && gates::approved_missing(&st, &id))
         {
-            return Err(refuse(
-                format!("{} {id}", if old.is_some() { "replace" } else { "add" }),
-                format!("the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"),
-                &[
-                    &format!("Run `bf amend open {id}` (name every record to change) to see the impact. If an amendment is already open and {id} is a kept record of its impact set, name it in the changed set instead: `bf amend revise <the IDs it names now> {id}`."),
-                    &format!("Put {id} again while the amendment waits for the human (a kept record is not put while it waits: name it first); the one approval covers the content put."),
-                    "Narrow it with `bf amend narrow --file <f>`; the human reads it and says yes, then run `bf amend approve`. A record put after the narrowing makes approval refuse: revise and narrow again.",
-                ],
-                format!("`bf record get {id}` shows the new content."),
+            if old.is_none() {
+                return Err(crate::refusal::from_key(
+                    "cli.amend.new_record_late",
+                    &[("id", &id), ("stage", stage)],
+                ));
+            }
+            return Err(crate::refusal::from_key(
+                "cli.amend.replace_gated",
+                &[("id", &id), ("stage", stage)],
             ));
         }
     }
@@ -318,16 +317,6 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
         p.write_record(&rec)?;
     }
     p.write_guard()?;
-    // A record that an approved amendment covered before it existed: what is put now is what the
-    // approval covers, and a later change needs an amendment again.
-    if old.is_none() && gates::approved_missing(&st, &id) {
-        let put = p.get_record(&id)?.unwrap_or_else(|| rec.clone());
-        let mut e = json!({"id": id, "content_h": crate::evidence::record_hash(&put)});
-        if !s(&put, "unit").is_empty() {
-            e["unit"] = json!(s(&put, "unit"));
-        }
-        events::append(p, "amend.bind", e)?;
-    }
     if let Some(m) = &made {
         gates::design_made(p, &id, kind.name, m)?;
     }

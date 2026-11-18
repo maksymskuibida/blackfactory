@@ -1046,7 +1046,9 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     }
     let log = events::load_log(p)?;
     let recent: Vec<Value> = log.events.iter().rev().take(15).map(|e| {
-        json!({"id": format!("E-{}", e["seq"]), "title": format!("{} {}", s(e, "at"), s(e, "kind")), "body": [{"type": "code", "text": serde_json::to_string(&strip_event(e)).unwrap_or_default()}]})
+        let (short, cut) = crate::amend::shorten_event(e);
+        let line = crate::amend::event_line(&strip_event(&short), cut);
+        json!({"id": format!("E-{}", e["seq"]), "title": format!("{} {}", s(e, "at"), s(e, "kind")), "body": [{"type": "code", "text": line}]})
     }).collect();
     let run = st.active_run();
     let mut blocks = vec![wave_block(&pl, &map)];

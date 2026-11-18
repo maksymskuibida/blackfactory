@@ -573,9 +573,7 @@ pub fn checkpoint_gaps(
     let mut unproven: Vec<String> = Vec::new();
     // A checkpoint record changed by an amendment the human has not approved is a draft: it closes nothing.
     if let Some(a) = crate::gates::unapproved_change(st, k) {
-        gaps.push(format!(
-            "{kid}: changed by {a}, which the human has not approved; a draft of the plan is not the record in force"
-        ));
+        gaps.push(crate::gates::draft_line(st, kid, &a));
     }
     let is_last = last_checkpoint(pl)
         .map(|l| s(l, "id") == kid)
