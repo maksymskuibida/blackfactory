@@ -1,21 +1,20 @@
 {
  "contract": 1,
  "kind": "questions",
- "id": "requirements-q1",
+ "id": "questions-requirements",
  "project": "example-app",
- "built_at": "2026-01-15T10:00:00Z",
  "page": {
   "crumbs": [
    "All pages",
    "Example app",
-   "Requirements",
-   "Questions"
+   "Questions",
+   "requirements"
   ],
   "status": {
    "text": "Requirements · 4 questions",
    "tone": "wait"
   },
-  "title": "Four questions before the requirements are written",
+  "title": "Questions of the requirements stage in Example app",
   "lede": "Your answers decide the requirements. Pick an option or write your own; nothing is chosen for you.",
   "facts": [
    {

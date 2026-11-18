@@ -37,7 +37,6 @@ fn t6_every_kind_of_refusal_has_the_four_parts() {
         vec!["record", "list", "--kind", "nonsense"],
         vec!["id", "new", "nonsense"],
         vec!["id", "sideways"],
-        vec!["next"],
         vec!["unit", "start", "U-1"],
         vec!["unit", "land", "U-1"],
         vec!["report", "U-1", "--result", "built"],
@@ -73,12 +72,18 @@ fn t6_every_kind_of_refusal_has_the_four_parts() {
         assert_eq!(o.code, 2, "{c:?} should be refused (exit 2):\n{}", o.all());
         assert_four_parts(&o.stderr);
     }
+    // Bare `bf next` in a design stage answers (R-46).
+    let o = fx.bf(&["next"]);
+    assert_eq!(o.code, 0, "{}", o.all());
     // Refusals that need a little state.
     fx.put("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"x\"\ndelivers=[\"R-5\"]\nfiles=[\"a\"]\ncheckpoint=\"K-1\"\n");
     fx.refused(&["plan", "check"]);
     fx.refused(&["run", "start"]);
     // Outside any project.
     let o = fx.bf_in(dir.path(), &["status"]);
+    assert_eq!(o.code, 2);
+    assert_four_parts(&o.stderr);
+    let o = fx.bf_in(dir.path(), &["next"]);
     assert_eq!(o.code, 2);
     assert_four_parts(&o.stderr);
     let o = fx.bf_in(dir.path(), &["init"]);
