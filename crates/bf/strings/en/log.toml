@@ -1,0 +1,2 @@
+# Strings of the group `log`: keys are quoted and flat, `"cli.log.some.key" = "text"`.
+# Filled by the unit that owns this group (D-62).

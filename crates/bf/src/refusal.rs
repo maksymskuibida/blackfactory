@@ -1,6 +1,7 @@
 //! One shared refusal type. Every refusal has four parts: what was refused,
 //! why, numbered steps to fix it, and how to tell it worked.
 
+use crate::strings;
 use serde_json::{json, Value};
 use std::fmt;
 
@@ -33,16 +34,21 @@ impl Refusal {
         })
     }
 
-    /// Plain-text form, the same four parts in the same order.
+    /// Plain-text form, the same four parts in the same order, each under its label from a key.
     pub fn text(&self) -> String {
+        let label = |part: &str| strings::t(&format!("cli.refusal.part.{part}"), &[]);
         let mut s = format!(
-            "refused: {}\nbecause: {}\ndo this:\n",
-            self.refused, self.because
+            "{} {}\n{} {}\n{}\n",
+            label("refused"),
+            self.refused,
+            label("because"),
+            self.because,
+            label("do_this")
         );
         for (i, step) in self.do_this.iter().enumerate() {
             s.push_str(&format!("  {}. {}\n", i + 1, step));
         }
-        s.push_str(&format!("it worked when: {}\n", self.worked_when));
+        s.push_str(&format!("{} {}\n", label("worked_when"), self.worked_when));
         s
     }
 }
@@ -57,7 +63,7 @@ impl fmt::Display for Fail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Fail::Refused(r) => write!(f, "{r}"),
-            Fail::Error(e) => write!(f, "error: {e}"),
+            Fail::Error(e) => write!(f, "{} {e}", strings::t("cli.error.prefix", &[])),
         }
     }
 }
@@ -74,6 +80,29 @@ pub fn refuse(
         because: because.into(),
         do_this: steps.iter().map(|s| s.to_string()).collect(),
         worked_when: worked_when.into(),
+    };
+    debug_assert!(!r.refused.is_empty() && !r.because.is_empty() && !r.worked_when.is_empty());
+    debug_assert!(!r.do_this.is_empty());
+    Fail::Refused(r)
+}
+
+/// Build a refusal from a key stem: `<stem>.refused`, `<stem>.because`, `<stem>.do_this.1` and
+/// following, and `<stem>.worked_when`. Places are filled from `values`.
+pub fn from_key(stem: &str, values: &[(&str, &str)]) -> Fail {
+    let part = |p: &str| strings::t(&format!("{stem}.{p}"), values);
+    let mut steps = Vec::new();
+    loop {
+        let step = part(&format!("do_this.{}", steps.len() + 1));
+        if step.is_empty() {
+            break;
+        }
+        steps.push(step);
+    }
+    let r = Refusal {
+        refused: part("refused"),
+        because: part("because"),
+        do_this: steps,
+        worked_when: part("worked_when"),
     };
     debug_assert!(!r.refused.is_empty() && !r.because.is_empty() && !r.worked_when.is_empty());
     debug_assert!(!r.do_this.is_empty());

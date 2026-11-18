@@ -1,5 +1,7 @@
 //! The project on disk: where records live, config, policy, and the guard table.
 
+pub mod layout;
+
 use crate::refusal::{err, refuse, R};
 use crate::schema::{self, Kind};
 use crate::util;

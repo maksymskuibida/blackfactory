@@ -1,0 +1,28 @@
+# Core strings of the engine (C-12, D-62, D-38). Keys are flat and quoted; a place is `{name}`;
+# a value `@other.key` reads that key's text.
+
+# The parts of a refusal, in their order.
+"cli.refusal.part.refused" = "refused:"
+"cli.refusal.part.because" = "because:"
+"cli.refusal.part.do_this" = "do this:"
+"cli.refusal.part.worked_when" = "it worked when:"
+
+# An error that is no refusal.
+"cli.error.prefix" = "error:"
+
+# An information line.
+"cli.prefix.note" = "note:"
+
+# The context line of D-38, by what the command can name.
+"cli.context.line" = "space: {space}  intent: {intent}"
+"cli.context.space_only" = "space: {space}"
+"cli.context.intent_only" = "intent: {intent}"
+
+# A state as a sign with its word.
+"cli.state" = "{sign} {word}"
+
+# The command groups this version names and does not build.
+"cli.not_built.refused" = "run `bf {command}`"
+"cli.not_built.because" = "the command is not built in this version"
+"cli.not_built.do_this.1" = "Run `bf help` for the commands this version has."
+"cli.not_built.worked_when" = "`bf help` prints the usage."
