@@ -1,0 +1,19 @@
+{
+  "off": {
+    "accessibility": "the test does not exercise it",
+    "amendment-review": "the test does not exercise it",
+    "architecture-review": "the test does not exercise it",
+    "built-uiux-verification": "the test does not exercise it",
+    "checkpoint-review": "the test does not exercise it",
+    "dependency-licence-check": "the test does not exercise it",
+    "design-uiux-verification": "the test does not exercise it",
+    "idea-review": "the test does not exercise it",
+    "legal-audit": "the test does not exercise it",
+    "markets-statement": "the test does not exercise it",
+    "plan-review": "the test does not exercise it",
+    "requirements-review": "the test does not exercise it",
+    "secret-scan": "the test does not exercise it",
+    "security-audit": "the test does not exercise it",
+    "threat-model": "the test does not exercise it"
+  }
+}

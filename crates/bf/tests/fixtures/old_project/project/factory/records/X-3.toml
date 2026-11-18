@@ -1,0 +1,11 @@
+command = "ls src/hello.txt src/bye.txt"
+how = "command"
+id = "X-3"
+kind = "check"
+proves = [
+    "R-1",
+    "R-2",
+    "C-1",
+]
+scope = "checkpoint"
+title = "Both files"

@@ -1,0 +1,88 @@
+# Black Factory policy. Only the human edits this file.
+[limits]
+max_rounds = 3        # review rounds before a unit is parked
+idle_minutes = 60     # a running unit with no event for this long is stuck
+max_attempts = 10     # failing check runs and blocked reports in a row before a unit is parked
+checkpoint_reviews = 3 # reviews a checkpoint may have before it parks with a high or medium finding open
+
+[context]
+max_share = 40        # percent of the context window a conductor's session may fill before the hook says so
+max_age_seconds = 900 # a saved share older than this is not used: no note is made
+
+[tiers]               # model tier by kind of work: cheap, standard or strong
+conductor = "standard"          # conducting the build loop
+designer = "strong"             # a design stage
+amender = "strong"              # an amendment
+advisor = "strong"              # advising the conductor on a question that needs judgment
+builder = "standard"            # building
+reviewer = "strong"             # reviewing a unit
+checkpoint_reviewer = "strong"  # reviewing a checkpoint
+verifier = "standard"           # verifying
+
+[efforts]             # effort by kind of work: low, medium or high
+conductor = "medium"
+designer = "high"
+amender = "high"
+advisor = "high"
+builder = "medium"
+reviewer = "high"
+checkpoint_reviewer = "high"
+verifier = "low"
+
+# A model named outright for a harness replaces the harness's choice for the tier. Optional, one table
+# per kind of work, for example a [models.builder] table holding claude = "a-model-name".
+
+[budget]
+cap = 0.0             # 0 means no cap; with a cap, every `bf report` must carry --cost
+unit = "USD"
+
+[review]
+required = true       # a unit needs a clean review before it can land
+# A builder that needs a file beyond its unit's list asks for it, and a cold reviewer says whether the
+# unit's original scope needs it. true: a needed file is granted at once, with no step of the human.
+# false: every request goes to the human as a plan repair, as before.
+scope_review = true
+
+[unit_checks]
+# Checks every unit must pass, each with its exact command, for example the lint step and the whole
+# test suite: list = [{ name = "lint", command = "cargo clippy -- -D warnings" }]. Empty as shipped.
+list = []
+
+[ledger]
+kinds = ["requirement", "component", "screen", "journey", "target", "threat", "decision"]
+
+[evidence]
+tail_bytes = 4000
+max_attach_bytes = 5242880
+
+[human]
+sessions = []         # session ids that count as the human's own; empty means any session
+# A decision is the quote the conductor names from the human's message; the engine stores both. These
+# two lists only add a visible caution beside the decision ("the message also contains: not"). They
+# never refuse anything.
+approval_words = ["approve", "approved", "yes", "ok", "okay", "go ahead", "lgtm", "agreed", "accept", "accepted", "fine", "proceed", "merge it", "ja", "genehmigt", "freigegeben", "einverstanden", "okay", "passt", "weiter", "los", "oui", "approuve", "approuvé", "d'accord", "sí", "si", "vale", "aprobado", "adelante"]
+refusal_words = ["not", "no", "nope", "don't", "dont", "never", "reject", "rejected", "stop", "wait", "hold", "cancel", "disapprove", "change", "changes", "revise", "redo", "rework", "wrong", "instead", "nicht", "nein", "kein", "keine", "nie", "niemals", "ablehnen", "abgelehnt", "stopp", "warte", "halt", "ändern", "falsch", "non", "pas", "jamais", "rejeter", "arrêtez", "attendez", "changer", "nunca", "rechazo", "rechazar", "espera", "cambiar", "incorrecto"]
+transcript_root = "/private/tmp/old-project-gen/transcripts"   # where the harness keeps its transcripts
+# "soft" records the turn from the hook payload and only notes what the transcript says (match, differs,
+# unparsed, absent). "strict" refuses a turn unless the transcript, under the root above, already ends
+# with the prompt; the harness may write the transcript only after the hook runs.
+transcript_match = "soft"
+
+[gates]
+in_order = false       # a design gate opens only after the earlier ones are approved, and only with records behind it
+
+[roles]
+tokens = false         # `bf report` needs the one-use token that `bf next` handed out for the role
+
+[exec]
+# Checks run through /bin/sh with exactly this PATH and `git` is this program, whatever the caller's
+# environment says. Captured at `bf init`; only the human edits it.
+path = "/usr/bin:/bin:/usr/sbin:/sbin"
+git = "/usr/bin/git"
+sandbox = true        # run checks and git under sandbox-exec where it works (macOS); see `bf doctor`
+network = false       # true lets checks reach the network under the sandbox
+env = []              # extra environment variable names a check may see, e.g. ["JAVA_HOME"]
+
+[guard]
+allow = "abstain"     # "abstain" prints {} and leaves the decision to the harness's own prompts; "allow" approves
+protected_extra = []  # more paths agents may not write
