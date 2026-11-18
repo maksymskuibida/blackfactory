@@ -8,9 +8,10 @@
 //! requirement of the amendment has no link to another design part.
 
 use crate::events::{Amend, State};
-use crate::refusal::{refuse_owned, R};
+use crate::refusal::{from_key, refuse_owned, R};
 use crate::schema::{self, parse_id};
 use crate::store::{s, str_list, Project};
+use crate::strings;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
@@ -161,6 +162,167 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
         ],
         "`bf amend approve` prints the approved amendment.",
     ))
+}
+
+/// Refuse while an ID the amendment names has no record. A new record is put while the amendment waits
+/// for the human, so the human reads it before the approval (R-43). `stem` is the key stem of the
+/// refusal of the command that asks.
+pub fn refuse_if_names_missing(p: &Project, a: &Amend, stem: &str) -> R<()> {
+    let mut missing: Vec<String> = Vec::new();
+    for id in &a.ids {
+        if p.get_record(id)?.is_none() {
+            missing.push(id.clone());
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(from_key(
+        stem,
+        &[("amend", &a.id), ("ids", &missing.join(", "))],
+    ))
+}
+
+/// What a withdrawal does to one record.
+#[derive(Clone, Debug)]
+pub enum Back {
+    /// Write this content, the content last approved.
+    Restore(Value),
+    /// Take the record out of the records in force: the amendment added it.
+    Remove,
+}
+
+/// The records a withdrawal puts back, each with what is done to it. The content comes from the log by
+/// the hash it holds for the last approval of the record. Nothing is written here: when the content of
+/// any record cannot be found, the withdrawal is refused naming each such record (R-44).
+pub fn withdraw_plan(p: &Project, st: &State, a: &Amend) -> R<Vec<(String, Back)>> {
+    let mut ids: Vec<&String> = a.ids.iter().chain(a.touched.iter()).collect();
+    ids.sort();
+    ids.dedup();
+    let mut out = Vec::new();
+    let mut lost: Vec<String> = Vec::new();
+    for id in ids {
+        let cur = p.get_record(id)?;
+        let stage = cur
+            .as_ref()
+            .map(|r| s(r, "kind").to_string())
+            .or_else(|| schema::kind_of_id(id).map(|k| k.name.to_string()))
+            .and_then(|k| crate::gates::stage_of_kind(&k));
+        let Some(stage) = stage else { continue };
+        if !st
+            .latest_gate(stage, None)
+            .map(|g| g.status == "approved")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match crate::gates::approved_entry(st, stage, id) {
+            Some((h, _)) if h != "missing" => {
+                let found = crate::gates::approved_record(st, stage, id)
+                    .filter(|r| crate::evidence::record_hash(r) == h);
+                match (found, &cur) {
+                    (None, _) => lost.push(id.clone()),
+                    (Some(r), Some(c)) if *c == r => {}
+                    (Some(r), _) => out.push((id.clone(), Back::Restore(r))),
+                }
+            }
+            _ => {
+                if cur.is_some() {
+                    out.push((id.clone(), Back::Remove));
+                }
+            }
+        }
+    }
+    if !lost.is_empty() {
+        return Err(from_key(
+            "cli.amend.withdraw_lost",
+            &[("amend", &a.id), ("ids", &lost.join(", "))],
+        ));
+    }
+    Ok(out)
+}
+
+/// Do the plan of `withdraw_plan`, all or none. Returns what was on disk before, for `undo_writes`.
+pub fn apply_withdraw(
+    p: &Project,
+    plan: &[(String, Back)],
+) -> R<Vec<(std::path::PathBuf, Option<Vec<u8>>)>> {
+    let mut before: Vec<(std::path::PathBuf, Option<Vec<u8>>)> = vec![];
+    for (id, _) in plan {
+        let path = p.record_path(id)?;
+        before.push((path.clone(), std::fs::read(&path).ok()));
+    }
+    for (id, how) in plan {
+        let done = match how {
+            Back::Restore(r) => p.write_record(r),
+            Back::Remove => p
+                .record_path(id)
+                .and_then(|f| std::fs::remove_file(f).map_err(Into::into)),
+        };
+        if let Err(e) = done {
+            undo_writes(&before);
+            return Err(e);
+        }
+    }
+    Ok(before)
+}
+
+/// The text of a finished withdrawal: its line, then each record put back.
+pub fn withdraw_text(v: &Value) -> String {
+    let aid = s(v, "amend");
+    let mut lines = vec![strings::t(
+        "cli.amend.withdraw.line",
+        &[("amend", aid), ("reason", s(v, "reason"))],
+    )];
+    let back = v["put_back"].as_array().cloned().unwrap_or_default();
+    if back.is_empty() {
+        lines.push(strings::t("cli.amend.withdraw.nothing", &[("amend", aid)]));
+    }
+    for b in &back {
+        let key = if s(b, "how") == "removed" {
+            "cli.amend.withdraw.removed"
+        } else {
+            "cli.amend.withdraw.restored"
+        };
+        lines.push(strings::t(key, &[("id", s(b, "id")), ("amend", aid)]));
+    }
+    lines.join("\n")
+}
+
+/// The longest line the log view prints for one event (R-52).
+pub const EVENT_LINE_MAX: usize = 2000;
+
+/// An event as the log view prints it: an amendment's narrowing and approval events carry the IDs of
+/// their records, under the label of `cli.log.records`, where they hold the records' contents. The bool
+/// says whether contents were left out. The log itself is never changed.
+pub fn shorten_event(e: &Value) -> (Value, bool) {
+    let drop: &[&str] = match s(e, "kind") {
+        "amend.narrow" => &["changes"],
+        "amend.approve" => &["content"],
+        _ => return (e.clone(), false),
+    };
+    let mut m = e.clone();
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(o) = m.as_object_mut() {
+        for k in drop {
+            match o.remove(*k) {
+                Some(Value::Object(c)) => ids.extend(c.keys().cloned()),
+                Some(Value::Array(c)) => {
+                    ids.extend(c.iter().map(|x| s(x, "id").to_string()));
+                }
+                _ => {}
+            }
+        }
+        let label = strings::t("cli.log.records", &[]);
+        o.insert(label, json!(ids));
+    }
+    if serde_json::to_string(&m).map(|x| x.len()).unwrap_or(0) > EVENT_LINE_MAX {
+        let label = strings::t("cli.log.records", &[]);
+        if let Some(o) = m.as_object_mut() {
+            o.insert(label, json!(ids.len()));
+        }
+    }
+    (m, true)
 }
 
 /// The requirements of the amendment that have no link to another design part (their own `links`,

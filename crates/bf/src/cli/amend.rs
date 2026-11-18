@@ -35,6 +35,12 @@ pub(crate) fn cmd_amend(args: &Args) -> R<()> {
             ))
         }
     };
-    out(args, &v, || pretty(&v));
+    out(args, &v, || {
+        if v["withdrawn"] == true {
+            crate::amend::withdraw_text(&v)
+        } else {
+            pretty(&v)
+        }
+    });
     Ok(())
 }

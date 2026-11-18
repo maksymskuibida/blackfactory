@@ -1,2 +1,59 @@
 # Strings of the group `amend`: keys are quoted and flat, `"cli.amend.some.key" = "text"`.
 # Filled by the unit that owns this group (D-62).
+
+# R-43: an amendment names its new records.
+"cli.amend.missing_narrow.refused" = "narrow {amend}"
+"cli.amend.missing_narrow.because" = "the amendment names {ids}, and no record has that ID; an amendment names its new records, and each is put while the amendment waits, so the human reads it"
+"cli.amend.missing_narrow.do_this.1" = "Put each of {ids} (`bf record put <kind> --file <f>`), or leave it out with `bf amend revise <the IDs it names now>`."
+"cli.amend.missing_narrow.do_this.2" = "Run `bf amend narrow --file <f>` again."
+"cli.amend.missing_narrow.worked_when" = "`bf amend narrow` prints the narrowed set."
+
+"cli.amend.missing_approve.refused" = "approve {amend}"
+"cli.amend.missing_approve.because" = "the amendment names {ids}, and no record has that ID, so the human has read no content for it; an amendment names its new records, and each is put while the amendment waits"
+"cli.amend.missing_approve.do_this.1" = "Put each of {ids} (`bf record put <kind> --file <f>`), or leave it out with `bf amend revise <the IDs it names now>`."
+"cli.amend.missing_approve.do_this.2" = "Narrow {amend} again with `bf amend narrow --file <f>`; the human reads it after its last change."
+"cli.amend.missing_approve.worked_when" = "`bf amend approve` prints the approved amendment."
+
+"cli.amend.narrow.add_step" = "To add a record to {amend}, run `bf amend revise <the IDs it names now> <the new ID>`: narrowing only removes IDs."
+
+"cli.amend.new_record_late.refused" = "add {id}"
+"cli.amend.new_record_late.because" = "the {stage} gate is approved and {id} did not exist when the human approved, so no content may take force that the human did not see"
+"cli.amend.new_record_late.do_this.1" = "Name new records when the amendment is opened: `bf amend open {id} <the other IDs>`, or add {id} to an amendment that waits with `bf amend revise <the IDs it names now> {id}`, before the human approves."
+"cli.amend.new_record_late.do_this.2" = "Put {id} while that amendment waits, narrow it with `bf amend narrow --file <f>`, and let the human read it and say yes."
+"cli.amend.new_record_late.worked_when" = "`bf record get {id}` shows the new content."
+
+# R-44: withdrawing puts records back.
+"cli.amend.withdraw.line" = "withdrew {amend}: {reason}"
+"cli.amend.withdraw.restored" = "put back {id} to the content last approved"
+"cli.amend.withdraw.removed" = "took out {id}, which {amend} added (the log keeps its content)"
+"cli.amend.withdraw.nothing" = "{amend} had changed no record, so none was put back"
+
+"cli.amend.withdraw_lost.refused" = "withdraw {amend}"
+"cli.amend.withdraw_lost.because" = "the content last approved for {ids} cannot be found in the log, so it cannot be put back"
+"cli.amend.withdraw_lost.do_this.1" = "Put {ids} back to the content the human approved by hand (git history holds it), then run the withdrawal again."
+"cli.amend.withdraw_lost.do_this.2" = "Or keep {amend} open and change it with `bf amend revise <the IDs it names now>`."
+"cli.amend.withdraw_lost.worked_when" = "`bf amend withdraw {amend}` prints each record it put back."
+
+# R-45: a refusal for a draft of the plan.
+"cli.amend.draft_waits.refused" = "{what}"
+"cli.amend.draft_waits.because" = "{draft} is changed by {amend}, which waits for the human; a draft of the plan is not the record in force"
+"cli.amend.draft_waits.do_this.1" = "Ask the human about {amend} (`bf status` lists it); the draft takes force when they approve it."
+"cli.amend.draft_waits.do_this.2" = "Or put back the approved content of {draft} by withdrawing {amend}: `bf amend withdraw {amend} --reason \"<why>\"`."
+"cli.amend.draft_waits.worked_when" = "`bf status` shows the amendment approved or withdrawn."
+
+"cli.amend.draft_no_amendment.refused" = "{what}"
+"cli.amend.draft_no_amendment.because" = "{draft} is not the content the human approved, and no amendment is open for it, so no approval is coming"
+"cli.amend.draft_no_amendment.do_this.1" = "Put back the approved content of {draft}: `bf record get {draft}` shows what is there now, and the page of the approving amendment or the plan gate shows what was approved."
+"cli.amend.draft_no_amendment.do_this.2" = "Or open an amendment that names the record, `bf amend open {draft}`, put the change while it waits, narrow it, and let the human read it."
+"cli.amend.draft_no_amendment.worked_when" = "`bf doctor` names no draft."
+
+# R-52, S-26: `bf log` and the recent events view leave out record contents of amendment events.
+"cli.log.records" = "records"
+"cli.log.contents_left_out" = "[contents left out]"
+"cli.log.whole_hint" = "An event was shortened: `bf log --whole <number>` prints one event whole."
+"cli.log.whole_none.refused" = "print an event whole"
+"cli.log.whole_none.because" = "no event has the number {number}"
+"cli.log.whole_none.do_this.1" = "Run `bf log --tail 20` and use the number at the start of an event."
+"cli.log.whole_none.worked_when" = "`bf log --whole <number>` prints the event."
+"cli.log.verify.ok" = "chain ok ({events} events)"
+"cli.log.verify.broken" = "chain BROKEN: {error}"

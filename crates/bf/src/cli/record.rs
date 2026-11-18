@@ -263,8 +263,13 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
             && changes
             && !gates::amended(&st, &id)
             && !gates::is_approved_content(&st, &rec)
-            && !(old.is_none() && gates::approved_missing(&st, &id))
         {
+            if old.is_none() {
+                return Err(crate::refusal::from_key(
+                    "cli.amend.new_record_late",
+                    &[("id", &id), ("stage", stage)],
+                ));
+            }
             return Err(refuse(
                 format!("{} {id}", if old.is_some() { "replace" } else { "add" }),
                 format!("the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"),
@@ -318,16 +323,6 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
         p.write_record(&rec)?;
     }
     p.write_guard()?;
-    // A record that an approved amendment covered before it existed: what is put now is what the
-    // approval covers, and a later change needs an amendment again.
-    if old.is_none() && gates::approved_missing(&st, &id) {
-        let put = p.get_record(&id)?.unwrap_or_else(|| rec.clone());
-        let mut e = json!({"id": id, "content_h": crate::evidence::record_hash(&put)});
-        if !s(&put, "unit").is_empty() {
-            e["unit"] = json!(s(&put, "unit"));
-        }
-        events::append(p, "amend.bind", e)?;
-    }
     if let Some(m) = &made {
         gates::design_made(p, &id, kind.name, m)?;
     }

@@ -6,6 +6,7 @@ use crate::plan;
 use crate::refusal::{refuse, refuse_owned, R};
 use crate::schema;
 use crate::store::{s, str_list, Project};
+use crate::strings;
 use crate::util;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -690,6 +691,22 @@ pub fn drafts_off_unit(st: &State, plan_checks: &[Value], unit: &str) -> Vec<(St
         }
     }
     out
+}
+
+/// The refusal of an act that rests on a draft of the plan. `a` is what `unapproved_change` returned.
+/// With an amendment that waits for the human it names that amendment; with none it says so and gives
+/// the steps that work, and never a step that waits for an approval that cannot come (R-45).
+pub fn draft_refusal(st: &State, what: &str, draft: &str, a: &str) -> crate::refusal::Fail {
+    let waits = st
+        .amends
+        .iter()
+        .any(|x| x.id == a && matches!(x.status.as_str(), "open" | "narrowed"));
+    let stem = if waits {
+        "cli.amend.draft_waits"
+    } else {
+        "cli.amend.draft_no_amendment"
+    };
+    crate::refusal::from_key(stem, &[("what", what), ("draft", draft), ("amend", a)])
 }
 
 /// Records of a gate that was approved and that no longer match what the human approved: changed,
@@ -1613,13 +1630,29 @@ pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> 
             "The status lists the amendment as withdrawn, with its reason.",
         ));
     }
-    events::append(
+    // The records the amendment changed go back to the content last approved, and one it added is
+    // taken out of the records in force; all or none (R-44).
+    let back = crate::amend::withdraw_plan(p, &st, a)?;
+    let written = crate::amend::apply_withdraw(p, &back)?;
+    let listed: Vec<Value> = back
+        .iter()
+        .map(|(id, how)| {
+            json!({"id": id, "how": match how {
+                crate::amend::Back::Restore(_) => "restored",
+                crate::amend::Back::Remove => "removed",
+            }})
+        })
+        .collect();
+    if let Err(e) = events::append(
         p,
         "amend.withdraw",
-        json!({"amend": aid, "reason": reason.trim()}),
-    )?;
+        json!({"amend": aid, "reason": reason.trim(), "put_back": listed}),
+    ) {
+        crate::amend::undo_writes(&written);
+        return Err(e);
+    }
     p.write_guard()?;
-    Ok(json!({"amend": aid, "withdrawn": true, "reason": reason.trim()}))
+    Ok(json!({"amend": aid, "withdrawn": true, "reason": reason.trim(), "put_back": listed}))
 }
 
 /// The status of an amendment as the human sees it: open, approved or withdrawn.
@@ -1681,6 +1714,7 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             "`bf amend open` prints a new ID.",
         ));
     }
+    crate::amend::refuse_if_names_missing(p, a, "cli.amend.missing_narrow")?;
     let keep = str_list(file, "keep");
     let waive = str_list(file, "waive");
     let reasons = file.get("reasons").cloned().unwrap_or(json!({}));
@@ -1720,6 +1754,9 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
     }
     if !problems.is_empty() {
         let mut steps: Vec<String> = problems.iter().map(|x| format!("Fix: {x}.")).collect();
+        if problems.iter().any(|x| x.contains("not in the impact set")) {
+            steps.push(strings::t("cli.amend.narrow.add_step", &[("amend", &aid)]));
+        }
         steps.push("Run `bf amend narrow --file <f>` again.".into());
         return Err(refuse_owned(
             "narrow the amendment",
@@ -1775,6 +1812,9 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
             &["Run `bf amend narrow --file <f>` first."],
             "`bf amend approve` prints the approved set.",
         ));
+    }
+    if let Some(a) = a {
+        crate::amend::refuse_if_names_missing(p, a, "cli.amend.missing_approve")?;
     }
     let last_change = log.events.iter().rev().find(|e| {
         matches!(e["kind"].as_str(), Some("amend.narrow" | "amend.revise"))
