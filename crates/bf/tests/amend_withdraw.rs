@@ -96,6 +96,78 @@ fn amend_withdraw_draft_refusal_without_an_amendment_waits_for_nothing() {
     assert!(!lower.contains("wait"), "{}", o.stderr);
     assert!(lower.contains("no amendment"), "{}", o.stderr);
     assert!(o.stderr.contains("bf amend open X-1"), "{}", o.stderr);
+    // The lines of the evidence list say the same: no approval is coming, and the steps that work.
+    let v = fx.bf(&["evidence", "verify", "--unit", "U-1"]);
+    let all = v.all();
+    assert!(all.contains("X-1"), "{all}");
+    assert!(!all.contains("has not approved"), "{all}");
+    assert!(all.contains("bf amend open X-1"), "{all}");
+}
+
+/// With another amendment open, the step to open one is not given (it is refused): the step is to name
+/// the record in the open one.
+#[test]
+fn amend_withdraw_draft_refusal_with_another_amendment_open_names_revise() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.must(&["amend", "open", "--repair", "X-1"]);
+    fx.must(&["amend", "withdraw", "A-1", "--reason", "not needed"]);
+    let f = fx.root.join("factory/records/X-1.toml");
+    let text = fs::read_to_string(&f).unwrap();
+    fs::write(&f, text.replace("test -f", "test -s")).unwrap();
+    fx.must(&["amend", "open", "--repair", "X-2"]);
+    let o = fx.refused(&[
+        "evidence",
+        "run",
+        "X-1",
+        "--unit",
+        "U-1",
+        "--",
+        "test",
+        "-s",
+        "src/hello.txt",
+    ]);
+    assert!(o.stderr.contains("A-2"), "{}", o.stderr);
+    assert!(o.stderr.contains("bf amend revise"), "{}", o.stderr);
+    assert!(!o.stderr.contains("bf amend open X-1"), "{}", o.stderr);
+    let v = fx.bf(&["evidence", "verify", "--unit", "U-1"]).all();
+    assert!(v.contains("bf amend revise"), "{v}");
+    assert!(!v.contains("has not approved"), "{v}");
+}
+
+/// R-44: a withdrawal before any narrowing takes out the added record, and the log keeps its content;
+/// `bf log` leaves that content out of the event's line.
+#[test]
+fn amend_withdraw_before_narrowing_keeps_the_removed_content_in_the_log() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.must(&["amend", "open", "--repair", "X-1", "X-4"]);
+    put_file(
+        &fx,
+        "c.toml",
+        &check_text("X-4", "true", "U-1").replace("Check X-4", "ZebraAddedTitle"),
+        false,
+    );
+    fx.must(&["amend", "withdraw", "A-1", "--reason", "not needed"]);
+    assert!(!fx.root.join("factory/records/X-4.toml").exists());
+    let log = fs::read_to_string(fx.project().log_path()).unwrap();
+    assert!(log.contains("ZebraAddedTitle"), "the log lost the content");
+    let o = fx.must(&["log", "--tail", "3"]);
+    let line = o
+        .stdout
+        .lines()
+        .find(|l| l.contains("\"amend.withdraw\""))
+        .expect("withdraw event");
+    assert!(!line.contains("ZebraAddedTitle"), "{line}");
+    assert!(line.contains("X-4") && line.contains("[contents left out]"), "{line}");
+    let n = serde_json::from_str::<Value>(line.split(" [contents").next().unwrap()).unwrap()["seq"]
+        .as_u64()
+        .unwrap();
+    let w = fx.must(&["log", "--whole", &n.to_string()]);
+    assert!(w.stdout.contains("ZebraAddedTitle"), "{}", w.stdout);
+    fx.must(&["log", "--verify"]);
 }
 
 /// With an amendment open the same refusal names it.

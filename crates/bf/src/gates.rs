@@ -701,12 +701,40 @@ pub fn draft_refusal(st: &State, what: &str, draft: &str, a: &str) -> crate::ref
         .amends
         .iter()
         .any(|x| x.id == a && matches!(x.status.as_str(), "open" | "narrowed"));
-    let stem = if waits {
-        "cli.amend.draft_waits"
+    let (stem, who) = if waits {
+        ("cli.amend.draft_waits", a.to_string())
+    } else if let Some(o) = waiting_amendment(st) {
+        ("cli.amend.draft_other_open", o)
     } else {
-        "cli.amend.draft_no_amendment"
+        ("cli.amend.draft_no_amendment", a.to_string())
     };
-    crate::refusal::from_key(stem, &[("what", what), ("draft", draft), ("amend", a)])
+    crate::refusal::from_key(stem, &[("what", what), ("draft", draft), ("amend", &who)])
+}
+
+/// The amendment that waits for the human, when one does (only one is open at a time).
+fn waiting_amendment(st: &State) -> Option<String> {
+    st.amends
+        .iter()
+        .find(|x| matches!(x.status.as_str(), "open" | "narrowed"))
+        .map(|x| x.id.clone())
+}
+
+/// The line that says a record of the plan is a draft, for the evidence and checkpoint lists: it names
+/// the amendment that waits for the human when one names the record, and otherwise says that no
+/// approval is coming and gives the steps that work (R-45). `a` is what `unapproved_change` returned.
+pub fn draft_line(st: &State, id: &str, a: &str) -> String {
+    let waits = st
+        .amends
+        .iter()
+        .any(|x| x.id == a && matches!(x.status.as_str(), "open" | "narrowed"));
+    let (key, who) = if waits {
+        ("cli.amend.draft_line.waits", a.to_string())
+    } else if let Some(o) = waiting_amendment(st) {
+        ("cli.amend.draft_line.other_open", o)
+    } else {
+        ("cli.amend.draft_line.none", a.to_string())
+    };
+    strings::t(key, &[("id", id), ("amend", &who)])
 }
 
 /// Records of a gate that was approved and that no longer match what the human approved: changed,
@@ -1633,6 +1661,14 @@ pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> 
     // The records the amendment changed go back to the content last approved, and one it added is
     // taken out of the records in force; all or none (R-44).
     let back = crate::amend::withdraw_plan(p, &st, a)?;
+    // What the withdrawal takes away is written into its event first, so the log keeps it: the
+    // record an amendment added, and the content a restored record held (R-44).
+    let mut taken = serde_json::Map::new();
+    for (id, _) in &back {
+        if let Some(r) = p.get_record(id)? {
+            taken.insert(id.clone(), r);
+        }
+    }
     let written = crate::amend::apply_withdraw(p, &back)?;
     let listed: Vec<Value> = back
         .iter()
@@ -1646,7 +1682,7 @@ pub fn amend_withdraw(p: &Project, arg: Option<&str>, reason: &str) -> R<Value> 
     if let Err(e) = events::append(
         p,
         "amend.withdraw",
-        json!({"amend": aid, "reason": reason.trim(), "put_back": listed}),
+        json!({"amend": aid, "reason": reason.trim(), "put_back": listed, "taken_away": taken}),
     ) {
         crate::amend::undo_writes(&written);
         return Err(e);
@@ -1718,12 +1754,15 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
     let keep = str_list(file, "keep");
     let waive = str_list(file, "waive");
     let reasons = file.get("reasons").cloned().unwrap_or(json!({}));
-    let mut problems = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+    let mut adds = false;
     let full: Vec<String> = a.keep.clone();
     for k in &keep {
         if !full.contains(k) {
-            problems.push(format!(
-                "{k} is not in the impact set; narrowing can only remove IDs, never add them"
+            adds = true;
+            problems.push(strings::t(
+                "cli.amend.narrow.problem.not_in_set",
+                &[("id", k)],
             ));
         }
     }
@@ -1734,14 +1773,18 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             .map(|r| r.trim().is_empty())
             .unwrap_or(true)
         {
-            problems.push(format!(
-                "{dropped} is dropped from the set without a reason"
+            problems.push(strings::t(
+                "cli.amend.narrow.problem.dropped_no_reason",
+                &[("id", dropped)],
             ));
         }
     }
     for w in &waive {
         if !keep.contains(w) && !a.ids.contains(w) {
-            problems.push(format!("{w} is waived but not part of the amendment"));
+            problems.push(strings::t(
+                "cli.amend.narrow.problem.waived_not_part",
+                &[("id", w)],
+            ));
         }
         if reasons
             .get(w)
@@ -1749,20 +1792,29 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             .map(|r| r.trim().is_empty())
             .unwrap_or(true)
         {
-            problems.push(format!("{w} is waived without a reason"));
+            problems.push(strings::t(
+                "cli.amend.narrow.problem.waived_no_reason",
+                &[("id", w)],
+            ));
         }
     }
     if !problems.is_empty() {
-        let mut steps: Vec<String> = problems.iter().map(|x| format!("Fix: {x}.")).collect();
-        if problems.iter().any(|x| x.contains("not in the impact set")) {
+        let mut steps: Vec<String> = problems
+            .iter()
+            .map(|x| strings::t("cli.amend.narrow.fix", &[("problem", x)]))
+            .collect();
+        if adds {
             steps.push(strings::t("cli.amend.narrow.add_step", &[("amend", &aid)]));
         }
-        steps.push("Run `bf amend narrow --file <f>` again.".into());
+        steps.push(strings::t("cli.amend.narrow.again", &[]));
         return Err(refuse_owned(
-            "narrow the amendment",
-            format!("{} problem(s) in the narrowing", problems.len()),
+            strings::t("cli.amend.narrow.problems.refused", &[]),
+            strings::t(
+                "cli.amend.narrow.problems.because",
+                &[("count", &problems.len().to_string())],
+            ),
             steps,
-            "The command prints the narrowed set.",
+            strings::t("cli.amend.narrow.problems.worked_when", &[]),
         ));
     }
     // The records of the set as the human reads them now: approval is refused if they change later.

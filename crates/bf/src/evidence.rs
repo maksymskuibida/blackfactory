@@ -2072,10 +2072,7 @@ pub fn unit_landing_needs<'a>(
                 id: s(d, "id").to_string(),
                 attached: false,
                 met: None,
-                line: format!(
-                    "{}: changed by {a}, which the human has not approved; the draft does not count",
-                    s(d, "id")
-                ),
+                line: crate::gates::draft_line(st, s(d, "id"), &a),
             });
         }
     }
@@ -2092,9 +2089,7 @@ pub fn unit_landing_needs<'a>(
             id: cid.clone(),
             attached: false,
             met: None,
-            line: format!(
-                "{cid}: changed by {a}, which the human has not approved; the draft does not count"
-            ),
+            line: crate::gates::draft_line(st, &cid, &a),
         });
     }
     for c in pl.unit_checks(unit) {

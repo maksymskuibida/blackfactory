@@ -14,6 +14,15 @@
 "cli.amend.missing_approve.do_this.2" = "Narrow {amend} again with `bf amend narrow --file <f>`; the human reads it after its last change."
 "cli.amend.missing_approve.worked_when" = "`bf amend approve` prints the approved amendment."
 
+"cli.amend.narrow.problem.not_in_set" = "{id} is not in the impact set; narrowing can only remove IDs, never add them"
+"cli.amend.narrow.problem.dropped_no_reason" = "{id} is dropped from the set without a reason"
+"cli.amend.narrow.problem.waived_not_part" = "{id} is waived but not part of the amendment"
+"cli.amend.narrow.problem.waived_no_reason" = "{id} is waived without a reason"
+"cli.amend.narrow.problems.refused" = "narrow the amendment"
+"cli.amend.narrow.problems.because" = "{count} problem(s) in the narrowing"
+"cli.amend.narrow.problems.worked_when" = "The command prints the narrowed set."
+"cli.amend.narrow.fix" = "Fix: {problem}."
+"cli.amend.narrow.again" = "Run `bf amend narrow --file <f>` again."
 "cli.amend.narrow.add_step" = "To add a record to {amend}, run `bf amend revise <the IDs it names now> <the new ID>`: narrowing only removes IDs."
 
 "cli.amend.new_record_late.refused" = "add {id}"
@@ -21,6 +30,13 @@
 "cli.amend.new_record_late.do_this.1" = "Name new records when the amendment is opened: `bf amend open {id} <the other IDs>`, or add {id} to an amendment that waits with `bf amend revise <the IDs it names now> {id}`, before the human approves."
 "cli.amend.new_record_late.do_this.2" = "Put {id} while that amendment waits, narrow it with `bf amend narrow --file <f>`, and let the human read it and say yes."
 "cli.amend.new_record_late.worked_when" = "`bf record get {id}` shows the new content."
+
+"cli.amend.replace_gated.refused" = "replace {id}"
+"cli.amend.replace_gated.because" = "the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"
+"cli.amend.replace_gated.do_this.1" = "Run `bf amend open {id}` (name every record to change) to see the impact. If an amendment is already open and {id} is a kept record of its impact set, name it in the changed set instead: `bf amend revise <the IDs it names now> {id}`."
+"cli.amend.replace_gated.do_this.2" = "Put {id} again while the amendment waits for the human (a kept record is not put while it waits: name it first); the one approval covers the content put."
+"cli.amend.replace_gated.do_this.3" = "Narrow it with `bf amend narrow --file <f>`; the human reads it and says yes, then run `bf amend approve`. A record put after the narrowing makes approval refuse: revise and narrow again."
+"cli.amend.replace_gated.worked_when" = "`bf record get {id}` shows the new content."
 
 # R-44: withdrawing puts records back.
 "cli.amend.withdraw.line" = "withdrew {amend}: {reason}"
@@ -46,6 +62,17 @@
 "cli.amend.draft_no_amendment.do_this.1" = "Put back the approved content of {draft}: `bf record get {draft}` shows what is there now, and the page of the approving amendment or the plan gate shows what was approved."
 "cli.amend.draft_no_amendment.do_this.2" = "Or open an amendment that names the record, `bf amend open {draft}`, put the change, narrow the amendment, and let the human read it."
 "cli.amend.draft_no_amendment.worked_when" = "`bf doctor` names no draft."
+
+"cli.amend.draft_other_open.refused" = "{what} rests on a draft of the plan"
+"cli.amend.draft_other_open.because" = "{draft} is not the content the human approved, and {amend}, which waits for the human, does not name it, so no approval of the draft is coming"
+"cli.amend.draft_other_open.do_this.1" = "Put back the approved content of {draft}: `bf record get {draft}` shows what is there now, and the page of the approving amendment or the plan gate shows what was approved."
+"cli.amend.draft_other_open.do_this.2" = "Or name the record in {amend} with `bf amend revise <the IDs it names now> {draft}`, narrow it again, and let the human read it; only one amendment is open at a time."
+"cli.amend.draft_other_open.worked_when" = "`bf doctor` names no draft."
+
+# R-45: the lines of the evidence and checkpoint lists for a draft.
+"cli.amend.draft_line.waits" = "{id}: changed by {amend}, which the human has not approved; the draft does not count"
+"cli.amend.draft_line.none" = "{id}: a draft of the plan that no amendment covers, so no approval is coming; the draft does not count. Put back the approved content (`bf record get {id}` shows what is there now), or open an amendment that names the record (`bf amend open {id}`)"
+"cli.amend.draft_line.other_open" = "{id}: a draft of the plan that {amend}, which waits for the human, does not name, so no approval of it is coming; the draft does not count. Put back the approved content, or name the record in {amend} with `bf amend revise <the IDs it names now> {id}`"
 
 # R-52, S-26: `bf log` and the recent events view leave out record contents of amendment events.
 "cli.log.records" = "records"

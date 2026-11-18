@@ -293,3 +293,114 @@ fn amend_one_open_the_log_leaves_record_contents_out_of_amendment_events() {
         .to_string();
     assert!(!ev.contains("Farewell wording"), "{ev}");
 }
+
+/// R-43 acceptance 4: a log written by an earlier engine holds a record bound after its approval
+/// (`amend.bind`); it replays to the same state: the ID is not frozen, and the content bound is the
+/// content that may be put again.
+#[test]
+fn amend_one_open_a_log_with_a_record_bound_after_its_approval_replays_the_same() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    fx.must(&["amend", "open", "--repair", "X-1"]);
+    let opened = fx.must(&["amend", "revise", "X-1", "--json"]).json();
+    narrow_all(&fx, "A-1", &opened);
+    fx.human("Yes, approve the repair.");
+    let p = fx.project();
+    let st = bf::events::replay(&p).unwrap();
+    let turn = st.turns.last().unwrap().seq;
+    // An earlier engine approved a page that named X-7 before it had any content.
+    bf::events::append(
+        &p,
+        "amend.approve",
+        serde_json::json!({"amend": "A-1", "turn": turn, "quote": "approve the repair",
+            "content": {"X-7": {"h": "missing"}},
+            "reopen_units": [], "reopen_checkpoints": [], "reopen_checks": [], "receipt_floor": 0}),
+    )
+    .unwrap();
+    let rec = serde_json::json!({"id": "X-7", "kind": "check", "title": "New", "how": "command",
+        "command": "true", "proves": ["R-1"], "scope": "unit", "unit": "U-1"});
+    let text = "id=\"X-7\"\nkind=\"check\"\ntitle=\"New\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n";
+    let before = bf::events::replay(&p).unwrap();
+    assert!(bf::gates::approved_missing(&before, "X-7"));
+    // Without the binding the first put of the record is refused.
+    let o = fx.put("check", text);
+    assert_eq!(o.code, 2, "{}", o.all());
+    bf::events::append(
+        &p,
+        "amend.bind",
+        serde_json::json!({"id": "X-7", "content_h": bf::evidence::record_hash(&rec), "unit": "U-1"}),
+    )
+    .unwrap();
+    let after = bf::events::replay(&p).unwrap();
+    assert!(!bf::gates::approved_missing(&after, "X-7"));
+    assert_eq!(
+        after.approved_content["X-7"].1["h"],
+        bf::evidence::record_hash(&rec)
+    );
+    assert_eq!(after.approved_content["X-7"].1["unit"], "U-1");
+    // The same content is put again; a different one is still refused.
+    let o = fx.put("check", text);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = fx.put("check", &text.replace("\"New\"", "\"Other\""));
+    assert_eq!(o.code, 2, "{}", o.all());
+    fx.must(&["log", "--verify"]);
+}
+
+/// R-52: an event of a narrowing with long reasons is still at most 2,000 bytes with its mark, on the
+/// log and on the run page, and `--json` leaves the contents out as well.
+#[test]
+fn amend_one_open_a_narrowing_with_long_reasons_stays_within_the_line_limit() {
+    let fx = Fx::new();
+    fx.tiny();
+    put_decision(&fx, "D-91", "ui");
+    put_decision(&fx, "D-92", "plan");
+    let o = fx.put("component", NEW_C);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let opened = fx
+        .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])
+        .json();
+    let ids: Vec<String> = opened["impact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let named = ["R-2", "C-9", "D-91", "D-92"];
+    let dropped: Vec<&String> = ids.iter().filter(|i| !named.contains(&i.as_str())).collect();
+    assert!(dropped.len() >= 3, "{ids:?}");
+    let keep: Vec<&String> = ids.iter().filter(|i| named.contains(&i.as_str())).collect();
+    let reasons: serde_json::Map<String, serde_json::Value> = dropped
+        .iter()
+        .map(|i| (i.to_string(), serde_json::json!("Long reason. ".repeat(60))))
+        .collect();
+    let f = fx.root.join("narrow.json");
+    fs::write(
+        &f,
+        serde_json::json!({"amend": "A-1", "keep": keep, "waive": [], "reasons": reasons})
+            .to_string(),
+    )
+    .unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+    let o = fx.must(&["log", "--tail", "3"]);
+    let line = o
+        .stdout
+        .lines()
+        .find(|l| l.contains("\"amend.narrow\""))
+        .expect("narrow event");
+    assert!(line.len() <= 2000, "{} bytes", line.len());
+    assert!(line.ends_with("[contents left out]"), "{line}");
+    let j = fx.must(&["log", "--tail", "3", "--json"]).stdout;
+    assert!(!j.contains("Farewell wording"), "{j}");
+    let evs: Vec<serde_json::Value> = serde_json::from_str(&j).unwrap();
+    let n = evs.iter().find(|e| e["kind"] == "amend.narrow").expect("narrow");
+    assert!(n.get("changes").is_none() && n.get("records").is_some(), "{n}");
+    let v = fx.must(&["view", "run", "--json"]).json();
+    for s in v["sections"].as_array().unwrap().iter().filter(|s| s["id"] == "events") {
+        for r in s["rows"].as_array().unwrap() {
+            for b in r["body"].as_array().unwrap() {
+                assert!(b["text"].as_str().unwrap().len() <= 2000, "{b}");
+            }
+        }
+    }
+}

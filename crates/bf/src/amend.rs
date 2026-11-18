@@ -299,6 +299,7 @@ pub fn shorten_event(e: &Value) -> (Value, bool) {
     let drop: &[&str] = match s(e, "kind") {
         "amend.narrow" => &["changes"],
         "amend.approve" => &["content"],
+        "amend.withdraw" => &["taken_away"],
         _ => return (e.clone(), false),
     };
     let mut m = e.clone();
@@ -316,13 +317,54 @@ pub fn shorten_event(e: &Value) -> (Value, bool) {
         let label = strings::t("cli.log.records", &[]);
         o.insert(label, json!(ids));
     }
-    if serde_json::to_string(&m).map(|x| x.len()).unwrap_or(0) > EVENT_LINE_MAX {
-        let label = strings::t("cli.log.records", &[]);
-        if let Some(o) = m.as_object_mut() {
-            o.insert(label, json!(ids.len()));
+    (m, true)
+}
+
+/// The line the log view and the recent events view print for an event: its JSON on one line. A
+/// shortened event ends with the mark of `cli.log.contents_left_out`, and the whole line, mark included,
+/// is at most `EVENT_LINE_MAX` bytes: the longest fields go to their count, then the line is cut (R-52).
+pub fn event_line(m: &Value, cut: bool) -> String {
+    let mark = if cut {
+        format!(" {}", strings::t("cli.log.contents_left_out", &[]))
+    } else {
+        String::new()
+    };
+    let line = serde_json::to_string(m).unwrap_or_default();
+    if !cut || line.len() + mark.len() <= EVENT_LINE_MAX {
+        return format!("{line}{mark}");
+    }
+    let room = EVENT_LINE_MAX - mark.len();
+    let mut m = m.clone();
+    if let Some(o) = m.as_object_mut() {
+        let mut keys: Vec<(usize, String)> = o
+            .iter()
+            .filter(|(k, _)| !matches!(k.as_str(), "seq" | "at" | "kind" | "amend"))
+            .map(|(k, v)| (v.to_string().len(), k.clone()))
+            .collect();
+        keys.sort();
+        keys.reverse();
+        for (_, k) in keys {
+            if serde_json::to_string(&o).map(|x| x.len()).unwrap_or(0) <= room {
+                break;
+            }
+            let n = match &o[&k] {
+                Value::Array(a) => a.len(),
+                Value::Object(c) => c.len(),
+                Value::String(x) => x.chars().count(),
+                _ => continue,
+            };
+            o.insert(k, json!(n));
         }
     }
-    (m, true)
+    let mut line = serde_json::to_string(&m).unwrap_or_default();
+    if line.len() > room {
+        let mut end = room;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+    }
+    format!("{line}{mark}")
 }
 
 /// The requirements of the amendment that have no link to another design part (their own `links`,

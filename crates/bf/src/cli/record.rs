@@ -270,15 +270,9 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
                     &[("id", &id), ("stage", stage)],
                 ));
             }
-            return Err(refuse(
-                format!("{} {id}", if old.is_some() { "replace" } else { "add" }),
-                format!("the {stage} gate is approved; an approved stage changes only by amendment, and that includes new records"),
-                &[
-                    &format!("Run `bf amend open {id}` (name every record to change) to see the impact. If an amendment is already open and {id} is a kept record of its impact set, name it in the changed set instead: `bf amend revise <the IDs it names now> {id}`."),
-                    &format!("Put {id} again while the amendment waits for the human (a kept record is not put while it waits: name it first); the one approval covers the content put."),
-                    "Narrow it with `bf amend narrow --file <f>`; the human reads it and says yes, then run `bf amend approve`. A record put after the narrowing makes approval refuse: revise and narrow again.",
-                ],
-                format!("`bf record get {id}` shows the new content."),
+            return Err(crate::refusal::from_key(
+                "cli.amend.replace_gated",
+                &[("id", &id), ("stage", stage)],
             ));
         }
     }

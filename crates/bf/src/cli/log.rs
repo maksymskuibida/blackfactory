@@ -56,7 +56,12 @@ pub(crate) fn cmd_log(args: &Args) -> R<()> {
     let skip = log.events.len().saturating_sub(n);
     let evs: Vec<&Value> = log.events.iter().skip(skip).collect();
     if args.has("json") {
-        println!("{}", pretty(&json!(evs)));
+        // An event is printed whole only with its flag (S-26).
+        let short: Vec<Value> = evs
+            .iter()
+            .map(|e| crate::amend::shorten_event(e).0)
+            .collect();
+        println!("{}", pretty(&json!(short)));
     } else {
         let mut shortened = false;
         for e in evs {
@@ -66,13 +71,10 @@ pub(crate) fn cmd_log(args: &Args) -> R<()> {
                     o.remove(k);
                 }
             }
-            let line = serde_json::to_string(&m)?;
             if cut {
                 shortened = true;
-                println!("{line} {}", strings::t("cli.log.contents_left_out", &[]));
-            } else {
-                println!("{line}");
             }
+            println!("{}", crate::amend::event_line(&m, cut));
         }
         if shortened {
             println!("{}", strings::t("cli.log.whole_hint", &[]));
