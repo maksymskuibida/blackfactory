@@ -211,4 +211,24 @@ mod questions {
             assert!(!text.contains(bad), "{bad} writes a time");
         }
     }
+
+    #[test]
+    fn no_skill_file_names_the_old_bare_questions_page() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/claude/skills");
+        let mut stack = vec![dir];
+        let mut seen = 0;
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "md") {
+                    seen += 1;
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    assert!(!text.contains("questions.html"), "{p:?} names questions.html");
+                }
+            }
+        }
+        assert!(seen > 3, "no skill files were read");
+    }
 }

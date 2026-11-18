@@ -1,6 +1,6 @@
 //! The delivery plan: units, handoffs, checkpoints, waves and readiness.
 
-use crate::events::State;
+use crate::events::{self, State};
 use crate::evidence;
 use crate::gitx;
 use crate::refusal::{refuse_owned, R};
@@ -17,6 +17,9 @@ pub struct Plan {
     pub checks: Vec<Value>,
     /// The plan settings record `PL-1`, when the plan holds one (D-59).
     pub settings: Option<Value>,
+    /// True when the plan was approved by an engine that did not yet mark its plan gates with the tests
+    /// rule (R-62): such a plan reads as today, every unit running the full suite.
+    pub approved_before_tests_rule: bool,
     pub designed: Vec<Value>,
     pub wave: HashMap<String, u32>,
     pub problems: Vec<String>,
@@ -54,7 +57,8 @@ impl Plan {
     /// A plan written for this version of the engine: it names a unit's tests or reason, or holds the
     /// settings record. An older plan reads as today: every unit runs the full suite.
     pub fn knows_tests(&self) -> bool {
-        self.settings.is_some()
+        !self.approved_before_tests_rule
+            || self.settings.is_some()
             || self
                 .units
                 .iter()
@@ -104,6 +108,7 @@ pub fn load(p: &Project) -> R<Plan> {
         checkpoints: by.remove("checkpoint").unwrap_or_default(),
         checks: by.remove("check").unwrap_or_default(),
         settings,
+        approved_before_tests_rule: approved_before_tests_rule(p),
         designed,
         wave: HashMap::new(),
         problems: vec![],
@@ -112,6 +117,19 @@ pub fn load(p: &Project) -> R<Plan> {
     };
     finish(p, &mut plan, &ids);
     Ok(plan)
+}
+
+/// The plan gate was approved before gates carried the tests-rule marker, read from the log (F-151).
+fn approved_before_tests_rule(p: &Project) -> bool {
+    events::replay(p)
+        .map(|st| {
+            st.gates
+                .iter()
+                .rfind(|g| g.kind == "plan" && g.status == "approved")
+                .map(|g| !g.tests_rule)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 /// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
@@ -136,6 +154,7 @@ pub fn problems_of_edited(
         checkpoints,
         checks,
         settings: base.settings.clone(),
+        approved_before_tests_rule: base.approved_before_tests_rule,
         designed: base.designed.clone(),
         wave: HashMap::new(),
         problems: vec![],

@@ -928,6 +928,20 @@ pub fn run_in(
     }
 }
 
+/// The list the engine proposes for every unit: format and lint before the suite, and a suite command that
+/// runs to its end, so one run names every failing test (R-31, R-33, R-62). It is the same whether or not a
+/// unit names its tests. The commands are the Rust toolchain's when the project has a manifest, else
+/// empty for the human to fill.
+fn default_unit_proposal(p: &Project) -> Value {
+    let manifest = p.root.join(["Cargo", "toml"].join(".")).is_file();
+    let cmd = |c: &'static str| if manifest { c } else { "" };
+    json!([
+        {"name": "format", "kind": "format", "command": cmd("cargo fmt --check")},
+        {"name": "lint", "kind": "lint", "command": cmd("cargo clippy --all-targets -- -D warnings")},
+        {"name": "suite", "kind": "suite", "command": cmd("cargo nextest run --no-fail-fast")},
+    ])
+}
+
 /// `bf checks unit <state|question|propose|set>`: the run's choice about the checks every unit must pass
 /// (R-76). The project's own list lives in the policy file, which only the human edits.
 fn unit_settings(
@@ -953,7 +967,8 @@ fn unit_settings(
                         {"choice": "override", "text": "Override it for this run: give each check as name=command"},
                         {"choice": "none", "text": "No checks for every unit in this run"},
                     ],
-                    "note": "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override.",
+                    "note": "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override. A unit that names its tests runs them in the suite's place.",
+                    "proposal": default_unit_proposal(p),
                 });
             }
             Ok(v)

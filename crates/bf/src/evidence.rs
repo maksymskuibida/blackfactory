@@ -673,6 +673,9 @@ pub fn run_with(
     // TH-11: a heavy check runs under the time limit of a check; its place is freed when it ends.
     let limit = (chk["heavy"].as_bool() == Some(true)).then(|| heavy_time_limit(p));
     fs::create_dir_all(p.receipts_dir())?;
+    // R-31: the ignore file exists before the pending output does, so an interrupted run leaves nothing
+    // that a `git add -A` would commit.
+    write_output_ignore(p);
     let pending = p
         .receipts_dir()
         .join(format!(".output-{}.txt", std::process::id()));
@@ -968,14 +971,18 @@ fn shortened_limit(policy: u64, asked: Option<&str>) -> u64 {
 /// How many whole-output files of failed runs stay in the receipts folder.
 const KEPT_OUTPUTS: usize = 40;
 
-/// The whole outputs are local files, not part of a commit: the folder ignores them, and only the newest
-/// ones stay.
-fn keep_outputs_bounded(p: &Project) {
-    let dir = p.receipts_dir();
-    let ignore = dir.join(".gitignore");
+/// The whole outputs are local files, not part of a commit: the folder ignores them.
+fn write_output_ignore(p: &Project) {
+    let ignore = p.receipts_dir().join(".gitignore");
     if !ignore.exists() {
         let _ = fs::write(&ignore, "output-*.txt\n.output-*.txt\n");
     }
+}
+
+/// Only the newest whole outputs stay.
+fn keep_outputs_bounded(p: &Project) {
+    let dir = p.receipts_dir();
+    write_output_ignore(p);
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = fs::read_dir(&dir)
         .into_iter()
         .flatten()

@@ -216,7 +216,7 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
         let o = fx.put(k, t);
         assert_eq!(o.code, 0, "{}", o.all());
     }
-    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\n");
+    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\nfull_suite=\"fixture\"\n");
     replace_record(&fx, "check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nscope=\"checkpoint\"\n");
     replace_record(&fx, "checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nchecks=[\"X-4\"]\n");
     fx.commit_all("records");

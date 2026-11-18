@@ -905,7 +905,7 @@ pub fn open(p: &Project, kind: &str, refr: Option<&str>) -> R<Gate> {
     events::append(
         p,
         "gate.open",
-        json!({"gate": id, "gate_kind": kind, "ref": refr, "round": round, "snapshot": snap}),
+        json!({"gate": id, "gate_kind": kind, "ref": refr, "round": round, "snapshot": snap, "tests_rule": true}),
     )?;
     p.write_guard()?;
     let st = events::replay(p)?;

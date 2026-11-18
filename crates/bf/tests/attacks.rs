@@ -200,6 +200,7 @@ fn first_receipt(fx: &Fx) -> (std::path::PathBuf, String) {
         .unwrap()
         .flatten()
         .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
         .collect();
     files.sort();
     let f = files[0].clone();
@@ -331,6 +332,8 @@ fn t5_a_command_that_changes_the_files_gets_no_receipt() {
         !fx.root.join("factory/receipts").exists()
             || fs::read_dir(fx.root.join("factory/receipts"))
                 .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
                 .count()
                 == 0
     );

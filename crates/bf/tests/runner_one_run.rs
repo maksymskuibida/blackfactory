@@ -348,7 +348,7 @@ fn runner_one_run_a_plan_that_names_tests_refuses_a_unit_with_neither_field() {
         ("unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"b\"]\ncheckpoint=\"K-1\"\n"),
         ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\", \"U-2\"]\nproves=[\"R-1\"]\n"),
     ] {
-        assert_eq!(fx.put(k, t).code, 0);
+        assert_eq!(fx.put_raw(k, t).code, 0);
     }
     let text = plan_problems(&fx);
     assert!(text.contains("U-2 neither names its `tests`"), "{text}");
@@ -356,16 +356,18 @@ fn runner_one_run_a_plan_that_names_tests_refuses_a_unit_with_neither_field() {
 }
 
 #[test]
-fn runner_one_run_an_old_plan_with_neither_field_reads_as_today() {
+fn runner_one_run_a_new_plan_with_neither_field_on_any_unit_is_a_plan_problem() {
     let fx = Fx::new();
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"a\"]\ncheckpoint=\"K-1\"\n"),
         ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\n"),
     ] {
-        assert_eq!(fx.put(k, t).code, 0);
+        assert_eq!(fx.put_raw(k, t).code, 0);
     }
-    assert!(!plan_problems(&fx).contains("neither names its"));
+    // F-151: this plan was never approved, so it is a new plan and the rule holds.
+    let text = plan_problems(&fx);
+    assert!(text.contains("U-1 neither names its `tests`"), "{text}");
 }
 
 #[test]
@@ -531,4 +533,16 @@ fn timing_runner_one_run_a_heavy_check_over_its_limit_is_stopped_and_frees_its_p
     // The place is free again: the next heavy check does not wait.
     let o = s.fx.must_in(&s.wc, &run_args("X-3", &["sh", "ok.sh"]));
     assert!(!o.stderr.contains("waits for a place"), "{}", o.stderr);
+}
+
+#[test]
+fn runner_one_run_the_ignore_file_for_outputs_exists_after_a_passing_first_run() {
+    // R-31: the ignore file is written before the pending output file, not after the first failure.
+    let s = setup("full_suite=\"a light suite\"\n", &[], "");
+    fs::create_dir_all(s.wc.join("src")).unwrap();
+    fs::write(s.wc.join("src/a.txt"), "x\n").unwrap();
+    let o = s.fx.bf_in(&s.wc, &run_args("X-1", &["test", "-f", "src/a.txt"]));
+    assert_eq!(o.code, 0, "{}", o.all());
+    let ignore = fs::read_to_string(s.fx.root.join("factory/receipts/.gitignore")).unwrap();
+    assert!(ignore.contains("output-*.txt") && ignore.contains(".output-*.txt"), "{ignore}");
 }

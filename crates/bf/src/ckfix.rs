@@ -1353,6 +1353,19 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
             "## What to judge\n\nDoes the fix solve the failure without weakening a test? Look at how each probe test was added to the suite: it must be in the suite and run, not compiled out, skipped or emptied, and its command must run at least one test. Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
         ));
     }
+    if role != "builder" {
+        md.push('\n');
+    }
+    md.push_str(&format!(
+        "- {}\n",
+        crate::strings::t("cli.evidence.brief.rule.checks_engine", &[])
+    ));
+    if role != "builder" {
+        md.push_str(&format!(
+            "- {}\n",
+            crate::strings::t("cli.evidence.brief.rule.reviewer_receipts", &[])
+        ));
+    }
     let path = p.briefs_dir().join(format!("{k}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)

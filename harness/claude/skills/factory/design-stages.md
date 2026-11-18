@@ -16,7 +16,7 @@ When you present a gate, list the designer's calls as the next section says.
 
 **B. Ask first.** Ask only what you cannot decide and what changes the result. The way to ask is in `asking.md`. `bf questions --open` must be empty before C.
 
-**C. Open the gate.** `bf gate open <kind>` prints the gate ID (`idea-r1`, `plan-r2`). It refuses while a question for the stage is open, and for `plan` while `bf plan check` fails. Then `bf render gate <gate-id> --template .claude/skills/factory/page.html --out .bf/pages/gate-<gate-id>.html`. Publish it (see `asking.md`). The gate page holds no open question. Name pages as the engine's index expects (`gate-<gate-id>.html`, `questions.html`, `plan.html`, `run.html`, `ledger.html`, `coverage.html`, `checkpoint-<K>.html`) and render `index` the same way when the human wants an overview.
+**C. Open the gate.** `bf gate open <kind>` prints the gate ID (`idea-r1`, `plan-r2`). It refuses while a question for the stage is open, and for `plan` while `bf plan check` fails. Then `bf render gate <gate-id> --template .claude/skills/factory/page.html --out .bf/pages/gate-<gate-id>.html`. Publish it (see `asking.md`). The gate page holds no open question. Name pages as the engine's index expects (`gate-<gate-id>.html`, `questions-<stage>.html` (one per stage; a page named only `questions` from an older run still counts), `plan.html`, `run.html`, `ledger.html`, `coverage.html`, `checkpoint-<K>.html`) and render `index` the same way when the human wants an overview.
 
 **D. Stop.** Write one chat message: the link as visible text, one sentence on what approving decides, the designer's calls made without asking, and "Reply approve, or tell me what to change." Then end your turn and call no tool until the human writes.
 
