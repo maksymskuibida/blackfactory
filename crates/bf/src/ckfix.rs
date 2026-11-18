@@ -842,6 +842,18 @@ fn report_inner(
                     "`bf status` shows the fix in review.",
                 ));
             }
+            // R-32: a probe that is not yet a permanent test is refused before any check runs again.
+            let absent = probe_tests_missing(p, &pl, &f)?;
+            if !absent.is_empty() {
+                let mut steps = absent.clone();
+                steps.push(crate::strings::t("cli.ckfix.probe_missing.step", &[]));
+                return Err(refuse_owned(
+                    crate::strings::t("cli.ckfix.probe_missing.what", &[("k", k)]),
+                    crate::strings::t("cli.ckfix.probe_missing.because", &[("n", &absent.len().to_string())]),
+                    steps,
+                    crate::strings::t("cli.ckfix.probe_missing.check", &[]),
+                ));
+            }
             // A wave fix is tried on the wave checks; it counts only after the reviewer's clean round.
             let failed = if f.source == "wave" {
                 crate::wavecheck::rerun(p, &pl, k, f.wave, false)?
@@ -859,17 +871,6 @@ fn report_inner(
                 return Err(refuse_owned(
                     format!("report the fix of {k}"),
                     format!("the checkpoint's checks still fail: {}", failed.len()),
-                    steps,
-                    "`bf status` shows the fix in review.",
-                ));
-            }
-            let absent = probe_tests_missing(p, &pl, &f)?;
-            if !absent.is_empty() {
-                let mut steps = absent.clone();
-                steps.push("Add each probe to the suite as a permanent test with its expected answer, commit it, then report again.".into());
-                return Err(refuse_owned(
-                    format!("report the fix of {k}"),
-                    format!("a probe that exposed a fault is not yet a permanent test that passes: {}", absent.len()),
                     steps,
                     "`bf status` shows the fix in review.",
                 ));
