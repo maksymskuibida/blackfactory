@@ -16,7 +16,7 @@ fn has(file: &str, needles: &[&str]) {
     }
 }
 
-const ROLE: &str = "harness/claude/agents/ux-verifier.md";
+const ROLE: &str = "harness/claude/agents/uiux-verifier.md";
 const DRIVERS: [(&str, &[&str]); 4] = [
     ("web", &["playwright", "node", "curl"]),
     ("ios", &["xcrun", "simctl", "xcodebuild"]),
@@ -28,7 +28,7 @@ const SECTIONS: [&str; 4] = ["## Tools needed", "## Start the product", "## Act"
 #[test]
 fn the_role_file_has_its_name_and_limits() {
     let t = read(ROLE);
-    assert!(t.starts_with("---\nname: ux-verifier\n"));
+    assert!(t.starts_with("---\nname: uiux-verifier\n"));
     has(
         ROLE,
         &[

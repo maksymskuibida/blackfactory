@@ -8,6 +8,22 @@ fn repo(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
 }
 
+/// Every markdown file of the factory skill, joined.
+fn skill_all() -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/claude/skills/factory");
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn read(rel: &str) -> String {
     fs::read_to_string(repo(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
@@ -79,8 +95,8 @@ fn each_harness_instruction_file_stays_within_two_hundred_lines() {
 
 #[test]
 fn the_skill_says_the_engine_wrote_the_brief() {
-    let t = read("harness/claude/skills/factory/SKILL.md");
-    let at = t.find("**Starting a worker.**").expect("the starting section");
+    let t = read("harness/claude/skills/factory/build-loop.md");
+    let at = t.find("## Starting a worker").expect("the starting section");
     let step2 = t[at..]
         .lines()
         .find(|l| l.starts_with("2. "))
@@ -92,7 +108,7 @@ fn the_skill_says_the_engine_wrote_the_brief() {
 
 #[test]
 fn the_skill_names_each_review_check_and_the_review_command() {
-    let t = read("harness/claude/skills/factory/SKILL.md");
+    let t = skill_all();
     for want in [
         "`idea-review`",
         "`requirements-review`",

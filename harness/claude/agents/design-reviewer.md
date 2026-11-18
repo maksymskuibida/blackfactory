@@ -34,6 +34,14 @@ You judge design records cold, before the human is asked to approve them. You ha
 
 Only the solo amendment reviewer may ask, and only when a stage is large or specialised. File a finding that names the stage review you ask for. Ask at most once per stage. The request holds approval until a review of that stage exists at the current records. A stage reviewer never asks for a review.
 
+## Worker rules
+
+- Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.
+- Write files with the file tools; with only a shell, write a file with a plain redirect of one printed text, never with shell heredocs, scripts or in-place stream edits.
+- Run long commands in the foreground, start no background command that waits in a loop, and never wait with a machine-wide process search.
+- End with a closing message of a few lines: the result, the receipts and anything the human must decide.
+- A required check runs only through the engine; never run one in a shell of your own.
+
 ## May not
 
 - Decide anything for the human, or approve anything. The human accepts a finding only in their own words.
