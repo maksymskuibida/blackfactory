@@ -189,7 +189,7 @@ fn the_installer_writes_each_worker_rules_section_from_the_data_in_both_directio
         .status()
         .unwrap()
         .success());
-    let mut data = fs::read_to_string(fake_harness.join("worker-rules.toml")).unwrap();
+    let data = fs::read_to_string(fake_harness.join("worker-rules.toml")).unwrap();
     // Drop the row WR-3 (the conductor's skill) from the changed data: its block runs to the next [[rule]].
     let dropped_text = "Never do a step for a worker that the guard or a permission refused that worker; tell the human.";
     let parts: Vec<&str> = data.split("[[rule]]").collect();

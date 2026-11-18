@@ -5,13 +5,7 @@
 mod common;
 use common::*;
 use std::fs;
-use std::path::{Path, PathBuf};
-
-fn repo(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
+use std::path::Path;
 
 fn actions(fx: &Fx) -> Vec<String> {
     fx.must(&["next", "--json"]).json()["directives"]

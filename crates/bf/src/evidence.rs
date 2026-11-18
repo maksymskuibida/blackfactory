@@ -955,20 +955,6 @@ fn shortened_limit(policy: u64, asked: Option<&str>) -> u64 {
         .map_or(policy, |n| n.min(policy))
 }
 
-#[cfg(test)]
-mod heavy_limit_tests {
-    use super::shortened_limit;
-
-    #[test]
-    fn the_variable_only_shortens_the_limit() {
-        assert_eq!(shortened_limit(3600, None), 3600);
-        assert_eq!(shortened_limit(3600, Some("5")), 5);
-        assert_eq!(shortened_limit(3600, Some("999999")), 3600);
-        assert_eq!(shortened_limit(3600, Some("0")), 3600);
-        assert_eq!(shortened_limit(3600, Some("x")), 3600);
-    }
-}
-
 /// How many whole-output files of failed runs stay in the receipts folder.
 const KEPT_OUTPUTS: usize = 40;
 
@@ -1203,7 +1189,7 @@ pub fn take_place(p: &Project, check_id: &str, unit: Option<&str>) -> R<Option<P
             told_long = true;
         }
         if let Some(u) = unit {
-            if last_beat.map_or(true, |t| t.elapsed() >= beat) {
+            if last_beat.is_none_or(|t| t.elapsed() >= beat) {
                 events::append(
                     p,
                     "evidence.wait",
@@ -2299,4 +2285,18 @@ pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) ->
         pass_after_failure: pass_marks,
         unmet,
     })
+}
+
+#[cfg(test)]
+mod heavy_limit_tests {
+    use super::shortened_limit;
+
+    #[test]
+    fn the_variable_only_shortens_the_limit() {
+        assert_eq!(shortened_limit(3600, None), 3600);
+        assert_eq!(shortened_limit(3600, Some("5")), 5);
+        assert_eq!(shortened_limit(3600, Some("999999")), 3600);
+        assert_eq!(shortened_limit(3600, Some("0")), 3600);
+        assert_eq!(shortened_limit(3600, Some("x")), 3600);
+    }
 }
