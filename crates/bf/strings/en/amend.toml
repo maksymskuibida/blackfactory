@@ -35,13 +35,13 @@
 "cli.amend.withdraw_lost.worked_when" = "`bf amend withdraw {amend}` prints each record it put back."
 
 # R-45: a refusal for a draft of the plan.
-"cli.amend.draft_waits.refused" = "{what}"
+"cli.amend.draft_waits.refused" = "{what} rests on a draft of the plan"
 "cli.amend.draft_waits.because" = "{draft} is changed by {amend}, which waits for the human; a draft of the plan is not the record in force"
 "cli.amend.draft_waits.do_this.1" = "Ask the human about {amend} (`bf status` lists it); the draft takes force when they approve it."
 "cli.amend.draft_waits.do_this.2" = "Or put back the approved content of {draft} by withdrawing {amend}: `bf amend withdraw {amend} --reason \"<why>\"`."
 "cli.amend.draft_waits.worked_when" = "`bf status` shows the amendment approved or withdrawn."
 
-"cli.amend.draft_no_amendment.refused" = "{what}"
+"cli.amend.draft_no_amendment.refused" = "{what} rests on a draft of the plan"
 "cli.amend.draft_no_amendment.because" = "{draft} is not the content the human approved, and no amendment is open for it, so no approval is coming"
 "cli.amend.draft_no_amendment.do_this.1" = "Put back the approved content of {draft}: `bf record get {draft}` shows what is there now, and the page of the approving amendment or the plan gate shows what was approved."
 "cli.amend.draft_no_amendment.do_this.2" = "Or open an amendment that names the record, `bf amend open {draft}`, put the change, narrow the amendment, and let the human read it."
