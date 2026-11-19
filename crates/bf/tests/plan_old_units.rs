@@ -98,6 +98,64 @@ impl Old {
         fs::remove_file(f).unwrap();
     }
 
+    /// Open a plan repair over `ids`, let `change` put the new records, narrow and approve it with the
+    /// human's words. Returns the approval's amendment ID.
+    fn approved_amendment(&self, ids: &[&str], change: impl Fn(&Old)) {
+        let mut args = vec!["amend", "open", "--repair"];
+        args.extend(ids);
+        args.push("--json");
+        let opened: Value = serde_json::from_str(&self.must(&args)).unwrap();
+        change(self);
+        let keep: Vec<String> = opened["impact_ids"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default();
+        let aid = opened["amend"]
+            .as_str()
+            .or_else(|| opened["id"].as_str())
+            .unwrap_or("A-1")
+            .to_string();
+        let f = self.root.join("narrow.json");
+        fs::write(
+            &f,
+            json!({"amend": aid, "keep": keep, "waive": []}).to_string(),
+        )
+        .unwrap();
+        self.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+        fs::remove_file(f).unwrap();
+        self.human("Yes, approve the change.");
+        self.must(&["amend", "approve", &aid, "--quote", "approve the change"]);
+    }
+
+    #[allow(dead_code)]
+    /// Make the last approval read as one from an engine before the marker: drop `tests_rule` from the
+    /// last event and seal the line again with the project's key.
+    fn strip_marker(&self) {
+        let log = self.root.join("factory/log/events.jsonl");
+        let text = fs::read_to_string(&log).unwrap();
+        let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+        let mut ev: serde_json::Map<String, Value> =
+            serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(ev["kind"], "amend.approve");
+        assert_eq!(ev.remove("tests_rule"), Some(json!(true)));
+        let dir = fs::read_dir(self.base.join("state"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let key = fs::read_to_string(dir.join("key")).unwrap();
+        let prev = ev["prev"].as_str().unwrap().to_string();
+        let h = bf::events::event_hash(key.trim(), &prev, &ev);
+        ev.insert("h".into(), json!(h));
+        *lines.last_mut().unwrap() = serde_json::to_string(&Value::Object(ev)).unwrap();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let hp = dir.join("head.json");
+        let mut head: Value = serde_json::from_str(&fs::read_to_string(&hp).unwrap()).unwrap();
+        head["last_hash"] = json!(h);
+        fs::write(&hp, head.to_string()).unwrap();
+    }
+
     /// Open a plan repair over `ids`, let `change` put the new records and narrow it. Returns the
     /// amendment's ID.
     fn narrowed_amendment(&self, ids: &[&str], change: impl Fn(&Old)) -> String {
@@ -130,14 +188,6 @@ impl Old {
     fn try_approve(&self, aid: &str) -> (i32, String) {
         self.human("Yes, approve the change.");
         self.run(&["amend", "approve", aid, "--quote", "approve the change"], "")
-    }
-
-    /// Open a plan repair over `ids`, let `change` put the new records, narrow and approve it with the
-    /// human's words.
-    fn approved_amendment(&self, ids: &[&str], change: impl Fn(&Old)) {
-        let aid = self.narrowed_amendment(ids, change);
-        let (c, out) = self.try_approve(&aid);
-        assert_eq!(c, 0, "approve {aid}: {out}");
     }
 
     /// Open, change and narrow a repair, and see the engine refuse its approval. Returns the refusal.
