@@ -13,6 +13,10 @@ autotests = false
 name = "all"
 path = "tests/all.rs"
 
+[features]
+# The test seam (C-3): off by default, asked for by no release build or install.
+test_seam = []
+
 [lib]
 name = "bf"
 path = "src/lib.rs"
@@ -26,6 +30,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 sha2 = "0.10"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# The build of the tests turns the test seam on (C-3), so the seam tests run in every test run; a
+# release build or an install builds no dev-dependency and never has it. The feature is not default.
+bf = { path = ".", features = ["test_seam"] }
+
+[build-dependencies]
+toml = "0.9"

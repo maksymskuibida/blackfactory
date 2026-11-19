@@ -1,0 +1,12 @@
+command = "test -f src/hello.txt"
+how = "command"
+id = "X-1"
+kind = "check"
+proves = [
+    "R-1",
+    "C-1",
+    "H-1",
+]
+scope = "unit"
+title = "Greeting file"
+unit = "U-1"

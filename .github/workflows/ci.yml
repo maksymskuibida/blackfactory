@@ -36,9 +36,13 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Build
         run: cargo build --locked
+      - name: Build the release artifact
+        run: cargo build --release --locked -p bf
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       - name: Test
+        env:
+          BF_RELEASE_ARTIFACT: ${{ github.workspace }}/target/release/bf
         run: cargo nextest run --locked --profile ci
       - name: Documentation tests
         run: cargo test --locked --doc

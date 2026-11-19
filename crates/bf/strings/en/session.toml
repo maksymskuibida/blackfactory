@@ -1,0 +1,2 @@
+# Strings of the group `session`: keys are quoted and flat, `"cli.session.some.key" = "text"`.
+# Filled by the unit that owns this group (D-62).

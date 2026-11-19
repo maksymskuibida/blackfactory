@@ -54,7 +54,7 @@ fn big(fx: &Fx) {
         del.push(format!("\"D-{u}\""));
         let del = del.join(",");
         proves.push(del.clone());
-        w(&format!("U-{u}"), format!("id=\"U-{u}\"\nkind=\"unit\"\ntitle=\"Unit {u}\"\ndelivers=[{del}]\nfiles=[\"src/u{u}/\"]\ncheckpoint=\"K-1\"\n"));
+        w(&format!("U-{u}"), format!("id=\"U-{u}\"\nkind=\"unit\"\ntitle=\"Unit {u}\"\ndelivers=[{del}]\nfiles=[\"src/u{u}/\"]\nfull_suite=\"fixture\"\ncheckpoint=\"K-1\"\n"));
         w(&format!("X-{u}"), format!("id=\"X-{u}\"\nkind=\"check\"\ntitle=\"Check {u}\"\nhow=\"command\"\ncommand=\"true\"\nproves=[{del}]\nscope=\"unit\"\nunit=\"U-{u}\"\n"));
     }
     let after: Vec<String> = (1..=100).map(|u| format!("\"U-{u}\"")).collect();

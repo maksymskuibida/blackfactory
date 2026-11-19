@@ -34,7 +34,7 @@ fn every_file_has_its_name_model_and_tools() {
     ] {
         let t = text(name);
         assert!(t.starts_with(&format!("---\nname: {name}\n")), "{name}");
-        has(name, &["model: sonnet", "tools:", "bf report"]);
+        has(name, &["model: opus", "tools:", "bf report"]);
         assert!(t.lines().count() < 100, "{name} is too long");
     }
 }

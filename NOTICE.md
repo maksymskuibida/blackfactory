@@ -37,3 +37,11 @@ The engine contains no network code and starts no background process. It calls t
 The files under `harness/claude/ux/` (`journey-contract.md`, `report-contract.md` and `accessibility-checklist.md`) were written new for this harness. No text was copied or adapted from any other project, so no third-party licence applies to them. The accessibility checklist was written against WCAG 2.2 (a W3C Recommendation); it quotes no WCAG text.
 
 The four driver guides under `harness/claude/ux/drivers/` use only command-line tools that are not bundled: Playwright, `simctl`, `adb` and a plain shell.
+
+## Ideas taken from AI-DLC v2
+
+The words `space` and `intent`, and the shape of the layers, the templates and the learning loop, are taken as ideas from AI-DLC v2 (the AI-Driven Development Life Cycle method). They are ideas, not text. No code and no text of AI-DLC v2 was copied into this repository, so no licence of it applies to any file here and no copyright line of it is carried. If a later change copies any text of it, this entry must name that text, its source, its licence and its copyright line.
+
+## Role files and the conductor's instructions
+
+The role files under `harness/claude/agents/` and the conductor's instructions under `harness/claude/skills/` were written new for this project. No text was copied or adapted from another project or from a private note, so no third-party licence applies to them. The worker rules in `harness/claude/worker-rules.toml` are written the same way.

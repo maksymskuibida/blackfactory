@@ -9,9 +9,10 @@ Version 1 is fixed: fields may be added (marked *optional addition* below), neve
 | Field | Meaning |
 |---|---|
 | `contract` | Always `1`. |
-| `kind` | `index`, `gate`, `questions`, `ledger`, `plan`, `run`, `checkpoint` or `coverage`; `report` is an *optional addition* for a written report that is not produced by the engine (it renders like any other kind). All kinds use the same layout; the kind decides which blocks the engine puts in. `index` is a list of pages with no filter bar. |
+| `kind` | `index`, `gate`, `questions`, `ledger`, `plan`, `run`, `checkpoint` or `coverage`; `workspace`, `space` and `rules` are *optional additions* (D-42) for the three levels of pages: the workspace, one space and the rules of a space; `report` is an *optional addition* for a written report that is not produced by the engine (it renders like any other kind). All kinds use the same layout; the kind decides which blocks the engine puts in. `index` is a list of pages with no filter bar. |
 | `id` | Stable id of the page, for example `architecture-r2`. It is the key for everything the page stores, so keep it the same across rebuilds of the same page. |
 | `project`, `built_at` | Shown in the footer. |
+| `space`, `intent` | *Optional additions (D-42).* The space and the intent the page belongs to. A page of a space leaves out `intent`; a page of the workspace leaves out both. |
 | `page` | The header card: see below. |
 | `sections` | Cards in reading order. Each holds optional `blocks` above its `rows`. |
 | `records` | Raw records, drawn once in one collapsed block at the end. Nothing else repeats them. |
@@ -20,7 +21,7 @@ Version 1 is fixed: fields may be added (marked *optional addition* below), neve
 
 ## `page`
 
-`crumbs` (the last one is the current page), `crumb_hrefs` (*optional addition*, a link per crumb), `status` (`text` and a `tone` of `wait` amber, `ok` green or `info` blue), `title`, `lede` (one sentence), `facts` (tiles with `label`, `value`, `sub`), `round`.
+`crumbs` (the last one is the current page), `crumb_hrefs` (*optional addition*, a link per crumb), `status` (`text` and a `tone` of `wait` amber, `ok` green or `info` blue), `title`, `lede` (one sentence), `facts` (tiles with `label`, `value`, `sub`), `round`, and two *optional additions* (D-42): `context`, the strip under the crumbs, a list of `{label, value, tone}` for the space, the intent and the intent's state (an item with an empty label or value is not drawn), and `context_label`, its accessible name.
 
 `round` is `{n, prev, changed, new, removed}`. The page draws "Round 2 compared with round 1: 2 changed, 3 new, 1 removed" and each count is a button that shows only the changed rows. It counts the rows itself; the numbers in `round` are used only when no row carries a round mark.
 
@@ -37,6 +38,7 @@ A row is one line that opens in place.
 | `needs_you` | The row is part of the "Needs you" filter. |
 | `round` | `new`, `changed` or `removed`. A changed or new row has a coloured left edge and tint; a removed row is struck through. |
 | `round_note` | Why it changed. Shown as "Changed in v2: ..." above the body. |
+| `tags` | *Optional addition (D-42).* A list of `{text, tone}` beside the one tag a row has today; `tone` is `wait`, `ok`, `info` or `none`. A tag with empty text is not drawn, and the tone is never the only sign: the text says it. Any kind of entry is drawn from its `title` and its tags; the template holds no list of kinds. |
 | `handled` | `{tone: ok|accepted|open, text}`, a tag such as "Fixed". |
 | `body` | Blocks (below). |
 | `refs` | Linked ids as chips with a tooltip. A chip whose label is an id on this page links to that row even with no `target`. |
@@ -47,7 +49,7 @@ A row is one line that opens in place.
 
 Evidence outcome: `passed`, `failed` or `unreachable`. Absent means passed when `exit` is 0 and failed when `exit` is another number. A failed check is drawn red; an unreachable one (the check could not run, which says nothing about the thing checked) is drawn dashed in amber with "Could not run:" and its `reason`. Never send `unreachable` for a check that ran and failed.
 
-Body blocks: `text`, `list`, `was` (the previous wording, label optional), `table`, `code`, `evidence` (check, command, exit code, commit, time, output tail, and *optional additions* `outcome` and `reason`), `image` (a path relative to the page).
+Body blocks: `text`, `list`, `was` (the previous wording, label optional), `table`, `code` (*optional addition* `wrap`: wrap long lines), `note` (*optional addition (D-42)*: `{label, text}`, a marked note; an empty label is not drawn), `evidence` (check, command, exit code, commit, time, output tail, and *optional additions* `outcome` and `reason`), `image` (a path relative to the page).
 
 ## Section blocks
 
@@ -90,3 +92,11 @@ Published as an artifact with the `db` and `user` capabilities, the page keeps:
 Writes are one at a time per document, only after a change, coalesced after a short pause, and never made from a snapshot callback. Loading has a 10 second limit after which the page says the saved data cannot be reached yet. Without the capabilities, or outside an artifact, the same data is kept in the browser's `localStorage` under `bf:<page id>:...`; without that, the page still renders and works for the visit.
 
 Private notes are private: an agent reads them only if the viewer says them in chat. Answers and picks are shared so an agent can read them.
+
+## Values are text
+
+The template draws every value from the data as text, never as markup (TH-16): a title, a note, a tag, a context value or a code block holding `<script>` shows those characters. A link from the data is drawn only when it is a page link, a relative link, or an `http`, `https` or `mailto` address. A block of a type the template has never seen is drawn from its `text`, if it has one.
+
+## The new sections (D-42)
+
+The fix design and the recovery review on a checkpoint page, the cost on a run page, the tests and the heavy limit on a plan page, the links to other intents on a gate page, the decisions and the questions rows are made of the parts above: rows with `tags`, a `table` for the items of a design, a `meter` for a spend against a cap, `refs` for links, `picks` for a lean and a `note` for the reason of an ask. Every label is the text of a key in `views/contract/strings.json`, carried in the data; an empty text hides its element. The samples `workspace`, `space`, `rules`, `checkpoint-fix`, `run-cost`, `plan-tests` and `gate-links` show each.

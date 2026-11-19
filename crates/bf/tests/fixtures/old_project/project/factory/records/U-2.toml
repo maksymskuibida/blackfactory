@@ -1,0 +1,8 @@
+checkpoint = "K-1"
+delivers = ["R-2"]
+depends_on = ["U-1"]
+estimate = 1
+files = ["src/bye.txt"]
+id = "U-2"
+kind = "unit"
+title = "Farewell"

@@ -4,6 +4,8 @@
 //! judges it, rounds and parking work as for a unit, and the engine then runs the checkpoint's checks
 //! again on the new content. The engine records which units' files each fix touched.
 
+pub mod design;
+
 use crate::events::{self, CkFixOpen, State};
 use crate::evidence::{self, Receipt};
 use crate::gitx;
@@ -840,6 +842,18 @@ fn report_inner(
                     "`bf status` shows the fix in review.",
                 ));
             }
+            // R-32: a probe that is not yet a permanent test is refused before any check runs again.
+            let absent = probe_tests_missing(p, &pl, &f)?;
+            if !absent.is_empty() {
+                let mut steps = absent.clone();
+                steps.push(crate::strings::t("cli.ckfix.probe_missing.step", &[]));
+                return Err(refuse_owned(
+                    crate::strings::t("cli.ckfix.probe_missing.what", &[("k", k)]),
+                    crate::strings::t("cli.ckfix.probe_missing.because", &[("n", &absent.len().to_string())]),
+                    steps,
+                    crate::strings::t("cli.ckfix.probe_missing.check", &[]),
+                ));
+            }
             // A wave fix is tried on the wave checks; it counts only after the reviewer's clean round.
             let failed = if f.source == "wave" {
                 crate::wavecheck::rerun(p, &pl, k, f.wave, false)?
@@ -857,17 +871,6 @@ fn report_inner(
                 return Err(refuse_owned(
                     format!("report the fix of {k}"),
                     format!("the checkpoint's checks still fail: {}", failed.len()),
-                    steps,
-                    "`bf status` shows the fix in review.",
-                ));
-            }
-            let absent = probe_tests_missing(p, &pl, &f)?;
-            if !absent.is_empty() {
-                let mut steps = absent.clone();
-                steps.push("Add each probe to the suite as a permanent test with its expected answer, commit it, then report again.".into());
-                return Err(refuse_owned(
-                    format!("report the fix of {k}"),
-                    format!("a probe that exposed a fault is not yet a permanent test that passes: {}", absent.len()),
                     steps,
                     "`bf status` shows the fix in review.",
                 ));
@@ -1348,6 +1351,19 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         }
         md.push_str(&format!(
             "## What to judge\n\nDoes the fix solve the failure without weakening a test? Look at how each probe test was added to the suite: it must be in the suite and run, not compiled out, skipped or emptied, and its command must run at least one test. Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
+        ));
+    }
+    if role != "builder" {
+        md.push('\n');
+    }
+    md.push_str(&format!(
+        "- {}\n",
+        crate::strings::t("cli.evidence.brief.rule.checks_engine", &[])
+    ));
+    if role != "builder" {
+        md.push_str(&format!(
+            "- {}\n",
+            crate::strings::t("cli.evidence.brief.rule.reviewer_receipts", &[])
         ));
     }
     let path = p.briefs_dir().join(format!("{k}-{role}.md"));

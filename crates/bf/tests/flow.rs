@@ -216,7 +216,7 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
         let o = fx.put(k, t);
         assert_eq!(o.code, 0, "{}", o.all());
     }
-    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\n");
+    replace_record(&fx, "unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"B\"\ndelivers=[\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\nfull_suite=\"fixture\"\n");
     replace_record(&fx, "check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"both\"\nhow=\"command\"\ncommand=\"ls src/a.txt src/b.txt\"\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nscope=\"checkpoint\"\n");
     replace_record(&fx, "checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Second\"\nafter=[\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-9\",\"D-91\",\"D-92\"]\nchecks=[\"X-4\"]\n");
     fx.commit_all("records");
@@ -1168,7 +1168,7 @@ fn a_new_session_finds_the_pages_an_earlier_one_published() {
     two_units_in_one_checkpoint(&fx2);
     fx2.start_test_run();
     fx2.must(&["unit", "start", "U-1"]);
-    fx2.must(&["page", "set", "questions", "https://example.com/p/q9"]);
+    fx2.must(&["page", "set", "questions-U-1", "https://example.com/p/q9"]);
     fx2.must(&["ask", "--unit", "U-1", "--title", "Which colour?"]);
     let n = fx2.must(&["next", "--json"]).json();
     let d = n["directives"]

@@ -17,6 +17,22 @@ fn read(rel: &str) -> String {
     fs::read_to_string(repo(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
+/// Every markdown file of the factory skill, joined.
+fn skill_all() -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/claude/skills/factory");
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn has(text: &str, what: &str, needles: &[&str]) {
     for n in needles {
         assert!(text.contains(n), "{what} should contain `{n}`");
@@ -25,7 +41,7 @@ fn has(text: &str, what: &str, needles: &[&str]) {
 
 #[test]
 fn the_skill_names_each_new_demand() {
-    let skill = read("harness/claude/skills/factory/SKILL.md");
+    let skill = skill_all();
     has(
         &skill,
         "the skill",
@@ -64,7 +80,7 @@ fn the_documents_state_the_corrected_rules() {
 
 #[test]
 fn the_skill_forbids_the_conductor_to_use_a_token() {
-    let skill = read("harness/claude/skills/factory/SKILL.md");
+    let skill = skill_all();
     has(
         &skill,
         "the skill",

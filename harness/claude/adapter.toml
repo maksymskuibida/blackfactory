@@ -1,0 +1,28 @@
+# The harness adapter data (C-24, D-51): what the engine knows of the Claude Code harness.
+# `crates/bf/build.rs` compiles this file into the binary; nothing is read from it at run time.
+# A path that starts with `~/` is under the account's home from the account database (C-3).
+
+# The folder where the harness writes one file for each running session, and the file's name form.
+session_dir = "~/.claude/sessions"
+session_file = "<pid>.json"
+
+# The keys of a session file.
+key_pid = "pid"
+key_proc_start = "procStart"
+key_session_id = "sessionId"
+
+# The harness's variable that names the session when the walk up the process ancestry finds no
+# file (D-51); the engine's own `BF_SESSION` is read only after it and is not adapter data.
+fallback_variable = "CLAUDE_CODE_SESSION_ID"
+
+# The harness's own configuration variable.
+config_variable = "CLAUDE_CONFIG_DIR"
+
+# The fields of a subagent's hook payload.
+subagent_fields = ["agent_id", "agent_type", "parent_tool_use_id", "subagent", "agent_name"]
+
+# The programs that are the harness itself.
+programs = ["claude"]
+
+# The folder of the harness's transcripts.
+transcript_dir = "~/.claude/projects"

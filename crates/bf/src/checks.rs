@@ -228,6 +228,10 @@ pub struct Attached {
     pub source: &'static str,
     /// The reason of the override that set the list; empty for the project's own list.
     pub reason: String,
+    /// `format`, `lint` or `suite` (D-59); empty when the entry does not say.
+    pub kind: String,
+    /// The entry says it starts devices, containers or a build of the whole product.
+    pub heavy: bool,
 }
 
 impl Attached {
@@ -291,7 +295,10 @@ pub fn shell_words(line: &str) -> Vec<String> {
     out
 }
 
-fn defs_from_value(v: Option<&Value>) -> Vec<(String, Vec<String>)> {
+/// One entry of a list: name, command words, kind and whether it is heavy.
+type Def = (String, Vec<String>, String, bool);
+
+fn defs_from_value(v: Option<&Value>) -> Vec<Def> {
     v.and_then(|x| x.as_array())
         .map(|a| {
             a.iter()
@@ -299,6 +306,8 @@ fn defs_from_value(v: Option<&Value>) -> Vec<(String, Vec<String>)> {
                     (
                         x["name"].as_str().unwrap_or("").trim().to_string(),
                         shell_words(x["command"].as_str().unwrap_or("")),
+                        x["kind"].as_str().unwrap_or("").to_string(),
+                        x["heavy"].as_bool() == Some(true),
                     )
                 })
                 .collect()
@@ -306,17 +315,33 @@ fn defs_from_value(v: Option<&Value>) -> Vec<(String, Vec<String>)> {
         .unwrap_or_default()
 }
 
-fn attach_list(
-    list: Vec<(String, Vec<String>)>,
-    source: &'static str,
-    reason: &str,
-) -> Vec<Attached> {
+/// The kind of an entry of the project's own list, whose policy table carries no `kind`: read from its name.
+fn kind_from_name(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if n.contains("suite") || n == "test" || n == "tests" {
+        "suite"
+    } else if n.contains("lint") || n.contains("clippy") {
+        "lint"
+    } else if n.contains("fmt") || n.contains("format") {
+        "format"
+    } else {
+        ""
+    }
+}
+
+fn attach_list(list: Vec<Def>, source: &'static str, reason: &str) -> Vec<Attached> {
     list.into_iter()
-        .map(|(name, command)| Attached {
+        .map(|(name, command, kind, heavy)| Attached {
+            kind: if kind.is_empty() {
+                kind_from_name(&name).to_string()
+            } else {
+                kind
+            },
             name,
             command,
             source,
             reason: reason.to_string(),
+            heavy,
         })
         .collect()
 }
@@ -325,6 +350,42 @@ fn attach_list(
 /// list, then its checkpoint's, then the run's, then the project's. Returns the list, its source and the
 /// reason of the override (empty for the project's list).
 pub fn attached_for_unit(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    unit: &str,
+) -> (Vec<Attached>, &'static str, String) {
+    let (mut list, source, reason) = attached_listed(p, pl, st, unit);
+    // R-62: a unit that names its tests runs them in the suite's place, and the suite's place in the
+    // order stays where it is.
+    if let Some(t) = pl
+        .unit(unit)
+        .map(|u| crate::store::s(u, "tests").trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        for a in list.iter_mut().filter(|a| a.kind == "suite") {
+            a.command = shell_words(&t);
+        }
+    }
+    (list, source, reason)
+}
+
+/// The command of the suite among the checks every unit must pass for this unit, as the list gives it
+/// (before a unit's own tests take its place).
+pub fn suite_command(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    unit: &str,
+) -> Option<Vec<String>> {
+    attached_listed(p, pl, st, unit)
+        .0
+        .into_iter()
+        .find(|a| a.kind == "suite")
+        .map(|a| a.command)
+}
+
+fn attached_listed(
     p: &Project,
     pl: &crate::plan::Plan,
     st: &State,
@@ -358,18 +419,25 @@ pub fn attached_for_unit(
                     attach_list(defs_from_value(c.get("checks")), "run", ""),
                     "run",
                     String::new(),
-                )
+                );
             }
             "none" => return (vec![], "run", String::new()),
             _ => {}
         }
     }
-    let list: Vec<(String, Vec<String>)> = p
+    let list: Vec<Def> = p
         .policy
         .unit_checks
         .list
         .iter()
-        .map(|d| (d.name.trim().to_string(), shell_words(&d.command)))
+        .map(|d| {
+            (
+                d.name.trim().to_string(),
+                shell_words(&d.command),
+                kind_from_name(&d.name).to_string(),
+                false,
+            )
+        })
         .collect();
     (attach_list(list, "project", ""), "project", String::new())
 }
@@ -418,6 +486,24 @@ pub fn attached_missing(
             )
         })
         .collect()
+}
+
+/// The attached checks that come before `id` in the unit's list and have no passing receipt on `content`
+/// (R-33): the first of them refuses a later check.
+pub fn earlier_unpassed(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &State,
+    receipts: &[crate::evidence::Receipt],
+    unit: &str,
+    id: &str,
+    content: &str,
+) -> Option<Attached> {
+    let list = attached_for_unit(p, pl, st, unit).0;
+    let at = list.iter().position(|a| a.id() == id)?;
+    list.into_iter()
+        .take(at)
+        .find(|a| attached_receipt(receipts, a, content).is_none())
 }
 
 /// Resolve an attached check by its ID for a unit: the command the receipt must carry.
@@ -771,7 +857,9 @@ pub fn run_in(
                 return Err(refuse(
                     "record check settings for a run",
                     "no run is active",
-                    &["Start a run with `bf run start`, or propose the project default with `--scope default`."],
+                    &[
+                        "Start a run with `bf run start`, or propose the project default with `--scope default`.",
+                    ],
                     "`bf checks state` shows the checks that are on and off.",
                 ));
             }
@@ -780,7 +868,9 @@ pub fn run_in(
                 return Err(refuse(
                     "record check settings for another run",
                     "the proposal was made for a run that is no longer the active one",
-                    &["Run `bf checks propose` again in the active run and show the human the result."],
+                    &[
+                        "Run `bf checks propose` again in the active run and show the human the result.",
+                    ],
                     "`bf checks state` shows the checks that are on and off.",
                 ));
             }
@@ -838,6 +928,20 @@ pub fn run_in(
     }
 }
 
+/// The list the engine proposes for every unit: format and lint before the suite, and a suite command that
+/// runs to its end, so one run names every failing test (R-31, R-33, R-62). It is the same whether or not a
+/// unit names its tests. The commands are the Rust toolchain's when the project has a manifest, else
+/// empty for the human to fill.
+fn default_unit_proposal(p: &Project) -> Value {
+    let manifest = p.root.join(["Cargo", "toml"].join(".")).is_file();
+    let cmd = |c: &'static str| if manifest { c } else { "" };
+    json!([
+        {"name": "format", "kind": "format", "command": cmd("cargo fmt --check")},
+        {"name": "lint", "kind": "lint", "command": cmd("cargo clippy --all-targets -- -D warnings")},
+        {"name": "suite", "kind": "suite", "command": cmd("cargo nextest run --no-fail-fast")},
+    ])
+}
+
 /// `bf checks unit <state|question|propose|set>`: the run's choice about the checks every unit must pass
 /// (R-76). The project's own list lives in the policy file, which only the human edits.
 fn unit_settings(
@@ -863,7 +967,12 @@ fn unit_settings(
                         {"choice": "override", "text": "Override it for this run: give each check as name=command"},
                         {"choice": "none", "text": "No checks for every unit in this run"},
                     ],
-                    "note": "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override.",
+                    "note": format!(
+                        "{} {}",
+                        crate::strings::t("cli.checks.unit.question.note", &[]),
+                        crate::strings::t("cli.checks.unit.question.note_tests", &[])
+                    ),
+                    "proposal": default_unit_proposal(p),
                 });
             }
             Ok(v)
@@ -914,7 +1023,9 @@ fn unit_settings(
                         {
                             return Err(refuse(
                                 "propose the checks every unit must pass",
-                                format!("`{a}` needs a name of letters, digits, `-`, `_` or `.` and a command"),
+                                format!(
+                                    "`{a}` needs a name of letters, digits, `-`, `_` or `.` and a command"
+                                ),
                                 &["Write each check as `lint=cargo clippy -- -D warnings`."],
                                 "The command prints the proposal.",
                             ));
@@ -926,7 +1037,10 @@ fn unit_settings(
                         {
                             return Err(refuse(
                                 "propose the checks every unit must pass",
-                                crate::evidence::operator_message(&format!("check `{}`", n.trim()), &w),
+                                crate::evidence::operator_message(
+                                    &format!("check `{}`", n.trim()),
+                                    &w,
+                                ),
                                 &[
                                     "Propose one check per program.",
                                     "Or keep an argument with a space whole by quoting it: the engine passes the quoted words as they are.",
@@ -952,7 +1066,7 @@ fn unit_settings(
                         format!("`{mode}` is not `project`, `override` or `none`"),
                         &["Run `bf checks unit question` for the question to ask the human."],
                         "The command prints the proposal.",
-                    ))
+                    ));
                 }
             };
             crate::wavecheck::propose(p, "unitchecks", "run", value)
@@ -1022,7 +1136,9 @@ fn pick_scope(st: &State, scope: Option<&str>) -> R<String> {
         return Err(refuse(
             "propose check settings",
             format!("the scope `{s}` is not `run`, `default` or `both`"),
-            &["Use `--scope run` for this run, `--scope default` for the project default, or `--scope both`."],
+            &[
+                "Use `--scope run` for this run, `--scope default` for the project default, or `--scope both`.",
+            ],
             "`bf checks propose` prints the proposal.",
         ));
     }

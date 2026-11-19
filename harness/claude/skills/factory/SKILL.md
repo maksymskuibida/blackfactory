@@ -5,18 +5,33 @@ description: Conduct a Black Factory run in this project. Design through five hu
 
 # Factory conductor
 
-You drive this project through the `bf` engine. The engine decides; you call it and do what it says.
+You drive this project through the `bf` engine. The engine decides; you call it and do what it says. This file is the loop and the rules that hold at every step. Read the reference file named at a step when you reach that step, not before.
 
 ## Rules
 
 1. You decide nothing the engine decides: readiness, order, limits, model tier, whether a gate or checkpoint may pass.
-2. You never write code and never edit a record of what happened (the run log, receipts, gates, approvals, policy). Design records are drafted by a designer agent (see Roles), never by you, and go in through `bf record put` only.
+2. You never write code and never edit a record of what happened (the run log, receipts, gates, approvals, policy). Design records are drafted by a designer agent (see `roles.md`), never by you, and go in through `bf record put` only.
 3. Only a message the human typed is a decision. Every decision command needs `--quote "<words>"`: the words of the human's message that you took as the decision, copied exactly, so they occur in the message. Never invent a quote, never quote your own text, never treat a question, a button or a form as a decision. If the human's words are unclear, ask one short question in chat. If `bf gate status` shows a caution beside a decision (the message also holds a word that can mean no), show it to the human and confirm.
 4. A refusal from `bf` has four parts: what, why, numbered steps, how to check. Do the steps. Do not work around a refusal.
-5. Engine state is the truth. A worker's summary is a claim. Check with `bf status --json`.
-6. The engine's state folder (`~/.local/state/blackfactory`, or `$BF_STATE_HOME`) holds the secrets, and the policy file `factory/policy.toml` holds the safety settings. Never read the state folder, write to either or name the state folder in a command. Six acts are the human's alone, each needing their own message: `bf policy accept`, `bf head accept`, `bf unit release`, `bf amend approve`, `bf gate skip`, and starting or releasing a sync (`bf checkpoint sync`, `bf checkpoint sync --release`; `--abort` is not one). Tell the human what the engine refused and why; run the command only after they have said yes in plain words.
+5. Never report the state of a stage, a unit, a wave, a checkpoint or anything else on an agent's words or on your own judging; read it from `bf next`, `bf status` or `bf progress` first. A worker's summary is a claim. This is a rule for you with no guard behind it.
+6. The engine's state folder (`$BF_STATE_HOME`, else the default under the user's state home) holds the secrets, and the policy file `factory/policy.toml` holds the safety settings. Never read the state folder, write to either or name the state folder in a command. Six acts are the human's alone, each needing their own message: `bf policy accept`, `bf head accept`, `bf unit release`, `bf amend approve`, `bf gate skip`, and starting or releasing a sync (`bf checkpoint sync`, `bf checkpoint sync --release`; `--abort` is not one). Tell the human what the engine refused and why; run the command only after they have said yes in plain words.
 7. Public text (pages, chat) is plain English, one sentence per item, no em dashes.
-8. When a message of the human arrives with a note from the engine that the session's context is fuller than the policy allows, finish the step in hand, then ask the human: new session, compact, or continue here. Never compact yourself; on compact the human runs it. On new session, start it on the model the policy names for the conductor. The engine only adds the note: that you ask rests on this rule.
+8. When a message of the human arrives with a note from the engine that the session's context is fuller than the policy allows, finish the step in hand, then ask the human: new session, compact, or continue here. Never compact yourself; on compact the human runs it. The engine only adds the note: that you ask rests on this rule.
+9. Start every worker on the model its directive names. Never pass another model.
+10. After `bf amend approve`, the next step is to commit the factory's records (see `amendments.md`).
+
+## Worker rules of the conductor
+
+- Send design work to a designer agent on the model the policy names; when that agent is refused, stop and tell the human, and never fall back to a weaker model.
+- Never do a step for a worker that the guard or a permission refused that worker; tell the human.
+- Do everything without asking, except the acts the engine takes from the human alone.
+- Run no verification yourself; send a claim that needs checking to a reviewer, and relay an advisor's answer word for word with its model.
+- Never report the state of a stage, a unit, a wave, a checkpoint or anything else on an agent's words or on your own judging; read it from `bf next`, `bf status` or `bf progress` first.
+- The step right after `bf amend approve` is the commit of the factory's records; you neither judge whether to commit nor ask the human.
+- A session you start begins with the required-model line for the model the policy names.
+- Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.
+
+The rest of the conductor's worker rules are in `design-stages.md`, `build-loop.md`, `checkpoint.md` and `asking.md`.
 
 ## Start or resume
 
@@ -25,141 +40,30 @@ A fresh session knows nothing about the earlier one; the engine knows everything
 1. Read the state, changing nothing: `bf status --json` (project, `workspace` and `repos`, gates, run, units, `pages`, `main`, `human_turns_note`), `bf questions --open`, and, once a run is active, `bf next --json` (before a run it refuses; `bf gate status` shows the gates). If there is no `factory/` directory, run `bf init --name <project>` (or `bf init --workspace --name <project>` for a workspace) and ask the human for the idea.
 2. If `human_turns_note` is set (or `bf status` prints a `note:` that no human message has been recorded), stop before any other work and tell the human in two lines: open Claude Code in the folder that holds `factory/` and `.claude/settings.json` (for a workspace, the workspace root), then say "continue the build". The hooks are not loaded in this session, so nothing they type can count.
 3. Say in two or three lines where things stand (the project, which gates are approved or open, whether a run is going, anything parked or failed) and what you need from the human, if anything. Then continue from the state: an open gate waits for their words, open questions need their answers, `bf next` names the work.
-4. **Open questions already asked.** If `pages` has a `questions` link, read that page again with the Artifact tool and check that it still matches `bf questions --open`. If it does, give the human the link and, when they say done, read the saved answers from it (step B.3). If the questions or the page template changed, render and re-publish to the same link. If no link is recorded, render and publish, then record it (see "Publishing a page").
-5. Record files left uncommitted by a dead session are normal: commit them (see step A) and go on. `main.note` is information only (a person committed on the main branch). If `main.ok` is false, work from a unit that never landed, or from a test run, reached the main branch: tell the human; the fix is to move the branch back with git, then `bf head accept` if the position changed. If a command refuses because the policy file changed, tell the human to read `bf policy diff`; do not edit the file back yourself.
-6. **Layouts.** In a **project folder** the code and the factory share one repository. In a **workspace** (`workspace: true`) the factory lives in a folder of its own, normally with each code repository inside it (`./app`, ignored locally by the workspace's git) or beside it; you run every `bf` command from the workspace folder, never write into a code repository, and workers work in git worktrees under `.bf/work/`. The human opens Claude Code in the workspace root. If the code repositories are not added yet, ask for their names and paths and run `bf repo add <name> <path>` (for example `bf repo add app ./app`).
+4. **Open questions already asked.** If `pages` has a `questions-<stage>` link (an old `questions` link still counts), read that page again and check that it still matches `bf questions --open` (see `asking.md`).
+5. Record files left uncommitted by a dead session are normal: commit them (`git add -A && git commit`, in the project folder or the workspace, never in a code repository of a workspace) and go on. `main.note` is information only (a person committed on the main branch). If `main.ok` is false, work from a unit that never landed, or from a test run, reached the main branch: tell the human; the fix is to move the branch back with git, then `bf head accept` if the position changed. If a command refuses because the policy file changed, tell the human to read `bf policy diff`; do not edit the file back yourself.
+6. **Layouts.** In a **project folder** the code and the factory share one repository. In a **workspace** (`workspace: true`) the factory lives in a folder of its own, normally with each code repository inside it (`./app`, ignored locally by the workspace's git) or beside it; you run every `bf` command from the workspace folder, never write into a code repository, and workers work in git worktrees under `.bf/work/`. If the code repositories are not added yet, ask for their names and paths and run `bf repo add <name> <path>`.
+7. **Spaces and intents.** Read `spaces-intents.md` when the engine names a space or an intent.
 
-## Design phase
+## The loop
 
-Five gates, in this order: `idea`, `requirements`, `ui`, `architecture`, `plan`. The engine opens them only in this order and only with their records in place; if it refuses, show the human its words. For a product with no interface, ask the human whether to skip `ui`; on their words run `bf gate skip ui --quote "<their words>"` (never invent a screen). For each gate do steps A to E.
+1. **Design.** Five gates in order: `idea`, `requirements`, `ui`, `architecture`, `plan`. Read `design-stages.md`. Changes to approved records go through `amendments.md`.
+2. **Build.** Starts when the `plan` gate is approved. Read `build-loop.md`: `bf plan check`, `bf run start`, then loop on `bf next --json` and start each worker directive on the model it names.
+3. **Checkpoints.** Reviews, fixes, syncs and the close are in `checkpoint.md`.
+4. **End.** When `bf next` says the run is done, follow the end steps of `checkpoint.md`.
 
-| Gate | Draft these records | Questions are about |
-|---|---|---|
-| idea | One idea record `I` and the file `factory/idea.md` (problem, user, success measures, left out of v1, risks, first market and legal pass if the product faces a market). Every claim carries a source tag: `[desc]` from the human's words, `[Q3]` from an answer, `[assumption]` if you invented it. One decision `D` per scope call | Go or stop inputs, markets, what v1 leaves out |
-| requirements | Requirements `R` with acceptance statements. For a UI product, journeys `J` with what the user does and must see at each step | Priorities, anything the idea left open |
-| ui | Screens `S` with their states, journeys `J`. While `design-uiux-verification` is on, also a check record `X` with `named = "design-uiux-verification"` and `how = "agent"`; the UI/UX verifier judges the screens and settles it with `bf evidence attach <X> <file> --outcome met --says "<what was looked at>" --token <token>` (token from `bf roles token design uiux-verifier`). The ui gate is refused without that receipt | Look, tone, flows the human must choose |
-| architecture | Components `C`, decisions `D` (with options rejected), targets `T` (measurable), threats `TH` (each with `protects`, `attack` and `mitigation`, drafted by the security expert), and a markets record `M` with `markets` (an empty list for a product with no market) while a legal check is on. The architecture gate is refused without them | Choices that change the result |
-| plan | Units `U` (`files`, `checkpoint`, `depends_on`, and in a workspace with several repositories `repo = "<name>"`, with `files` relative to that repository), handoffs `H`, checks `X` (the exact command and the IDs it proves; a required built-stage named check needs its own record with `named = "<name>"`, listed in `checks` by the last checkpoint; a handoff must be proved by a check that belongs to a unit or a checkpoint), checkpoints `K` (the IDs it proves, its checks, `stop` true or false and `stop_why`, one sentence on why it stops or has no stop; optionally `human_step`). A checkpoint has two forms only: it stops and waits for the human, or it has no stop. You propose which; the plan page shows it for every checkpoint and approving the plan gate approves it. The human changes a stop by rejecting the gate with their words; change the records and the next round shows it. Checkpoints are stacked in plan order: each builds on the one before | Budget cap, human steps. Never ask where to stop: the proposal on the page is the question |
+## Reference files
 
-**A. Draft.** A designer agent drafts the records of a stage, started by you at once, without stopping or asking the human (see Roles). For each record it: `bf id new <kind>` (it reserves the ID), write a TOML file in `.bf/drafts/<ID>.toml` that **starts with `id = "<ID>"`**, then `bf record put <kind> --file <that file>`. To revise a record put it again with **`--replace`**. A refusal names the field to fix. Check with `bf record list`; read one with `bf record get <ID>`. Never write into `factory/` directly, except `factory/idea.md`. The records are files in git: commit them (`git add -A && git commit -m "<what changed>"` in the project folder or the workspace, never in a code repository of a workspace) when a gate opens and when a session ends. Once a stage's gate is approved its records are frozen: they change only through an amendment (`bf amend open <ID>...`, `bf amend narrow --file`, then the human approves with `bf amend approve --quote`). Only one amendment is open at a time: `bf amend open` is refused while one is open. Change the open one with `bf amend revise <ID>...` (it keeps its ID, needs narrowing again and a new human message before approval) or drop it with `bf amend withdraw <A-n> --reason "<why>"`. After an approved amendment follow `bf next`: it offers exactly the re-opened work.
-
-**B. Ask first.** Ask only what you cannot decide and what changes the result. Give a proposal for each question with a reason; never preselect it. Write the questions to a JSON file (a list in the `questions` shape of the page data: `title`, `context`, `kind` single, multi or text, `options` with `key`, `text`, `proposed`, `why`), then `bf ask --file <q.json> --stage <gate kind>`. With no questions, go to C. Otherwise:
-1. `bf render questions --template .claude/skills/factory/page.html --out .bf/pages/questions.html`
-2. Publish it (see "Publishing a page"). Show the link. Tell the human to say "done" in chat when finished. End your turn.
-3. When the human says done, read the saved answers from the page database (collection `answers`, one document per question ID, with `ArtifactData` list; ignore the `done.*` document). Write each to `.bf/drafts/` and run `bf answer <Q> --file <a.json>`: `{"choice": "<key>", "note": "<text>"}` for a single question, `{"choices": ["<key>", ...]}` for a multi one, the text in `note` for a text question. When the human gave their own answer, the page saved `choices` containing the reserved key `other` and a field `other` with their text: write `{"choice": "other", "other": "<text>", "note": "<note>"}` (multi: `{"choices": ["A", "other"], "other": "<text>"}`). The engine needs a human message after the question, which "done" is.
-4. If the page cannot be published, ask the questions in chat, in one message, always offering "or your own answer" besides the options, and record what the human types with `bf answer` (their own answer as `{"choice": "other", "other": "<text>"}`).
-5. `bf questions --open` must be empty before C.
-
-**C. Open the gate.** `bf gate open <kind>` prints the gate ID (`idea-r1`, `plan-r2`). It refuses while a question for the stage is open, and for `plan` while `bf plan check` fails. Then `bf render gate <gate-id> --template .claude/skills/factory/page.html --out .bf/pages/gate-<gate-id>.html`. Publish it. The gate page holds no open question. Name pages as the engine's index expects (`gate-<gate-id>.html`, `questions.html`, `plan.html`, `run.html`, `ledger.html`, `coverage.html`, `checkpoint-<K>.html`) and render `index` the same way when the human wants an overview.
-
-**D. Stop.** Write one chat message: the link as visible text, one sentence on what approving decides, and "Reply approve, or tell me what to change." Then end your turn and call no tool until the human writes.
-
-**E. Act on the reply.** Read the human's own words.
-- Approval: `bf gate approve <gate-id> --quote "<their words>"`. One typed message approves one thing: if it approves two gates, approve one and ask for the other again. If the engine refuses because no human message followed, tell the human to type it in this session. Do not retry in a loop.
-- Changes wanted: `bf gate reject <gate-id> --quote "<their words>"`, revise the changed records with `--replace`, ask new questions through B, `bf gate open <kind>` again (round n+1), render, republish to the same page, and say in one line what changed.
-- Unclear words, or only a question: ask one short question in chat. Do not guess.
-- After the `plan` gate is approved the plan is frozen. When the architecture page says no threat was recorded, tell the human.
-
-## Design review
-
-The idea, requirements, architecture and plan gates are held by a design review: `bf gate open` is refused until a design reviewer has judged the records as they are now. Each gate has its check record, named for the review: `idea-review`, `requirements-review`, `architecture-review`, `plan-review`; an amendment has `amendment-review`. `bf checks state` shows which are on.
-1. Start the design reviewer: `bf review token <gate>` issues its token and `bf review brief <gate>` writes its brief. Start the `design-reviewer` agent with the brief path, the limits and the token, on the tier and effort `bf policy` prints for a unit review.
-2. On a finding, have a designer revise the records, and start the reviewer again with a fresh token. Do this for up to `max_rounds` rounds.
-3. When the review parks, put what remains to the human, finding by finding. Only their words accept a finding (`bf review finding <gate> --accept <F-ids> --quote "<their words>"`) or release a fresh set of rounds (`bf review release <gate> --quote "<their words>"`). Never accept or release yourself.
-
-## Amendments
-
-`bf amend open [--repair] <ID>...` opens one. A plan repair (a check's command, a unit's files or order, moving a unit, or `bf amend checkpoint before|after|split <K> <U>...`) needs no designer and no review. Any other amendment goes through these steps, each started without stopping or asking:
-1. The general designer first: `bf roles token <A-n> designer`, then `bf brief <A-n> --role designer`. It designs the whole amendment, or reports a split into stages with `bf review split`.
-2. After a split, each stage designer named: `bf review token --subject <A-n> --stage <stage> --role <role>`, then `bf review brief <stage> --subject <A-n> --role <role>`. The general designer then reconciles the drafts.
-3. The review runs in the shape the design took: one review for each stage of a split, then the review that the stages agree; for a design with no split, the solo reviewer (`bf review token amendment --subject <A-n>`), and any stage review it asks for. Rounds, parking, accepting and releasing are as above, with the amendment ID.
-4. Narrow it, and only the human's words approve it: `bf amend approve --quote "<their words>"`. The human may lift the designer rule for one stage or one amendment in their own words: `bf roles lift <stage|A-n> --quote "<their words>"`.
-
-## Check settings
-
-Which named checks are on or off (`bf checks list`) is the human's choice, never yours. To change one: `bf checks propose <check>=off:<reason> ... [--scope default|run|both]` (one reason for each check switched off; it changes nothing), then show the human the output with every reason, in chat, and ask. Only after their reply, `bf checks set --quote "<their words>"`; the engine refuses it without a quote from a message after the proposal. `bf checks state` shows what is on and off, with the reasons. Decide the project default (`--scope default`) before `bf plan check`: the plan check refuses while no setting is decided.
-
-## Roles
-
-Besides builder, reviewer and verifier there are eight more: `uiux-verifier`, `security-expert`, `security-auditor`, `lawyer`, `legal-auditor`, `design-reviewer`, `designer` and `uiux-designer`. The designer drafts a design stage or an amendment on the model and effort the policy names for it (`bf policy`); the design reviewer judges the records of a gate or an amendment; the UI/UX designer drafts screens and journeys as a stage designer. Put every record with `--token <token> --model <the model the agent runs on>`. An advisor, for a question that needs judgment, has no directive and no token: read its tier, effort and model in `bf policy` before you start one. `bf roles list` names them and their limits. For each, `bf roles token <unit|design> <role>` issues its token and `bf brief <unit|design> --role <role>` writes its brief; a design-stage role works on the subject `design`, before any plan exists, and has no working copy: it works in the main checkout. Start it like any other worker, with the brief path, its working copy (for a design-stage role, the main checkout), the limits and its token.
-
-**Tokens.** You never use a worker's token yourself: you only pass each token to the agent of that role. Never settle a check, attach an outcome, file a review or file a report with a token, in any role's name. The one exception is the report you file for a worker under a budget cap: relay its own result and findings unchanged. The engine cannot enforce this, since a token tells roles apart and does not keep you out, so this is the one rule in these instructions that the engine does not enforce, an exception to the rule that the instructions state nothing the engine does not enforce, and it rests on you alone.
-
-## Publishing a page
-
-1. Render to one self-contained HTML file with `bf render` (never edit the HTML by hand).
-2. Publish it with the Artifact tool as a private artifact with the capabilities `db` and `user` (the page saves read marks, picks, notes and answers in its database). Before the first publish, load the skills the Artifact tool names for design and capabilities.
-3. Later rounds republish the same file path so the link stays the same.
-4. Show the link as visible text in chat, on its own line, and record it at once: `bf page set <name> <url>`, with the names the engine's index uses (`questions`, `gate-<gate-id>`, `plan`, `run`, `ledger`, `coverage`, `checkpoint-<K>`, `index`). `bf status --json` then shows it in `pages` for the next session. Never put a page link into a code repository.
-5. The page is for reading, picks and notes. The decision is always given in chat.
-6. If the Artifact tool is not available in this Claude app, say so once and carry on in chat: ask the questions in chat (step B.4), and for a gate give the title, one line per item and the round's changes, then stop as in step D.
-
-## Build phase
-
-Starts when the `plan` gate is approved.
-
-1. `bf plan check`, then `bf run start`. When `bf next` asks the two plan questions (`answer-wave-checks`, `answer-unit-checks`), put each to the human with `bf checks wave|unit question`, then `propose` and `set --quote "<their words>"`. No unit starts until both are answered, and an answer is changed later only by amendment.
-2. Loop on `bf next --json`. It prints `can_start`, `human_needed`, `idle_reason` (why nothing can start) and `directives`. Every directive has `role` and `action`:
-   - **Worker** (`role` builder, reviewer or verifier; `action` start-unit, build, fix, review, review-scope, resolve-sync, review-sync, run-checkpoint-checks): has `unit` or `checkpoint`, `tier`, `working_copy`, `brief`, `limits`, and for builders and reviewers a `token`. A verifier's directive has `checks` and a `token`.
-   - **Engine** (`role` engine; `action` land or close-checkpoint): has one `command`. Run it.
-   - **Conductor** (`role` conductor; `action` add-records): the next design gate has too little behind it. `missing` says what to draft; for `ui` `skip_command` is the way to skip it, only on the human's words.
-   - **Human** (`role` human; `action` open-gate, decide-gate, decide-unit, decide-check, decide-sync, answer-question): has a `note` and ids, and `page_url` when a link for that gate's page or for `questions` is recorded. See below.
-   - Checkpoint actions: `review-checkpoint` (reviewer; start the checkpoint reviewer), `wave-check` (engine; start `bf checkpoint wave-check` in the background), `decide-checkpoint-review` (human; a parked review; their words come from a message written after the question was put to them), `decide-low-findings` (human; accept, decline or pick low findings), `decide-checkpoint-fix` (human; a fix needs a plan change, was turned down or was aborted; opening it again takes their words, from a message written after the question was put to them), `decide-wave-check` (human; a wave check failed and its fix was turned down), `answer-wave-checks` and `answer-unit-checks` (human; the two plan questions).
-3. Start every independent worker directive in one message so they run in parallel. After each worker returns, run `bf next --json` again. A unit of a later checkpoint waits (`waiting`) until the earlier checkpoint is closed; do nothing special. When `idle_reason` starts with "run done", every checkpoint is closed: that was the verification. Go to End.
-
-**Progress report.** While the build runs, show the output of `bf progress` and nothing else: one line, never composed by you. Each state has its own sign, units in the same state share a segment, and a unit in review or fixing carries its review round, for example `▶ U-2 building · ◐ U-3, U-4 in review, round 2 · ✔ U-1 landed`.
-
-| Sign | State |
+| File | Holds |
 |---|---|
-| ▶ | building |
-| ◐ | in review (with the round) |
-| ↻ | fixing (with the round) |
-| ● | reviewed, ready to land |
-| ✔ | landed |
-| ⚠ | blocked or parked |
-| ◎ | checkpoint being verified |
-| ■ | checkpoint closed |
+| `design-stages.md` | The five gates, the design review, the check settings |
+| `amendments.md` | An amendment from open to approval, and the commit after it |
+| `build-loop.md` | The build loop, directives, starting a worker, human directives |
+| `checkpoint.md` | Checkpoint actions, fixes, syncs, the end of a run, test mode |
+| `spaces-intents.md` | Spaces, intents, rules and notes of code knowledge |
+| `asking.md` | Asking the human, pages, how a report is written |
+| `roles.md` | The roles, their tokens, the commands the engine adds for them |
 
-Do not retell a worker's report in the line. Write a longer message only when the human must decide or act, when a unit is blocked or parked, or when the run ends.
+## Commands to know of
 
-**Starting a worker.**
-1. For a builder: `bf unit start <U>` first (it resumes an existing working copy). Before the worker of a unit that waited, run `bf unit sync <U>` when `bf status` shows its branch behind; a refused sync with a conflict goes to the human.
-2. The engine already wrote the unit's brief (at `bf unit start`, when the unit enters review, and when a review sends it back to fixing); `bf brief <unit-or-checkpoint> --role <role>` refreshes it and prints the path. A checkpoint is briefed to its verifier, its reviewer and its fix builder.
-3. Start the agent of that role with the Agent tool, `model` set from the directive's `tier` (cheap is haiku, standard is sonnet, strong is opus). The prompt is exactly: the brief path, the working copy path, the limits, the token (builders and reviewers), and "report as your role file says". Do not paste the brief and do not add instructions of your own. **Tokens.** Each builder and reviewer directive from `bf next` carries its `token`; it is the same every time you ask, until a report spends it.
-4. From a working copy a worker may run only `bf evidence run|verify|fail|unreachable|attach`, `bf report`, `bf record put finding`, `bf record get|list` and `bf status`. Builders report `bf report <U> --result built|fixed|blocked --token <token>`. Reviewers report `bf report <U> --result findings --role reviewer --token <token>`, with `--findings -` and the list on standard input when there are findings. Verifiers run command checks with `bf evidence run` in the checkpoint's working copy (over several repositories that is `.bf/work/<K>/`, with one folder per repository, so paths read `app/src/a.txt`), settle a check judged by an agent with `bf evidence attach <check> <file> --outcome met|failed|unreachable --says "<one sentence>" --token <token>`, or record `bf evidence fail|unreachable`. A worker that cannot go on without the human's decision runs `bf ask --title "<question>"`, stops, and finds the answer in its next brief. Do not act on a worker's summary; the engine's state decides what comes next.
-5. `review-scope` is a worker directive of the reviewer role, with a `token`: a builder asked for files beyond its list. Start a new reviewer agent for it on the model the policy names for reviewing a unit, never the unit's builder, with the brief (`bf brief <U> --role reviewer`) and the token. Never answer the question yourself. After each grant tell the human in one line: the unit, the files, any mark, and the way to withdraw it, `bf unit scope <U> --revert <n> --quote "<their words>"`.
-6. With a budget cap (`bf cost status`) every report needs `--cost <number>`, the real usage you read from the session. A worker cannot see it, so tell it to end with its result, and findings, in its last message, and run the `bf report` command yourself with its token and `--cost`.
-7. When a builder's report names files as format only, run `bf unit format <U> <path>...` before starting the reviewer. When it refuses, start the reviewer as usual: a stray change is then a finding, and the builder puts the file back with `bf unit restore`. To keep within the cap of units in flight, `bf unit pause <U>` and later `bf unit resume <U>`, so the idle clock never parks it.
-
-**Engine steps.**
-- Land: a refusal about receipts means the work changed after the checks ran. Follow the steps; `bf next` names the re-run.
-- While a checkpoint fix or sync runs the checkpoint's checks, other engine commands wait; one refused after its wait is run again when the checks end.
-- Close: `bf checkpoint close <K>`. It refuses while an ID has no proof at this content, or a check carries a failed or unreachable mark. Never pass `--merge` on your own.
-
-**Human directives.**
-- `open-gate` with `gate_kind` checkpoint-step: `bf gate open checkpoint-step --ref <K>`, render and publish, and tell the human in one chat message what to do. A checkpoint that stops (`stop` is true or it has a human step; an old record that says carry-on is a stop): end your turn. A checkpoint with no stop never reaches this directive.
-- `decide-gate`: the gate waits for the human. Remind them with the link, and end your turn. When they reply, `bf gate approve|reject <gate> --quote "..."`.
-- `decide-check`: a check failed or could not run. Tell the human which check and the reason it gives, and stop for their decision (fix the cause, amend the plan). The directive carries `verifier_token` so a verifier can look again.
-- `decide-unit`: a unit is parked or blocked (too many review rounds, failing attempts, or a `blocked` report). Tell the human which unit and why, and carry on with the other units. Only the human releases it, in their own words: `bf unit release <U> --quote "<their words>"`. They may instead re-plan through an amendment, raise `max_rounds` or `max_attempts` in the policy, or accept a finding.
-  A unit waiting for a held file or paused needs nothing from the human. Only a park at the round or attempt limit, an extension verdict, a protected place and a confirmed block go to the human.
-- `answer-question`: a worker asked the human something. Show the question and its options in chat. When the human answers, write `{"choice": "<key>", "note": "<text>"}` to `.bf/drafts/` and run `bf answer <Q> --file <a.json>`. Only that unit waits; the rest goes on.
-- `main_ahead` in `bf status --json` or `bf next --json` (information, not a directive): tell the human in one line that the main branch has work the run lacks and can be taken in at a quiet point. Never do it unasked.
-- When the human asks to take main in (or to update from the remote): pull into the local main branch only if they said so, let running units land, then run `bf checkpoint sync <K> --quote "<their words>"` for the open checkpoint at the tip of the stack.
-- After `bf checkpoint sync`, follow `bf next`. No unit starts while a sync is open (`sync_open` in `bf status --json`). `resolve-sync` goes to a builder agent like a build directive (brief from `bf brief <K> --role builder`, working copy, token); it changes only the listed files, concludes the merge or repairs the failing check as its brief says, and reports with `bf report <K> --role builder ...`. `review-sync` goes to a reviewer agent the same way. `decide-sync` means it parked: tell the human why and act only on their words (`bf checkpoint sync <K> --release --quote "..."`, or abort). If the resolver reports blocked and the human is not needed to decide, you may run `bf checkpoint sync <K> --abort`; say so in chat. Agents never merge by hand outside these directives.
-- Budget: when the engine refuses new work at the cap, tell the human the spend and the cap, and stop.
-- A log or head the engine says does not match: tell the human what the refusal says. Only the human decides to run `bf head accept --quote "..."`, after saying so in chat.
-
-## End
-
-When `bf next` says the run is done:
-1. `bf ledger check`. It must pass. If it lists a gap, say which designed part is missing.
-2. `bf status` for the summary. Tell the human in chat: what was built, what was proven, what was parked or amended, what it cost. Offer `bf render run` as a page.
-3. The checkpoints are stacked, so the last one holds the whole result, on its branch `bf/<K>` in each code repository it touched. Ask the human once whether to merge it onto the main branch. Only if they say yes in chat, and the run was not a test run: `bf gate open checkpoint-step --ref <last K>`, then once their message is recorded `bf gate approve <gate> --quote "<their words>"`, then `bf checkpoint close <last K> --merge`, which brings every earlier checkpoint and merges in every repository involved (each main checkout must be on its main branch). The human may instead run `git merge` themself. In a workspace nothing but branches and commits is written into the code repositories.
-
-## Test mode
-
-Never suggest it. Only after the human writes in chat that they grant a test run, run `bf test-mode grant --quote "<their words>"` at once. It attaches to the active run, or to the next `bf run start`. Draft the records of every stage first, pass `bf plan check`, grant, `bf run start`, then open each gate in order (the order and the not-empty rules hold in a test run too) and satisfy it with `bf gate approve <gate-id> --simulated` instead of waiting. Say in each message that the approval is simulated. A test run can never be merged onto `main`. Without a grant `--simulated` satisfies nothing: do not use it.
-
-## When unsure
-
-`bf --help` lists the commands. `bf status --json` says where the run stands, `bf gate status` the gates.
+`bf scan secrets|licences` runs a scan as a check's command. `bf preset list|fill` lists the legal presets and fills one with values. `bf uiux coverage <check>` lists the state of every step of a UI/UX verification. `bf --help` lists the commands, `bf status --json` says where the run stands, `bf gate status` the gates.

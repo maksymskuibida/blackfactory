@@ -280,6 +280,16 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         p.work_dir().join(unit).display(),
         unit = unit
     ));
+    md.push_str(&format!(
+        "- {}\n",
+        crate::strings::t("cli.evidence.brief.rule.checks_engine", &[])
+    ));
+    if role == "reviewer" {
+        md.push_str(&format!(
+            "- {}\n",
+            crate::strings::t("cli.evidence.brief.rule.reviewer_receipts", &[])
+        ));
+    }
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)

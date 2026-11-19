@@ -423,7 +423,22 @@ impl Fx {
         p
     }
 
+    /// Puts a record. A unit of a fixture that names neither `tests` nor `full_suite` gets a `full_suite`
+    /// reason, since a plan written now must name one (F-151); `put_raw` puts the text as it is.
     pub fn put(&self, kind: &str, toml_text: &str) -> Out {
+        let text = if kind == "unit"
+            && !toml_text.contains("tests=")
+            && !toml_text.contains("tests =")
+            && !toml_text.contains("full_suite")
+        {
+            format!("{toml_text}full_suite=\"fixture\"\n")
+        } else {
+            toml_text.to_string()
+        };
+        self.put_raw(kind, &text)
+    }
+
+    pub fn put_raw(&self, kind: &str, toml_text: &str) -> Out {
         let n = fs::read_dir(self.scratch.path()).unwrap().count();
         let f = self.scratch.path().join(format!("rec{n}.toml"));
         fs::write(&f, toml_text).unwrap();

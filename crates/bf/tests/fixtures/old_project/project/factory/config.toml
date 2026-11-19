@@ -1,0 +1,5 @@
+# Black Factory project config.
+project = "toy"
+project_id = "b9ddee13912ee270"
+main_branch = "main"
+branch_prefix = "bf/"

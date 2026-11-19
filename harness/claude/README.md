@@ -4,10 +4,10 @@ This folder holds everything Black Factory needs inside Claude Code. The engine 
 
 | Path | What it is |
 |---|---|
-| `skills/factory/SKILL.md` | The conductor: the one loop that drives a project through five gates and the build. Used as `/factory`. |
-| `agents/builder.md` | Builds one unit from its brief, in its own working copy. |
-| `agents/reviewer.md` | Reviews cold: brief, diff and receipts only. |
-| `agents/verifier.md` | Checks a checkpoint against the contract. Outcomes: met, failed, unreachable. |
+| `skills/factory/SKILL.md` | The conductor: a short loop and the rules that hold at every step. Used as `/factory`. |
+| `skills/factory/*.md` | Reference files the loop names at the step that needs them: design stages, amendments, the build loop, checkpoints, spaces and intents, asking the human, roles. |
+| `agents/*.md` | One role file for each role: builder, reviewer, verifier, UI/UX verifier, security expert and auditor, lawyer, legal auditor, design reviewer, designer, UI/UX designer, fix designer, knowledge writer and rule proposer. Each names the model the shipped policy gives for its kind of work. |
+| `worker-rules.toml` | The numbered worker rules that hold for any project, each with the files that carry it. A test reads it against the role files and the skill. |
 | `settings.fragment.json` | The hooks and permission rules a project needs. |
 | `panel/` | The panel for the Claude desktop app, installed as `.claude/skills/factory-panel/`. |
 | `install.sh` | Copies the above into a project's `.claude/` and merges the settings. |
@@ -21,7 +21,7 @@ harness/claude/install.sh /path/to/your/project
 harness/claude/install.sh --workspace /path/to/your/workspace
 ```
 
-The first form installs into a project, a git repository that holds the code. The second installs into a workspace, a folder made with `bf init --workspace` that holds only the factory and points at code repositories. The folder is detected by `factory/workspace.toml`; `--workspace` only makes the script refuse a folder that is not one, so a code repository is never picked by mistake. In both forms everything goes into that folder's `.claude/`: nothing is written into a code repository. The script touches nothing outside the folder, makes a `.bak` copy of anything it would change, merges into `.claude/settings.json` without removing anything, and does nothing the second time you run it. `bf` must be on your `PATH` for the hooks to work. In a workspace, start Claude Code in the workspace folder so that `CLAUDE_PROJECT_DIR` is the workspace.
+The installer installs every role file and every skill file of this folder, prints each file it wrote (or left as it was), names any file it could not install, and ends with what to say next. The first form installs into a project, a git repository that holds the code. The second installs into a workspace, a folder made with `bf init --workspace` that holds only the factory and points at code repositories. The folder is detected by `factory/workspace.toml`; `--workspace` only makes the script refuse a folder that is not one, so a code repository is never picked by mistake. In both forms everything goes into that folder's `.claude/`: nothing is written into a code repository. The script touches nothing outside the folder, makes a `.bak` copy of anything it would change, merges into `.claude/settings.json` without removing anything, and does nothing the second time you run it. `bf` must be on your `PATH` for the hooks to work. In a workspace, start Claude Code in the workspace folder so that `CLAUDE_PROJECT_DIR` is the workspace.
 
 ## The panel
 

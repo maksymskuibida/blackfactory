@@ -1,6 +1,6 @@
 //! The delivery plan: units, handoffs, checkpoints, waves and readiness.
 
-use crate::events::State;
+use crate::events::{self, State};
 use crate::evidence;
 use crate::gitx;
 use crate::refusal::{refuse_owned, R};
@@ -15,9 +15,16 @@ pub struct Plan {
     pub handoffs: Vec<Value>,
     pub checkpoints: Vec<Value>,
     pub checks: Vec<Value>,
+    /// The plan settings record `PL-1`, when the plan holds one (D-59).
+    pub settings: Option<Value>,
+    /// True when the plan was approved by an engine that did not yet mark its plan gates with the tests
+    /// rule (R-62): such a plan reads as today, every unit running the full suite.
+    pub approved_before_tests_rule: bool,
     pub designed: Vec<Value>,
     pub wave: HashMap<String, u32>,
     pub problems: Vec<String>,
+    /// Notes that refuse nothing: the plan page shows them.
+    pub notes: Vec<String>,
     /// Record files that cannot be read.
     pub bad: Vec<(String, String)>,
 }
@@ -38,6 +45,24 @@ impl Plan {
             }
         }
         m
+    }
+    /// The limit of heavy checks at once, when the plan states one (D-59).
+    pub fn heavy_limit(&self) -> Option<u64> {
+        self.settings
+            .as_ref()
+            .and_then(|v| v.get("heavy_limit"))
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n >= 1)
+    }
+    /// A plan written for this version of the engine: it names a unit's tests or reason, or holds the
+    /// settings record. An older plan reads as today: every unit runs the full suite.
+    pub fn knows_tests(&self) -> bool {
+        !self.approved_before_tests_rule
+            || self.settings.is_some()
+            || self
+                .units
+                .iter()
+                .any(|u| u.get("tests").is_some() || u.get("full_suite").is_some())
     }
     /// Checks attached to a unit by `unit = U`.
     pub fn unit_checks(&self, unit: &str) -> Vec<&Value> {
@@ -63,6 +88,10 @@ pub fn load(p: &Project) -> R<Plan> {
             designed.push(r.clone());
         }
     }
+    let settings = recs
+        .iter()
+        .find(|r| s(r, "kind") == "plan_settings")
+        .cloned();
     for r in recs {
         let k = match s(&r, "kind") {
             "unit" => "unit",
@@ -78,13 +107,29 @@ pub fn load(p: &Project) -> R<Plan> {
         handoffs: by.remove("handoff").unwrap_or_default(),
         checkpoints: by.remove("checkpoint").unwrap_or_default(),
         checks: by.remove("check").unwrap_or_default(),
+        settings,
+        approved_before_tests_rule: approved_before_tests_rule(p),
         designed,
         wave: HashMap::new(),
         problems: vec![],
+        notes: vec![],
         bad,
     };
     finish(p, &mut plan, &ids);
     Ok(plan)
+}
+
+/// The plan gate was approved before gates carried the tests-rule marker, read from the log (F-151).
+fn approved_before_tests_rule(p: &Project) -> bool {
+    events::replay(p)
+        .map(|st| {
+            st.gates
+                .iter()
+                .rfind(|g| g.kind == "plan" && g.status == "approved")
+                .map(|g| !g.tests_rule)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 /// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
@@ -108,9 +153,12 @@ pub fn problems_of_edited(
         handoffs: base.handoffs.clone(),
         checkpoints,
         checks,
+        settings: base.settings.clone(),
+        approved_before_tests_rule: base.approved_before_tests_rule,
         designed: base.designed.clone(),
         wave: HashMap::new(),
         problems: vec![],
+        notes: vec![],
         bad: base.bad.clone(),
     };
     finish(p, &mut plan, &ids);
@@ -128,7 +176,44 @@ fn finish(p: &Project, plan: &mut Plan, ids: &HashSet<String>) {
         plan.problems.extend(more);
         let q = question_problems(plan, &st);
         plan.problems.extend(q);
+        let c = close_suite_problems(p, plan, &st);
+        plan.problems.extend(c);
     }
+}
+
+/// R-62: the full suite runs when the checkpoint closes. A checkpoint that holds a unit naming `tests`
+/// lists a command check that runs the suite's command, or it has a problem.
+fn close_suite_problems(p: &Project, pl: &Plan, st: &State) -> Vec<String> {
+    let mut out = vec![];
+    for k in &pl.checkpoints {
+        let kid = s(k, "id");
+        let Some(u) = pl
+            .units
+            .iter()
+            .find(|u| s(u, "checkpoint") == kid && !s(u, "tests").trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(suite) = crate::checks::suite_command(p, pl, st, s(u, "id")) else {
+            continue;
+        };
+        let runs = str_list(k, "checks").iter().any(|cid| {
+            pl.checks.iter().any(|c| {
+                s(c, "id") == cid && s(c, "how") == "command" && evidence::command_words(c) == suite
+            })
+        });
+        if !runs {
+            out.push(crate::strings::t(
+                "cli.evidence.plan.close_without_suite",
+                &[
+                    ("checkpoint", kid),
+                    ("unit", s(u, "id")),
+                    ("suite", &suite.join(" ")),
+                ],
+            ));
+        }
+    }
+    out
 }
 
 /// The questions every run puts to the human at its plan stage (R-61, R-76): which wave checks it uses,
@@ -354,6 +439,9 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
             ));
         }
     }
+    let mut notes: Vec<String> = Vec::new();
+    heavy_problems(pl, &mut bad, &mut notes);
+    pl.notes = notes;
     // Every designed ID belongs to a unit and to a checkpoint.
     let delivered: HashSet<String> = pl
         .units
@@ -553,6 +641,76 @@ pub fn not_ready(
         }
     }
     None
+}
+
+/// D-59: a plan that knows tests has every unit name its tests or say why it runs the full suite, and a
+/// plan that holds a heavy check states the limit. A plan of an older engine is read as today.
+fn heavy_problems(pl: &Plan, bad: &mut Vec<String>, notes: &mut Vec<String>) {
+    if pl.knows_tests() {
+        for u in &pl.units {
+            if u.get("tests").is_none() && u.get("full_suite").is_none() {
+                bad.push(crate::strings::t(
+                    "cli.evidence.plan.unit_without_tests",
+                    &[("unit", s(u, "id"))],
+                ));
+            }
+        }
+        // A later check of a unit that names no `needs` is told, not refused.
+        for u in &pl.units {
+            let id = s(u, "id");
+            for c in pl.unit_checks(id).into_iter().skip(1) {
+                if str_list(c, "needs").is_empty() {
+                    notes.push(crate::strings::t(
+                        "cli.evidence.plan.later_without_needs",
+                        &[("check", s(c, "id")), ("unit", id)],
+                    ));
+                }
+            }
+        }
+    }
+    // A unit's `tests` is a command in the form a check's command has: no shell operator.
+    for u in &pl.units {
+        let t = s(u, "tests").trim();
+        if !t.is_empty() {
+            let probe = serde_json::json!({"command": t});
+            if let Some(w) = evidence::record_operator_word(&probe) {
+                bad.push(crate::strings::t(
+                    "cli.evidence.plan.tests_operator",
+                    &[("unit", s(u, "id")), ("word", &w)],
+                ));
+            }
+        }
+    }
+    let heavy_entry = |v: &Value, list: &str| {
+        v.get(list)
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().any(|x| x["heavy"].as_bool() == Some(true)))
+            .unwrap_or(false)
+    };
+    let mut heavy: Vec<String> = pl
+        .checks
+        .iter()
+        .filter(|c| c["heavy"].as_bool() == Some(true))
+        .map(|c| s(c, "id").to_string())
+        .collect();
+    heavy.extend(
+        pl.units
+            .iter()
+            .filter(|u| heavy_entry(u, "own_checks"))
+            .map(|u| s(u, "id").to_string()),
+    );
+    heavy.extend(
+        pl.checkpoints
+            .iter()
+            .filter(|k| heavy_entry(k, "unit_checks"))
+            .map(|k| s(k, "id").to_string()),
+    );
+    if !heavy.is_empty() && pl.heavy_limit().is_none() {
+        bad.push(crate::strings::t(
+            "cli.evidence.plan.heavy_without_limit",
+            &[("checks", &heavy.join(", "))],
+        ));
+    }
 }
 
 pub fn designed_kinds() -> Vec<&'static str> {

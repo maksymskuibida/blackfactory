@@ -1,0 +1,10 @@
+# Strings of the group `version`: keys are quoted and flat, `"cli.version.some.key" = "text"`.
+# Filled by the unit that owns this group (D-62).
+
+"cli.version.test_seam_build" = "This is a test build: the account's home can be replaced by BF_TEST_ACCOUNT_HOME. It is not for real work."
+"cli.doctor.test_seam_build" = "This is a test build: the account's home can be replaced by BF_TEST_ACCOUNT_HOME. It is not for real work."
+"cli.refuse.test_seam_real_project.refused" = "a test build with the test variable set does not act on a project of the account's real state folder"
+"cli.refuse.test_seam_real_project.because" = "the account's real state folder holds a folder of this project, and a test build must not act on a project that real work uses"
+"cli.refuse.test_seam_real_project.do_this.1" = "Unset BF_TEST_ACCOUNT_HOME and run the command again."
+"cli.refuse.test_seam_real_project.do_this.2" = "Or use the shipped build of `bf` for this project; `bf --version` is the one command a test build answers here."
+"cli.refuse.test_seam_real_project.worked_when" = "The command runs, because the variable is unset or the project has no folder in the real state folder."

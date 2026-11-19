@@ -5,6 +5,9 @@
 //! edit or deletion of a past line breaks the chain and is reported.
 //! State is never stored: it is always replayed from the log.
 
+pub mod head;
+pub mod workspace;
+
 use crate::refusal::{err, refuse, R};
 use crate::store::Project;
 use crate::util;
@@ -372,6 +375,8 @@ pub struct Gate {
     /// What the transcript said about the human's message when it was recorded (information only).
     pub transcript: String,
     pub snapshot: Value,
+    /// The gate was opened by an engine that marks the tests rule (R-62, F-151).
+    pub tests_rule: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1308,6 +1313,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     caution: String::new(),
                     transcript: String::new(),
                     snapshot: ev.get("snapshot").cloned().unwrap_or(Value::Null),
+                    tests_rule: ev["tests_rule"].as_bool().unwrap_or(false),
                 });
             }
             "gate.approve" | "gate.reject" => {

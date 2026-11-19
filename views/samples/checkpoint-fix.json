@@ -1,0 +1,100 @@
+{
+ "contract": 1,
+ "kind": "checkpoint",
+ "id": "K-9",
+ "project": "example-app",
+ "built_at": "2026-01-15T10:00:00Z",
+ "space": "Billing",
+ "intent": "Billing export",
+ "page": {
+  "crumbs": [
+   "All pages",
+   "Billing",
+   "Billing export",
+   "K-9"
+  ],
+  "title": "Checkpoint K-9: the fix and its recovery review",
+  "lede": "What is held and why.",
+  "context_label": "Where this page sits",
+  "context": [
+   {
+    "label": "Space",
+    "value": "Billing"
+   },
+   {
+    "label": "Intent",
+    "value": "Billing export"
+   },
+   {
+    "label": "State",
+    "value": "Running",
+    "tone": "info"
+   }
+  ]
+ },
+ "sections": [
+  {
+   "id": "fix",
+   "title": "Fix design",
+   "rows": [
+    {
+     "id": "fx-1",
+     "title": "The fix changes the rounding of the total and its test",
+     "tags": [
+      {
+       "text": "Waits for you",
+       "tone": "wait"
+      }
+     ],
+     "needs_you": true,
+     "body": [
+      {
+       "type": "note",
+       "label": "Why the findings are held",
+       "text": "Two findings are open, so the checkpoint stays closed."
+      },
+      {
+       "type": "table",
+       "head": [
+        "Item",
+        "Change"
+       ],
+       "rows": [
+        [
+         "Total",
+         "Round half up"
+        ],
+        [
+         "Test",
+         "One case added"
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "recovery",
+   "title": "Recovery review",
+   "rows": [
+    {
+     "id": "rc-1",
+     "title": "Recovery review met with one note",
+     "tags": [
+      {
+       "text": "Settled",
+       "tone": "ok"
+      }
+     ],
+     "body": [
+      {
+       "type": "text",
+       "text": "The reviewer asked for a clearer name."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

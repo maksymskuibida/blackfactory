@@ -5,13 +5,7 @@
 mod common;
 use common::*;
 use std::fs;
-use std::path::{Path, PathBuf};
-
-fn repo(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(rel)
-}
+use std::path::Path;
 
 fn actions(fx: &Fx) -> Vec<String> {
     fx.must(&["next", "--json"]).json()["directives"]
@@ -180,9 +174,25 @@ fn before_the_plan_gate_an_unanswered_question_is_still_a_plan_problem() {
     );
 }
 
+/// Every markdown file of the factory skill, joined.
+fn skill_all() -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/claude/skills/factory");
+    let mut names: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn the_skill_names_the_questions_and_the_directive_actions_and_help_lists_the_commands() {
-    let skill = fs::read_to_string(repo("harness/claude/skills/factory/SKILL.md")).unwrap();
+    let skill = skill_all();
     for n in [
         "answer-wave-checks",
         "answer-unit-checks",

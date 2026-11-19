@@ -174,6 +174,10 @@ pub static KINDS: &[Kind] = &[
             // with a reason. Each entry is a table with a `name` and a `command`.
             f("own_checks", Ty::Tables, false),
             f("own_checks_reason", Ty::Str, false),
+            // D-59: the command that runs the tests the unit's files can affect, in the suite's place; or
+            // the sentence that says why the unit runs the whole suite. A unit holds one, never both.
+            f("tests", Ty::Str, false),
+            f("full_suite", Ty::Str, false),
         ],
     },
     Kind {
@@ -226,6 +230,22 @@ pub static KINDS: &[Kind] = &[
             fe("scope", Ty::Str, true, &["unit", "checkpoint", "wave"]),
             f("unit", Ty::Id("U"), false),
             f("named", Ty::Str, false),
+            // D-59: a check that starts devices, containers or a build of the whole product; and the checks
+            // that must have passed on the same content before this one runs.
+            f("heavy", Ty::Bool, false),
+            f("needs", Ty::Ids("X"), false),
+        ],
+    },
+    Kind {
+        name: "plan_settings",
+        prefix: "PL",
+        designed: false,
+        fields: &[
+            f("id", Ty::Str, true),
+            f("kind", Ty::Str, true),
+            f("title", Ty::Str, true),
+            f("text", Ty::Str, false),
+            f("heavy_limit", Ty::Int, false),
         ],
     },
     Kind {
@@ -473,6 +493,60 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
             "missing required field `unit` (a finding that names neither a `gate` nor an `amendment` belongs to a unit)"
                 .into(),
         );
+    }
+    if kind.name == "plan_settings" {
+        if obj.get("id").and_then(|v| v.as_str()) != Some("PL-1") {
+            bad.push(crate::strings::t("cli.schema.plan_settings.id", &[]));
+        }
+        if let Some(n) = obj.get("heavy_limit").and_then(|v| v.as_i64()) {
+            if n < 1 {
+                bad.push(crate::strings::t(
+                    "cli.schema.plan_settings.heavy_limit",
+                    &[],
+                ));
+            }
+        }
+    }
+    if kind.name == "unit" && obj.contains_key("tests") && obj.contains_key("full_suite") {
+        bad.push(crate::strings::t(
+            "cli.schema.unit.tests_and_full_suite",
+            &[],
+        ));
+    }
+    if kind.name == "unit" || kind.name == "checkpoint" {
+        let list = if kind.name == "unit" {
+            "own_checks"
+        } else {
+            "unit_checks"
+        };
+        if let Some(a) = obj.get(list).and_then(|v| v.as_array()) {
+            let mut suites = 0;
+            for x in a {
+                match x.get("kind") {
+                    None => {}
+                    Some(k) => match k.as_str() {
+                        Some("suite") => suites += 1,
+                        Some("format" | "lint") => {}
+                        _ => bad.push(crate::strings::t(
+                            "cli.schema.list.bad_kind",
+                            &[("list", list)],
+                        )),
+                    },
+                }
+                if x.get("heavy").is_some_and(|h| !h.is_boolean()) {
+                    bad.push(crate::strings::t(
+                        "cli.schema.list.bad_heavy",
+                        &[("list", list)],
+                    ));
+                }
+            }
+            if suites > 1 {
+                bad.push(crate::strings::t(
+                    "cli.schema.list.two_suites",
+                    &[("list", list)],
+                ));
+            }
+        }
     }
     if kind.name == "unit" {
         if let Some(a) = obj.get("delivers").and_then(|v| v.as_array()) {

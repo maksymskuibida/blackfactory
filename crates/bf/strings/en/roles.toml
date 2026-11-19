@@ -1,0 +1,2 @@
+# Strings of the group `roles`: keys are quoted and flat, `"cli.roles.some.key" = "text"`.
+# Filled by the unit that owns this group (D-62).

@@ -213,8 +213,8 @@ fn draft_everything(w: &Walk) -> Ids {
         w.new_id("check"),
         w.new_id("checkpoint"),
     );
-    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"The greeting\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nfiles = [\"src/hello.txt\"]\ncheckpoint = \"{k1}\"\nestimate = 2\n"));
-    w.put("unit", &u2, &format!("kind = \"unit\"\ntitle = \"The goodbye\"\ndelivers = [\"{r2}\", \"{j1}\", \"{t1}\", \"{th1}\"]\nfiles = [\"src/bye.txt\"]\ndepends_on = [\"{u1}\"]\ncheckpoint = \"{k1}\"\nestimate = 1\n"));
+    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"The greeting\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nfiles = [\"src/hello.txt\"]\ncheckpoint = \"{k1}\"\nestimate = 2\nfull_suite = \"fixture\"\n"));
+    w.put("unit", &u2, &format!("kind = \"unit\"\ntitle = \"The goodbye\"\ndelivers = [\"{r2}\", \"{j1}\", \"{t1}\", \"{th1}\"]\nfiles = [\"src/bye.txt\"]\ndepends_on = [\"{u1}\"]\ncheckpoint = \"{k1}\"\nestimate = 1\nfull_suite = \"fixture\"\n"));
     w.put("handoff", &h1, &format!("kind = \"handoff\"\nfrom = \"{u1}\"\nto = \"{u2}\"\nthing = \"the greeting wording\"\ncontract = \"Same tone as the greeting.\"\n"));
     w.put("check", &x1, &format!("kind = \"check\"\ntitle = \"The greeting file exists\"\nhow = \"command\"\ncommand = \"test -f src/hello.txt\"\nproves = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\", \"{h1}\"]\nscope = \"unit\"\nunit = \"{u1}\"\n"));
     w.put("check", &x2, &format!("kind = \"check\"\ntitle = \"The goodbye file exists\"\nhow = \"command\"\ncommand = \"test -f src/bye.txt\"\nproves = [\"{r2}\", \"{j1}\", \"{t1}\", \"{th1}\"]\nscope = \"unit\"\nunit = \"{u2}\"\n"));
@@ -546,6 +546,8 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
         let stem = h.trim_end_matches(".html");
         let args: Vec<&str> = if let Some(g) = stem.strip_prefix("gate-") {
             vec!["gate", g]
+        } else if let Some(k) = stem.strip_prefix("questions-") {
+            vec!["questions", k]
         } else if let Some(k) = stem.strip_prefix("checkpoint-") {
             vec!["checkpoint", k]
         } else {
@@ -555,7 +557,7 @@ fn the_conductor_builder_reviewer_and_verifier_follow_their_instructions_under_a
         assert!(fx.root.join(".bf/pages").join(h).exists(), "{h}");
     }
     for h in [
-        "questions.html",
+        "questions-requirements.html",
         "plan.html",
         "run.html",
         "ledger.html",
@@ -744,7 +746,7 @@ fn the_design_phase_with_real_approvals_rejections_and_rounds() {
 
     // Plan: `bf gate open plan` refuses while `bf plan check` fails, then passes once the plan is whole.
     let (u1, x1, k1) = (w.new_id("unit"), w.new_id("check"), w.new_id("checkpoint"));
-    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"All of it\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nfiles = [\"src/\"]\ncheckpoint = \"{k1}\"\n"));
+    w.put("unit", &u1, &format!("kind = \"unit\"\ntitle = \"All of it\"\ndelivers = [\"{r1}\", \"{s1}\", \"{c1}\", \"{d1}\"]\nfiles = [\"src/\"]\ncheckpoint = \"{k1}\"\nfull_suite = \"fixture\"\n"));
     let o = w.bf(&fx.root, &["gate", "open", "plan"]);
     assert_eq!(o.code, 2);
     assert!(
