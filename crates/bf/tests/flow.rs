@@ -644,19 +644,40 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
             &vt,
         ],
     );
-    // A failed check opens a fix for a builder, not a question to the human; the fix turned down, the
-    // human decides as before.
+    // A failed check opens a fix for a builder, not a question to the human; the fix turned down, it
+    // opens again.
     let n = fx.must(&["next", "--json"]).json();
     assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The abort of a fix opened for a failed check marks nothing declined: the fix opens again, and
+    // the human has no question to decide while it is open.
     let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "decide-check", "{n}");
-    // The human says look again: the directive carries the verifier's token (a new one, as the fix's
-    // directive took the place of the verifier's for a while).
-    let vt = n["directives"][0]["verifier_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    assert_eq!(n["directives"].as_array().unwrap().len(), 1, "{n}");
+    assert_eq!(n["directives"][0]["failing_checks"][0], "X-5", "{n}");
+    // The fix is built and reviewed, and only then does the verifier run the check again.
+    let ft = n["directives"][0]["token"].as_str().unwrap().to_string();
+    fs::write(k.join("src/a.txt"), "a2\n").unwrap();
+    git(&k, &["add", "-A"]);
+    git(&k, &["commit", "-q", "-m", "fix"]);
+    fx.must_in(
+        &k,
+        &["report", "K-1", "--role", "builder", "--result", "built", "--token", &ft],
+    );
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "review-checkpoint-fix", "{n}");
+    let fr = n["directives"][0]["token"].as_str().unwrap().to_string();
+    fx.must_in(
+        &k,
+        &["report", "K-1", "--role", "reviewer", "--result", "built", "--token", &fr],
+    );
+    // The verifier's token is the one the engine gives now, not the one from before the fix.
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "run-checkpoint-checks", "{n}");
+    assert_eq!(n["directives"][0]["role"], "verifier", "{n}");
+    let vt2 = n["directives"][0]["token"].as_str().unwrap().to_string();
+    assert_ne!(vt2, vt, "{n}");
+    let vt = vt2;
     fx.must_in(
         &k,
         &[
