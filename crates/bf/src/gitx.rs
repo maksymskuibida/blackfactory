@@ -231,6 +231,9 @@ pub fn workdir_hash(dir: &Path, exclude_factory: bool) -> R<String> {
     Ok(crate::util::sha256_hex(text.as_bytes()))
 }
 
+#[cfg(feature = "test_seam")]
+use std::time::SystemTime;
+
 fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let gitdir = git_dir_of(top)
         .ok_or_else(|| err(format!("{} is not a git working copy", top.display())))?;
@@ -238,6 +241,21 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let real = gitdir.join("index");
     if real.is_file() {
         fs::copy(&real, &tmp)?;
+        // Test seam (C-3): make the copy look newer, as a copy that does not keep times does.
+        #[cfg(feature = "test_seam")]
+        if std::env::var_os("BF_TEST_INDEX_COPY_FORWARD").is_some() {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&tmp)?
+                .set_modified(SystemTime::now() + std::time::Duration::from_secs(60))?;
+        }
+        // Git finds racy files by comparing their times with the index file's own modified time.
+        // Not every platform keeps that time on copy, so set it from the real index.
+        let modified = fs::metadata(&real)?.modified()?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp)?
+            .set_modified(modified)?;
     } else {
         let _ = fs::remove_file(&tmp);
     }
