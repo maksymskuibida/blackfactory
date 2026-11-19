@@ -201,7 +201,7 @@ impl Old {
         out
     }
 
-    /// Seals an approval by hand, with the `tests_rule` marker, so the engine's own refusal does not apply.
+    /// Seals an approval by hand so the engine's own refusal does not apply.
     /// Seal an approval of `aid` into the log by hand, as an engine would have written it, with the
     /// tests-rule marker or without it.
     fn seal_approval(&self, aid: &str, marker: bool) {
