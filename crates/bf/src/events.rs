@@ -834,6 +834,8 @@ pub struct CkFixDone {
     pub units: Vec<String>,
     /// File -> the units whose file lists hold it.
     pub by_file: Value,
+    /// File -> its mark (`format only`, R-58); Null for a fix recorded before marks were kept.
+    pub marks: Value,
     pub rounds_log: Vec<Value>,
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
@@ -2545,6 +2547,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         files: crate::store::str_list(ev, "files"),
                         units: crate::store::str_list(ev, "units"),
                         by_file: ev["by_file"].clone(),
+                        marks: ev["marks"].clone(),
                         rounds_log: o.rounds_log.clone(),
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
@@ -2878,8 +2881,15 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ));
                     continue;
                 };
-                if !decision_turn_ok(&st, &turn_ix, tseq, after, seq, &sv("quote"), Decide::Approve)
-                {
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    after,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
                     st.ignored.push(crate::strings::t(
                         "events.k2.ignored.judge_seen_turn",
                         &[("seq", &seq.to_string())],

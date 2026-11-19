@@ -50,12 +50,24 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
             args.flag("quote").unwrap_or(""),
             args.has("abort"),
             args.has("release"),
+            args.has("open"),
         )?;
         out(args, &v, || {
-            if v["aborted"] == true {
-                format!("{k} is as it was before the fix")
+            if v["opened"] == true {
+                let named: Vec<&str> = v["failed_checks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str())
+                    .collect();
+                crate::strings::t(
+                    "cli.ckfix.open.done",
+                    &[("k", k), ("checks", &named.join(", "))],
+                )
+            } else if v["aborted"] == true {
+                crate::strings::t("cli.ckfix.abort.done", &[("k", k)])
             } else {
-                format!("the fix of {k} is back with its builder")
+                crate::strings::t("cli.ckfix.release.done", &[("k", k)])
             }
         });
         return Ok(());

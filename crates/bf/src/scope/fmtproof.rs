@@ -128,6 +128,33 @@ pub fn format(p: &Project, unit: &str, paths: &[String]) -> R<Value> {
     Ok(out)
 }
 
+/// R-58: the proof that one file a checkpoint fix changed is formatting only: the unit's proof, run with the
+/// repository, the checkpoint's working copy and the commit the fix started from. The caller refuses the
+/// places and kinds of file a unit's acceptance refuses, through `scope::hard_rule`, before it asks.
+pub fn prove_in_fix(
+    p: &Project,
+    repo: &Path,
+    wc: &Path,
+    base: &str,
+    path: &str,
+) -> Result<Value, String> {
+    let g = if p.policy.exec.git.is_empty() {
+        "git".to_string()
+    } else {
+        p.policy.exec.git.clone()
+    };
+    let fmt = path.ends_with(".rs").then(|| locate_rustfmt(p, repo));
+    let c = Ctx {
+        p,
+        g,
+        repo,
+        wc,
+        base: base.to_string(),
+        fmt,
+    };
+    prove(&c, path)
+}
+
 /// The result for one granted file at landing, when this rule decides it; None leaves the file to
 /// the removed-lines rule.
 pub fn landing(_st: &State, unit: &str, repo: &Path, range: &str, file: &Value) -> Option<R<()>> {
