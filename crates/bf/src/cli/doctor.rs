@@ -28,7 +28,7 @@ pub(crate) fn cmd_doctor(args: &Args) -> R<()> {
     } else {
         let v = doctor::doctor(&p)?;
         out(args, &v, || {
-            v["checks"]
+            let mut lines: Vec<String> = v["checks"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -40,8 +40,15 @@ pub(crate) fn cmd_doctor(args: &Args) -> R<()> {
                         c["note"].as_str().unwrap_or("")
                     )
                 })
-                .collect::<Vec<_>>()
-                .join("\n")
+                .collect();
+            lines.extend(
+                v["heavy_waits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| l.as_str().map(str::to_string)),
+            );
+            lines.join("\n")
         });
         if v["ok"] != true {
             std::process::exit(2);
