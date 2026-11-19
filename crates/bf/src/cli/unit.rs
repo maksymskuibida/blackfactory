@@ -1,15 +1,13 @@
-//! `bf unit start|land|release|scope|pause|resume|restore|format|sync`.
+//! `bf unit start|land|release|scope|pause|resume|accept|restore|format|sync`.
 
 use super::{out, project, Args};
 use crate::refusal::{refuse, R};
 use crate::run;
+use crate::strings::t;
 
 pub(crate) fn cmd_unit(args: &Args) -> R<()> {
     let p = project(args)?;
-    let sub = args.pos_at(
-        1,
-        "`start`, `land`, `release`, `scope`, `pause`, `resume`, `restore`, `format` or `sync`",
-    )?;
+    let sub = args.pos_at(1, &t("cli.unit_accept.subcommands", &[]))?;
     let unit = args.pos_at(2, "a unit ID")?;
     let paths: Vec<String> = args.pos.iter().skip(3).cloned().collect();
     let v = match sub {
@@ -33,6 +31,14 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
         }
         "pause" => run::pause::unit_pause(&p, unit)?,
         "resume" => run::pause::unit_resume(&p, unit)?,
+        "accept" => {
+            let ids: Vec<String> = paths
+                .iter()
+                .flat_map(|x| x.split(',').map(str::to_string).collect::<Vec<_>>())
+                .filter(|x| !x.is_empty())
+                .collect();
+            crate::unitaccept::accept(&p, unit, &ids, args.flag("quote").unwrap_or(""))?
+        }
         "restore" => crate::scope::restore::restore(&p, unit, &paths, args.flag("token"))?,
         "format" => crate::scope::fmtproof::format(&p, unit, &paths)?,
         "sync" => run::unit_sync::unit_sync(&p, unit)?,
@@ -40,7 +46,7 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
             return Err(refuse(
                 "run `bf unit`",
                 "unknown subcommand",
-                &["Use `bf unit start <U>`, `land <U>`, `release <U> --quote \"...\"`, `scope <U> --revert <n>`, `pause <U>`, `resume <U>`, `restore <U> <path>...`, `format <U> <path>...` or `sync <U>`."],
+                &[&t("cli.unit_accept.usage", &[])],
                 "The command prints the result.",
             ))
         }
@@ -54,7 +60,7 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
             "{unit} is back at work ({})",
             v["state"].as_str().unwrap_or("")
         ),
-        "pause" | "resume" | "restore" | "format" | "sync" => {
+        "pause" | "resume" | "accept" | "restore" | "format" | "sync" => {
             v["line"].as_str().unwrap_or("").to_string()
         }
         "scope" => format!(
