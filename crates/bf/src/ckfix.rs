@@ -15,8 +15,9 @@ use crate::run;
 use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a checkpoint fix may change.
 pub struct FileSet {
@@ -342,7 +343,17 @@ fn open_locked_by(
             return Ok(false);
         }
     }
-    let set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
+    let mut set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
+    // A fix of only format or lint checks may also change the files the failed output names (R-70).
+    if source == "check" && format_lint_only(&failed) {
+        let top = p.work_dir().join(k);
+        let st = events::replay(p)?;
+        for path in named_in(&top, &failed, &placed(p, pl, &st, k)).into_keys() {
+            if !set.allowed.contains(&path) {
+                set.allowed.push(path);
+            }
+        }
+    }
     let by = human
         .map(|(t, q)| json!({"turn": t, "quote": q.trim()}))
         .unwrap_or(Value::Null);
@@ -684,6 +695,320 @@ fn fail_lines(failed: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// The repository's checkout, the working copy, the path inside it and the commit the fix started from, for a
+/// path of the checkpoint's files.
+fn locate(
+    p: &Project,
+    pl: &Plan,
+    f: &CkFixOpen,
+    path: &str,
+) -> R<Option<(PathBuf, PathBuf, String, String)>> {
+    let several = several_repos(p, pl, &f.checkpoint);
+    for r in run::checkpoint_repos(p, pl, &f.checkpoint)? {
+        let (name, wt) = (r.name.clone(), run::checkpoint_wt(p, pl, &f.checkpoint, r)?);
+        let rel = if several {
+            match path.strip_prefix(&format!("{name}/")) {
+                Some(r) => r,
+                None => continue,
+            }
+        } else {
+            path
+        };
+        let before = f
+            .before
+            .iter()
+            .find(|(r, _)| *r == name)
+            .map(|(_, h)| h.clone())
+            .unwrap_or_default();
+        if before.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some((r.path.clone(), wt, rel.to_string(), before)));
+    }
+    Ok(None)
+}
+
+fn fmt_path(p: &Project) -> PathBuf {
+    p.state_dir().join("ckfix_fmt.json")
+}
+
+/// The files of the open fix of `k` accepted as format only, with the hash of the content accepted.
+pub fn fmt_load(p: &Project, k: &str, open_seq: u64) -> BTreeMap<String, String> {
+    let v: Value = fs::read_to_string(fmt_path(p))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let e = &v[k];
+    if e["open_seq"].as_u64() != Some(open_seq) {
+        return BTreeMap::new();
+    }
+    e["files"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(a, b)| (a.clone(), b.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fmt_save(p: &Project, k: &str, open_seq: u64, files: &BTreeMap<String, String>) -> R<()> {
+    let mut v: Value = fs::read_to_string(fmt_path(p))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(|v: &Value| v.is_object())
+        .unwrap_or_else(|| json!({}));
+    v[k] = json!({"open_seq": open_seq, "files": files});
+    let _ = fs::create_dir_all(p.state_dir());
+    fs::write(fmt_path(p), v.to_string()).map_err(|e| {
+        crate::refusal::err(crate::strings::t(
+            "cli.ckfix.format.save_failed",
+            &[("why", &e.to_string())],
+        ))
+    })?;
+    Ok(())
+}
+
+/// The kind of a check from its command: `format` for `cargo fmt` and `rustfmt`, `lint` for `cargo clippy`,
+/// and nothing for any other command or for one that chains several.
+fn command_kind(command: &str) -> &'static str {
+    if command.contains("&&") || command.contains(';') || command.contains('|') {
+        return "";
+    }
+    let w: Vec<&str> = command.split_whitespace().collect();
+    let sub = match w.as_slice() {
+        ["cargo", x, ..] if x.starts_with('+') => w.get(2).copied(),
+        ["cargo", x, ..] => Some(*x),
+        [x, ..] if *x == "rustfmt" || *x == "cargo-fmt" => Some("fmt"),
+        [x, ..] if *x == "cargo-clippy" => Some("clippy"),
+        _ => None,
+    };
+    match sub {
+        Some("fmt") => "format",
+        Some("clippy") => "lint",
+        _ => "",
+    }
+}
+
+/// Whether every failed check is a format or a lint check.
+fn format_lint_only(failed: &[Value]) -> bool {
+    !failed.is_empty()
+        && failed
+            .iter()
+            .all(|x| !command_kind(x["command"].as_str().unwrap_or("")).is_empty())
+}
+
+/// A path a failed output names, as a path inside the checkpoint's working copy folder; None for one that
+/// is not a file there, climbs out of the folder or lies in a folder of the engine or of git.
+fn named_path(top: &Path, raw: &str, keep: &dyn Fn(&str) -> bool) -> Option<String> {
+    let raw = raw.trim().trim_end_matches(':');
+    let mut rel = PathBuf::from(raw);
+    if rel.is_absolute() {
+        let canon = fs::canonicalize(top).unwrap_or_else(|_| top.to_path_buf());
+        rel = rel
+            .strip_prefix(top)
+            .or_else(|_| rel.strip_prefix(&canon))
+            .ok()?
+            .to_path_buf();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for c in rel.components() {
+        match c {
+            std::path::Component::Normal(x) => parts.push(x.to_string_lossy().to_string()),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let first = parts.first()?.as_str();
+    if matches!(first, ".git" | "factory" | ".bf") {
+        return None;
+    }
+    let path = parts.join("/");
+    (keep(&path) && top.join(&path).is_file()).then_some(path)
+}
+
+/// The places a grant may reach, applied to the paths a failed output names: the rule a unit's file request
+/// meets (`scope::hard_rule`), read for the checkpoint's own working copy folder (F-282).
+fn placed<'a>(
+    p: &'a Project,
+    pl: &'a Plan,
+    st: &'a State,
+    k: &'a str,
+) -> impl Fn(&str) -> bool + 'a {
+    move |path| crate::scope::hard_rule(p, pl, st, k, path).is_none()
+}
+
+/// The files of the failed format and lint outputs, each with the source lines the output names (`-->` of
+/// clippy and the numbered lines under it); rustfmt's `Diff in <path>` names a file with no line.
+fn named_in(
+    top: &Path,
+    failed: &[Value],
+    keep: &dyn Fn(&str) -> bool,
+) -> BTreeMap<String, BTreeSet<u32>> {
+    let mut out: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    for x in failed {
+        let mut cur: Option<String> = None;
+        for l in x["tail"].as_str().unwrap_or("").lines() {
+            let t = l.trim_start();
+            if let Some(rest) = t.strip_prefix("Diff in ") {
+                let rest = match rest.split_once(" at line ") {
+                    Some((a, _)) => a,
+                    None => {
+                        let r = rest.trim_end_matches(':');
+                        match r.rsplit_once(':') {
+                            Some((a, n)) if n.chars().all(|c| c.is_ascii_digit()) => a,
+                            _ => r,
+                        }
+                    }
+                };
+                if let Some(path) = named_path(top, rest, keep) {
+                    out.entry(path).or_default();
+                }
+            } else if let Some(rest) = t.strip_prefix("--> ") {
+                let mut it = rest.trim().rsplitn(3, ':');
+                let (col, line, path) = (it.next(), it.next(), it.next());
+                cur = None;
+                if let (Some(_), Some(line), Some(path)) = (col, line, path) {
+                    if let (Some(path), Ok(n)) = (named_path(top, path, keep), line.parse::<u32>())
+                    {
+                        out.entry(path.clone()).or_default().insert(n);
+                        cur = Some(path);
+                    }
+                }
+            } else if let Some(path) = &cur {
+                let num: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !num.is_empty() && t[num.len()..].trim_start().starts_with('|') {
+                    if let Ok(n) = num.parse::<u32>() {
+                        out.entry(path.clone()).or_default().insert(n);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One hunk of a diff: the old side's first line and length, then the new side's.
+type Hunk = (u32, u32, u32, u32);
+
+/// The hunks of each file's diff from `before` to the head, as `git diff -U0` gives them.
+fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Vec<Hunk>>> {
+    let several = several_repos(p, pl, &f.checkpoint);
+    let mut out: BTreeMap<String, Vec<Hunk>> = BTreeMap::new();
+    for (name, wt) in wts(p, pl, &f.checkpoint)? {
+        let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
+            continue;
+        };
+        let d = gitx::must(&wt, &["diff", "-U0", "--no-renames", before, "HEAD"])?;
+        let mut cur = String::new();
+        for l in d.lines() {
+            if let Some(rest) = l.strip_prefix("diff --git a/") {
+                // Both sides name one path (no renames); a binary file has no `+++` line.
+                let n = rest.len().saturating_sub(3) / 2;
+                let x = rest.get(..n).unwrap_or(rest);
+                cur = if several {
+                    format!("{name}/{x}")
+                } else {
+                    x.to_string()
+                };
+                out.entry(cur.clone()).or_default();
+            } else if l.starts_with("old mode ")
+                || l.starts_with("new mode ")
+                || l.starts_with("new file mode ")
+                || l.starts_with("deleted file mode ")
+            {
+                // A mode change is never a rewrite of named lines: a hunk no lint line can account for.
+                out.entry(cur.clone()).or_default().push((0, 0, 0, 0));
+            } else if let Some(rest) = l.strip_prefix("+++ ") {
+                cur = match rest.strip_prefix("b/") {
+                    Some(x) if several => format!("{name}/{x}"),
+                    Some(x) => x.to_string(),
+                    None => String::new(), // /dev/null: a deleted file
+                };
+                out.entry(cur.clone()).or_default();
+            } else if let Some(h) = hunk_of(l) {
+                out.entry(cur.clone()).or_default().push(h);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The hunk a `@@ -a,b +c,d @@` line gives; a side with no length is one line long.
+fn hunk_of(line: &str) -> Option<Hunk> {
+    let rest = line.strip_prefix("@@ -")?;
+    let mut sides = rest.split(' ');
+    let old = sides.next()?;
+    let new = sides.next()?.strip_prefix('+')?;
+    let one = |x: &str| -> Option<(u32, u32)> {
+        let (a, b) = x.split_once(',').unwrap_or((x, "1"));
+        Some((a.parse().ok()?, b.parse().ok()?))
+    };
+    let ((a, b), (c, d)) = (one(old)?, one(new)?);
+    Some((a, b, c, d))
+}
+
+/// Whether a hunk only rewrites lines the lint output names: every old line is named, and the new side is
+/// no longer than the old, so it adds nothing beside them. A pure insertion is never accounted for.
+fn hunk_accounted(lines: &BTreeSet<u32>, (a, b, _, d): Hunk) -> bool {
+    b > 0 && d <= b && (a..a + b).all(|n| lines.contains(&n))
+}
+
+/// Whether every change of the fix is accounted for: each file is proved format only, or is named by the
+/// lint output with each old line it changes among the lines named and nothing added beside them.
+fn lint_accounts(
+    p: &Project,
+    pl: &Plan,
+    st: &State,
+    f: &CkFixOpen,
+    by_format: &BTreeSet<String>,
+) -> R<bool> {
+    let top = p.work_dir().join(&f.checkpoint);
+    let named = named_in(&top, &f.origin_failed, &placed(p, pl, st, &f.checkpoint));
+    let diff = changed_hunks(p, pl, f)?;
+    let files = changed(p, pl, f)?;
+    if files.is_empty() {
+        return Ok(false);
+    }
+    // Walk every file the fix changed: one with no text hunk (a binary file, a mode-only change, a
+    // deletion) or with a mode line cannot be accounted for by lint output and goes to review.
+    for (path, _) in files {
+        let hunks = diff.get(&path).cloned().unwrap_or_default();
+        // A mode change (the (0,0,0,0) marker) is never format only: proved or not, it goes to review.
+        if hunks.contains(&(0, 0, 0, 0)) {
+            return Ok(false);
+        }
+        if by_format.contains(&path) {
+            continue;
+        }
+        let Some(lines) = named.get(&path) else {
+            return Ok(false);
+        };
+        if hunks.is_empty() || !hunks.iter().all(|h| hunk_accounted(lines, *h)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The checkpoint's command checks that are switched on: the ones that ran again on the fix.
+fn ran_again(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+    let switched_off = run::skipped_k_checks(p, pl, k)?;
+    Ok(pl
+        .checkpoint(k)
+        .map(|kr| str_list(kr, "checks"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|cid| {
+            !switched_off.contains(cid)
+                && pl
+                    .checks
+                    .iter()
+                    .any(|c| s(c, "id") == cid && s(c, "how") == "command")
+        })
+        .collect())
+}
+
 /// A failing attempt: the fix goes back to its builder, or is parked when the attempts reach the limit.
 fn attempt(p: &Project, f: &CkFixOpen, failed: &[Value]) -> R<&'static str> {
     let over = f.attempts + 1 >= p.policy.limits.max_attempts;
@@ -820,15 +1145,66 @@ fn report_inner(
                 }
             }
             let files = changed(p, &pl, &f)?;
+            // R-58: a file accepted as format only must still equal the content accepted.
+            for (path, sha) in fmt_load(p, k, f.open_seq) {
+                if let Some((_, wt, rel, _)) = locate(p, &pl, &f, &path)? {
+                    let now = fs::read(wt.join(&rel)).ok().map(|b| util::sha256_hex(&b));
+                    let changed_now = files.iter().any(|x| x.0 == path);
+                    if changed_now && now.as_deref() != Some(sha.as_str()) {
+                        return Err(refuse_owned(
+                            crate::strings::t("cli.ckfix.format.stale.what", &[("k", k)]),
+                            crate::strings::t("cli.ckfix.format.stale.because", &[("path", &path)]),
+                            vec![crate::strings::t("cli.ckfix.format.stale.step", &[("path", &path)])],
+                            crate::strings::t("cli.ckfix.format.stale.check", &[]),
+                        ));
+                    }
+                }
+            }
+            let outside_any = files.iter().any(|(path, st)| !within(&f, path, *st));
+            let skip_wanted = f.source == "check" && format_lint_only(&f.origin_failed);
+            let mut proven: BTreeMap<String, Value> = BTreeMap::new();
+            let mut why_not: BTreeMap<String, String> = BTreeMap::new();
+            if outside_any || skip_wanted {
+                for (path, status) in &files {
+                    if *status != 'M' || (within(&f, path, *status) && !skip_wanted) {
+                        continue;
+                    }
+                    let Some((repo, wt, rel, before)) = locate(p, &pl, &f, path)? else {
+                        continue;
+                    };
+                    // The places and kinds of file a unit's acceptance refuses are refused here by the same rule.
+                    if let Some(why) = crate::scope::hard_rule(p, &pl, &st, k, path) {
+                        why_not.insert(path.clone(), why);
+                        continue;
+                    }
+                    let rel = crate::scope::normalize_path(&rel).unwrap_or(rel);
+                    match crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
+                        Ok(v) => {
+                            proven.insert(path.clone(), v);
+                        }
+                        Err(e) => {
+                            why_not.insert(path.clone(), e);
+                        }
+                    }
+                }
+            }
             let outside: Vec<String> = files
                 .iter()
-                .filter(|(path, st)| !within(&f, path, *st))
-                .map(|(path, st)| {
-                    if *st == 'A' || *st == 'M' || *st == 'D' {
-                        format!("{path} is outside the files of {k}'s units and is not a new test file")
+                .filter(|(path, status)| !within(&f, path, *status) && !proven.contains_key(path))
+                .flat_map(|(path, status)| {
+                    let key = if matches!(*status, 'A' | 'M' | 'D') {
+                        "cli.ckfix.outside.not_test"
                     } else {
-                        format!("{path} is outside the files of {k}'s units")
+                        "cli.ckfix.outside.units"
+                    };
+                    let mut v = vec![crate::strings::t(key, &[("path", path), ("k", k)])];
+                    if let Some(w) = why_not.get(path) {
+                        v.push(crate::strings::t(
+                            "cli.ckfix.format.refused",
+                            &[("path", path), ("why", w)],
+                        ));
                     }
+                    v
                 })
                 .collect();
             if !outside.is_empty() {
@@ -875,9 +1251,28 @@ fn report_inner(
                     "`bf status` shows the fix in review.",
                 ));
             }
+            let accepted: BTreeMap<String, String> = files
+                .iter()
+                .filter(|(path, status)| !within(&f, path, *status))
+                .filter_map(|(path, _)| {
+                    let v = proven.get(path)?;
+                    Some((path.clone(), s(&v["format"], "result_sha256").to_string()))
+                })
+                .collect();
+            fmt_save(p, k, f.open_seq, &accepted)?;
             events::append(p, "checkpoint.fix.built", json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>()}))?;
             write_overlay(p)?;
             p.write_guard()?;
+            // R-70: a fix of only format or lint checks whose every change the failed output names needs
+            // no review round: the checks passed above, and the checkpoint's others ran again with them.
+            let by_format: BTreeSet<String> = proven.keys().cloned().collect();
+            if skip_wanted && lint_accounts(p, &pl, &st, &f, &by_format)? {
+                let again = ran_again(p, &pl, k)?;
+                let mut v = finish(p, &pl, &f, again)?;
+                v["reviewed"] = json!(false);
+                v["note"] = json!(crate::strings::t("cli.ckfix.lint.finished", &[("k", k)]));
+                return Ok(v);
+            }
             Ok(json!({"checkpoint": k, "phase": "review"}))
         }
         ("review", "findings") => {
@@ -918,20 +1313,7 @@ fn report_inner(
                     "failed_checks": failed}));
             }
             // Only the command checks that are switched on ran again; agent-judged ones did not.
-            let switched_off = run::skipped_k_checks(p, &pl, k)?;
-            let ran_again: Vec<String> = pl
-                .checkpoint(k)
-                .map(|kr| str_list(kr, "checks"))
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|cid| {
-                    !switched_off.contains(cid)
-                        && pl
-                            .checks
-                            .iter()
-                            .any(|c| s(c, "id") == cid && s(c, "how") == "command")
-                })
-                .collect();
+            let ran_again = ran_again(p, &pl, k)?;
             finish(p, &pl, &f, ran_again)
         }
         (ph, r) => Err(refuse(
@@ -1104,12 +1486,18 @@ fn finish(p: &Project, pl: &Plan, f: &CkFixOpen, rerun: Vec<String>) -> R<Value>
         }
         by_file.insert(path.clone(), json!(us));
     }
+    // R-58: a file accepted as format only carries its mark in a field of its own, apart from the units.
+    let marks: serde_json::Map<String, Value> = fmt_load(p, &f.checkpoint, f.open_seq)
+        .keys()
+        .filter(|path| files.iter().any(|x| &x.0 == *path))
+        .map(|path| (path.clone(), json!(crate::scope::fmtproof::MARK_FORMAT)))
+        .collect();
     units.sort();
     let names: Vec<String> = files.iter().map(|x| x.0.clone()).collect();
     events::append(
         p,
         "checkpoint.fix.done",
-        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file}),
+        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file, "marks": marks}),
     )?;
     write_overlay(p)?;
     p.write_guard()?;
@@ -1120,16 +1508,29 @@ fn finish(p: &Project, pl: &Plan, f: &CkFixOpen, rerun: Vec<String>) -> R<Value>
 }
 
 /// `bf checkpoint fix <K> --abort` and `--release --quote "..."`.
-pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) -> R<Value> {
+pub fn command(
+    p: &Project,
+    k: &str,
+    quote: &str,
+    abort: bool,
+    release: bool,
+    open: bool,
+) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("fix {k}"))?;
     let st = events::require_chain(p)?;
     run::need_run(&st)?;
+    if open {
+        return reopen(p, &st, k);
+    }
     let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
-        return Err(refuse(
-            format!("settle the fix of {k}"),
-            "no fix is open for it",
-            &["`bf status` shows an open fix when there is one."],
-            "`bf status` shows no open fix.",
+        return Err(refuse_owned(
+            crate::strings::t("cli.ckfix.settle.what", &[("k", k)]),
+            crate::strings::t("cli.ckfix.settle.none_open", &[]),
+            vec![
+                crate::strings::t("cli.ckfix.settle.step_status", &[]),
+                crate::strings::t("cli.ckfix.open.step_open", &[]),
+            ],
+            crate::strings::t("cli.ckfix.settle.check", &[]),
         ));
     };
     let pl = plan::load(p)?;
@@ -1172,12 +1573,153 @@ pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) ->
         p.write_guard()?;
         return Ok(json!({"checkpoint": k, "released": true}));
     }
-    Err(refuse(
-        format!("run `bf checkpoint fix {k}`"),
-        "it needs --abort or --release",
-        &["Run `bf checkpoint fix <K> --abort`, or `bf checkpoint fix <K> --release --quote \"<the human's words>\"` for a parked fix."],
-        "The command prints the result.",
+    Err(refuse_owned(
+        crate::strings::t("cli.ckfix.needs.what", &[("k", k)]),
+        crate::strings::t("cli.ckfix.open.needs", &[]),
+        vec![crate::strings::t("cli.ckfix.open.needs_step", &[])],
+        crate::strings::t("cli.ckfix.needs.check", &[]),
     ))
+}
+
+/// `bf checkpoint fix <K> --open`: a fix for the failed checks of the checkpoint's current content, when
+/// none is open. The engine lock is held by the caller.
+fn reopen(p: &Project, st: &State, k: &str) -> R<Value> {
+    let what = crate::strings::t("cli.ckfix.open.what", &[("k", k)]);
+    let no = |because: String, step: String| {
+        refuse_owned(
+            what.clone(),
+            because,
+            vec![step],
+            crate::strings::t("cli.ckfix.open.worked", &[]),
+        )
+    };
+    let step = crate::strings::t("cli.ckfix.open.step_status", &[]);
+    if st.ck_fix.is_some() {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.fix_open", &[("k", k)]),
+            step,
+        ));
+    }
+    if st.sync_open.is_some() {
+        return Err(no(crate::strings::t("cli.ckfix.open.sync_open", &[]), step));
+    }
+    let pl = plan::load(p)?;
+    let Some(kr) = pl.checkpoint(k) else {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.no_checkpoint", &[]),
+            step,
+        ));
+    };
+    let after = str_list(kr, "after");
+    if st.closed.contains_key(k)
+        || after.is_empty()
+        || !after.iter().all(|u| st.unit_state(u) == "landed")
+    {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.not_landed", &[]),
+            step,
+        ));
+    }
+    let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+    let receipts = evidence::load_receipts(p)?;
+    let (failed, unreachable) = failing_checks(&pl, st, &receipts, kr, &content);
+    if unreachable {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.unreachable", &[("k", k)]),
+            step,
+        ));
+    }
+    if failed.is_empty() || content.is_empty() {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.none_failed", &[("k", k)]),
+            step,
+        ));
+    }
+    let ids: Vec<String> = failed
+        .iter()
+        .filter_map(|x| x["check"].as_str().map(String::from))
+        .collect();
+    open_locked(
+        p,
+        &pl,
+        k,
+        "check",
+        failed,
+        (vec![], vec![]),
+        &content,
+        true,
+        None,
+    )?;
+    Ok(json!({"checkpoint": k, "opened": true, "failed_checks": ids}))
+}
+
+/// The files of a finished fix marked format only, from its `marks`: the files in order.
+fn marked_files(marks: &Value) -> Vec<(String, String)> {
+    marks
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(f, v)| (f.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The checkpoint page's line for a finished fix: it says whether a review round happened, taken from the
+/// fix's rounds, and ends with the files accepted as format only.
+pub fn done_page(rounds_log: &[Value], marks: &Value) -> String {
+    let clean = rounds_log
+        .last()
+        .is_some_and(|r| r["result"].as_str() == Some("clean"));
+    let key = if !clean {
+        "cli.ckfix.done.no_review"
+    } else {
+        "cli.ckfix.done.reviewed"
+    };
+    format!("{}{}", crate::strings::t(key, &[]), marks_page(marks))
+}
+
+/// The sentence of a fix's page row that names its files accepted as format only, with a leading space;
+/// empty when it has none (R-58).
+pub fn marks_page(marks: &Value) -> String {
+    let files: Vec<String> = marked_files(marks)
+        .into_iter()
+        .map(|(f, _)| format!("`{f}`"))
+        .collect();
+    if files.is_empty() {
+        return String::new();
+    }
+    format!(
+        " {}",
+        crate::strings::t("cli.ckfix.format.page", &[("files", &files.join(", "))])
+    )
+}
+
+/// The checkpoint reviewer's section on the files of finished fixes of `k` accepted as format only, each
+/// with its mark; empty when no fix has one (R-58).
+pub fn marks_md(st: &State, k: &str) -> String {
+    let mut rows = String::new();
+    for d in st.ck_fixes.iter().filter(|d| d.checkpoint == k) {
+        let marks = marked_files(&d.marks);
+        if marks.is_empty() {
+            continue;
+        }
+        for path in &d.files {
+            let mark = marks
+                .iter()
+                .find(|(f, _)| f == path)
+                .map(|(_, m)| crate::strings::t("cli.ckfix.format.checkpoint_mark", &[("mark", m)]))
+                .unwrap_or_default();
+            rows.push_str(&crate::strings::t(
+                "cli.ckfix.format.checkpoint_row",
+                &[("fix", &d.id), ("path", path), ("mark", &mark)],
+            ));
+        }
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    crate::strings::t("cli.ckfix.format.checkpoint", &[("rows", &rows)])
 }
 
 /// The open fix and every finished fix, for `bf status`.
@@ -1191,7 +1733,7 @@ pub fn status_json(st: &State) -> Value {
         })),
         "done": st.ck_fixes.iter().map(|d| json!({
             "id": d.id, "checkpoint": d.checkpoint, "source": d.source, "files": d.files,
-            "units": d.units, "by_file": d.by_file, "review_rounds": d.rounds_log,
+            "units": d.units, "by_file": d.by_file, "marks": d.marks, "review_rounds": d.rounds_log,
         })).collect::<Vec<_>>(),
     })
 }
@@ -1270,6 +1812,20 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                     s(x, "probe_command")
                 ));
             }
+        }
+        md.push('\n');
+    }
+    let accepted = fmt_load(p, k, f.open_seq);
+    if role == "reviewer" && !accepted.is_empty() {
+        md.push_str(&crate::strings::t(
+            "cli.ckfix.format.reviewer",
+            &[("mark", crate::scope::fmtproof::MARK_FORMAT)],
+        ));
+        for path in accepted.keys() {
+            md.push_str(&format!(
+                "- `{path}` ({})\n",
+                crate::scope::fmtproof::MARK_FORMAT
+            ));
         }
         md.push('\n');
     }
@@ -1374,4 +1930,74 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
 /// The file the guard reads, for tests and tools.
 pub fn overlay_path(p: &Project) -> PathBuf {
     p.state_dir().join("ckfix.json")
+}
+
+#[cfg(test)]
+mod ckfix_reopen {
+    use super::*;
+
+    #[test]
+    fn the_kind_of_a_check_is_read_from_its_command() {
+        assert_eq!(command_kind("cargo fmt --check"), "format");
+        assert_eq!(
+            command_kind("cargo +nightly fmt --all -- --check"),
+            "format"
+        );
+        assert_eq!(command_kind("rustfmt --check src/a.rs"), "format");
+        assert_eq!(
+            command_kind("cargo clippy --all-targets -- -D warnings"),
+            "lint"
+        );
+        assert_eq!(command_kind("cargo nextest run fmt"), "");
+        assert_eq!(command_kind("cargo fmt --check && cargo test"), "");
+    }
+
+    #[test]
+    fn the_output_names_files_and_lines() {
+        let top = std::env::temp_dir().join(format!("bf-ckfix-named-{}", std::process::id()));
+        fs::create_dir_all(top.join("src")).unwrap();
+        fs::write(top.join("src/a.rs"), "x\n").unwrap();
+        fs::write(top.join("src/b.rs"), "x\n").unwrap();
+        let tail = format!(
+            "Diff in {}/src/a.rs:3:\n-x\n+y\nwarning: w\n  --> src/b.rs:7:5\n   |\n7  |     let a = 1;\n8  |     let b = 2;\n   |\nDiff in ../outside.rs:1:\n--> .git/config:1:1\n",
+            top.display()
+        );
+        let n = named_in(&top, &[json!({"tail": tail})], &|_| true);
+        let _ = fs::remove_dir_all(&top);
+        assert_eq!(n.len(), 2, "{n:?}");
+        assert!(n["src/a.rs"].is_empty());
+        assert_eq!(
+            n["src/b.rs"].iter().copied().collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+    }
+
+    #[test]
+    fn a_hunk_is_accounted_for_only_when_it_rewrites_named_lines_and_adds_nothing() {
+        let named: BTreeSet<u32> = [4, 5].into_iter().collect();
+        assert_eq!(hunk_of("@@ -4 +4 @@ fn a()"), Some((4, 1, 4, 1)));
+        assert_eq!(hunk_of("@@ -4,2 +4,3 @@"), Some((4, 2, 4, 3)));
+        assert_eq!(hunk_of("@@ -3,0 +4,2 @@"), Some((3, 0, 4, 2)));
+        assert_eq!(hunk_of("diff --git a b"), None);
+        assert!(hunk_accounted(&named, (4, 1, 4, 1)));
+        assert!(hunk_accounted(&named, (4, 2, 4, 1)));
+        assert!(hunk_accounted(&named, (4, 1, 4, 0)));
+        // A pure insertion beside a named line, and a rewrite that grows, are not accounted for.
+        assert!(!hunk_accounted(&named, (4, 0, 5, 3)));
+        assert!(!hunk_accounted(&named, (3, 0, 4, 1)));
+        assert!(!hunk_accounted(&named, (4, 1, 4, 2)));
+        assert!(!hunk_accounted(&named, (3, 2, 3, 2)));
+    }
+
+    #[test]
+    fn a_named_path_the_place_rule_refuses_is_dropped() {
+        let top = std::env::temp_dir().join(format!("bf-ckfix-keep-{}", std::process::id()));
+        fs::create_dir_all(top.join("src")).unwrap();
+        fs::write(top.join("src/a.rs"), "x\n").unwrap();
+        fs::write(top.join("src/b.rs"), "x\n").unwrap();
+        let tail = "Diff in src/a.rs:1:\nDiff in src/b.rs:1:\n";
+        let n = named_in(&top, &[json!({"tail": tail})], &|path| path != "src/b.rs");
+        let _ = fs::remove_dir_all(&top);
+        assert_eq!(n.keys().cloned().collect::<Vec<_>>(), vec!["src/a.rs"]);
+    }
 }

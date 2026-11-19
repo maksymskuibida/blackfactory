@@ -1624,7 +1624,7 @@ fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
                 kid,
                 &d.source,
                 "done",
-                "Reviewed clean and the checkpoint's checks passed again.",
+                &crate::ckfix::done_page(&d.rounds_log, &d.marks),
                 &d.origin_failed,
                 &d.origin_findings,
                 Some(&d.files),
