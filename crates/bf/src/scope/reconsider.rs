@@ -3,7 +3,7 @@
 
 use crate::events::State;
 use crate::scope::NextEntry;
-use crate::store::Project;
+use crate::store::{s, Project};
 use serde_json::{json, Value};
 
 /// Replay step run after every event.
@@ -36,9 +36,16 @@ pub fn after_event(st: &mut State, kind: &str, ev: &Value, seq: u64, at: &str) {
                 }
             }
         }
-        "unit.release" | "unit.park" | "unit.scope.refused" => {
+        "unit.release" | "unit.park" => {
             if let Some(u) = st.units.get_mut(&unit) {
                 u.reconsider = false;
+            }
+        }
+        // A reviewer's `retry` gives the builder a second look at the request; every other refusal,
+        // `retry_spent` included, goes to the human.
+        "unit.scope.refused" => {
+            if let Some(u) = st.units.get_mut(&unit) {
+                u.reconsider = ev["refusal"] == "retry";
             }
         }
         _ => {}
@@ -72,14 +79,38 @@ pub fn next_entry(p: &Project, st: &State, id: &str, limits: Value) -> Option<Ne
     }
     let pl = crate::plan::load(p).ok()?;
     let u = pl.unit(id)?;
-    Some(NextEntry::Directive(json!({
+    let mut d = json!({
         "role": "builder", "action": "reconsider", "unit": id,
         "tier": crate::run::tier_for(p, u, "builder"),
         "working_copy": p.work_dir().join(id).to_string_lossy(),
         "brief": p.briefs_dir().join(format!("{id}-builder.md")).to_string_lossy(),
         "limits": limits,
         "commands": [format!("bf brief {id} --role builder")],
-    })))
+    });
+    if let Some(r) = open_retry(st, id) {
+        let list: Vec<Value> = r["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| s(f, "verdict") == "retry")
+            .map(|f| json!({"path": s(f, "path"), "why": s(f, "why"), "must": s(f, "must")}))
+            .collect();
+        d["retry"] = json!(list);
+    }
+    Some(NextEntry::Directive(d))
+}
+
+/// The reviewer's `retry` refusal the second look is open for, if the look came from one.
+pub fn open_retry(st: &State, unit: &str) -> Option<Value> {
+    if !open(st, unit) {
+        return None;
+    }
+    let last = st.scope.get(unit)?.refused.last()?.clone();
+    let fresh = st
+        .units
+        .get(unit)
+        .is_some_and(|u| u.last_seq == last["seq"].as_u64().unwrap_or(0));
+    (s(&last, "refusal") == "retry" && fresh).then_some(last)
 }
 
 /// Whether a request for files is accepted from a blocked unit.
