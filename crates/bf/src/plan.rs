@@ -7,6 +7,8 @@ use crate::refusal::{refuse_owned, R};
 use crate::schema;
 use crate::store::{s, str_list, Project};
 use crate::util;
+pub mod targets;
+
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -23,6 +25,9 @@ pub struct Plan {
     /// Units of an old plan that count as new for the tests rule: added, or changed in `files`, `text` or
     /// `delivers`, by an amendment the human approved with the marker (R-62, D-59).
     pub new_units: HashSet<String>,
+    /// Checks that count as new for the plan-target rule (U-56): new, or changed in `command`, by a marked
+    /// approval; in an amendment's drafts, every check that differs from the plan.
+    pub new_checks: HashSet<String>,
     pub designed: Vec<Value>,
     pub wave: HashMap<String, u32>,
     pub problems: Vec<String>,
@@ -108,6 +113,7 @@ pub fn load(p: &Project) -> R<Plan> {
         settings,
         approved_before_tests_rule: approved_before_tests_rule(p),
         new_units: new_units_by_marked_approvals(p),
+        new_checks: new_checks_by_marked_approvals(p),
         designed,
         wave: HashMap::new(),
         problems: vec![],
@@ -175,6 +181,45 @@ fn new_units_by_marked_approvals(p: &Project) -> HashSet<String> {
     out
 }
 
+/// The checks that a human-approved amendment with the tests-rule marker added, or changed in `command`.
+fn new_checks_by_marked_approvals(p: &Project) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(log) = events::load_log(p) else {
+        return out;
+    };
+    let mut narrowed: HashMap<String, &Value> = HashMap::new();
+    for e in &log.events {
+        match e["kind"].as_str() {
+            Some("amend.narrow") => {
+                if let Some(a) = e["amend"].as_str() {
+                    narrowed.insert(a.to_string(), e);
+                }
+            }
+            Some("amend.approve") if e["tests_rule"].as_bool() == Some(true) => {
+                let Some(n) = e["amend"].as_str().and_then(|a| narrowed.get(a)) else {
+                    continue;
+                };
+                for c in n["changes"].as_array().into_iter().flatten() {
+                    let rec = &c["record"];
+                    if s(rec, "kind") != "check" {
+                        continue;
+                    }
+                    let new = match c["how"].as_str() {
+                        Some("new") => true,
+                        Some("changed") => rec.get("command") != c["was"].get("command"),
+                        _ => false,
+                    };
+                    if new {
+                        out.insert(s(rec, "id").to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
 /// `load`, on the edited units, handoffs, checkpoints and checks instead of the files (R-64).
 pub fn problems_of_edited(
@@ -195,10 +240,24 @@ pub fn problems_of_edited(
         units,
         handoffs: base.handoffs.clone(),
         checkpoints,
-        checks,
+        checks: checks.clone(),
         settings: base.settings.clone(),
         approved_before_tests_rule: base.approved_before_tests_rule,
         new_units: base.new_units.clone(),
+        new_checks: {
+            let mut n = base.new_checks.clone();
+            for c in &checks {
+                let same = base
+                    .checks
+                    .iter()
+                    .find(|b| s(b, "id") == s(c, "id"))
+                    .is_some_and(|b| b.get("command") == c.get("command"));
+                if !same {
+                    n.insert(s(c, "id").to_string());
+                }
+            }
+            n
+        },
         designed: base.designed.clone(),
         wave: HashMap::new(),
         problems: vec![],
@@ -485,6 +544,20 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
     }
     let mut notes: Vec<String> = Vec::new();
     heavy_problems(pl, &mut bad, &mut notes);
+    // U-56: a command's test targets and filters are read against the package. A plan of this engine
+    // holds a problem; a check of an older plan is a problem only when a marked approval made it new.
+    {
+        let old = pl.approved_before_tests_rule;
+        let fresh = pl.new_checks.clone();
+        targets::judge(
+            p,
+            &pl.units,
+            &pl.checks,
+            |id| !old || fresh.contains(id),
+            &mut bad,
+            &mut notes,
+        );
+    }
     pl.notes = notes;
     // Every designed ID belongs to a unit and to a checkpoint.
     let delivered: HashSet<String> = pl
