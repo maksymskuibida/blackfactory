@@ -643,12 +643,23 @@ fn the_plan_is_frozen_once_its_gate_is_approved() {
         let o = fx.put("decision", &t);
         assert_eq!(o.code, 0, "{}", o.all());
     }
+    // The unit the amendment adds is a whole one: it has its check, the checkpoint lists it, and it
+    // shares no file with another unit, or the approval is refused for the problems it would add (R-69).
+    let good_unit = "id=\"U-9\"\nkind=\"unit\"\ntitle=\"Anything\"\ndelivers=[\"R-1\"]\nfiles=[\"src/new9.txt\"]\ncheckpoint=\"K-1\"\n";
+    let good_check = "id=\"X-9\"\nkind=\"check\"\ntitle=\"t\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-9\"\n";
+    let k1 = fs::read_to_string(fx.root.join("factory/records/K-1.toml")).unwrap();
+    let k1 = k1.replacen("after = [", "after = [\"U-9\", ", 1);
+    assert!(k1.contains("\"U-9\""), "{k1}");
     let opened = fx
-        .must(&["amend", "open", "U-9", "D-91", "D-92", "D-93", "--json"])
+        .must(&["amend", "open", "U-9", "X-9", "K-1", "D-91", "D-92", "D-93", "--json"])
         .json();
     // The amendment names the new unit: it is put while the amendment waits.
-    assert_eq!(fx.put("unit", new_unit).code, 0);
+    assert_eq!(fx.put("unit", good_unit).code, 0);
+    assert_eq!(fx.put("check", good_check).code, 0);
     let tmp = tempfile::tempdir().unwrap();
+    let kf = tmp.path().join("k.toml");
+    fs::write(&kf, &k1).unwrap();
+    fx.must(&["record", "put", "checkpoint", "--file", kf.to_str().unwrap(), "--replace"]);
     let f = tmp.path().join("n.json");
     fs::write(
         &f,
@@ -658,7 +669,7 @@ fn the_plan_is_frozen_once_its_gate_is_approved() {
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     fx.human("yes, add that unit");
     fx.must(&["amend", "approve", "--quote", "yes, add that unit"]);
-    assert_eq!(fx.put("unit", new_unit).code, 0);
+    assert_eq!(fx.put("unit", good_unit).code, 0);
 }
 
 // ----------------------------------------------------------------

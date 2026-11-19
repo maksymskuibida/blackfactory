@@ -1516,12 +1516,19 @@ fn amend_impact(p: &Project, ids: &[String]) -> R<(Value, Vec<String>)> {
 }
 
 pub fn amend_open(p: &Project, ids: &[String]) -> R<Value> {
-    amend_open_marked(p, ids, false)
+    amend_open_marked(p, ids, false, None)
 }
 
 /// Open an amendment; `repair` marks it as a plan repair, which the engine refuses when the set holds
 /// a design part (R-41).
-pub fn amend_open_marked(p: &Project, ids: &[String], repair: bool) -> R<Value> {
+/// `from_design` names the fix design's checkpoint whose marked item the repair comes from (D-30, R-64):
+/// such a repair is the human's for good and is never judged (finding F-202).
+pub fn amend_open_marked(
+    p: &Project,
+    ids: &[String],
+    repair: bool,
+    from_design: Option<&str>,
+) -> R<Value> {
     let st = events::require_chain(p)?;
     if ids.is_empty() {
         return Err(refuse(
@@ -1546,15 +1553,19 @@ pub fn amend_open_marked(p: &Project, ids: &[String], repair: bool) -> R<Value> 
     if repair {
         crate::amend::refuse_repair_mark("open an amendment as a plan repair", ids)?;
     }
+    if let Some(k) = from_design {
+        crate::judge::refuse_bad_from_design(p, k, repair)?;
+    }
     let (imp, all) = amend_impact(p, ids)?;
     let id = format!("A-{}", st.amends.len() + 1);
-    events::append(
-        p,
-        "amend.open",
-        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}),
-    )?;
+    let mut data =
+        json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair});
+    if let Some(k) = from_design {
+        data["from_design"] = json!(k);
+    }
+    events::append(p, "amend.open", data.clone())?;
     p.write_guard()?;
-    Ok(json!({"amend": id, "ids": ids, "impact": imp, "impact_ids": all, "repair": repair}))
+    Ok(data)
 }
 
 /// Inside the open amendment: insert a checkpoint before or after a named one, or split one. The
@@ -1880,10 +1891,36 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     let narrow_seq = last_change.and_then(|e| e["seq"].as_u64()).unwrap_or(0);
     let (seq, _) = events::pick_turn(&st, narrow_seq, events::Decide::Approve, quote)?;
     let a = a.unwrap();
+    approval_checks(p, &st, a, last_change, true)?;
+    let edit = approval_edit_of(p, &st, a)?;
+    let unblocked = finish_approval(
+        p,
+        &st,
+        a,
+        edit,
+        json!({"turn": seq, "quote": quote.trim(), "tests_rule": true}),
+    )?;
+    Ok(json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked}))
+}
+
+/// The checks every approval passes, the human's and the judge's (R-69): the stage coverage (a plan
+/// repair needs none and may hold no design part, R-41), no record of the set changed since the
+/// narrowing the reader read (TH-12), and a plan that has no problem the plan in force did not have.
+/// `marker` says whether the approval carries the tests-rule marker (the human's does, the judge's not).
+pub(crate) fn approval_checks(
+    p: &Project,
+    st: &State,
+    a: &events::Amend,
+    last_change: Option<&Value>,
+    marker: bool,
+) -> R<()> {
     // Every stage covered and every requirement linked, before the approval is written (R-40).
     // A plan repair needs no stage sentences and no links, but it may not hold a design part (R-41).
     if a.repair {
-        crate::amend::refuse_repair_mark(&format!("approve {aid} as a plan repair"), &a.ids)?;
+        crate::amend::refuse_repair_mark(
+            &strings::t("cli.amend.approve_repair_what", &[("amend", &a.id)]),
+            &a.ids,
+        )?;
     }
     if !crate::amend::is_repair(a) {
         crate::amend::refuse_if_uncovered(p, a)?;
@@ -1893,13 +1930,128 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         crate::amend::refuse_if_changed_since_narrowing(p, a, e)?;
     }
     // The checkpoint operations: the plan they leave must pass the plan check before approval (R-64).
-    let edit = if a.ops.is_empty() {
-        None
-    } else {
-        let e = crate::amend::edit_of(p, &st, &a.ops)?;
+    if !a.ops.is_empty() {
+        let e = crate::amend::edit_of(p, st, &a.ops)?;
         crate::amend::refuse_if_result_breaks_plan(p, a, &e)?;
-        Some(e)
-    };
+        return Ok(());
+    }
+    // Any other approval: the plan it leaves has no problem that the plan in force has not (R-69).
+    let added = new_plan_problems(p, a, marker)?;
+    if !added.is_empty() {
+        let aid = &a.id;
+        let mut steps: Vec<String> = added
+            .iter()
+            .take(20)
+            .map(|x| strings::t("cli.amend.adds_problem.fix", &[("problem", x)]))
+            .collect();
+        steps.push(strings::t(
+            "cli.amend.adds_problem.again",
+            &[("amend", aid)],
+        ));
+        return Err(refuse_owned(
+            strings::t("cli.amend.adds_problem.refused", &[("amend", aid)]),
+            strings::t(
+                "cli.amend.adds_problem.because",
+                &[
+                    ("count", &added.len().to_string()),
+                    ("problems", &added.join("; ")),
+                ],
+            ),
+            steps,
+            strings::t("cli.amend.adds_problem.worked_when", &[]),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse while an ID the amendment names has no record (the judge's approval, as the human's).
+pub(crate) fn refuse_if_names_missing_for(p: &Project, a: &events::Amend) -> R<()> {
+    crate::amend::refuse_if_names_missing(p, a, "cli.amend.missing_approve")
+}
+
+/// The plan the checkpoint operations of `a` leave, when it has any.
+pub(crate) fn approval_edit_of(
+    p: &Project,
+    st: &State,
+    a: &events::Amend,
+) -> R<Option<crate::amend::Edit>> {
+    if a.ops.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(crate::amend::edit_of(p, st, &a.ops)?))
+    }
+}
+
+/// The plan problems an approval of `a` (one with no checkpoint operation) would add: those of the plan
+/// on disk now (the records of the narrowing as they stand, with the approval's effect on which units
+/// count as new for the tests rule) that the plan in force before the narrowing did not have.
+pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) -> R<Vec<String>> {
+    let now = plan::load(p)?;
+    let mut before = plan::load(p)?;
+    for c in &a.changes {
+        let rec = if c["record"].is_null() {
+            &c["was"]
+        } else {
+            &c["record"]
+        };
+        let list = match s(rec, "kind") {
+            "unit" => &mut before.units,
+            "checkpoint" => &mut before.checkpoints,
+            "check" => &mut before.checks,
+            "handoff" => &mut before.handoffs,
+            _ => continue,
+        };
+        let id = s(c, "id").to_string();
+        list.retain(|r| s(r, "id") != id);
+        if s(c, "how") != "new" && !c["was"].is_null() {
+            list.push(c["was"].clone());
+        }
+    }
+    let base: Vec<String> = plan::problems_of_edited(
+        p,
+        &before,
+        before.units.clone(),
+        before.checkpoints.clone(),
+        before.checks.clone(),
+    )?;
+    if marker {
+        // The human's approval carries the marker: a unit it adds, or changes in `files`, `text` or
+        // `delivers`, counts as new for the tests rule; a change of `depends_on` or `estimate` alone not.
+        for c in &a.changes {
+            let rec = &c["record"];
+            if s(rec, "kind") != "unit" {
+                continue;
+            }
+            let new = match s(c, "how") {
+                "new" => true,
+                "changed" => ["files", "text", "delivers"]
+                    .iter()
+                    .any(|f| rec.get(*f) != c["was"].get(*f)),
+                _ => false,
+            };
+            if new {
+                before.new_units.insert(s(rec, "id").to_string());
+            }
+        }
+    }
+    // The plan after the narrowing holds the handoffs as they stand on disk now.
+    before.handoffs = now.handoffs.clone();
+    let after = plan::problems_of_edited(p, &before, now.units, now.checkpoints, now.checks)?;
+    Ok(after.into_iter().filter(|x| !base.contains(x)).collect())
+}
+
+/// Write the approval of `a` after its checks passed: what it re-opens is worked out from the plan now
+/// (as the operations leave it), the operations' records are written, and `amend.approve` is recorded
+/// with `who` (the human's turn and quote, or the judge's `by` and `judge_seq`). Returns the units the
+/// approval unblocked.
+pub(crate) fn finish_approval(
+    p: &Project,
+    st: &State,
+    a: &events::Amend,
+    edit: Option<crate::amend::Edit>,
+    who: Value,
+) -> R<Value> {
+    let aid = a.id.clone();
     // What the amendment re-opens, worked out from the plan now (as the operations leave it) and
     // written into the event.
     let mut pl = plan::load(p)?;
@@ -1962,7 +2114,7 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         Some(e) => crate::amend::write_edit(p, e)?,
         None => vec![],
     };
-    let extra = crate::scope::unblock::approve_fields(p, &st, a, &reopen_units);
+    let extra = crate::scope::unblock::approve_fields(p, st, a, &reopen_units);
     // The content the human approves, bound to the approval: a later change of any of these records is
     // a change with no amendment.
     let mut content = serde_json::Map::new();
@@ -1979,11 +2131,11 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         };
         content.insert(id.clone(), e);
     }
-    let mut data = json!({"amend": aid, "turn": seq, "quote": quote.trim(), "content": content,
+    let mut data = json!({"amend": aid, "content": content,
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
                "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
-               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default(),
-               "tests_rule": true});
+               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()});
+    crate::scope::merge_fields(&mut data, who);
     let unblocked = extra.get("unblock_units").cloned().unwrap_or(json!([]));
     crate::scope::merge_fields(&mut data, extra);
     if let Err(err) = events::append(p, "amend.approve", data) {
@@ -1992,7 +2144,7 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     }
     crate::scope::wait::resume_waiting(p)?;
     p.write_guard()?;
-    Ok(json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked}))
+    Ok(unblocked)
 }
 
 /// IDs waived by approved amendments.

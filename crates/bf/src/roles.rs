@@ -364,11 +364,11 @@ fn open_non_repair_amendment(p: &Project, id: &str) -> R<crate::events::Amend> {
         ));
     }
     if crate::amend::is_repair(a) {
-        return Err(refuse(
+        return Err(crate::refusal::refuse_owned(
             what,
-            format!("{id} is a plan repair, which needs no designer"),
-            &["A plan repair is judged by the human alone."],
-            "The command prints its result.",
+            crate::strings::t("roles.repair_no_designer.because", &[("id", id)]),
+            vec![crate::strings::t("roles.repair_no_designer.do_this", &[])],
+            crate::strings::t("roles.repair_no_designer.worked_when", &[]),
         ));
     }
     Ok(a.clone())
@@ -618,6 +618,11 @@ pub fn run_with(p: &Project, sub: &str, rest: &[String], quote: Option<&str>) ->
         "token" => {
             let unit = rest.first().map(|x| x.as_str()).unwrap_or("");
             let role = rest.get(1).map(|x| x.as_str()).unwrap_or("");
+            // The repair judge (R-69) is not one of the new roles: its token is one for an amendment's
+            // narrowing, issued only under the limits of `judge::token`.
+            if role == crate::judge::ROLE {
+                return crate::judge::token(p, unit);
+            }
             check_subject(p, unit, role)?;
             let token = run::issue_token(p, &format!("{unit}:{role}"))?;
             Ok(json!({"unit": unit, "role": role, "token": token}))

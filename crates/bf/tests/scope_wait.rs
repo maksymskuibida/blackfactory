@@ -125,7 +125,7 @@ fn a_unit_waits_for_a_file_a_unit_beside_it_holds_and_resumes_when_that_unit_lan
 
 fn amend_after(fx: &Fx) {
     let opened = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
-    let u2 = "id=\"U-2\"\nkind=\"unit\"\ntitle=\"Part 2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/f2.txt\"]\ndepends_on=[\"U-1\"]\ncheckpoint=\"K-1\"\nestimate=1\n";
+    let u2 = "id=\"U-2\"\nkind=\"unit\"\ntitle=\"Part 2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/f2.txt\"]\ndepends_on=[\"U-1\"]\ncheckpoint=\"K-1\"\nestimate=1\nfull_suite=\"fixture\"\n";
     let f = fx.root.join("u2.toml");
     fs::write(&f, u2).unwrap();
     let put = format!("record put unit --file {} --replace", f.to_str().unwrap());
