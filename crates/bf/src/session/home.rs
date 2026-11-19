@@ -141,6 +141,15 @@ pub fn resolve_tilde(path: &str) -> Option<PathBuf> {
     }
 }
 
+/// Sets `HOME` in a child's environment to the account's home, the one place that names the
+/// variable for a child; with no home the variable is left out. The caller's `HOME` is never passed.
+pub fn set_env(c: &mut std::process::Command) {
+    match account_home() {
+        Some(h) => c.env("HOME", h),
+        None => c.env_remove("HOME"),
+    };
+}
+
 /// The calls to the account database so far in this process (test seam build only).
 #[cfg(feature = "test_seam")]
 pub fn lookup_count() -> usize {

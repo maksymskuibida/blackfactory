@@ -1266,7 +1266,6 @@ fn shell_quote(a: &str) -> String {
 /// The environment a check runs in: nothing of the caller's except a short list, and the PATH from the
 /// policy. A caller cannot put a fake `sh` or `cargo` first on the path, or point git elsewhere.
 pub const CHECK_ENV: &[&str] = &[
-    "HOME",
     "USER",
     "LOGNAME",
     "LANG",
@@ -1361,6 +1360,8 @@ pub(crate) fn exec_capture_keep(
             cmd.env(k, v);
         }
     }
+    // After the loop, so whatever the policy lists, the account's home is what the check sees.
+    crate::session::home::set_env(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {
         refuse(
             format!("run `{}`", argv.join(" ")),
@@ -1466,7 +1467,9 @@ pub fn path_notes(p: &Project) -> Vec<String> {
         if standard.iter().any(|s| canon == Path::new(s)) {
             continue;
         }
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = crate::session::home::account_home()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !home.is_empty() && canon.starts_with(&home) {
             out.push(format!("{dir} is in the user's home folder (the user, and so any program they run, can change what is in it)"));
         }

@@ -58,13 +58,22 @@ fn normalize(path: &str) -> String {
 }
 
 fn expand_home(p: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if p == "~" || p == "$HOME" {
-        home
-    } else if let Some(r) = p.strip_prefix("~/").or_else(|| p.strip_prefix("$HOME/")) {
-        format!("{home}/{r}")
+    let rest = if p == "~" || p == "$HOME" {
+        Some("")
     } else {
-        p.to_string()
+        p.strip_prefix("~/").or_else(|| p.strip_prefix("$HOME/"))
+    };
+    let Some(r) = rest else {
+        return p.to_string();
+    };
+    // The account database is asked only for a path that names the home.
+    let home = crate::session::home::account_home()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if r.is_empty() {
+        home
+    } else {
+        format!("{home}/{r}")
     }
 }
 
