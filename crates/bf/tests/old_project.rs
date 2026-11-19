@@ -176,3 +176,11 @@ fn todays_engine_reads_the_old_project_and_changes_no_file() {
         "an old project's files changed by being read"
     );
 }
+
+/// A plan approved before the tests rule reads as today: no unit is faulted for naming no `tests`.
+#[test]
+fn a_plan_approved_before_the_tests_rule_is_not_faulted_for_unnamed_tests() {
+    let p = OldProject::copy();
+    let o = p.run(&["plan", "check"]);
+    assert!(!o.all().contains("neither names its `tests`"), "{}", o.all());
+}

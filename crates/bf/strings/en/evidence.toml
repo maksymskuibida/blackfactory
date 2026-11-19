@@ -29,3 +29,5 @@
 "cli.ckfix.probe_missing.because" = "a probe that exposed a fault is not yet a permanent test that passes: {n}"
 "cli.ckfix.probe_missing.step" = "Add each probe to the suite as a permanent test with its expected answer, commit it, then report again."
 "cli.ckfix.probe_missing.check" = "`bf status` shows the fix in review."
+"cli.checks.unit.question.note" = "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override."
+"cli.checks.unit.question.note_tests" = "A unit that names its tests runs them in the suite's place."

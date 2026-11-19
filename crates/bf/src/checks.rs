@@ -967,7 +967,11 @@ fn unit_settings(
                         {"choice": "override", "text": "Override it for this run: give each check as name=command"},
                         {"choice": "none", "text": "No checks for every unit in this run"},
                     ],
-                    "note": "A checkpoint or a single unit may override the list in the plan, with a reason; the plan page shows every override. A unit that names its tests runs them in the suite's place.",
+                    "note": format!(
+                        "{} {}",
+                        crate::strings::t("cli.checks.unit.question.note", &[]),
+                        crate::strings::t("cli.checks.unit.question.note_tests", &[])
+                    ),
                     "proposal": default_unit_proposal(p),
                 });
             }
