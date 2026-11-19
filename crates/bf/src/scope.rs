@@ -987,6 +987,12 @@ pub fn brief_review(p: &Project, unit: &str) -> R<PathBuf> {
         md.push_str(&format!("- `{f}`\n"));
     }
     md.push('\n');
+    md.push_str(&format!(
+        "## {}\n\n{}\n\n{}\n\n",
+        crate::strings::t("pages.k2.scope.tests_title", &[]),
+        crate::view::unit_tests_line(&pl, &u),
+        crate::strings::t("pages.k2.scope.tests_question", &[])
+    ));
     let earlier = grants_md_unit(&st, unit);
     if earlier.is_empty() {
         md.push_str("Earlier grants: none.\n\n");

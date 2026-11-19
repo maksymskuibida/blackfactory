@@ -280,7 +280,7 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         "requirements" => vec!["requirement"],
         "ui" => vec!["screen", "journey"],
         "architecture" => vec!["component", "decision", "target", "threat", "markets"],
-        "plan" => vec!["unit", "handoff", "checkpoint", "check"],
+        "plan" => vec!["unit", "handoff", "checkpoint", "check", "plan_settings"],
         _ => vec![],
     };
     let cur_snapshot = if gate.is_some() {
@@ -322,6 +322,15 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             } else {
                 design_row(r, mark.clone())
             };
+            if *k == "plan_settings" {
+                let line = match pl.heavy_limit() {
+                    Some(n) => {
+                        crate::strings::t("pages.k2.settings.row", &[("limit", &n.to_string())])
+                    }
+                    None => crate::strings::t("pages.k2.settings.row_none", &[]),
+                };
+                row["body"].as_array_mut().unwrap().push(text(&line));
+            }
             if let Some((rd, note, _)) = &mark {
                 row["round"] = json!(rd);
                 row["round_note"] = json!(note);
@@ -347,7 +356,15 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             }
         }
         mark_made(&mut rows, &made);
-        sections.push(json!({"id": *k, "title": plural(k), "hint": format!("{} in this gate", plural(k).to_lowercase()), "open": true, "blocks": [], "rows": rows}));
+        let (title, hint) = if *k == "plan_settings" {
+            (
+                crate::strings::t("pages.k2.settings.title", &[]),
+                crate::strings::t("pages.k2.settings.hint", &[]),
+            )
+        } else {
+            (plural(k), format!("{} in this gate", plural(k).to_lowercase()))
+        };
+        sections.push(json!({"id": *k, "title": title, "hint": hint, "open": true, "blocks": [], "rows": rows}));
     }
     if kind == "idea" {
         if let Some((title, text)) = crate::gates::idea_brief(p) {
@@ -539,6 +556,192 @@ fn proves_refs(pl: &Plan, ids: &[String]) -> Vec<Value> {
         .collect()
 }
 
+/// The line of a unit's tests, its full-suite reason, or the note that it runs the full suite as a unit of an
+/// old plan (R-62). The record may be a unit as the plan holds it or as an amendment changes it.
+pub fn unit_tests_line(pl: &Plan, u: &Value) -> String {
+    unit_tests_line_for(pl, u, false)
+}
+
+/// The same line; `becomes_new` is true for a unit an amendment adds or changes in `files`, `text` or
+/// `delivers`: once approved it must name its tests, whatever the plan it belongs to.
+fn unit_tests_line_for(pl: &Plan, u: &Value, becomes_new: bool) -> String {
+    let t = s(u, "tests").trim();
+    if !t.is_empty() {
+        return crate::strings::t("pages.k2.unit.tests", &[("tests", t)]);
+    }
+    if u.get("full_suite").is_some() {
+        return crate::strings::t("pages.k2.unit.full_suite", &[("why", s(u, "full_suite"))]);
+    }
+    let known = pl.units.iter().any(|x| s(x, "id") == s(u, "id"));
+    if becomes_new || !known || pl.unit_knows_tests(s(u, "id")) {
+        crate::strings::t("pages.k2.unit.neither", &[])
+    } else {
+        crate::strings::t("pages.k2.unit.old_plan", &[])
+    }
+}
+
+/// The heavy limit and the checks marked heavy, as the section of the plan page (R-63).
+fn heavy_section(pl: &Plan) -> Value {
+    let heavy_entry = |v: &Value, list: &str| {
+        v.get(list)
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().any(|x| x["heavy"].as_bool() == Some(true)))
+            .unwrap_or(false)
+    };
+    let mut rows: Vec<Value> = Vec::new();
+    let mut add = |key: &str, id: &str| {
+        rows.push(json!({"id": id, "title": crate::strings::t(key, &[("id", id)]), "body": []}));
+    };
+    for c in pl
+        .checks
+        .iter()
+        .filter(|c| c["heavy"].as_bool() == Some(true))
+    {
+        add("pages.k2.heavy.row_check", s(c, "id"));
+    }
+    for u in pl.units.iter().filter(|u| heavy_entry(u, "own_checks")) {
+        add("pages.k2.heavy.row_unit", s(u, "id"));
+    }
+    for k in pl
+        .checkpoints
+        .iter()
+        .filter(|k| heavy_entry(k, "unit_checks"))
+    {
+        add("pages.k2.heavy.row_checkpoint", s(k, "id"));
+    }
+    let limit = match pl.heavy_limit() {
+        Some(n) => crate::strings::t("pages.k2.heavy.limit", &[("limit", &n.to_string())]),
+        None => crate::strings::t("pages.k2.heavy.no_limit", &[]),
+    };
+    let mut all = vec![json!({"id": "heavy-limit", "title": limit, "body": []})];
+    if rows.is_empty() {
+        all.push(json!({"id": "heavy-none", "title": crate::strings::t("pages.k2.heavy.none", &[]), "body": []}));
+    }
+    all.extend(rows);
+    json!({"id": "heavy", "title": crate::strings::t("pages.k2.heavy.title", &[]),
+        "hint": crate::strings::t("pages.k2.heavy.hint", &[]), "open": true, "blocks": [], "rows": all})
+}
+
+/// A section of the accepted findings, each with its level and the human's words (H-25, F-213).
+fn accepted_section(items: &[&events::Accepted]) -> Value {
+    let rows: Vec<Value> = items
+        .iter()
+        .map(|a| {
+            let finding = if a.id.is_empty() {
+                format!("{}.{}", a.round, a.index)
+            } else {
+                a.id.clone()
+            };
+            let unknown = crate::strings::t("pages.k2.accepted.level_unknown", &[]);
+            let level = if a.level.is_empty() { unknown.as_str() } else { a.level.as_str() };
+            json!({"id": format!("{}-{}", a.subject, finding), "title": crate::strings::t("pages.k2.accepted.row", &[("finding", &finding), ("level", level)]),
+                "body": [text(&crate::strings::t("pages.k2.accepted.words", &[("quote", &a.quote)]))]})
+        })
+        .collect();
+    json!({"id": "accepted", "title": crate::strings::t("pages.k2.accepted.title", &[]),
+        "hint": crate::strings::t("pages.k2.accepted.hint", &[]), "open": !rows.is_empty(), "blocks": [], "rows": rows})
+}
+
+/// The grants of the open fix of a checkpoint, each with the reasons given (H-25).
+fn fix_grants_section(st: &State, kid: &str) -> Value {
+    let rows: Vec<Value> = st
+        .ck_fix
+        .iter()
+        .filter(|f| f.checkpoint == kid)
+        .flat_map(|f| f.grants.iter().enumerate())
+        .map(|(i, g)| {
+            let n = (i + 1).to_string();
+            json!({"id": format!("{kid}-grant-{n}"), "title": crate::strings::t("pages.k2.fix.grant",
+                &[("n", &n), ("files", &g.files.join(", ")), ("reasons", &g.reasons.join("; "))]), "body": []})
+        })
+        .collect();
+    json!({"id": "fix-grants", "title": crate::strings::t("pages.k2.fix.grants_title", &[]),
+        "hint": crate::strings::t("pages.k2.fix.grants_hint", &[]), "open": !rows.is_empty(), "blocks": [], "rows": rows})
+}
+
+/// The repairs the judge approved, and each `ask` and failed judge with its reasons, withdrawn ones
+/// included, until the human marks it seen (F-213, H-25).
+fn judged_section(st: &State) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
+    for a in st.amends.iter().filter(|a| !a.seen) {
+        let verdict = a
+            .verdict
+            .as_ref()
+            .and_then(|v| v["verdict"].as_str())
+            .unwrap_or("");
+        let approved = a.judged && st.judged_unseen.contains(&a.id);
+        let asked = verdict == "ask";
+        if !(approved || asked || a.failed.is_some()) {
+            continue;
+        }
+        let state = if a.status == "withdrawn" {
+            crate::strings::t("pages.k2.judged.withdrawn", &[])
+        } else {
+            crate::strings::t("pages.k2.judged.open", &[("status", &a.status)])
+        };
+        let reasons = match a.verdict.as_ref().map(|v| &v["reasons"]) {
+            Some(Value::String(x)) => x.clone(),
+            Some(Value::Array(x)) => x
+                .iter()
+                .filter_map(|y| y.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+            _ => String::new(),
+        };
+        let title = if let Some(f) = &a.failed {
+            crate::strings::t(
+                "pages.k2.judged.failed",
+                &[("id", &a.id), ("reason", s(f, "reason")), ("state", &state)],
+            )
+        } else if asked {
+            crate::strings::t("pages.k2.judged.ask", &[("id", &a.id), ("state", &state)])
+        } else {
+            crate::strings::t(
+                "pages.k2.judged.approved",
+                &[("id", &a.id), ("state", &state)],
+            )
+        };
+        let mut body = Vec::new();
+        if !reasons.is_empty() {
+            body.push(text(&crate::strings::t(
+                "pages.k2.judged.reasons",
+                &[("reasons", &reasons)],
+            )));
+        }
+        rows.push(json!({"id": a.id, "title": title, "needs_you": true, "body": body}));
+    }
+    json!({"id": "judged-repairs", "title": crate::strings::t("pages.k2.judged.title", &[]),
+        "hint": crate::strings::t("pages.k2.judged.hint", &[]), "open": !rows.is_empty(), "blocks": [], "rows": rows})
+}
+
+/// A unit's files and tests, shown beside each other on the amendment page (R-62).
+fn unit_files_tests(pl: &Plan, u: &Value, becomes_new: bool) -> Vec<Value> {
+    vec![
+        text(&crate::strings::t(
+            "pages.k2.unit.files",
+            &[("files", &str_list(u, "files").join(", "))],
+        )),
+        text(&unit_tests_line_for(pl, u, becomes_new)),
+    ]
+}
+
+/// Whether the amendment's narrowing adds this unit or changes its `files`, `text` or `delivers`, the
+/// rule by which an approval makes a unit new (R-62).
+fn amendment_makes_new(a: &crate::events::Amend, id: &str) -> bool {
+    a.changes.iter().any(|c| {
+        let rec = &c["record"];
+        s(rec, "kind") == "unit"
+            && s(rec, "id") == id
+            && match c["how"].as_str() {
+                Some("new") => true,
+                Some("changed") => ["files", "text", "delivers"]
+                    .iter()
+                    .any(|f| rec.get(*f) != c["was"].get(*f)),
+                _ => false,
+            }
+    })
+}
+
 fn plan_row(p: &Project, r: &Value, pl: &Plan) -> Value {
     let id = s(r, "id");
     let mut body = Vec::new();
@@ -562,6 +765,7 @@ fn plan_row(p: &Project, r: &Value, pl: &Plan) -> Value {
             if !deps.is_empty() {
                 body.push(text(&format!("Waits for {}.", deps.join(", "))));
             }
+            body.push(text(&unit_tests_line(pl, r)));
         }
         "handoff" => {
             body.push(text(&format!(
@@ -942,6 +1146,7 @@ fn plan_view(p: &Project, st: &State) -> R<Value> {
         "rows": pl.handoffs.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
     sections.push(json!({"id": "checkpoints", "title": "Checkpoints", "hint": "What each one proves", "open": false, "blocks": [],
         "rows": pl.checkpoints.iter().map(|h| plan_row(p, h, &pl)).collect::<Vec<_>>()}));
+    sections.push(heavy_section(&pl));
     sections.push(crate::wavecheck::plan_section(&pl, st));
     sections.push(crate::wavecheck::unit_checks_section(p, &pl, st));
     if !pl.problems.is_empty() {
@@ -1099,6 +1304,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     if let Some(r) = run {
         secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
     }
+    secs.push(judged_section(st));
     secs.push(policy_section(p));
     v["policy"] = run::work_policy(p);
     let made = crate::gates::made_by(p)?;
@@ -1112,6 +1318,7 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     }
     // The amendment page: for each amendment that is not withdrawn, the four stages as sections,
     // each with its records or its not affected sentence.
+    let pl_now = plan::load(p)?;
     let mut reviews = serde_json::Map::new();
     for a in st.amends.iter().filter(|a| a.status != "withdrawn") {
         let repair = crate::amend::is_repair(a);
@@ -1136,6 +1343,19 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
             } else {
                 c.records.iter().map(|r| design_row(r, None)).collect()
             };
+            if c.sentence.is_none() {
+                for (row, rec) in rows.iter_mut().zip(c.records.iter()) {
+                    if s(rec, "kind") == "unit" {
+                        if let Some(b) = row["body"].as_array_mut() {
+                            b.extend(unit_files_tests(
+                                &pl_now,
+                                rec,
+                                amendment_makes_new(a, s(rec, "id")),
+                            ));
+                        }
+                    }
+                }
+            }
             mark_made(&mut rows, &made);
             if let (true, "plan") = (edit.is_some(), c.stage) {
                 if let Some(e) = &edit {
@@ -1163,7 +1383,25 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
         // Everything the narrowing recorded as differing from the approved content, kept records
         // included: the list the fingerprint covers, read from the narrowing, not recomputed.
         if !a.changes.is_empty() {
-            let rows: Vec<Value> = a.changes.iter().map(change_row).collect();
+            let rows: Vec<Value> = a
+                .changes
+                .iter()
+                .map(|c| {
+                    let mut r = change_row(c);
+                    if s(&c["record"], "kind") == "unit"
+                        && str_list(&c["record"], "files") != str_list(&c["was"], "files")
+                    {
+                        if let Some(b) = r["body"].as_array_mut() {
+                            b.extend(unit_files_tests(
+                                &pl_now,
+                                &c["record"],
+                                amendment_makes_new(a, s(&c["record"], "id")),
+                            ));
+                        }
+                    }
+                    r
+                })
+                .collect();
             secs.push(json!({"id": format!("{}-changes", a.id),
                 "title": format!("{}: everything that differs from the approved content", a.id),
                 "hint": "What the narrowing recorded; approval binds exactly this",
@@ -1563,6 +1801,8 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
     v["sections"] = json!([
         {"id": "proofs", "title": "Proofs", "hint": "One row per ID", "open": true, "blocks": [], "rows": rows},
         {"id": "fixes", "title": "Fixes", "hint": "What set each fix off, its files, units and review rounds", "open": !fixes.is_empty(), "blocks": [], "rows": fixes},
+        fix_grants_section(st, &kid),
+        accepted_section(&st.accepted.iter().filter(|a| (a.scope == "fix" && a.subject == kid) || (a.scope == "unit" && unit_ids.contains(&a.subject))).collect::<Vec<_>>()),
         crate::scope::section(st, &pl, Some(&unit_ids)),
         {"id": "units", "title": "Units", "hint": "The fixes attributed to each unit", "open": false, "blocks": [], "rows": unit_rows},
     ]);
