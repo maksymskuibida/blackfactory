@@ -343,7 +343,9 @@ pub fn classify_prompt(
 
 fn expand_home(p: &str) -> String {
     match p.strip_prefix("~/") {
-        Some(r) => format!("{}/{r}", std::env::var("HOME").unwrap_or_default()),
+        Some(_) => crate::session::home::resolve_tilde(p)
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         None => p.to_string(),
     }
 }
@@ -452,7 +454,7 @@ fn snapshot_kinds(kind: &str) -> &'static [&'static str] {
         "requirements" => &["requirement"],
         "ui" => &["screen", "journey"],
         "architecture" => &["component", "decision", "target", "threat", "markets"],
-        "plan" => &["unit", "handoff", "checkpoint", "check"],
+        "plan" => &["unit", "handoff", "checkpoint", "check", "plan_settings"],
         _ => &[],
     }
 }
@@ -516,7 +518,7 @@ pub fn stage_of_kind(kind: &str) -> Option<&'static str> {
         "requirement" => Some("requirements"),
         "screen" | "journey" => Some("ui"),
         "component" | "decision" | "target" | "threat" | "markets" => Some("architecture"),
-        "unit" | "handoff" | "checkpoint" | "check" => Some("plan"),
+        "unit" | "handoff" | "checkpoint" | "check" | "plan_settings" => Some("plan"),
         _ => None,
     }
 }
@@ -617,7 +619,10 @@ pub fn is_approved_content(st: &State, rec: &Value) -> bool {
 /// landing and no checkpoint close rest on it until the human approves it (R-39).
 pub fn unapproved_change(st: &State, rec: &Value) -> Option<String> {
     let kind = s(rec, "kind");
-    if !matches!(kind, "unit" | "check" | "checkpoint" | "handoff") {
+    if !matches!(
+        kind,
+        "unit" | "check" | "checkpoint" | "handoff" | "plan_settings"
+    ) {
         return None;
     }
     let id = s(rec, "id");
@@ -1977,7 +1982,8 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     let mut data = json!({"amend": aid, "turn": seq, "quote": quote.trim(), "content": content,
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
                "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
-               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()});
+               "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default(),
+               "tests_rule": true});
     let unblocked = extra.get("unblock_units").cloned().unwrap_or(json!([]));
     crate::scope::merge_fields(&mut data, extra);
     if let Err(err) = events::append(p, "amend.approve", data) {

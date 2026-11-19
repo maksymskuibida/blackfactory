@@ -397,14 +397,13 @@ fn a_test_build_doctor_names_the_state_folder_it_checked() {
 /// Files that still read `HOME` before the unit that owns each moves it to the resolver. The list
 /// may only shrink: it holds no more than `PENDING_LIMIT` entries, each one of `PENDING_FIRST`, and
 /// every entry must still read `HOME`.
-const PENDING_FIRST: [&str; 5] = [
-    "gates.rs",
+const PENDING_FIRST: [&str; 4] = [
     "store.rs",
     "evidence.rs",
     "guard.rs",
     "scope/fmtproof/exec.rs",
 ];
-const PENDING_LIMIT: usize = 5;
+const PENDING_LIMIT: usize = 4;
 const PENDING: &[&str] = &PENDING_FIRST;
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -701,9 +700,9 @@ fn a_home_crate_named_in_a_manifest_makes_the_source_test_fail() {
 
 #[test]
 fn the_pending_list_cannot_grow() {
-    // The list is checked against the fixed first five and its limit by the source test above: a
+    // The list is checked against the fixed first four and its limit by the source test above: a
     // sixth entry or one the list did not begin with fails it. Here the fixed numbers themselves.
-    assert_eq!(PENDING_LIMIT, 5);
+    assert_eq!(PENDING_LIMIT, 4);
     assert_eq!(PENDING_FIRST.len(), PENDING_LIMIT);
 }
 
