@@ -19,6 +19,7 @@ pub mod fmtproof;
 pub mod order;
 pub mod reconsider;
 pub mod restore;
+pub mod retry;
 pub mod unblock;
 pub mod wait;
 
@@ -469,6 +470,44 @@ fn paths(files: &[Value]) -> Vec<String> {
     files.iter().map(|f| s(f, "path").to_string()).collect()
 }
 
+/// A request for a file whose rounds are spent, or whose patch is the one already judged, is refused
+/// naming the file. `patch` is None when only the rounds are looked at.
+fn retry_refusal(
+    p: &Project,
+    st: &State,
+    unit: &str,
+    path: &str,
+    patch: Option<&str>,
+) -> Option<crate::refusal::Fail> {
+    let refusals = retry::for_unit(p, st, unit);
+    let lim = retry::limit(p);
+    let (because, step) = if retry::spent(&refusals, path, lim) {
+        (
+            crate::strings::t(
+                "scope.retry.request.spent",
+                &[("rounds", &retry::rounds_used(&refusals, path).to_string())],
+            ),
+            crate::strings::t("scope.retry.request.spent_step", &[]),
+        )
+    } else if patch.is_some_and(|patch| {
+        retry::latest_is_retry(&refusals, path)
+            && retry::last_patch(&refusals, path).is_some_and(|l| l.trim() == patch.trim())
+    }) {
+        (
+            crate::strings::t("scope.retry.request.same_patch", &[]),
+            crate::strings::t("scope.retry.request.same_patch_step", &[]),
+        )
+    } else {
+        return None;
+    };
+    Some(refuse_owned(
+        format!("ask for files for {unit}"),
+        format!("{path}: {because}"),
+        vec![step],
+        crate::strings::t("scope.retry.request.done_when", &[]),
+    ))
+}
+
 /// A builder's request for files (`bf report <U> --result blocked --need-files -`).
 pub fn request(
     p: &Project,
@@ -493,6 +532,17 @@ pub fn request(
     if !(matches!(cur.as_str(), "running" | "fixing")
         || (cur == "blocked" && reconsider::request_from(&st, unit)))
     {
+        for f in list
+            .as_array()
+            .or_else(|| list.get("files").and_then(|f| f.as_array()))
+            .into_iter()
+            .flatten()
+        {
+            let path = normalize_path(s(f, "path")).unwrap_or_default();
+            if let Some(e) = retry_refusal(p, &st, unit, &path, None) {
+                return Err(e);
+            }
+        }
         return Err(refuse(
             format!("ask for files for {unit}"),
             format!(
@@ -529,6 +579,11 @@ pub fn request(
                 path,
                 "it is already inside the unit's files",
             ));
+        }
+    }
+    for f in &files {
+        if let Some(e) = retry_refusal(p, &st, unit, s(f, "path"), Some(s(f, "patch"))) {
+            return Err(e);
         }
     }
     if !p.policy.review.scope_review {
@@ -627,7 +682,7 @@ pub fn verdict(
             &what,
             why,
             &[
-                "Report a JSON list with one object for each requested file: {\"path\", \"verdict\": \"needed\" or \"extension\", \"why\"}.",
+                &crate::strings::t("scope.retry.verdict.report_hint", &[]),
                 "Every requested file appears once, and no other file does.",
             ],
             "`bf report` accepts the verdict and the unit goes on or waits for the human.",
@@ -650,10 +705,8 @@ pub fn verdict(
         if seen.iter().any(|x| x == path) {
             return Err(bad(format!("{path}: it is answered twice")));
         }
-        if !matches!(s(v, "verdict"), "needed" | "extension") {
-            return Err(bad(format!(
-                "{path}: the verdict must be `needed` or `extension`"
-            )));
+        if let Err(why) = retry::check_verdict_item(v) {
+            return Err(bad(format!("{path}: {why}")));
         }
         if s(v, "why").trim().is_empty() {
             return Err(bad(format!("{path}: give the reason for the verdict")));
@@ -678,9 +731,13 @@ pub fn verdict(
         .get(unit)
         .map(|sc| sc.grants.iter().map(|g| g.files.len()).sum())
         .unwrap_or(0);
+    let refusals = retry::for_unit(p, &st, unit);
+    let lim = retry::limit(p);
     let mut granted: Vec<Value> = Vec::new();
     let mut refused: Vec<Value> = Vec::new();
     let mut late = false;
+    let mut retries: Vec<Value> = Vec::new();
+    let mut all: Vec<Value> = Vec::new();
     for v in &arr {
         let path = s(v, "path");
         let asked = req
@@ -689,17 +746,39 @@ pub fn verdict(
             .find(|f| s(f, "path") == path)
             .cloned()
             .unwrap_or_default();
-        if s(v, "verdict") == "extension" {
-            refused.push(json!({"path": path, "why": s(v, "why"), "verdict": "extension"}));
-        } else if let Some(r) = hard_rule(p, &pl, &st, unit, path) {
-            late = true;
-            refused.push(json!({"path": path, "rule": r, "why": s(v, "why"), "verdict": "needed"}));
-        } else {
-            granted.push(
-                json!({"path": path, "why": s(v, "why"), "asked": s(&asked, "why"),
-                "patch": s(&asked, "patch"), "new": asked["new"].as_bool().unwrap_or(false)}),
-            );
+        let round = retry::rounds_used(&refusals, path) + 1;
+        let mut entry =
+            json!({"path": path, "why": s(v, "why"), "patch": s(&asked, "patch"), "round": round});
+        match s(v, "verdict") {
+            "extension" => {
+                entry["verdict"] = json!("extension");
+                refused.push(entry.clone());
+            }
+            "retry" => {
+                entry["verdict"] = json!(retry::verdict_word(&refusals, path, lim));
+                entry["must"] = json!(s(v, "must").trim());
+                retries.push(entry.clone());
+            }
+            _ => {
+                entry["verdict"] = json!("needed");
+                if let Some(r) = hard_rule(p, &pl, &st, unit, path) {
+                    late = true;
+                    entry["rule"] = json!(r);
+                    refused.push(entry.clone());
+                } else {
+                    granted.push(
+                        json!({"path": path, "why": s(v, "why"), "asked": s(&asked, "why"),
+                        "patch": s(&asked, "patch"), "new": asked["new"].as_bool().unwrap_or(false)}),
+                    );
+                }
+            }
         }
+        all.push(entry);
+    }
+    // A `retry` holds back the whole request unless the human is asked anyway.
+    let hold = !retries.is_empty() && refused.is_empty();
+    if hold {
+        granted.clear();
     }
     let n = st.scope.get(unit).map(|sc| sc.grants.len()).unwrap_or(0) + 1;
     if !granted.is_empty() {
@@ -712,20 +791,46 @@ pub fn verdict(
                 "verdicts": arr, "note": note, "cost": cost}),
         )?;
     }
-    if !refused.is_empty() {
+    let mut refusal = "";
+    if hold {
+        refusal = if retries.iter().any(|f| s(f, "verdict") == "retry_spent") {
+            "retry_spent"
+        } else {
+            "retry"
+        };
         events::append(
             p,
             "unit.scope.refused",
-            json!({"unit": unit, "refusal": if late { "hard_late" } else { "extension" }, "from": req.from,
-                "files": refused, "request": req.seq}),
+            json!({"unit": unit, "refusal": refusal, "from": req.from,
+                "files": all, "request": req.seq}),
+        )?;
+        refused = retries.clone();
+    } else if !refused.is_empty() {
+        // The retry files are listed for the human, each with its `must`; they count no round.
+        let mut files = refused.clone();
+        for r in &retries {
+            let mut r = r.clone();
+            r["verdict"] = json!("retry");
+            files.push(r);
+        }
+        refusal = if late { "hard_late" } else { "extension" };
+        events::append(
+            p,
+            "unit.scope.refused",
+            json!({"unit": unit, "refusal": refusal, "from": req.from,
+                "files": files, "request": req.seq}),
         )?;
     }
     p.write_guard()?;
     let st = events::replay(p)?;
+    if refusal == "retry" {
+        // The builder's second look reads a brief with the reviewer's words in it.
+        run::write_brief(p, unit, "builder");
+    }
     Ok(
         json!({"unit": unit, "result": "scope", "state": st.unit_state(unit),
         "grant": if granted.is_empty() { Value::Null } else { json!(n) },
-        "granted": paths(&granted), "refused": refused}),
+        "granted": paths(&granted), "refused": refused, "refusal": refusal}),
     )
 }
 
@@ -955,6 +1060,65 @@ pub fn undo_md(st: &State, unit: &str) -> String {
     )
 }
 
+/// For each requested file judged before: each earlier round and the number of this one.
+fn review_rounds_md(p: &Project, st: &State, unit: &str, files: &[Value]) -> String {
+    let refusals = retry::for_unit(p, st, unit);
+    let lim = retry::limit(p);
+    let mut md = String::new();
+    for f in files {
+        let path = s(f, "path");
+        let earlier: Vec<&Value> = refusals
+            .iter()
+            .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent"))
+            .filter_map(|r| {
+                r["files"].as_array()?.iter().find(|x| {
+                    s(x, "path") == path && matches!(s(x, "verdict"), "retry" | "retry_spent")
+                })
+            })
+            .collect();
+        if earlier.is_empty() {
+            continue;
+        }
+        if md.is_empty() {
+            md.push_str(&format!(
+                "## {}\n\n",
+                crate::strings::t("scope.retry.review.title", &[])
+            ));
+        }
+        let used = earlier.len() as u32;
+        md.push_str(&format!(
+            "{}\n\n",
+            crate::strings::t(
+                "scope.retry.review.file",
+                &[
+                    ("path", &one_line(path)),
+                    ("round", &(used + 1).to_string()),
+                    ("limit", &lim.to_string())
+                ]
+            )
+        ));
+        for (i, e) in earlier.iter().enumerate() {
+            md.push_str(&format!(
+                "{}\n\n{}\n",
+                crate::strings::t(
+                    "scope.retry.review.earlier",
+                    &[
+                        ("round", &(i + 1).to_string()),
+                        ("verdict", s(e, "verdict")),
+                        ("why", &one_line(s(e, "why"))),
+                        ("must", &one_line(s(e, "must"))),
+                    ]
+                ),
+                code_block(s(e, "patch"))
+            ));
+        }
+    }
+    if !md.is_empty() {
+        md.push('\n');
+    }
+    md
+}
+
 /// The brief of the reviewer of an open request.
 pub fn brief_review(p: &Project, unit: &str) -> R<PathBuf> {
     let st = events::replay(p)?;
@@ -1041,11 +1205,21 @@ pub fn brief_review(p: &Project, unit: &str) -> R<PathBuf> {
             code_block(s(f, "patch"))
         ));
     }
+    md.push_str(&review_rounds_md(p, &st, unit, &req.files));
     md.push_str(&format!("## The question\n\n{QUESTION}\n\n"));
+    md.push_str(&format!(
+        "{}\n\n",
+        crate::strings::t("scope.retry.review.question", &[])
+    ));
     md.push_str("Mark a test needed only when its patch keeps every assertion except those the unit's records change, and the new one is at least as strict. Mark a configuration file needed only when its patch leaves no test or check out.\n\n");
-    md.push_str("## How to answer\n\nReport once with `bf report ");
-    md.push_str(unit);
-    md.push_str(" --role reviewer --result scope --verdict - --token <token>` and a JSON list on stdin, with every requested file once: `[{\"path\": \"...\", \"verdict\": \"needed\" or \"extension\", \"why\": \"...\"}]`.\n");
+    md.push_str("## How to answer\n\n");
+    md.push_str(&crate::strings::t(
+        "scope.retry.review.how_to",
+        &[("unit", unit)],
+    ));
+    md.push(' ');
+    md.push_str(&crate::strings::t("scope.retry.review.answer", &[]));
+    md.push('\n');
     let path = p.briefs_dir().join(format!("{unit}-reviewer.md"));
     fs::create_dir_all(p.briefs_dir())?;
     util::atomic_write(&path, md.as_bytes())?;
@@ -1158,25 +1332,71 @@ pub fn rows(st: &State, pl: &Plan, only: Option<&[String]>) -> Vec<Value> {
         for r in &sc.refused {
             let kind = s(r, "refusal");
             let mut body: Vec<Value> = Vec::new();
+            let at = s(r, "at");
             for f in r["files"].as_array().into_iter().flatten() {
                 let why = if !s(f, "rule").is_empty() {
                     s(f, "rule")
                 } else {
                     s(f, "why")
                 };
-                body.push(json!({"type": "text", "text": format!("`{}`: {why}", s(f, "path"))}));
+                let path = s(f, "path");
+                let line = match s(f, "verdict") {
+                    "retry" | "retry_spent" if kind == "retry" || kind == "retry_spent" => {
+                        let key = if kind == "retry" {
+                            "scope.retry.row.file"
+                        } else {
+                            "scope.retry.row.spent_file"
+                        };
+                        crate::strings::t(
+                            key,
+                            &[
+                                ("path", path),
+                                ("why", why),
+                                ("must", s(f, "must")),
+                                ("round", &f["round"].as_u64().unwrap_or(0).to_string()),
+                            ],
+                        )
+                    }
+                    "retry" => crate::strings::t(
+                        "scope.refusal.row.must",
+                        &[("path", path), ("must", s(f, "must"))],
+                    ),
+                    _ => format!("`{path}`: {why}"),
+                };
+                body.push(json!({"type": "text", "text": line}));
             }
-            body.push(json!({"type": "text", "text": format!("The unit waits for a plan repair; refused {}.", s(r, "at"))}));
-            let t = if kind == "extension" {
-                "refused as a scope extension"
-            } else {
-                "refused by a hard rule"
+            let (title, needs, handled, wait) = match kind {
+                "retry" => (
+                    crate::strings::t("scope.retry.row.title", &[("unit", id)]),
+                    false,
+                    crate::strings::t("scope.retry.row.handled_open", &[]),
+                    crate::strings::t("scope.retry.row.waiting", &[("at", at)]),
+                ),
+                "retry_spent" => (
+                    crate::strings::t("scope.retry.row.spent_title", &[("unit", id)]),
+                    st.unit_state(id) == "blocked",
+                    crate::strings::t("scope.retry.row.handled_human", &[]),
+                    crate::strings::t("scope.retry.row.spent_waiting", &[("at", at)]),
+                ),
+                "extension" => (
+                    crate::strings::t("scope.refusal.row.extension_title", &[("unit", id)]),
+                    st.unit_state(id) == "blocked",
+                    crate::strings::t("scope.refusal.row.handled", &[]),
+                    crate::strings::t("scope.refusal.row.waiting", &[("at", at)]),
+                ),
+                _ => (
+                    crate::strings::t("scope.refusal.row.hard_title", &[("unit", id)]),
+                    st.unit_state(id) == "blocked",
+                    crate::strings::t("scope.refusal.row.handled", &[]),
+                    crate::strings::t("scope.refusal.row.waiting", &[("at", at)]),
+                ),
             };
+            body.push(json!({"type": "text", "text": wait}));
             all.push((
                 r["seq"].as_u64().unwrap_or(0),
-                json!({"id": format!("{id} refused"), "title": format!("A request of {id} was {t}: it waits for a plan repair"),
-                    "needs_you": st.unit_state(id) == "blocked",
-                    "handled": {"tone": "open", "text": "Plan repair"}, "body": body}),
+                json!({"id": format!("{id} refused"), "title": title,
+                    "needs_you": needs,
+                    "handled": {"tone": "open", "text": handled}, "body": body}),
             ));
         }
     }
