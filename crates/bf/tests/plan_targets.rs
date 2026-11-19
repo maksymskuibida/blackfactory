@@ -252,13 +252,18 @@ fn plan_targets_a_check_of_an_older_plan_is_a_note() {
 #[test]
 fn plan_targets_a_marked_amendment_makes_the_old_plans_command_a_problem() {
     let p = Old::new();
+    // The approval itself is refused: it would add the problem, and an approval adds none (R-69).
     let (code, out) = p.amend_command("cargo test --test harness_worker_rules");
-    assert_eq!(code, 0, "{out}");
-    let out = p.run(&["plan", "check"]).1;
-    assert!(out.contains("the plan has 1 problem"), "{out}");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("would add 1 plan problem"), "{out}");
+    assert!(!out.contains("note: X-1:"), "{out}");
     assert!(out.contains("X-1:"), "{out}");
     assert!(out.contains("--test harness_worker_rules"), "{out}");
-    assert!(!out.contains("note: X-1:"), "{out}");
+    // Nothing was approved, so the plan stays as the old plan's: the command is a note, not a problem.
+    let out = p.run(&["plan", "check"]).1;
+    assert!(out.contains("plan ok"), "{out}");
+    assert!(out.contains("note: X-1:"), "{out}");
+    assert!(out.contains("--test harness_worker_rules"), "{out}");
 }
 
 #[test]

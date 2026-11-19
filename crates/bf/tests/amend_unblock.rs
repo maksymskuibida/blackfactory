@@ -65,7 +65,7 @@ fn no_release(fx: &Fx) -> bool {
 
 fn change_check_command(fx: &Fx, id: &str, unit: &str, file: &str) {
     let f = fx.root.join("x.toml");
-    let toml = format!("id=\"{id}\"\nkind=\"check\"\ntitle=\"Changed\"\nhow=\"command\"\ncommand=\"test -s {file}\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"{unit}\"\n");
+    let toml = format!("id=\"{id}\"\nkind=\"check\"\ntitle=\"Changed\"\nhow=\"command\"\ncommand=\"test -s {file}\"\nproves=[\"R-1\", \"H-1\"]\nscope=\"unit\"\nunit=\"{unit}\"\n");
     fs::write(&f, toml).unwrap();
     let f = f.to_str().unwrap();
     fx.must(&["record", "put", "check", "--file", f, "--replace"]);
