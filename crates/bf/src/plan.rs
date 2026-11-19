@@ -20,6 +20,9 @@ pub struct Plan {
     /// True when the plan was approved by an engine that did not yet mark its plan gates with the tests
     /// rule (R-62): such a plan reads as today, every unit running the full suite.
     pub approved_before_tests_rule: bool,
+    /// Units of an old plan that count as new for the tests rule: added, or changed in `files`, `text` or
+    /// `delivers`, by an amendment the human approved with the marker (R-62, D-59).
+    pub new_units: HashSet<String>,
     pub designed: Vec<Value>,
     pub wave: HashMap<String, u32>,
     pub problems: Vec<String>,
@@ -54,15 +57,10 @@ impl Plan {
             .and_then(|v| v.as_u64())
             .filter(|n| *n >= 1)
     }
-    /// A plan written for this version of the engine: it names a unit's tests or reason, or holds the
-    /// settings record. An older plan reads as today: every unit runs the full suite.
-    pub fn knows_tests(&self) -> bool {
-        !self.approved_before_tests_rule
-            || self.settings.is_some()
-            || self
-                .units
-                .iter()
-                .any(|u| u.get("tests").is_some() || u.get("full_suite").is_some())
+    /// Whether this unit must name its `tests` or say why it runs the full suite: the plan is new, or the
+    /// unit is new by an approval that carries the marker. Every other unit reads as today.
+    pub fn unit_knows_tests(&self, id: &str) -> bool {
+        !self.approved_before_tests_rule || self.new_units.contains(id)
     }
     /// Checks attached to a unit by `unit = U`.
     pub fn unit_checks(&self, unit: &str) -> Vec<&Value> {
@@ -109,6 +107,7 @@ pub fn load(p: &Project) -> R<Plan> {
         checks: by.remove("check").unwrap_or_default(),
         settings,
         approved_before_tests_rule: approved_before_tests_rule(p),
+        new_units: new_units_by_marked_approvals(p),
         designed,
         wave: HashMap::new(),
         problems: vec![],
@@ -130,6 +129,50 @@ fn approved_before_tests_rule(p: &Project) -> bool {
                 .unwrap_or(false)
         })
         .unwrap_or(false)
+}
+
+/// The units that a human-approved amendment with the tests-rule marker added, or changed in `files`,
+/// `text` or `delivers`, read from the log: the narrowing's `changes` and the marker of the approval. A
+/// change of `depends_on`, `checkpoint` or `estimate` alone never makes a unit new.
+fn new_units_by_marked_approvals(p: &Project) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(log) = events::load_log(p) else {
+        return out;
+    };
+    let mut narrowed: HashMap<String, &Value> = HashMap::new();
+    for e in &log.events {
+        match e["kind"].as_str() {
+            Some("amend.narrow") => {
+                if let Some(a) = e["amend"].as_str() {
+                    narrowed.insert(a.to_string(), e);
+                }
+            }
+            Some("amend.approve") if e["tests_rule"].as_bool() == Some(true) => {
+                let Some(n) = e["amend"].as_str().and_then(|a| narrowed.get(a)) else {
+                    continue;
+                };
+                for c in n["changes"].as_array().into_iter().flatten() {
+                    let rec = &c["record"];
+                    if s(rec, "kind") != "unit" {
+                        continue;
+                    }
+                    let was = &c["was"];
+                    let new = match c["how"].as_str() {
+                        Some("new") => true,
+                        Some("changed") => ["files", "text", "delivers"]
+                            .iter()
+                            .any(|f| rec.get(*f) != was.get(*f)),
+                        _ => false,
+                    };
+                    if new {
+                        out.insert(s(rec, "id").to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
@@ -155,6 +198,7 @@ pub fn problems_of_edited(
         checks,
         settings: base.settings.clone(),
         approved_before_tests_rule: base.approved_before_tests_rule,
+        new_units: base.new_units.clone(),
         designed: base.designed.clone(),
         wave: HashMap::new(),
         problems: vec![],
@@ -643,28 +687,32 @@ pub fn not_ready(
     None
 }
 
-/// D-59: a plan that knows tests has every unit name its tests or say why it runs the full suite, and a
-/// plan that holds a heavy check states the limit. A plan of an older engine is read as today.
+/// D-59: a unit that is new by the plan or by a marked approval names its tests or says why it runs the
+/// full suite, and a plan that holds a heavy check states the limit. A plan of an older engine is read as today.
 fn heavy_problems(pl: &Plan, bad: &mut Vec<String>, notes: &mut Vec<String>) {
-    if pl.knows_tests() {
-        for u in &pl.units {
-            if u.get("tests").is_none() && u.get("full_suite").is_none() {
-                bad.push(crate::strings::t(
-                    "cli.evidence.plan.unit_without_tests",
-                    &[("unit", s(u, "id"))],
-                ));
-            }
+    for u in &pl.units {
+        if pl.unit_knows_tests(s(u, "id"))
+            && u.get("tests").is_none()
+            && u.get("full_suite").is_none()
+        {
+            bad.push(crate::strings::t(
+                "cli.evidence.plan.unit_without_tests",
+                &[("unit", s(u, "id"))],
+            ));
         }
-        // A later check of a unit that names no `needs` is told, not refused.
-        for u in &pl.units {
-            let id = s(u, "id");
-            for c in pl.unit_checks(id).into_iter().skip(1) {
-                if str_list(c, "needs").is_empty() {
-                    notes.push(crate::strings::t(
-                        "cli.evidence.plan.later_without_needs",
-                        &[("check", s(c, "id")), ("unit", id)],
-                    ));
-                }
+    }
+    // A later check of a unit that names no `needs` is told, not refused.
+    for u in &pl.units {
+        let id = s(u, "id");
+        if !pl.unit_knows_tests(id) {
+            continue;
+        }
+        for c in pl.unit_checks(id).into_iter().skip(1) {
+            if str_list(c, "needs").is_empty() {
+                notes.push(crate::strings::t(
+                    "cli.evidence.plan.later_without_needs",
+                    &[("check", s(c, "id")), ("unit", id)],
+                ));
             }
         }
     }
