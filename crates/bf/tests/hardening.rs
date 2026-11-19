@@ -1501,6 +1501,7 @@ fn an_empty_or_relative_state_variable_never_puts_the_key_inside_the_project() {
         .current_dir(&proj)
         .env_clear()
         .env("HOME", &home)
+        .env("BF_TEST_ACCOUNT_HOME", &home)
         .env("PATH", "/usr/bin:/bin")
         .env("BF_STATE_HOME", "")
         .env("XDG_STATE_HOME", "relative/state")

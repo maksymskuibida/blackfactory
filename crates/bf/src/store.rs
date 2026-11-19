@@ -850,9 +850,10 @@ impl Project {
     /// The harness's transcript root from the accepted policy, as an absolute path.
     pub fn transcript_root(&self) -> String {
         let r = &self.policy.human.transcript_root;
-        let abs = match r.strip_prefix("~/") {
-            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
-            None => r.clone(),
+        // A path that begins with `~` and has no home resolves to nothing: no root, never the raw text.
+        let Some(abs) = crate::session::home::resolve_tilde(r).map(|p| p.to_string_lossy().to_string())
+        else {
+            return String::new();
         };
         fs::canonicalize(&abs)
             .map(|p| p.to_string_lossy().to_string())
@@ -1143,7 +1144,9 @@ impl Project {
             .clone()
             .or_else(|| absolute_env("BF_STATE_HOME"))
             .or_else(|| absolute_env("XDG_STATE_HOME").map(|x| x.join("blackfactory")))
-            .or_else(|| absolute_env("HOME").map(|h| h.join(".local/state/blackfactory")))
+            .or_else(|| {
+                crate::session::home::account_home().map(|h| h.join(".local/state/blackfactory"))
+            })
             .unwrap_or_else(|| PathBuf::from("/nonexistent-state"));
         base.join(&self.config.project_id)
     }

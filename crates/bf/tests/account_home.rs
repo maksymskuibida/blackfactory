@@ -397,13 +397,8 @@ fn a_test_build_doctor_names_the_state_folder_it_checked() {
 /// Files that still read `HOME` before the unit that owns each moves it to the resolver. The list
 /// may only shrink: it holds no more than `PENDING_LIMIT` entries, each one of `PENDING_FIRST`, and
 /// every entry must still read `HOME`.
-const PENDING_FIRST: [&str; 4] = [
-    "store.rs",
-    "evidence.rs",
-    "guard.rs",
-    "scope/fmtproof/exec.rs",
-];
-const PENDING_LIMIT: usize = 4;
+const PENDING_FIRST: [&str; 0] = [];
+const PENDING_LIMIT: usize = 0;
 const PENDING: &[&str] = &PENDING_FIRST;
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -700,10 +695,25 @@ fn a_home_crate_named_in_a_manifest_makes_the_source_test_fail() {
 
 #[test]
 fn the_pending_list_cannot_grow() {
-    // The list is checked against the fixed first four and its limit by the source test above: a
-    // sixth entry or one the list did not begin with fails it. Here the fixed numbers themselves.
-    assert_eq!(PENDING_LIMIT, 4);
+    // The list is empty with a limit of 0: no file may read `HOME` outside the resolver.
+    assert_eq!(PENDING_LIMIT, 0);
     assert_eq!(PENDING_FIRST.len(), PENDING_LIMIT);
+}
+
+#[test]
+fn a_child_sees_the_account_home_and_never_the_callers_home() {
+    let other = tempfile::tempdir().unwrap();
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", "printf %s \"${HOME-unset}\""])
+        .env_clear()
+        .env("HOME", other.path());
+    bf::session::home::set_env(&mut c);
+    let out = String::from_utf8(c.output().unwrap().stdout).unwrap();
+    match bf::session::home::account_home() {
+        Some(h) => assert_eq!(out, h.to_string_lossy()),
+        None => assert_eq!(out, "unset"),
+    }
+    assert_ne!(out, other.path().to_string_lossy());
 }
 
 // ---- the build of the seam fails on an empty text --------------------------------------------
@@ -827,4 +837,47 @@ fn timing_account_home_lookup_is_one_call_within_the_time() {
         assert!(median < 2.0, "{name}: median {median} ms");
         assert!(p99 < 20.0, "{name}: p99 {p99} ms");
     }
+}
+
+// ---- review findings: the policy's list never passes the caller's home on; the guard's lookups ---------
+
+/// In every place that builds a check's or a scan's process, the account's home is set after the loop
+/// that copies the policy's listed variables, so a policy that lists the home's variable cannot pass the
+/// caller's value on.
+#[test]
+fn the_account_home_is_set_after_the_policys_listed_variables() {
+    for f in ["src/evidence.rs", "src/scan.rs"] {
+        let text = fs::read_to_string(crate_dir().join(f)).unwrap();
+        let loop_at = text
+            .find("policy.exec.env")
+            .unwrap_or_else(|| panic!("{f}: no loop over the policy's variables"));
+        let set_at = text
+            .find("session::home::set_env(&mut cmd)")
+            .unwrap_or_else(|| panic!("{f}: the account's home is never set for the process"));
+        assert!(set_at > loop_at, "{f}: the home is set before the policy's variables");
+    }
+}
+
+/// A guard call whose paths have no `~` makes no lookup of the account database; one with a `~` path makes one.
+#[test]
+fn a_guard_call_without_a_tilde_path_makes_no_lookup() {
+    if !SEAM {
+        return;
+    }
+    let table = serde_json::json!({"root": "/nonexistent-root"});
+    for (tool, input) in [
+        ("Write", serde_json::json!({"file_path": "/nonexistent-root/a.txt"})),
+        ("Read", serde_json::json!({"file_path": "b.txt"})),
+    ] {
+        let _ = bf::guard::decide(
+            &serde_json::json!({"tool_name": tool, "tool_input": input, "cwd": "/nonexistent-root"}),
+            &table,
+        );
+    }
+    assert_eq!(bf::session::home::lookup_count(), 0);
+    let _ = bf::guard::decide(
+        &serde_json::json!({"tool_name": "Write", "tool_input": {"file_path": "~/a.txt"}, "cwd": "/nonexistent-root"}),
+        &table,
+    );
+    assert_eq!(bf::session::home::lookup_count(), 1);
 }

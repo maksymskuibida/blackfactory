@@ -20,11 +20,12 @@ pub(super) fn exec(
 ) -> Result<Vec<u8>, String> {
     let mut c = Command::new(prog);
     c.args(args).current_dir(cwd).env_clear().env("PATH", path);
-    for k in ["HOME", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN"] {
+    for k in ["RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN"] {
         if let Ok(v) = std::env::var(k) {
             c.env(k, v);
         }
     }
+    crate::session::home::set_env(&mut c);
     c.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
