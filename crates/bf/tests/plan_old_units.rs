@@ -187,7 +187,10 @@ impl Old {
     /// The human says yes and approves `aid`: the exit code and the output.
     fn try_approve(&self, aid: &str) -> (i32, String) {
         self.human("Yes, approve the change.");
-        self.run(&["amend", "approve", aid, "--quote", "approve the change"], "")
+        self.run(
+            &["amend", "approve", aid, "--quote", "approve the change"],
+            "",
+        )
     }
 
     /// Open, change and narrow a repair, and see the engine refuse its approval. Returns the refusal.
