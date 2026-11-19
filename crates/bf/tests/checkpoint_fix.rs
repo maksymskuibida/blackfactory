@@ -437,12 +437,12 @@ fn a_change_outside_the_files_is_refused_as_a_plan_gap_for_the_human() {
     assert_eq!(d["role"], "human", "{d}");
     assert!(d["missing"].to_string().contains("src/other.txt"), "{d}");
     assert!(d["note"].as_str().unwrap().contains("amendment"), "{d}");
-    // The checkpoint goes back as it was, and no fix opens again for that content: the old way holds.
+    // The abort turns this attempt down; the failing check still has a fix open, so it opens again.
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
     assert!(!k.join("src/other.txt").exists());
     let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "run-checkpoint-checks", "{n}");
-    assert!(fx.must(&["status", "--json"]).json()["checkpoint_fix"]["open"].is_null());
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    assert!(!fx.must(&["status", "--json"]).json()["checkpoint_fix"]["open"].is_null());
 }
 
 #[test]
