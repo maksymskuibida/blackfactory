@@ -1185,7 +1185,7 @@ fn scenario(action: &str) -> Fx {
             match action {
                 "review-checkpoint-fix" => fix_built(&fx, "from the unit, fixed\n"),
                 "plan-gap" => {
-                    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "gap", "--note", "needs behaviour no record describes"], "");
+                    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "gap", "--note", "src/needs.txt: needs behaviour no record describes"], "");
                     assert_eq!(o.code, 2, "{}", o.all());
                 }
                 _ => {}

@@ -1352,14 +1352,14 @@ fn report_inner(
                 );
             }
             if files.is_empty() {
-                return Err(refuse(
-                    format!("report the fix of {k}"),
-                    "no file changed since the fix opened",
-                    &[
-                        "Make the change and commit it in the checkpoint's working copy, then report again.",
-                        "If the fix needs something outside the checkpoint's files, report `--result gap --note \"what is missing\"`.",
+                return Err(refuse_owned(
+                    crate::strings::t("fix.scope.no_change.what", &[("k", k)]),
+                    crate::strings::t("fix.scope.no_change.because", &[]),
+                    vec![
+                        crate::strings::t("fix.scope.no_change.step", &[]),
+                        crate::strings::t("fix.scope.brief.no_change_gap", &[("k", k)]),
                     ],
-                    "`bf status` shows the fix in review.",
+                    crate::strings::t("fix.scope.no_change.check", &[]),
                 ));
             }
             // R-32: a probe that is not yet a permanent test is refused before any check runs again.
@@ -1730,7 +1730,7 @@ pub fn command(
         write_overlay(p)?;
         p.write_guard()?;
         return Ok(
-            json!({"checkpoint": k, "aborted": true, "saved": saved, "message": "the checkpoint is as it was before the fix started; the human decides what to do with the failure"}),
+            json!({"checkpoint": k, "aborted": true, "saved": saved, "message": crate::strings::t("fix.scope.abort.message", &[])}),
         );
     }
     if release {
@@ -2036,10 +2036,18 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         }
         md.push_str(&builder_extras(p, &st, f));
         md.push_str(&format!(
-            "\n## Rules\n\n- Make the failing checks pass by fixing the code, never by weakening a test: do not delete, skip or loosen a test or an assertion to get a pass. A reviewer looks for it.\n- Commit the fix in the working copy (`git add` the files, `git commit`). Do not reset, check out, merge or rebase anything.\n- Run the failing checks again with `bf evidence run <check> -- <its command>` from inside `{}`.\n- Report with `bf report {k} --role builder --result built --token <token>`.\n- {}\n- {}\n- If you cannot go on: `bf report {k} --role builder --result blocked --note \"why\"`.\n",
-            wc.display(),
+            "\n## {}\n\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n",
+            crate::strings::t("fix.scope.brief.rules_title", &[]),
+            crate::strings::t("fix.scope.brief.rule_weaken", &[]),
+            crate::strings::t("fix.scope.brief.rule_commit", &[]),
+            crate::strings::t(
+                "fix.scope.brief.rule_run",
+                &[("wc", &wc.display().to_string())]
+            ),
+            crate::strings::t("fix.scope.brief.rule_report", &[("k", k)]),
             crate::strings::t("fix.scope.brief.ask", &[("k", k)]),
-            crate::strings::t("fix.scope.brief.gap", &[("k", k)])
+            crate::strings::t("fix.scope.brief.gap", &[("k", k)]),
+            crate::strings::t("fix.scope.brief.rule_blocked", &[("k", k)])
         ));
     } else {
         let round = f.rounds_log.len() + 1;
@@ -2247,7 +2255,10 @@ fn scope_brief(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<PathBuf> {
                 md.push_str(&format!("{}\n\n", s(&r, "text")));
             }
             for a in str_list(&r, "acceptance") {
-                md.push_str(&format!("- Acceptance: {a}\n"));
+                md.push_str(&format!(
+                    "{}\n",
+                    t("fix.scope.review.acceptance", &[("a", &a)])
+                ));
             }
             md.push('\n');
         }

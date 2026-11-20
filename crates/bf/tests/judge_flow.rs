@@ -77,13 +77,21 @@ fn token(fx: &Fx, aid: &str) -> String {
         .to_string()
 }
 
-fn pass(fx: &Fx, aid: &str) {
-    fs::write(
-        fx.state_dir().join("judge-pass.json"),
-        json!({"amend": aid, "agent_type": "repair-judge", "session": "s1", "agent": "g1"})
-            .to_string(),
+/// The pass of a judge's turn for the call that carries the token `tok`.
+fn pass_for(fx: &Fx, aid: &str, tok: &str) {
+    let d = fx.root.join(".claude/agents");
+    fs::create_dir_all(&d).unwrap();
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../harness/claude/agents/repair-judge.md"),
+        d.join("repair-judge.md"),
     )
     .unwrap();
+    let payload = json!({"tool_name": "Bash", "cwd": fx.root.to_string_lossy(),
+        "tool_input": {"command": format!("bf amend judge {aid} --file - --token {tok} --model m")},
+        "session_id": "s1", "agent_id": "g1", "agent_type": "repair-judge"});
+    let o = fx.bf_stdin(&fx.root, &["guard"], &payload.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
 }
 
 fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
@@ -97,7 +105,7 @@ fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
 /// The whole turn of a judge with a pass: token, pass, verdict.
 fn turn(fx: &Fx, aid: &str, verdict: &str) -> Out {
     let t = token(fx, aid);
-    pass(fx, aid);
+    pass_for(fx, aid, &t);
     judge(fx, aid, &t, verdict)
 }
 

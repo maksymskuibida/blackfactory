@@ -126,3 +126,28 @@
 
 "fix.scope.directive.note" = "The builder of the fix of {k} asked for files. Judge the request cold and report once with `bf checkpoint scope {k} --verdict - --token <token>`."
 "fix.scope.page.granted" = "Grant {n} of the fix: {files}"
+
+"fix.scope.label.request" = "the request"
+"fix.scope.label.entry" = "an entry"
+"fix.scope.review.acceptance" = "- Acceptance: {a}"
+
+"cli.ckscope.done_when" = "The command prints the result."
+"cli.ckscope.stdin.what" = "read the verdict from stdin"
+"cli.ckscope.stdin.because" = "the input is not valid JSON: {e}"
+"cli.ckscope.stdin.step" = "Pipe a JSON list such as [{{\"path\": \"tests/a.rs\", \"verdict\": \"needed\", \"why\": \"...\"}}] into the command."
+"cli.ckscope.need.what" = "run `bf checkpoint scope`"
+"cli.ckscope.need.because" = "it needs --verdict with the list of answers"
+"cli.ckscope.need.step" = "Run `bf checkpoint scope <K> --verdict - --token <token>` with the list on stdin."
+
+"fix.scope.brief.no_change_gap" = "If the fix needs a file outside the checkpoint's files, ask for it: `bf report {k} --role builder --result blocked --token <token> --need-files -`; for behaviour no record describes, report `--result gap --note \"<each file it needs, with the reason>\"`."
+"fix.scope.brief.rules_title" = "Rules"
+"fix.scope.brief.rule_weaken" = "Make the failing checks pass by fixing the code, never by weakening a test: do not delete, skip or loosen a test or an assertion to get a pass. A reviewer looks for it."
+"fix.scope.brief.rule_commit" = "Commit the fix in the working copy (`git add` the files, `git commit`). Do not reset, check out, merge or rebase anything."
+"fix.scope.brief.rule_run" = "Run the failing checks again with `bf evidence run <check> -- <its command>` from inside `{wc}`."
+"fix.scope.brief.rule_report" = "Report with `bf report {k} --role builder --result built --token <token>`."
+"fix.scope.brief.rule_blocked" = "If you cannot go on: `bf report {k} --role builder --result blocked --note \"why\"`."
+"fix.scope.abort.message" = "the checkpoint is as it was before the fix started; the human decides what to do with the failure"
+"fix.scope.no_change.what" = "report the fix of {k}"
+"fix.scope.no_change.because" = "no file changed since the fix opened"
+"fix.scope.no_change.step" = "Make the change and commit it in the checkpoint's working copy, then report again."
+"fix.scope.no_change.check" = "`bf status` shows the fix in review."

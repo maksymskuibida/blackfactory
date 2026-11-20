@@ -46,11 +46,25 @@ pub fn in_list(p: &Project, k: &str, live: &Live, path: &str) -> bool {
 }
 
 /// The files a gap note names: words that read as a path (a folder part, or a name with an extension).
+/// A `:<line>` or `:<line>:<column>` suffix is a place in the file, not part of its path.
+fn strip_line(w: &str) -> &str {
+    let mut w = w;
+    while let Some((head, tail)) = w.rsplit_once(':') {
+        if !head.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+            w = head;
+        } else {
+            break;
+        }
+    }
+    w
+}
+
 pub fn named_files(note: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in note.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
         let w = w.trim_matches(|c: char| "`'\"()[]:".contains(c));
         let w = w.trim_end_matches('.');
+        let w = strip_line(w);
         if w.is_empty() || w.starts_with("http") {
             continue;
         }
@@ -90,16 +104,30 @@ fn parse(p: &Project, k: &str, list: &Value) -> R<Vec<Value>> {
         .as_array()
         .cloned()
         .or_else(|| list.get("files").and_then(|f| f.as_array().cloned()))
-        .ok_or_else(|| bad(k, "the request", &t("fix.scope.request.not_list", &[])))?;
+        .ok_or_else(|| {
+            bad(
+                k,
+                &t("fix.scope.label.request", &[]),
+                &t("fix.scope.request.not_list", &[]),
+            )
+        })?;
     if arr.is_empty() {
-        return Err(bad(k, "the request", &t("fix.scope.request.empty", &[])));
+        return Err(bad(
+            k,
+            &t("fix.scope.label.request", &[]),
+            &t("fix.scope.request.empty", &[]),
+        ));
     }
     let top = p.work_dir().join(k);
     let mut out: Vec<Value> = Vec::new();
     for f in &arr {
         let given = s(f, "path").trim().to_string();
         if given.is_empty() {
-            return Err(bad(k, "an entry", &t("fix.scope.request.no_path", &[])));
+            return Err(bad(
+                k,
+                &t("fix.scope.label.entry", &[]),
+                &t("fix.scope.request.no_path", &[]),
+            ));
         }
         let path = if given.starts_with('/')
             || given.contains('\\')

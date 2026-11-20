@@ -1,7 +1,7 @@
 //! `bf checkpoint close|sync|fix|wave-check|finding|review`.
 
 use super::{out, project, Args};
-use crate::refusal::{refuse, R};
+use crate::refusal::{refuse, refuse_owned, R};
 use crate::store::s;
 use crate::{enforce, run};
 use serde_json::Value;
@@ -86,20 +86,20 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         let k = args.pos_at(2, "a checkpoint ID")?;
         let list = match args.flag("verdict") {
             Some("-") => serde_json::from_str::<Value>(&super::read_stdin()).map_err(|e| {
-                refuse(
-                    "read the verdict from stdin",
-                    format!("the input is not valid JSON: {e}"),
-                    &["Pipe a JSON list such as [{\"path\": \"tests/a.rs\", \"verdict\": \"needed\", \"why\": \"...\"}] into the command."],
-                    "The command prints the result.",
+                refuse_owned(
+                    crate::strings::t("cli.ckscope.stdin.what", &[]),
+                    crate::strings::t("cli.ckscope.stdin.because", &[("e", &e.to_string())]),
+                    vec![crate::strings::t("cli.ckscope.stdin.step", &[])],
+                    crate::strings::t("cli.ckscope.done_when", &[]),
                 )
             })?,
             Some(f) => super::read_data_in(&p, f)?,
             None => {
-                return Err(refuse(
-                    "run `bf checkpoint scope`",
-                    "it needs --verdict with the list of answers",
-                    &["Run `bf checkpoint scope <K> --verdict - --token <token>` with the list on stdin."],
-                    "The command prints the result.",
+                return Err(refuse_owned(
+                    crate::strings::t("cli.ckscope.need.what", &[]),
+                    crate::strings::t("cli.ckscope.need.because", &[]),
+                    vec![crate::strings::t("cli.ckscope.need.step", &[])],
+                    crate::strings::t("cli.ckscope.done_when", &[]),
                 ))
             }
         };

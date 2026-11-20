@@ -346,6 +346,19 @@ fn ckfix_scope_a_gap_names_its_files_and_a_file_of_the_list_is_refused() {
         "{}",
         o.stderr
     );
+    // A place in the file (`:12`, `:12:3`) is not part of its path.
+    for note in [
+        "src/a.txt:12 needs more behaviour",
+        "see src/a.txt:12:3, it needs more",
+    ] {
+        let o = gap(note);
+        assert_eq!(o.code, 2, "{}", o.all());
+        assert!(
+            o.stderr.contains("src/a.txt is already in the files"),
+            "{}",
+            o.stderr
+        );
+    }
     one_directive(&fx, "fix-checkpoint");
     let o = gap("src/new_module.txt: behaviour no record describes");
     assert_eq!(o.code, 2, "{}", o.all());
