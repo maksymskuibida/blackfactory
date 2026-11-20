@@ -412,7 +412,7 @@ fn open_locked_by(
     // `earlier` is the seq of an earlier opening whose words these are (a fix reopened after an abort).
     let by = human
         .map(|(t, q, earlier)| match earlier {
-            Some(e) => json!({"turn": t, "quote": q.trim(), "earlier": e}),
+            Some(e) => json!({"quote": q.trim(), "earlier": e}),
             None => json!({"turn": t, "quote": q.trim()}),
         })
         .unwrap_or(Value::Null);

@@ -39,4 +39,4 @@
 "accept.pick.step" = "Ask the human, then run the command again with `--quote \"<the words of their message>\"`."
 "accept.pick.check" = "The command opens the fix."
 "accept.pick.hold_what" = "fix findings"
-"accept.events.ignored.earlier_words" = "event {seq}: a fix reopened with the human's earlier words that no aborted opening of these findings by the human gives"
+"accept.events.ignored.reopen" = "event {seq}: a fix reopened with the human's earlier words that cites no counted opening of these findings by the human that an abort has ended since, or is written while a fix or a sync is at work or the human is not being asked"

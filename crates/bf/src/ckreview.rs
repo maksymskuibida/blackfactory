@@ -1513,38 +1513,9 @@ pub fn settle(
 
 /// The human's words on an earlier fix of these very findings that was aborted: the turn and the quote the fix
 /// was opened with, when that fix named every finding in `pairs`.
-fn earlier_words(
-    p: &Project,
-    st: &State,
-    k: &str,
-    pairs: &[(u32, u32)],
-) -> R<Option<(u64, String, Option<u64>)>> {
-    let log = events::load_log(p)?;
-    for a in st
-        .ck_fix_aborts
-        .iter()
-        .rev()
-        .filter(|a| a.checkpoint == k && pairs.iter().all(|x| a.ids.contains(x)))
-    {
-        let found = log.events.iter().rev().find(|e| {
-            e["kind"].as_str() == Some("checkpoint.fix.open")
-                && e["checkpoint"].as_str() == Some(k)
-                && e["seq"].as_u64().unwrap_or(u64::MAX) < a.seq
-                && e["human"]["turn"].as_u64().is_some()
-                && {
-                    let named = events::id_pairs(&e["finding_ids"]);
-                    pairs.iter().all(|x| named.contains(x))
-                }
-        });
-        if let Some(e) = found {
-            return Ok(Some((
-                e["human"]["turn"].as_u64().unwrap_or(0),
-                e["human"]["quote"].as_str().unwrap_or("").to_string(),
-                e["seq"].as_u64(),
-            )));
-        }
-    }
-    Ok(None)
+fn earlier_words(st: &State, k: &str, pairs: &[(u32, u32)]) -> Option<(u64, String, Option<u64>)> {
+    // Only the latest counted opening of these findings, aborted since, gives its words again.
+    events::reusable_pick(st, k, pairs).map(|(seq, c)| (c.1, c.2.clone(), Some(seq)))
 }
 
 /// `bf checkpoint finding <K> --fix-findings <ids>`: findings picked to be fixed open the checkpoint fix.
@@ -1567,7 +1538,18 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
         if quote.trim().is_empty() {
             // A fix reopened after an abort for the same findings keeps the human's earlier words (R-71).
-            match earlier_words(p, &st, k, &pairs)? {
+            // The same holds a pick meets: the human is not asked while a fix, a sync or a mark is at work.
+            let base = events::put_to_human_seq(&st, k, &pairs);
+            run::observe_holds(p)?;
+            let st = events::require_chain(p)?;
+            if let Err(h) = events::decision_bound(&st, k, base, u64::MAX) {
+                return Err(hold_refusal(
+                    &crate::strings::t("accept.pick.hold_what", &[]),
+                    k,
+                    &h,
+                ));
+            }
+            match earlier_words(&st, k, &pairs) {
                 Some(w) => Some(w),
                 None => {
                     return Err(refuse_owned(
@@ -1621,7 +1603,11 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         ids,
         &content,
         human.as_ref().map(|(t, q, e)| (*t, q.as_str(), *e)),
-        if human.is_some() { "pick" } else { "low" },
+        match &human {
+            Some((_, _, Some(_))) => "reopen",
+            Some(_) => "pick",
+            None => "low",
+        },
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true, "findings": named}))
 }

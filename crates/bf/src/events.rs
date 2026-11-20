@@ -971,6 +971,10 @@ pub struct State {
     /// Every checkpoint fix that was aborted: (checkpoint, the findings it was opened for as (round, number),
     /// seq of the abort).
     pub ck_fix_aborts: Vec<CkFixAbort>,
+    /// The fix openings of review findings by the human's words that the replay counted: the seq of the
+    /// opening to (checkpoint, turn, quote, the findings as (round, number)). A fix reopened after an abort
+    /// for the same findings may keep these words by citing one of them (R-71).
+    pub ck_picks: HashMap<u64, (String, u64, String, Vec<(u32, u32)>)>,
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
@@ -1120,6 +1124,30 @@ pub fn round_report_seq(st: &State, k: &str, round: u32) -> u64 {
         .map(|(_, _, q)| *q)
         .max()
         .unwrap_or(0)
+}
+
+/// The opening by the human's words that a fix of these findings may reopen with: the latest opening of the
+/// checkpoint that the replay counted and that names any of them, when it names them all and an abort of them
+/// all came after it. One abort pays for one reopen, because a reopen is itself a counted opening.
+pub fn reusable_pick<'a>(
+    st: &'a State,
+    k: &str,
+    ids: &[(u32, u32)],
+) -> Option<(u64, &'a (String, u64, String, Vec<(u32, u32)>))> {
+    if ids.is_empty() {
+        return None;
+    }
+    let (seq, c) = st
+        .ck_picks
+        .iter()
+        .filter(|(_, c)| c.0 == k && ids.iter().any(|x| c.3.contains(x)))
+        .max_by_key(|(seq, _)| **seq)?;
+    let covered = ids.iter().all(|x| c.3.contains(x));
+    let ended = st
+        .ck_fix_aborts
+        .iter()
+        .any(|a| a.checkpoint == k && a.seq > *seq && ids.iter().all(|x| a.ids.contains(x)));
+    (covered && ended).then_some((*seq, c))
 }
 
 /// The seq of the latest event that put these findings (round, number) of a checkpoint to the human: for
@@ -1338,9 +1366,6 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
     let mut report_used: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
     let mut marked_seen = false;
-    // The fix openings by a pick that the replay counted: seq to (checkpoint, turn, quote, finding ids). A
-    // fix reopened with the human's earlier words may cite only one of these (R-71).
-    let mut counted_picks: HashMap<u64, (String, u64, String, Vec<(u32, u32)>)> = HashMap::new();
     let mut parked_rounds: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
     for (ix, ev) in log.events.iter().enumerate() {
@@ -2208,6 +2233,33 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                                     }
                                 }
                             }
+                            "reopen" => {
+                                // A fix reopened after an abort for the same findings keeps the human's
+                                // earlier words (R-71): it cites no turn of its own, only the latest opening
+                                // of these findings that the replay counted, which an abort has ended since;
+                                // one abort pays for one reopen. It meets every hold a pick meets.
+                                let named = id_pairs(&ev["finding_ids"]);
+                                let quote = ev["human"]["quote"].as_str().unwrap_or("");
+                                let base = put_to_human_seq(&st, &ck, &named);
+                                let held = decision_bound(&st, &ck, base, seq).is_err()
+                                    || st.ck_fix.is_some()
+                                    || st.sync_open.is_some();
+                                let ok = !held
+                                    && ev["human"]["turn"].is_null()
+                                    && reusable_pick(&st, &ck, &named).is_some_and(|(e, c)| {
+                                        ev["human"]["earlier"].as_u64() == Some(e) && c.2 == quote
+                                    });
+                                if ok {
+                                    None
+                                } else {
+                                    marked_seen = true;
+                                    st.ignored.push(crate::strings::t(
+                                        "accept.events.ignored.reopen",
+                                        &[("seq", &seq.to_string())],
+                                    ));
+                                    continue;
+                                }
+                            }
                             _ => {
                                 Some("a fix of review findings names an unknown way it was opened")
                             }
@@ -2234,37 +2286,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             continue;
                         }
                     };
-                    // A fix reopened after an abort for the same findings keeps the human's earlier words
-                    // (R-71): it cites the earlier opening that the turn and the quote came from, and that
-                    // opening must be a fix the human's words opened, aborted since, for these findings.
-                    if let Some(earlier) = ev["human"]["earlier"].as_u64() {
-                        // Only an opening the replay itself counted can give its words again.
-                        let known = counted_picks.get(&earlier).is_some_and(|c| {
-                            c.0 == sv("checkpoint")
-                                && c.1 == tseq
-                                && c.2 == quote
-                                && ids.iter().all(|x| c.3.contains(x))
-                        }) && st.ck_fix_aborts.iter().any(|a| {
-                            a.checkpoint == sv("checkpoint")
-                                && a.seq > earlier
-                                && ids.iter().all(|x| a.ids.contains(x))
-                        });
-                        if !known {
-                            st.ignored.push(crate::strings::t(
-                                "accept.events.ignored.earlier_words",
-                                &[("seq", &seq.to_string())],
-                            ));
-                            continue;
-                        }
-                    } else if !decision_turn_ok(
-                        &st,
-                        &turn_ix,
-                        tseq,
-                        bound,
-                        seq,
-                        &quote,
-                        Decide::Approve,
-                    ) {
+                    if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
                         st.ignored.push(format!(
                             "event {seq}: a fix opened for findings cites no valid human turn and quote, or words written before the bound"
                         ));
@@ -2294,18 +2316,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     })
                     .collect();
                 let findings = ev["findings"].as_array().cloned().unwrap_or_default();
-                if let (Some(t), Some("pick")) =
-                    (ev["human"]["turn"].as_u64(), ev["opened_by"].as_str())
-                {
-                    counted_picks.insert(
-                        seq,
-                        (
-                            sv("checkpoint"),
-                            t,
-                            ev["human"]["quote"].as_str().unwrap_or("").to_string(),
-                            ids_named.clone(),
-                        ),
-                    );
+                let counted_from = match ev["opened_by"].as_str() {
+                    Some("pick") => ev["human"]["turn"]
+                        .as_u64()
+                        .map(|t| (t, ev["human"]["quote"].as_str().unwrap_or("").to_string())),
+                    Some("reopen") => ev["human"]["earlier"]
+                        .as_u64()
+                        .and_then(|e| st.ck_picks.get(&e))
+                        .map(|c| (c.1, c.2.clone())),
+                    _ => None,
+                };
+                if let Some((t, q)) = counted_from {
+                    st.ck_picks
+                        .insert(seq, (sv("checkpoint"), t, q, ids_named.clone()));
                 }
                 st.ck_fix = Some(CkFixOpen {
                     checkpoint: sv("checkpoint"),

@@ -1312,8 +1312,9 @@ fn check_row(action: &str) {
 /// The rows that have a test of their own below; every holding and asking row of the table must be here.
 const ROW_TESTS: &[&str] = &[
     "decide-checkpoint-review", "decide-checkpoint-fix", "decide-low-findings", "decide-sync", "resolve-sync", "review-sync",
-    "fix-checkpoint", "review-checkpoint-fix", "go-on-checkpoint-fix", "fix-wave", "review-wave-fix", "plan-gap", "decide-check", "answer-question",
+    "fix-checkpoint", "review-checkpoint-fix", "fix-wave", "review-wave-fix", "plan-gap", "decide-check", "answer-question",
     "decide-wave-check", "decide-gate", "open-gate", "add-records",
+    "go-on-checkpoint-fix",
 ];
 
 macro_rules! row_test {
