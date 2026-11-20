@@ -83,10 +83,19 @@ pub fn approve_counts(st: &State, ev: &Value) -> bool {
         })
 }
 
-/// The records of an amendment that the fix design's marked items name (U-63 fills this from
-/// `ckfix::design::marked_records`): a repair that holds one gets no judge token. Empty here.
-pub fn refused_records(_st: &State, _a: &Amend) -> Vec<String> {
-    vec![]
+/// The records of an amendment that the fix design's marked items name (`ckfix::design::marked_records`):
+/// a repair that holds one gets no judge token. Every record the amendment names or changes counts.
+pub fn refused_records(st: &State, a: &Amend) -> Vec<String> {
+    let marked = crate::ckfix::design::marked_records(st);
+    let mut named: Vec<String> = a.ids.clone();
+    named.extend(
+        a.changes
+            .iter()
+            .filter_map(|c| c["id"].as_str().map(|x| x.to_string())),
+    );
+    named.sort();
+    named.dedup();
+    named.into_iter().filter(|x| marked.contains(x)).collect()
 }
 
 /// The pass the guard wrote for the judge's command (U-63): who spoke.
@@ -95,18 +104,92 @@ pub struct Pass {
     pub agent: String,
 }
 
+/// The file of the state folder that holds the pass: one pass at a time, used once.
+pub const PASS_FILE: &str = "judge-pass.json";
+
+/// How long a pass is fresh, in seconds: the judge runs its command right after the guard saw it.
+pub const PASS_SECS: u64 = 600;
+
+fn pass_sig(key: &str, body: &Value) -> String {
+    util::hmac_sha256_hex(
+        key.trim().as_bytes(),
+        serde_json::to_string(body).unwrap_or_default().as_bytes(),
+    )
+}
+
+/// The guard's side: write the signed one-use pass for `command`, a call of `bf amend judge <amend>` that
+/// came with the agent type `repair-judge` (session, agent id, agent type, time and the command).
+pub fn write_pass(
+    state_dir: &std::path::Path,
+    session: &str,
+    agent: &str,
+    amend: &str,
+    command: &str,
+) -> std::io::Result<()> {
+    let key = std::fs::read_to_string(state_dir.join("key"))?;
+    let mut body = json!({"v": 1, "amend": amend, "session": session, "agent": agent,
+        "agent_type": AGENT_TYPE, "at": util::now_secs(), "command": command});
+    let sig = pass_sig(&key, &body);
+    body["sig"] = Value::String(sig);
+    std::fs::write(state_dir.join(PASS_FILE), body.to_string())
+}
+
+/// The value of `--token` in the command a pass was written for.
+fn command_token(command: &str) -> Option<String> {
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || "\"'".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().enumerate().find_map(|(i, w)| {
+        if *w == "--token" {
+            words.get(i + 1).map(|t| t.to_string())
+        } else {
+            w.strip_prefix("--token=").map(|t| t.to_string())
+        }
+    })
+}
+
 /// Take the one-use pass for `bf amend judge <amend>`: it exists only when the guard saw the agent type
-/// `repair-judge` in the hook payload. The reason is the text of a refusal when there is none. The pass
-/// is the guard unit's (U-63), which replaces this body with the signed pass; until then the pass is the
-/// file `judge-pass.json` of the state folder, which only the guard writes.
-fn take_pass(p: &Project, amend: &str) -> Result<Pass, String> {
-    let path = p.state_dir().join("judge-pass.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|_| strings::t("judge.failed.no_pass", &[("amend", amend)]))?;
-    let v: Value = serde_json::from_str(&text)
-        .map_err(|_| strings::t("judge.failed.no_pass", &[("amend", amend)]))?;
-    if s(&v, "amend") != amend || s(&v, "agent_type") != AGENT_TYPE {
-        return Err(strings::t("judge.failed.no_pass", &[("amend", amend)]));
+/// `repair-judge` in the hook payload, signed it with the project's key, wrote it for this amendment, and
+/// it is fresh. The reason is the text of a refusal when there is none. A pass written for another
+/// amendment stays where it is and is not taken.
+fn take_pass(p: &Project, amend: &str, token: Option<&str>) -> Result<Pass, String> {
+    let none = || strings::t("judge.failed.no_pass", &[("amend", amend)]);
+    let path = p.state_dir().join(PASS_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|_| none())?;
+    let mut v: Value = serde_json::from_str(&text).map_err(|_| none())?;
+    let sig = v
+        .as_object_mut()
+        .and_then(|o| o.remove("sig"))
+        .and_then(|x| x.as_str().map(|x| x.to_string()))
+        .unwrap_or_default();
+    let key = p.read_key().ok_or_else(none)?;
+    if sig.is_empty() || pass_sig(&key, &v) != sig {
+        return Err(strings::t(
+            "judge_guard.pass.bad_signature",
+            &[("amend", amend)],
+        ));
+    }
+    if s(&v, "agent_type") != AGENT_TYPE {
+        return Err(none());
+    }
+    if s(&v, "amend") != amend {
+        return Err(strings::t(
+            "judge_guard.pass.other_amend",
+            &[("amend", amend), ("other", s(&v, "amend"))],
+        ));
+    }
+    if command_token(s(&v, "command")).as_deref() != token {
+        return Err(strings::t(
+            "judge_guard.pass.other_token",
+            &[("amend", amend)],
+        ));
+    }
+    let at = v["at"].as_u64().unwrap_or(0);
+    let now = util::now_secs();
+    if at > now + 60 || now.saturating_sub(at) > PASS_SECS {
+        let _ = std::fs::remove_file(&path);
+        return Err(strings::t("judge_guard.pass.stale", &[("amend", amend)]));
     }
     let _ = std::fs::remove_file(&path);
     Ok(Pass {
@@ -115,8 +198,32 @@ fn take_pass(p: &Project, amend: &str) -> Result<Pass, String> {
     })
 }
 
+/// The harness copy of the role file, compiled in.
+const ROLE_FILE: &[u8] = include_bytes!("../../../harness/claude/agents/repair-judge.md");
+
+/// The part of a role file above its worker-rules section: the installer writes the section from the
+/// data, so only what is above it must match.
+fn above_rules(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.trim_end_matches('\n') == "## Worker rules" {
+            break;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 /// Why the installed role file of the judge differs from the harness copy (U-63), when it does.
-fn role_file_problem(_p: &Project) -> Option<String> {
+fn role_file_problem(p: &Project) -> Option<String> {
+    let path = p.root.join(".claude/agents/repair-judge.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Some(strings::t("judge_guard.role_file.missing", &[]));
+    };
+    let harness = String::from_utf8_lossy(ROLE_FILE);
+    if above_rules(&text) != above_rules(&harness) {
+        return Some(strings::t("judge_guard.role_file.differs", &[]));
+    }
     None
 }
 
@@ -335,7 +442,7 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
             &[("amend", amend), ("reason", &reason)],
         ))
     };
-    let pass = match take_pass(p, amend) {
+    let pass = match take_pass(p, amend, token) {
         Ok(x) => x,
         Err(reason) => return finish_failed(reason),
     };
@@ -406,6 +513,46 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
     let _ = crate::run::spend_token(p, &token_key(amend));
     p.write_guard()?;
     Ok(json!({"amend": amend, "verdict": "ask", "approved": false, "reasons": reasons}))
+}
+
+// ---- the human's sight ----
+
+/// `bf amend seen <A-n> --quote "<the human's words>"`: the human says they saw a judged repair, an `ask`
+/// or a failed judge. It writes `amend.judge.seen`; on replay it counts only with a human turn after the
+/// verdict whose words carry the quote.
+pub fn seen(p: &Project, amend: &str, quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    let refused = |key: &str| {
+        refuse_owned(
+            strings::t("judge_guard.seen.refused", &[("amend", amend)]),
+            strings::t(key, &[("amend", amend)]),
+            vec![strings::t("judge_guard.seen.do_this", &[])],
+            strings::t("judge_guard.seen.worked_when", &[]),
+        )
+    };
+    let Some(a) = st.amends.iter().find(|a| a.id == amend) else {
+        return Err(refused("judge_guard.seen.because.no_amendment"));
+    };
+    let after = [
+        a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
+        a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    let Some(after) = after else {
+        return Err(refused("judge_guard.seen.because.no_turn"));
+    };
+    if a.seen {
+        return Err(refused("judge_guard.seen.because.already"));
+    }
+    let (turn, _) = events::pick_turn(&st, after, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "amend.judge.seen",
+        json!({"amend": amend, "turn": turn, "quote": quote.trim()}),
+    )?;
+    Ok(json!({"amend": amend, "seen": true, "turn": turn}))
 }
 
 // ---- the limits ----
