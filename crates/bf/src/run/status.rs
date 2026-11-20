@@ -73,6 +73,7 @@ pub fn status(p: &Project) -> R<Value> {
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
     let states = unit_states(p, &pl, &st, &receipts);
+    let log_events = events::load_log(p).map(|l| l.events).unwrap_or_default();
     let mut counts = serde_json::Map::new();
     for (_, s_, _) in &states {
         let c = counts.entry(s_.clone()).or_insert(json!(0));
@@ -95,6 +96,8 @@ pub fn status(p: &Project) -> R<Value> {
                 Some(r) => json!(format!("a scope review of {} requested file(s)", r.files.len())),
                 None => json!(why),
             },
+            "sync_conflicts": super::unit_sync::unmerged(&p.work_dir().join(i)),
+            "sync_aborted": super::unit_sync::aborted_in(p, &log_events, i),
             "scope_request": crate::scope::request_json(&st, i),
             "scope_grants": crate::scope::grants_json(&st, i),
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),

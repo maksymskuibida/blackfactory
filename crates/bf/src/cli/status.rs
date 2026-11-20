@@ -99,6 +99,23 @@ fn status_text(v: &Value) -> String {
             u["id"].as_str().unwrap_or(""),
             u["state"].as_str().unwrap_or("")
         ));
+        for (field, key) in [
+            ("sync_conflicts", "status.unit.sync_conflicts"),
+            ("sync_aborted", "status.unit.sync_aborted"),
+        ] {
+            let files: Vec<&str> = u[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str())
+                .collect();
+            if !files.is_empty() {
+                t.push_str(&format!(
+                    "    {}\n",
+                    crate::strings::t(key, &[("files", &files.join(", "))])
+                ));
+            }
+        }
     }
     for g in v["gates"].as_array().into_iter().flatten() {
         t.push_str(&format!(

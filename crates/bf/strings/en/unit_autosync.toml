@@ -1,0 +1,20 @@
+# Strings of the engine's automatic sync of a unit with its checkpoint branch (R-74, D-93, D-102):
+# the commit of the builder's changes, the merge commit, the builder's brief sections and the refusal of
+# a report while conflict marks are left.
+
+"autosync.commit" = "{unit}: the builder's work so far, committed by the engine before the sync with the checkpoint branch ({cause})"
+"autosync.merge_commit" = "{unit}: merge of the checkpoint branch, conflicts resolved in {files}"
+
+"autosync.brief.conflicts.title" = "Sync conflicts to resolve"
+"autosync.brief.conflicts.body" = "The engine took the checkpoint branch into your working copy and left a merge in progress with conflict marks in the files below. Resolve the marks inside each file as part of the build or the fix, change nothing else for the merge, and do not run `git merge` or `git commit` yourself. Your report finishes the merge once no mark is left."
+"autosync.brief.aborted.title" = "Sync aborted"
+"autosync.brief.aborted.body" = "The engine tried to take the checkpoint branch into your working copy and aborted: it conflicts in files outside your list. Your work is committed and your branch stays on its old base. Go on with the unit; the files below are named for the human."
+"autosync.brief.file" = "- `{path}`"
+
+"autosync.report.refused" = "report {unit} while a merge is in progress"
+"autosync.report.because" = "these files still hold a line starting with `<<<<<<<`, `=======` or `>>>>>>>`: {files}"
+"autosync.report.step" = "Resolve the marks inside each file of {unit}, then report again; the engine finishes the merge."
+"status.unit.sync_conflicts" = "sync conflicts left for the builder to resolve: {files}"
+"status.unit.sync_aborted" = "the sync with the checkpoint branch was aborted, conflicts in: {files}"
+
+"autosync.report.worked" ="`bf report` is taken and the merge is finished with one commit."
