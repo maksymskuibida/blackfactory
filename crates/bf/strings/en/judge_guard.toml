@@ -1,0 +1,26 @@
+# Strings of the repair judge's guard (R-69, D-90, TH-17): the role's refusals, the pass, the role file, the seen call.
+
+"judge_guard.write.refused" = "write with `{tool}`"
+"judge_guard.write.because" = "the repair judge only judges: it puts and changes nothing, so it cannot touch what it judges"
+"judge_guard.write.step" = "Read the amendment with `bf record get` and `bf plan check`, and report your verdict with `bf amend judge`."
+"judge_guard.write.worked" = "The verdict is taken by `bf amend judge`."
+
+"judge_guard.command.refused" = "run `bf {command}`"
+"judge_guard.command.because" = "the repair judge may not put or remove a record, open, revise, narrow, approve or withdraw an amendment, or ask for a token: it would judge a repair of its own"
+"judge_guard.command.step" = "Run `bf record get`, `bf plan check` and `bf amend judge <A-n> --file - --token <token> --model <model>` with the verdict on standard input."
+"judge_guard.command.worked" = "`bf amend judge` takes your verdict."
+
+"judge_guard.pass.bad_signature" = "the pass for `bf amend judge {amend}` is not signed with this project's key"
+"judge_guard.pass.other_amend" = "the pass the guard wrote is for {other}, not for {amend}, so it is not taken"
+"judge_guard.pass.other_token" = "the pass the guard wrote for `bf amend judge {amend}` is for another token, so it is not taken"
+"judge_guard.pass.stale" = "the pass for `bf amend judge {amend}` is too old or comes from the future"
+
+"judge_guard.role_file.missing" = "the installed role file `.claude/agents/repair-judge.md` is missing"
+"judge_guard.role_file.differs" = "the installed role file `.claude/agents/repair-judge.md` differs from the harness copy above its worker-rules section"
+
+"judge_guard.seen.refused" = "mark the judged repair {amend} as seen"
+"judge_guard.seen.because.no_amendment" = "{amend} does not exist"
+"judge_guard.seen.because.no_turn" = "{amend} has no judge verdict and no failed judge to see"
+"judge_guard.seen.because.already" = "{amend} was already seen"
+"judge_guard.seen.do_this" = "Run `bf amend seen <A-n> --quote \"<the words of your message that say you saw it>\"` after you have said so in your own message."
+"judge_guard.seen.worked_when" = "`bf next` no longer lists the repair for you."

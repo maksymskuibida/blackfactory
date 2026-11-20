@@ -238,7 +238,7 @@ done
 if [ -d "$project/.claude/agents" ]; then
   for g in "$project"/.claude/agents/*.md; do
     [ -f "$g" ] || continue
-    if ! printf '%s' "$agent_names" | grep -qxF -- "$(basename "$g")"; then
+    if ! grep -qxF -- "$(basename "$g")" <<<"$agent_names"; then
       note "left       .claude/agents/$(basename "$g")  (the harness no longer has it; remove it by hand if you do not use it)"
     fi
   done
@@ -272,7 +272,7 @@ EOF_PANEL
     while IFS= read -r g; do
       [ -n "$g" ] || continue
       case "$g" in *.bak) continue ;; esac
-      if ! printf '%s\n' "$panel_files" | grep -qxF -- "$g"; then
+      if ! grep -qxF -- "$g" <<<"$panel_files"; then
         note "left       .claude/skills/factory-panel/$g  (the panel no longer has it)"
       fi
     done <<EOF_OLD

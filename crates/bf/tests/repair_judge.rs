@@ -1,6 +1,6 @@
 //! U-58: the repair judge (R-69, D-88, D-90): the token, the verdict, the limits of a go, the switch and
-//! the replay. The guard's pass is the guard unit's; here the pass is the file the stub of `judge.rs`
-//! reads from the state folder.
+//! the replay. The guard's pass is written by the guard itself: a test gets one by sending the hook the
+//! payload of a subagent of type `repair-judge` that runs the judge's command.
 
 mod common;
 use common::*;
@@ -72,6 +72,24 @@ impl Old {
             "cwd": self.root.to_string_lossy(), "permission_mode": "default",
             "hook_event_name": "UserPromptSubmit", "prompt": text});
         let (c, out) = self.run(&["human-turn"], &payload.to_string());
+        assert_eq!(c, 0, "{out}");
+    }
+
+    /// The pass of a judge's turn: the guard writes it for a `repair-judge` payload; the installed role
+    /// file is the harness copy.
+    fn pass(&self, aid: &str, tok: &str) {
+        let d = self.root.join(".claude/agents");
+        fs::create_dir_all(&d).unwrap();
+        fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../harness/claude/agents/repair-judge.md"),
+            d.join("repair-judge.md"),
+        )
+        .unwrap();
+        let payload = json!({"tool_name": "Bash", "cwd": self.root.to_string_lossy(),
+            "tool_input": {"command": format!("bf amend judge {aid} --file - --token {tok} --model m")},
+            "session_id": "s", "agent_id": "a", "agent_type": "repair-judge"});
+        let (c, out) = self.run(&["guard"], &payload.to_string());
         assert_eq!(c, 0, "{out}");
     }
 
@@ -179,12 +197,7 @@ fn repair_judge_the_a8_repair_is_a_go_on_an_old_project_and_leaves_no_problem() 
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     let tok: Value =
         serde_json::from_str(&p.must(&["roles", "token", "A-2", "judge", "--json"])).unwrap();
-    fs::write(
-        p.state_dir().join("judge-pass.json"),
-        json!({"amend": "A-2", "agent_type": "repair-judge", "session": "s", "agent": "a"})
-            .to_string(),
-    )
-    .unwrap();
+    p.pass("A-2", tok["token"].as_str().unwrap());
     let (c, out) = p.run(
         &[
             "amend", "judge", "A-2", "--file", "-", "--token",
@@ -331,12 +344,24 @@ fn token(fx: &Fx, aid: &str) -> String {
 }
 
 fn pass(fx: &Fx, aid: &str) {
-    fs::write(
-        fx.state_dir().join("judge-pass.json"),
-        json!({"amend": aid, "agent_type": "repair-judge", "session": "s1", "agent": "g1"})
-            .to_string(),
+    pass_for(fx, aid, "t");
+}
+
+/// The pass of a judge's turn for the call that carries the token `tok`.
+fn pass_for(fx: &Fx, aid: &str, tok: &str) {
+    let d = fx.root.join(".claude/agents");
+    fs::create_dir_all(&d).unwrap();
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../harness/claude/agents/repair-judge.md"),
+        d.join("repair-judge.md"),
     )
     .unwrap();
+    let payload = json!({"tool_name": "Bash", "cwd": fx.root.to_string_lossy(),
+        "tool_input": {"command": format!("bf amend judge {aid} --file - --token {tok} --model m")},
+        "session_id": "s1", "agent_id": "g1", "agent_type": "repair-judge"});
+    let o = fx.bf_stdin(&fx.root, &["guard"], &payload.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
 }
 
 fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
@@ -351,6 +376,7 @@ fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
 fn turn(fx: &Fx, aid: &str, verdict: &str) -> Out {
     let t = token(fx, aid);
     pass(fx, aid);
+    pass_for(fx, aid, &t);
     judge(fx, aid, &t, verdict)
 }
 
@@ -489,6 +515,7 @@ fn repair_judge_an_unreadable_verdict_fails_the_turn() {
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let t = token(&fx, &aid);
     pass(&fx, &aid);
+    pass_for(&fx, &aid, &t);
     let o = fx.bf_stdin(
         &fx.root,
         &["amend", "judge", &aid, "--file", "-", "--token", &t, "--model", "m"],
@@ -541,6 +568,7 @@ fn repair_judge_an_approval_written_by_hand_does_not_count() {
     // One that names a verdict `ask` does not count either.
     let t = token(&fx, &aid);
     pass(&fx, &aid);
+    pass_for(&fx, &aid, &t);
     let o = judge(&fx, &aid, &t, "ask");
     assert_eq!(o.code, 0, "{}", o.all());
     let ask_seq = events(&fx)
@@ -735,12 +763,7 @@ fn repair_judge_a_landed_units_record_is_refused() {
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     let tok: Value =
         serde_json::from_str(&p.must(&["roles", "token", "A-1", "judge", "--json"])).unwrap();
-    fs::write(
-        p.state_dir().join("judge-pass.json"),
-        json!({"amend": "A-1", "agent_type": "repair-judge", "session": "s", "agent": "a"})
-            .to_string(),
-    )
-    .unwrap();
+    p.pass("A-1", tok["token"].as_str().unwrap());
     let (c, out) = p.run(
         &[
             "amend", "judge", "A-1", "--file", "-", "--token",

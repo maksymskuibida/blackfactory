@@ -4265,6 +4265,102 @@ fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
     None
 }
 
+/// The words of a `bf` call after its program and its flags (`-C <dir>` takes a value).
+fn bf_rest(w: &[String]) -> &[String] {
+    let mut j = 1;
+    while j < w.len() && w[j].starts_with('-') {
+        j += if w[j] == "-C" { 2 } else { 1 };
+    }
+    w.get(j..).unwrap_or(&[])
+}
+
+/// The agent type the harness put in the hook payload, if any.
+fn agent_type(input: &Value) -> &str {
+    input["agent_type"].as_str().unwrap_or("")
+}
+
+/// What the repair judge may not do (U-63, R-69): every write tool, and the commands that put records,
+/// propose, narrow or approve an amendment, or issue a token. It cannot propose what it judges.
+fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
+    let t = |k: &str, v: &[(&str, &str)]| crate::strings::t(k, v);
+    if matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+        return Some(deny(
+            &t("judge_guard.write.refused", &[("tool", tool)]),
+            &t("judge_guard.write.because", &[]),
+            &[&t("judge_guard.write.step", &[])],
+            &t("judge_guard.write.worked", &[]),
+        ));
+    }
+    if tool != "Bash" {
+        return None;
+    }
+    for c in crate::shellparse::bf_calls(cmd) {
+        let rest = bf_rest(&c.words);
+        let sub = rest.first().map(|x| x.as_str()).unwrap_or("");
+        let second = rest.get(1).map(|x| x.as_str()).unwrap_or("");
+        let barred = match sub {
+            "record" => matches!(second, "put" | "remove"),
+            "amend" => matches!(
+                second,
+                "open" | "revise" | "narrow" | "checkpoint" | "approve" | "withdraw" | "seen"
+            ),
+            "roles" => true,
+            _ => false,
+        };
+        if barred {
+            let what = format!("{sub} {second}");
+            return Some(deny(
+                &t("judge_guard.command.refused", &[("command", what.trim())]),
+                &t("judge_guard.command.because", &[]),
+                &[&t("judge_guard.command.step", &[])],
+                &t("judge_guard.command.worked", &[]),
+            ));
+        }
+    }
+    None
+}
+
+/// The amendment of the first call of `bf amend judge <A-n>` in a command, run directly.
+fn judge_call_amend(cmd: &str) -> Option<String> {
+    crate::shellparse::bf_calls(cmd).into_iter().find_map(|c| {
+        if c.via.is_some() {
+            return None;
+        }
+        let rest = bf_rest(&c.words);
+        if rest.first().map(|x| x.as_str()) == Some("amend")
+            && rest.get(1).map(|x| x.as_str()) == Some("judge")
+        {
+            rest.get(2).filter(|x| !x.starts_with('-')).cloned()
+        } else {
+            None
+        }
+    })
+}
+
+/// Write the signed one-use pass of the judge when an allowed call of `bf amend judge <A-n>` came from a
+/// subagent of type `repair-judge`. Any other agent type, or none, writes no pass (TH-17).
+fn write_judge_pass(input: &Value, table: &Value) {
+    if agent_type(input) != crate::judge::AGENT_TYPE || input["tool_name"].as_str() != Some("Bash")
+    {
+        return;
+    }
+    let cmd = input["tool_input"]["command"].as_str().unwrap_or("");
+    let Some(amend) = judge_call_amend(cmd) else {
+        return;
+    };
+    let sd = state_dir(table);
+    if sd.is_empty() {
+        return;
+    }
+    let _ = crate::judge::write_pass(
+        Path::new(sd),
+        input["session_id"].as_str().unwrap_or(""),
+        input["agent_id"].as_str().unwrap_or(""),
+        &amend,
+        cmd,
+    );
+}
+
 /// Words of a command with their quotes kept apart: split on spaces, quotes and shell punctuation.
 fn tokens(s: &str) -> Vec<String> {
     s.split(|c: char| c.is_whitespace() || "\"'`()<>|&;=,{}[]".contains(c))
@@ -4998,6 +5094,11 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     } else {
         resolve(cwd_raw, "/")
     };
+    if agent_type(input) == crate::judge::AGENT_TYPE {
+        if let Some(d) = judge_role_denial(tool, ti["command"].as_str().unwrap_or("")) {
+            return d;
+        }
+    }
     match tool {
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let p = ti["file_path"]
@@ -5231,6 +5332,7 @@ pub fn run_hook(stdin: &str, process_cwd: &Path, root: Option<&str>) -> String {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut explicit = false;
     let mut any = false;
+    let mut tables: Vec<Value> = Vec::new();
     for s in starts {
         let found = if root.is_some() {
             find_exact(&fs::canonicalize(&s).unwrap_or(s.clone()))
@@ -5258,11 +5360,16 @@ pub fn run_hook(stdin: &str, process_cwd: &Path, root: Option<&str>) -> String {
         if !d.allow {
             return render(&d, false);
         }
+        tables.push(table.clone());
         explicit |= table["allow"].as_str() == Some("allow");
     }
     if !any {
         // Not a factory project: nothing to guard.
         return "{}".into();
+    }
+    // The judge's pass is written only when every project table has allowed the call.
+    for table in &tables {
+        write_judge_pass(&input, table);
     }
     render(&allow(), explicit)
 }
