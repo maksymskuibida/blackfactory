@@ -53,21 +53,28 @@ pub(crate) fn cmd_report(args: &Args) -> R<()> {
     // The spend is the conductor's to report, from the session's real usage. With a budget cap
     // a report without it is refused, and text that is not a number never counts as zero.
     let cost = match args.flag("cost") {
-        Some(c) => c.trim().parse::<f64>().ok().filter(|x| x.is_finite() && *x >= 0.0).ok_or_else(|| {
-            refuse(
-                "report with this cost",
-                format!("`{c}` is not a number of at least 0"),
-                &["Pass the spend as a plain number, for example `--cost 0.42`."],
-                "The command prints the unit's new state.",
-            )
-        })?,
+        Some(c) => c
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|x| x.is_finite() && *x >= 0.0)
+            .ok_or_else(|| {
+                refuse(
+                    "report with this cost",
+                    format!("`{c}` is not a number of at least 0"),
+                    &["Pass the spend as a plain number, for example `--cost 0.42`."],
+                    "The command prints the unit's new state.",
+                )
+            })?,
         None if p.policy.budget.cap > 0.0 => {
             return Err(refuse(
                 "report without a cost",
                 "the policy has a budget cap, so every report must say what the work cost",
-                &["The conductor reads the spend of the session and adds `--cost <amount>` to the report."],
+                &[
+                    "The conductor reads the spend of the session and adds `--cost <amount>` to the report.",
+                ],
                 "The command prints the unit's new state.",
-            ))
+            ));
         }
         None => 0.0,
     };
@@ -76,9 +83,57 @@ pub(crate) fn cmd_report(args: &Args) -> R<()> {
             return Err(refuse(
                 "ask for files",
                 "a request for files comes with `--result blocked`",
-                &["Report `bf report <unit> --result blocked --token <token> --need-files -` with the list on stdin."],
+                &[
+                    "Report `bf report <unit> --result blocked --token <token> --need-files -` with the list on stdin.",
+                ],
                 "The command prints the new state of the unit.",
             ));
+        }
+        if unit.starts_with("K-") {
+            let v = crate::fixscope::request(
+                &p,
+                unit,
+                args.flag("role"),
+                args.flag("token"),
+                args.flag("note").unwrap_or(""),
+                list,
+            )?;
+            out(args, &v, || {
+                let files: Vec<String> = v["scope_request"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect();
+                let refused: Vec<String> = v["refused"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|r| {
+                        format!(
+                            "{}: {}",
+                            r["path"].as_str().unwrap_or(""),
+                            r["rule"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect();
+                if refused.is_empty() {
+                    crate::strings::t(
+                        "fix.scope.request.asked",
+                        &[("k", unit), ("files", &files.join(", "))],
+                    )
+                } else {
+                    crate::strings::t(
+                        "fix.scope.request.asked_gap",
+                        &[
+                            ("k", unit),
+                            ("files", &files.join(", ")),
+                            ("refused", &refused.join("; ")),
+                        ],
+                    )
+                }
+            });
+            return Ok(());
         }
         let v = crate::scope::request(
             &p,

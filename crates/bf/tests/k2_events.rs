@@ -167,7 +167,7 @@ fn a_fix_asks_for_files_is_granted_or_refused_and_goes_back_to_work() {
     assert_eq!(f.grants[0].seq, 3);
     assert_eq!(f.refused.len(), 1);
     assert!(st.ignored.is_empty(), "{:?}", st.ignored);
-    assert!(bf::fixscope::granted(&st, "K-1").is_empty());
+    assert_eq!(bf::fixscope::granted(&st, "K-1"), vec!["tests/b.rs"]);
 
     // A grant with no request is ignored.
     let st = replay(vec![
