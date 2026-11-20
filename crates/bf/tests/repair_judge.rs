@@ -343,7 +343,12 @@ fn token(fx: &Fx, aid: &str) -> String {
         .to_string()
 }
 
-fn pass(fx: &Fx, aid: &str, tok: &str) {
+fn pass(fx: &Fx, aid: &str) {
+    pass_for(fx, aid, "t");
+}
+
+/// The pass of a judge's turn for the call that carries the token `tok`.
+fn pass_for(fx: &Fx, aid: &str, tok: &str) {
     let d = fx.root.join(".claude/agents");
     fs::create_dir_all(&d).unwrap();
     fs::copy(
@@ -370,7 +375,8 @@ fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
 /// The whole turn of a judge with a pass: token, pass, verdict.
 fn turn(fx: &Fx, aid: &str, verdict: &str) -> Out {
     let t = token(fx, aid);
-    pass(fx, aid, &t);
+    pass(fx, aid);
+    pass_for(fx, aid, &t);
     judge(fx, aid, &t, verdict)
 }
 
@@ -508,7 +514,8 @@ fn repair_judge_an_unreadable_verdict_fails_the_turn() {
     plan(&fx);
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let t = token(&fx, &aid);
-    pass(&fx, &aid, &t);
+    pass(&fx, &aid);
+    pass_for(&fx, &aid, &t);
     let o = fx.bf_stdin(
         &fx.root,
         &["amend", "judge", &aid, "--file", "-", "--token", &t, "--model", "m"],
@@ -560,7 +567,8 @@ fn repair_judge_an_approval_written_by_hand_does_not_count() {
     assert_eq!(status_of(&fx, &aid), "open");
     // One that names a verdict `ask` does not count either.
     let t = token(&fx, &aid);
-    pass(&fx, &aid, &t);
+    pass(&fx, &aid);
+    pass_for(&fx, &aid, &t);
     let o = judge(&fx, &aid, &t, "ask");
     assert_eq!(o.code, 0, "{}", o.all());
     let ask_seq = events(&fx)
