@@ -29,7 +29,11 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                     "the main branch conflicts in: {}; the merge is open in the checkpoint's working copy and `bf next` gives the directive that resolves it",
                     v["conflicted"]
                         .as_array()
-                        .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+                        .map(|a| a
+                            .iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "))
                         .unwrap_or_default()
                 )
             } else if v["aborted"] == true {
@@ -65,10 +69,63 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                     &[("k", k), ("checks", &named.join(", "))],
                 )
             } else if v["aborted"] == true {
-                crate::strings::t("cli.ckfix.abort.done", &[("k", k)])
+                match v["saved"].as_str().filter(|x| !x.is_empty()) {
+                    Some(saved) => crate::strings::t(
+                        "fix.scope.saved.abort_done",
+                        &[("k", k), ("saved", saved)],
+                    ),
+                    None => crate::strings::t("cli.ckfix.abort.done", &[("k", k)]),
+                }
             } else {
                 crate::strings::t("cli.ckfix.release.done", &[("k", k)])
             }
+        });
+        return Ok(());
+    }
+    if args.pos.get(1).map(|x| x.as_str()) == Some("scope") {
+        let k = args.pos_at(2, "a checkpoint ID")?;
+        let list = match args.flag("verdict") {
+            Some("-") => serde_json::from_str::<Value>(&super::read_stdin()).map_err(|e| {
+                refuse(
+                    "read the verdict from stdin",
+                    format!("the input is not valid JSON: {e}"),
+                    &["Pipe a JSON list such as [{\"path\": \"tests/a.rs\", \"verdict\": \"needed\", \"why\": \"...\"}] into the command."],
+                    "The command prints the result.",
+                )
+            })?,
+            Some(f) => super::read_data_in(&p, f)?,
+            None => {
+                return Err(refuse(
+                    "run `bf checkpoint scope`",
+                    "it needs --verdict with the list of answers",
+                    &["Run `bf checkpoint scope <K> --verdict - --token <token>` with the list on stdin."],
+                    "The command prints the result.",
+                ))
+            }
+        };
+        let v = crate::fixscope::verdict(&p, k, &list, args.flag("token"))?;
+        out(args, &v, || {
+            let files: Vec<String> = v["granted"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(
+                    v["refused"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|r| &r["path"]),
+                )
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+            let key = if !v["granted"].as_array().is_none_or(|a| a.is_empty()) {
+                "fix.scope.verdict.granted"
+            } else if v["phase"] == "gap" {
+                "fix.scope.verdict.human"
+            } else {
+                "fix.scope.verdict.retry"
+            };
+            crate::strings::t(key, &[("k", k), ("files", &files.join(", "))])
         });
         return Ok(());
     }
@@ -95,7 +152,9 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
             return Err(refuse(
                 "run `bf checkpoint finding`",
                 "it needs --accept, --decline or --fix-findings, with the findings named",
-                &["Run `bf checkpoint finding <K> --accept low --quote \"<the human's words>\"`, `--decline r1.2 --reason \"<why>\" --quote \"<the human's words>\"` or `--fix-findings r1.2,r1.3 --quote \"<the human's words>\"`. The words are needed for a critical, high or medium finding."],
+                &[
+                    "Run `bf checkpoint finding <K> --accept low --quote \"<the human's words>\"`, `--decline r1.2 --reason \"<why>\" --quote \"<the human's words>\"` or `--fix-findings r1.2,r1.3 --quote \"<the human's words>\"`. The words are needed for a critical, high or medium finding.",
+                ],
                 "The command prints the result.",
             ));
         };
@@ -134,7 +193,9 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         return Err(refuse(
             "run `bf checkpoint`",
             "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint finding` and `bf checkpoint review` exist",
-            &["Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`."],
+            &[
+                "Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`.",
+            ],
             "The command prints the result.",
         ));
     }

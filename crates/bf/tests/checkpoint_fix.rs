@@ -462,7 +462,7 @@ fn a_builder_can_report_a_gap_and_a_new_test_file_only_counts_when_it_is_new() {
             "--result",
             "gap",
             "--note",
-            "needs behaviour no record describes",
+            "src/needs.txt: needs behaviour no record describes",
         ],
     );
     assert_eq!(o.code, 2, "{}", o.all());
@@ -690,7 +690,16 @@ fn parked_fix_after_old_words(old: &str) -> Fx {
     let findings = json!([{"title": "the answer is wrong", "severity": "high", "where": "src/a.txt", "action": "fix it"}]);
     let o = fx.bf_stdin(
         &k,
-        &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"],
+        &[
+            "report",
+            "K-1",
+            "--role",
+            "reviewer",
+            "--result",
+            "findings",
+            "--findings",
+            "-",
+        ],
         &findings.to_string(),
     );
     assert_eq!(o.code, 0, "{}", o.all());
@@ -703,7 +712,9 @@ fn parked_fix_after_old_words(old: &str) -> Fx {
 fn builder_report_note(fx: &Fx, k: &Path) -> Out {
     fx.bf_in(
         k,
-        &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck"],
+        &[
+            "report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck",
+        ],
     )
 }
 
@@ -719,7 +730,14 @@ fn a_parked_fix_is_released_only_on_words_written_after_it_parked() {
     one_directive(&fx, "decide-checkpoint-fix");
     // A message written after the park releases it.
     fx.human("Yes, try the fix once more.");
-    let o = fx.bf(&["checkpoint", "fix", "K-1", "--release", "--quote", "try the fix once more"]);
+    let o = fx.bf(&[
+        "checkpoint",
+        "fix",
+        "K-1",
+        "--release",
+        "--quote",
+        "try the fix once more",
+    ]);
     assert_eq!(o.code, 0, "{}", o.all());
     one_directive(&fx, "fix-checkpoint");
 }

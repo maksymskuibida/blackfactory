@@ -2143,6 +2143,8 @@ pub(crate) fn finish_approval(
         return Err(err);
     }
     crate::scope::wait::resume_waiting(p)?;
+    // An open checkpoint fix reads its file list live: an approved repair takes effect at once (R-70).
+    crate::ckfix::write_overlay(p)?;
     p.write_guard()?;
     Ok(unblocked)
 }
