@@ -161,6 +161,10 @@ pub fn report(
             ));
         }
     };
+    // A merge the automatic sync left in the working copy is finished by the report, once no mark is left.
+    if cur != "review" && matches!(result, "built" | "fixed") {
+        unit_sync::finish_merge(p, unit)?;
+    }
     // Findings.
     let mut finding_ids: Vec<String> = Vec::new();
     if result == "findings" {

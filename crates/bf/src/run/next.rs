@@ -340,6 +340,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 }
                 crate::scope::wait::decorate(&st, &id, &mut d);
                 super::unblock::decorate(p, &st, &id, &mut d);
+                super::unit_sync::decorate(p, &id, &mut d);
                 directives.push(d);
             }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),

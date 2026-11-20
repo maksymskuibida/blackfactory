@@ -180,7 +180,7 @@ fn start_fast_forwards_a_made_unit_that_is_behind() {
 }
 
 #[test]
-fn release_fast_forwards_a_unit_without_commits_and_leaves_one_with_commits() {
+fn release_syncs_a_unit_without_commits_by_fast_forward_and_one_with_commits_by_merge() {
     let fx = Fx::new();
     plan(&fx);
     let (w2, w3) = (start(&fx, "U-2"), start(&fx, "U-3"));
@@ -192,8 +192,8 @@ fn release_fast_forwards_a_unit_without_commits_and_leaves_one_with_commits() {
     for (u, q) in [("U-2", "Release it"), ("U-3", "Release it too")] {
         fx.human(&format!("{q}, please."));
         let o = fx.must(&["unit", "release", u, "--quote", q, "--json"]).json();
-        assert_eq!(o.get("behind").is_some(), u == "U-3", "{o}");
+        assert!(o.get("behind").is_none(), "{o}");
     }
     assert_eq!(tip(&w2), git(&fx.root, &["rev-parse", "bf/K-1"]));
-    assert_eq!(syncs(&fx).len(), 1);
+    assert_eq!(syncs(&fx).len(), 2);
 }

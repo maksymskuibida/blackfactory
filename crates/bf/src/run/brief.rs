@@ -272,6 +272,7 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     }
     if role == "builder" {
         md.push_str(&unblock::brief_md(p, &st, unit));
+        md.push_str(&unit_sync::brief_md(p, unit));
     }
     md.push_str("## Limits\n\n");
     md.push_str(&format!(
