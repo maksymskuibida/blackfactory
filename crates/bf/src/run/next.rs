@@ -339,6 +339,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                     d["amendment"] = json!(a);
                 }
                 crate::scope::wait::decorate(&st, &id, &mut d);
+                super::unblock::decorate(p, &st, &id, &mut d);
                 directives.push(d);
             }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
@@ -350,6 +351,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 let entry = if state == "blocked" {
                     crate::scope::reconsider::next_entry(p, &st, &id, limits(rounds))
                         .or_else(|| crate::scope::wait::next_entry(p, &pl, &st, &id))
+                        .or_else(|| super::unblock::next_entry(p, &pl, &st, &id))
                 } else {
                     None
                 };
@@ -383,6 +385,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         &[("refusal", s(r, "refusal")), ("files", &files.join("; "))],
                     ));
                 }
+                note.push_str(&super::unblock::human_note(p, &pl, &st, &id));
                 directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state, "note": note}))
             }
             "planned" => waiting.push(format!("{id}: {}", why.unwrap_or_default())),

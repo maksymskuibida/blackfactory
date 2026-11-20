@@ -26,6 +26,7 @@ mod status;
 mod sync;
 mod tokens;
 mod unit;
+pub mod unblock;
 pub(crate) mod unit_sync;
 
 pub use brief::*;
@@ -37,6 +38,7 @@ pub(crate) use roles::*;
 pub use status::*;
 pub use sync::*;
 pub use tokens::*;
+pub use unblock::unit_unblock;
 pub use unit::*;
 
 /// Test hook: exit abruptly at a named point when `BF_CRASH_AT` names it.

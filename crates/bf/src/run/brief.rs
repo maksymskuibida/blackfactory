@@ -270,6 +270,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         }
         md.push_str("In any round you may read outside the changes, anywhere in the working copy, when you need to in order to judge them: what a change touches, calls or could break, and the code it relies on.\n\n");
     }
+    if role == "builder" {
+        md.push_str(&unblock::brief_md(p, &st, unit));
+    }
     md.push_str("## Limits\n\n");
     md.push_str(&format!(
         "- Review rounds: up to {} (so far {}).\n- Idle limit: {} minutes.\n",

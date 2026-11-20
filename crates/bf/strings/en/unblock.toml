@@ -1,0 +1,49 @@
+# Strings of the conductor's release of a blocked unit (R-74, D-93, D-102): `bf unit unblock`, its
+# directive and waiting lines in `bf next`, the builder's brief sections, the guard's refusal.
+
+"unblock.refused" = "release {unit} with `bf unit unblock`"
+"unblock.worked" = "`bf next` shows {unit} back at work, waiting, or with the human."
+
+"unblock.because.empty_why" = "`--why` is empty: the conductor's judgment is logged in its own words"
+"unblock.because.both_flags" = "`--wait` and `--human` are both given: a judgment is one of the three"
+"unblock.because.unknown" = "{unit} has not been started"
+"unblock.because.state" = "{unit} is `{state}`; only a blocked unit is judged"
+"unblock.because.not_report" = "{unit} is blocked by a refused request for files or by a park, not by its builder's own report; those keep their steps"
+"unblock.because.no_note" = "the builder's blocked report of {unit} has no note, so there is no reason to judge"
+"unblock.because.request_open" = "a request for files of {unit} is open; the scope reviewer answers it"
+"unblock.because.look_again" = "{unit} waits for a second look of its builder or for a file a unit beside it holds; the engine gives those steps"
+"unblock.because.no_release" = "{unit} was released by the conductor {used} times already ({releases}); the third step is the human's"
+
+"unblock.step.empty_why" = "Run `bf unit unblock {unit} --why \"<your judgment in plain words>\"`."
+"unblock.step.both_flags" = "Give one of `--wait` and `--human`, or neither for a release."
+"unblock.step.unknown" = "Use a unit ID from `bf status`."
+"unblock.step.other" = "`bf next` shows the step of {unit}."
+"unblock.step.no_release" = "Leave it: `bf next` gives the human `decide-unit` for {unit}, or run `bf unit unblock {unit} --human --why \"<why only the human can end the hold>\"`."
+
+"unblock.release_item" = "release {n}: {why}"
+"unblock.release_item.before" = "release {n} (before the human's own release of the unit): {why}"
+"unblock.out.line" = "{unit} is back at work ({state}); release {release} of {limit}"
+"unblock.out.behind" = "; its branch is still {behind} commits behind its checkpoint branch"
+"unblock.out.wait" = "{unit} waits until a unit lands or an amendment is approved"
+"unblock.out.human" = "{unit} goes to the human with your judgment"
+
+"unblock.ignored" = "event {seq}: a conductor judgment for a unit that is not blocked"
+
+"unblock.next.judge.note" = "{unit} is blocked by its builder's report: {reason}. Judge whether the reason is fixed now (a unit it waits for has landed, the file is free, the cause is gone). {left} releases are left."
+"unblock.next.cmd.fixed" = "bf unit unblock {unit} --why \"<what ended the hold, in plain words>\""
+"unblock.next.cmd.wait" = "bf unit unblock {unit} --wait --why \"<what it still waits for>\""
+"unblock.next.cmd.human" = "bf unit unblock {unit} --human --why \"<why only the human can end the hold>\""
+"unblock.next.wait.line" = "{unit}: blocked with the reason {reason}; the conductor judged it not fixed yet ({why}); the step comes back after a unit lands or an amendment is approved"
+"unblock.note.releases" = " The conductor released it before: {list}."
+"unblock.note.human" = " The builder's reason: {reason}. The conductor judged that only the human can end the hold: {why}."
+"unblock.note.stalled" = " The builder's reason: {reason}. The conductor judged it not fixed yet ({why}), and no other unit is in work or ready to start and no amendment is open, so nothing else can end the hold."
+
+"unblock.brief.report.title" = "When you report blocked"
+"unblock.brief.report.body" = "A `blocked` report with no request for files must carry in `--note` what holds the unit and what would end the hold (for example, which unit must land first). The conductor judges from those words when to put the unit back to work, so write them for a reader who has not seen your session."
+"unblock.brief.released.title" = "Released by the conductor"
+"unblock.brief.released.body" = "You reported this unit blocked with the reason: {reason}. The conductor judged the reason fixed (release {release}): {why}. Go on with the build; if the same reason holds again, say so in the note of a new blocked report."
+
+"unblock.guard.refused" = "run `bf unit unblock`"
+"unblock.guard.because" = "the release of a blocked unit is the conductor's own step, and this call comes from a session that the harness marks as the agent type `{agent}`"
+"unblock.guard.step" = "Report your own state with `bf report`, with the reason in `--note` for a blocked report; the conductor judges the release."
+"unblock.guard.worked" = "`bf next` gives the conductor `judge-block` for the unit."
