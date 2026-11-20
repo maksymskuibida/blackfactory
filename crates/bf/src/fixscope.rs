@@ -177,13 +177,24 @@ fn retry_refusal(
     patch: Option<&str>,
 ) -> Option<Fail> {
     let lim = retry::limit(p);
-    let (because, step) = if retry::spent(&f.refused, path, lim) {
+    let extended = f.refused.iter().any(|r| {
+        r["files"].as_array().is_some_and(|fs| {
+            fs.iter()
+                .any(|x| s(x, "path") == path && s(x, "verdict") == "extension")
+        })
+    });
+    let (because, step) = if extended {
+        (
+            t("fix.retry.request.extension", &[]),
+            t("fix.retry.request.extension_step", &[("k", k)]),
+        )
+    } else if retry::spent(&f.refused, path, lim) {
         (
             t(
                 "fix.scope.request.spent",
                 &[("rounds", &retry::rounds_used(&f.refused, path).to_string())],
             ),
-            t("fix.scope.request.spent_step", &[]),
+            t("fix.retry.request.spent_step", &[("k", k)]),
         )
     } else if patch.is_some_and(|pt| {
         retry::latest_is_retry(&f.refused, path)
@@ -457,79 +468,56 @@ pub fn verdict(p: &Project, k: &str, verdict: &Value, token: Option<&str>) -> R<
         }
         all.push(entry);
     }
-    let hold = !retries.is_empty() && refused.is_empty();
+    let extension = refused.iter().any(|x| s(x, "verdict") == "extension");
+    let held = late || extension || !retries.is_empty();
     let mut phase = "fix";
     let mut refusal = "";
-    if hold {
-        refusal = if retries.iter().any(|x| s(x, "verdict") == "retry_spent") {
+    if held {
+        // One answer, one event: nothing is granted, not even a needed file, and the builder asks again
+        // for what was needed (F-252). Only a late hard rule goes to the human at once.
+        refusal = if late {
+            "hard_late"
+        } else if extension {
+            "extension"
+        } else if retries.iter().any(|x| s(x, "verdict") == "retry_spent") {
             "retry_spent"
         } else {
             "retry"
         };
-        events::append(
-            p,
-            "checkpoint.fix.scope.refuse",
-            json!({"checkpoint": k, "refusal": refusal, "files": all}),
-        )?;
-        if refusal == "retry_spent" {
-            let missing: Vec<String> = retries
-                .iter()
-                .map(|r| {
-                    t(
-                        "fix.scope.gap.line_must",
-                        &[
-                            ("path", s(r, "path")),
-                            ("why", s(r, "why")),
-                            ("must", s(r, "must")),
-                        ],
-                    )
-                })
-                .collect();
-            gap(p, k, &missing, &t("fix.scope.gap.reason_spent", &[]))?;
-            phase = "gap";
-        }
-    } else if !refused.is_empty() {
-        // Nothing is granted: a request is answered once, and the human decides what the reviewer refused.
+        let counted = matches!(refusal, "retry" | "retry_spent");
         let files: Vec<Value> = all
             .iter()
             .map(|e| {
                 let mut e = e.clone();
-                if s(&e, "verdict") == "retry_spent" {
+                if !counted && s(&e, "verdict") == "retry_spent" {
                     e["verdict"] = json!("retry");
                 }
                 e
             })
             .collect();
-        refusal = if late { "hard_late" } else { "extension" };
         events::append(
             p,
             "checkpoint.fix.scope.refuse",
             json!({"checkpoint": k, "refusal": refusal, "files": files}),
         )?;
-        let missing: Vec<String> = refused
-            .iter()
-            .map(|r| {
-                let why = if late && !s(r, "rule").is_empty() {
-                    s(r, "rule")
-                } else {
-                    s(r, "why")
-                };
-                t(
-                    "fix.scope.gap.line",
-                    &[("path", s(r, "path")), ("why", why)],
-                )
-            })
-            .collect();
-        let reason = t(
-            if late {
-                "fix.scope.gap.reason_hard"
-            } else {
-                "fix.scope.gap.reason_extension"
-            },
-            &[],
-        );
-        gap(p, k, &missing, &reason)?;
-        phase = "gap";
+        if late {
+            let missing: Vec<String> = refused
+                .iter()
+                .map(|r| {
+                    let why = if s(r, "rule").is_empty() {
+                        s(r, "why")
+                    } else {
+                        s(r, "rule")
+                    };
+                    t(
+                        "fix.scope.gap.line",
+                        &[("path", s(r, "path")), ("why", why)],
+                    )
+                })
+                .collect();
+            gap(p, k, &missing, &t("fix.scope.gap.reason_hard", &[]))?;
+            phase = "gap";
+        }
     } else {
         events::append(
             p,
@@ -544,8 +532,10 @@ pub fn verdict(p: &Project, k: &str, verdict: &Value, token: Option<&str>) -> R<
     } else {
         vec![]
     };
+    let mut not_granted = refused;
+    not_granted.extend(retries);
     Ok(json!({"checkpoint": k, "result": "scope", "phase": phase,
-        "granted": granted_paths, "refused": if hold { retries } else { refused }, "refusal": refusal}))
+        "granted": granted_paths, "refused": not_granted, "refusal": refusal}))
 }
 
 /// A removed line of a granted existing test or configuration file that the grant's patch does not

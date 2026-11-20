@@ -118,6 +118,38 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                 )
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect();
+            if v["granted"].as_array().is_none_or(|a| a.is_empty())
+                && (v["refusal"] == "extension" || v["refusal"] == "retry_spent")
+            {
+                // Each file by its own verdict: an extension or a spent retry is not granted and goes by a
+                // gap report; any other retry file may be asked for again.
+                let spent = v["refusal"] == "retry_spent";
+                let (stuck, again): (Vec<&serde_json::Value>, Vec<&serde_json::Value>) = v
+                    ["refused"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .partition(|r| {
+                        r["verdict"] == "extension" || (spent && r["verdict"] == "retry_spent")
+                    });
+                let names = |l: &[&serde_json::Value]| {
+                    l.iter()
+                        .filter_map(|r| r["path"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let mut lines = vec![crate::strings::t(
+                    "fix.retry.verdict.not_granted",
+                    &[("k", k), ("files", &names(&stuck))],
+                )];
+                if !again.is_empty() {
+                    lines.push(crate::strings::t(
+                        "fix.scope.verdict.retry",
+                        &[("k", k), ("files", &names(&again))],
+                    ));
+                }
+                return lines.join("\n");
+            }
             let key = if !v["granted"].as_array().is_none_or(|a| a.is_empty()) {
                 "fix.scope.verdict.granted"
             } else if v["phase"] == "gap" {

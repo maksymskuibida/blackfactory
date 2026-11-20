@@ -247,10 +247,21 @@ fn ckfix_scope_an_extension_goes_to_the_human_and_grants_nothing() {
         json!([{"path": "tests/attacks.rs", "verdict": "extension", "why": "another feature"}]),
     );
     assert_eq!(o.code, 0, "{}", o.all());
-    let d = one_directive(&fx, "plan-gap");
-    assert!(d["missing"].to_string().contains("tests/attacks.rs"), "{d}");
+    // The fix is back at work; the way on is a gap report that names the file, which goes to the human.
+    let d = one_directive(&fx, "fix-checkpoint");
+    assert!(d["not_granted"].to_string().contains("tests/attacks.rs"), "{d}");
     let st = bf::events::replay(&fx.project()).unwrap();
     assert!(bf::fixscope::granted(&st, "K-1").is_empty());
+    let o = fx.bf_in(
+        &k,
+        &[
+            "report", "K-1", "--role", "builder", "--result", "gap", "--note",
+            "tests/attacks.rs: another feature",
+        ],
+    );
+    assert_eq!(o.code, 2, "{}", o.all());
+    let d = one_directive(&fx, "plan-gap");
+    assert!(d["missing"].to_string().contains("tests/attacks.rs"), "{d}");
 }
 
 #[test]
@@ -309,8 +320,8 @@ fn ckfix_scope_a_retry_is_asked_again_with_a_corrected_patch_until_the_rounds_ar
         );
         assert_eq!(o.code, 0, "{}", o.all());
     }
-    // The last round's retry goes to the human, and the file cannot be asked for again.
-    one_directive(&fx, "plan-gap");
+    // The last round's retry leaves the fix at work, and the file cannot be asked for again.
+    one_directive(&fx, "fix-checkpoint");
     let o = ask(
         &fx,
         &k,
