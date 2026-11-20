@@ -658,6 +658,23 @@ pub(crate) fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>
         .collect())
 }
 
+/// The id of a receipt that shows the command passed for the check on the content now in `top`.
+fn passing_receipt(p: &Project, check: &str, argv: &[String], top: &Path) -> R<Option<String>> {
+    let content = p.content_hash(top)?;
+    let command = argv.join(" ");
+    Ok(evidence::load_receipts(p)?
+        .iter()
+        .find(|r| {
+            r.is_run()
+                && r.seal_ok
+                && r.check() == check
+                && r.content() == content
+                && s(&r.v, "command") == command
+                && r.passes()
+        })
+        .map(|r| r.id().to_string()))
+}
+
 /// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
 /// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
@@ -678,7 +695,15 @@ pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
         let argv = evidence::command_words(c);
         // A check that already passed on this very content (the fix builder ran it through the engine)
         // is not run again: its receipt stands (R-32).
-        if evidence::passed_on_content(p, &cid, &argv, &top)? {
+        // Each skip is logged with the receipt it reused (R-71).
+        if let Some(receipt) = passing_receipt(p, &cid, &argv, &top)? {
+            events::append(
+                p,
+                "checkpoint.check.skip",
+                json!({"checkpoint": k, "check": cid, "receipt": receipt,
+                       "command": argv.join(" "),
+                       "note": crate::strings::t("accept.checks.skip", &[("k", k), ("check", &cid), ("receipt", &receipt)])}),
+            )?;
             continue;
         }
         // The engine runs the checks again on content they may already have run on: that is a deliberate

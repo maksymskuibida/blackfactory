@@ -367,7 +367,7 @@ fn open_locked_by(
     content: &str,
     strict: bool,
     wave: Option<(u32, &[String])>,
-    human: Option<(u64, &str)>,
+    human: Option<(u64, &str, Option<u64>)>,
     opened_by: Option<&str>,
 ) -> R<bool> {
     for (_, wt) in wts(p, pl, k)? {
@@ -409,8 +409,12 @@ fn open_locked_by(
             from_saved = folder;
         }
     }
+    // `earlier` is the seq of an earlier opening whose words these are (a fix reopened after an abort).
     let by = human
-        .map(|(t, q)| json!({"turn": t, "quote": q.trim()}))
+        .map(|(t, q, earlier)| match earlier {
+            Some(e) => json!({"turn": t, "quote": q.trim(), "earlier": e}),
+            None => json!({"turn": t, "quote": q.trim()}),
+        })
         .unwrap_or(Value::Null);
     let mut ev = json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings, "human": by,
                "finding_ids": finding_ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
@@ -438,7 +442,7 @@ pub(crate) fn open_chosen(
     findings: Vec<Value>,
     ids: Vec<(u32, u32)>,
     content: &str,
-    human: Option<(u64, &str)>,
+    human: Option<(u64, &str, Option<u64>)>,
     opened_by: &str,
 ) -> R<()> {
     open_locked_by(
@@ -654,6 +658,12 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             .to_string()
     };
     let abort = format!("bf checkpoint fix {k} --abort");
+    if settled(f) {
+        return json!({"role": "conductor", "action": "go-on-checkpoint-fix", "checkpoint": k,
+            "note": crate::strings::t("accept.fix.settled.note", &[("k", k)]),
+            "commands": [crate::strings::t("accept.fix.settled.command", &[("k", k)])],
+            "abort_command": abort});
+    }
     match f.phase.as_str() {
         "fix" => {
             json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
@@ -683,6 +693,16 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "verdict_command": format!("bf checkpoint scope {k} --verdict - --token <token>"),
             "abort_command": abort})
         }
+        "low" => {
+            let open = open_ids(f);
+            let ids: Vec<String> = open.iter().map(|x| x.0.clone()).collect();
+            json!({"role": "human", "action": "decide-low-findings", "checkpoint": k,
+            "findings": open.iter().map(|(id, x)| json!({"id": id, "severity": x["severity"], "title": x["title"], "where": x["where"], "what_to_do": x["action"]})).collect::<Vec<_>>(),
+            "note": crate::strings::t("accept.fix.low.note", &[("k", k), ("ids", &ids.join(","))]),
+            "accept_command": crate::strings::t("accept.fix.low.accept_command", &[("k", k), ("ids", &ids.join(","))]),
+            "release_command": crate::strings::t("accept.fix.low.release_command", &[("k", k)]),
+            "abort_command": abort})
+        }
         "gap" => json!({"role": "human", "action": "plan-gap", "checkpoint": k,
             "missing": f.missing,
             "note": format!("The fix of {k} needs what the plan never gave it: {}. Decide by amendment: a new unit, or an existing one extended. `{abort}` puts the checkpoint back as it was.", f.missing.join("; ")),
@@ -692,6 +712,36 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "release_command": format!("bf checkpoint fix {k} --release --quote \"<the human's words>\""),
             "abort_command": abort}),
     }
+}
+
+/// Whether the fix's review is settled: every finding of its latest round is accepted and the builder has not
+/// worked since. The engine goes on to the checks and the end, with no further round (R-71).
+pub(crate) fn settled(f: &CkFixOpen) -> bool {
+    f.phase == "review" && f.rounds_log.last().map(|r| r["accepted"] == json!(true)) == Some(true)
+}
+
+/// The open findings of the fix's latest review round with their ids `f<round>.<number>`: those no accept covers.
+pub(crate) fn open_ids(f: &CkFixOpen) -> Vec<(String, Value)> {
+    let Some(h) = f
+        .history
+        .last()
+        .filter(|h| h["round"].as_u64().unwrap_or(0) >= 1)
+    else {
+        return vec![];
+    };
+    let round = h["round"].as_u64().unwrap_or(0) as u32;
+    h["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(n, _)| {
+            !f.accepted
+                .iter()
+                .any(|a| a.round == round && a.index as usize == n + 1)
+        })
+        .map(|(n, x)| (format!("f{round}.{}", n + 1), x.clone()))
+        .collect()
 }
 
 /// Whether a report on `k` belongs to the checkpoint fix part: a fix of `k` is open, or the checkpoint
@@ -1155,9 +1205,30 @@ fn report_inner(
     let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
         return open_from_review(p, &st, &pl, k, result, role, findings, token, via_round);
     };
+    // The review is settled (every finding accepted): any report of `built` goes on to the checks and the end,
+    // with no further round. A stop between the accept and the checks leaves the fix here (R-71).
+    if settled(&f) {
+        if result != "built" {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.settled.what", &[("k", k)]),
+                crate::strings::t("accept.fix.settled.because", &[("result", result)]),
+                vec![crate::strings::t("accept.fix.settled.command", &[("k", k)])],
+                crate::strings::t("accept.fix.settled.check", &[]),
+            ));
+        }
+        return go_on(p, &pl, &f);
+    }
     let expected = match f.phase.as_str() {
         "fix" => "builder",
         "review" => "reviewer",
+        "low" => {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.low.report.what", &[("k", k)]),
+                crate::strings::t("accept.fix.low.report.because", &[]),
+                vec![crate::strings::t("accept.fix.low.report.step", &[("k", k)])],
+                crate::strings::t("accept.fix.low.report.check", &[]),
+            ));
+        }
         "gap" => {
             return Err(refuse(
                 format!("report on the fix of {k}"),
@@ -1439,52 +1510,40 @@ fn report_inner(
                     "`bf status` shows the fix in its new phase.",
                 ));
             }
+            // R-71: a fix review that files only low findings asks the human to accept or fix them. A low
+            // finding the reviewer marks small (a test or a strings key inside the fix's own files) goes
+            // back to the builder with no human step.
+            let only_low = listed.iter().all(|x| s(x, "severity") == "low");
+            let all_small = listed.iter().all(|x| x["small"].as_bool() == Some(true));
             let over = f.rounds + 1 > p.policy.limits.max_rounds;
+            let to = if only_low && (!all_small || over) {
+                "low"
+            } else if !over {
+                "fix"
+            } else {
+                "parked"
+            };
             record_round(
                 p,
                 &pl,
                 &f,
                 "findings",
-                if over { "parked" } else { "fix" },
+                to,
                 &listed,
-                if over {
-                    format!("more than {} review rounds", p.policy.limits.max_rounds)
-                } else {
-                    String::new()
+                match to {
+                    "low" => crate::strings::t("accept.fix.low.reason", &[]),
+                    "parked" => crate::strings::t(
+                        "accept.fix.over_rounds",
+                        &[("max", &p.policy.limits.max_rounds.to_string())],
+                    ),
+                    _ => String::new(),
                 },
             )?;
-            Ok(json!({"checkpoint": k, "phase": if over { "parked" } else { "fix" }}))
+            Ok(json!({"checkpoint": k, "phase": to}))
         }
         ("review", "built") => {
             record_round(p, &pl, &f, "clean", "done", &[], String::new())?;
-            // Clean: the checkpoint's checks run again on the new content, through the engine. A wave
-            // fix runs the wave checks again, and that run is the wave's new result.
-            if f.source == "wave" {
-                let failed = crate::wavecheck::rerun(p, &pl, k, f.wave, true)?;
-                if !failed.is_empty() {
-                    let to = attempt(p, &f, &failed)?;
-                    return Ok(
-                        json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
-                        "failed_checks": failed}),
-                    );
-                }
-                let again: Vec<String> = crate::wavecheck::records(&pl)
-                    .iter()
-                    .map(|c| s(c, "id").to_string())
-                    .collect();
-                return finish(p, &pl, &f, again);
-            }
-            let failed = run::run_k_checks(p, &pl, k)?;
-            if !failed.is_empty() {
-                let to = attempt(p, &f, &failed)?;
-                return Ok(
-                    json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
-                    "failed_checks": failed}),
-                );
-            }
-            // Only the command checks that are switched on ran again; agent-judged ones did not.
-            let ran_again = ran_again(p, &pl, k)?;
-            finish(p, &pl, &f, ran_again)
+            go_on(p, &pl, &f)
         }
         (ph, r) => Err(refuse(
             format!("report {r} on the fix of {k}"),
@@ -1495,6 +1554,39 @@ fn report_inner(
             "`bf status` shows the fix in its new phase.",
         )),
     }
+}
+
+/// The fix's review is settled (clean, or every finding accepted): the checks run again on the new content,
+/// through the engine, and the fix is finished. A wave fix runs the wave checks again, and that run is the
+/// wave's new result.
+pub(crate) fn go_on(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Value> {
+    let k = f.checkpoint.as_str();
+    if f.source == "wave" {
+        let failed = crate::wavecheck::rerun(p, pl, k, f.wave, true)?;
+        if !failed.is_empty() {
+            let to = attempt(p, f, &failed)?;
+            return Ok(
+                json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+                "failed_checks": failed}),
+            );
+        }
+        let again: Vec<String> = crate::wavecheck::records(pl)
+            .iter()
+            .map(|c| s(c, "id").to_string())
+            .collect();
+        return finish(p, pl, f, again);
+    }
+    let failed = run::run_k_checks(p, pl, k)?;
+    if !failed.is_empty() {
+        let to = attempt(p, f, &failed)?;
+        return Ok(
+            json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+            "failed_checks": failed}),
+        );
+    }
+    // Only the command checks that are switched on ran again; agent-judged ones did not.
+    let ran_again = ran_again(p, pl, k)?;
+    finish(p, pl, f, ran_again)
 }
 
 /// The fix is a plan gap: record it and refuse, naming what is missing.
@@ -1734,19 +1826,25 @@ pub fn command(
         );
     }
     if release {
-        if f.phase != "parked" {
-            return Err(refuse(
-                format!("release the fix of {k}"),
-                format!("it is `{}`, not parked", f.phase),
-                &["`bf next` shows what it waits for."],
-                "`bf status` shows the fix back at work.",
+        if !matches!(f.phase.as_str(), "parked" | "low") {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.release.what", &[("k", k)]),
+                crate::strings::t("accept.fix.release.because", &[("phase", &f.phase)]),
+                vec![crate::strings::t("accept.fix.step_next", &[])],
+                crate::strings::t("accept.fix.release.check", &[]),
             ));
         }
         run::observe_holds(p)?;
         let st = events::require_chain(p)?;
         let bound = match events::decision_bound(&st, k, f.park_seq, u64::MAX) {
             Ok(b) => b,
-            Err(h) => return Err(crate::ckreview::hold_refusal("release the fix", k, &h)),
+            Err(h) => {
+                return Err(crate::ckreview::hold_refusal(
+                    &crate::strings::t("accept.fix.release.hold_what", &[]),
+                    k,
+                    &h,
+                ))
+            }
         };
         let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
         events::append(

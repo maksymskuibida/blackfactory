@@ -1338,6 +1338,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
     let mut report_used: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
     let mut marked_seen = false;
+    // The fix openings by a pick that the replay counted: seq to (checkpoint, turn, quote, finding ids). A
+    // fix reopened with the human's earlier words may cite only one of these (R-71).
+    let mut counted_picks: HashMap<u64, (String, u64, String, Vec<(u32, u32)>)> = HashMap::new();
     let mut parked_rounds: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
     for (ix, ev) in log.events.iter().enumerate() {
@@ -2231,7 +2234,37 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             continue;
                         }
                     };
-                    if !decision_turn_ok(&st, &turn_ix, tseq, bound, seq, &quote, Decide::Approve) {
+                    // A fix reopened after an abort for the same findings keeps the human's earlier words
+                    // (R-71): it cites the earlier opening that the turn and the quote came from, and that
+                    // opening must be a fix the human's words opened, aborted since, for these findings.
+                    if let Some(earlier) = ev["human"]["earlier"].as_u64() {
+                        // Only an opening the replay itself counted can give its words again.
+                        let known = counted_picks.get(&earlier).is_some_and(|c| {
+                            c.0 == sv("checkpoint")
+                                && c.1 == tseq
+                                && c.2 == quote
+                                && ids.iter().all(|x| c.3.contains(x))
+                        }) && st.ck_fix_aborts.iter().any(|a| {
+                            a.checkpoint == sv("checkpoint")
+                                && a.seq > earlier
+                                && ids.iter().all(|x| a.ids.contains(x))
+                        });
+                        if !known {
+                            st.ignored.push(crate::strings::t(
+                                "accept.events.ignored.earlier_words",
+                                &[("seq", &seq.to_string())],
+                            ));
+                            continue;
+                        }
+                    } else if !decision_turn_ok(
+                        &st,
+                        &turn_ix,
+                        tseq,
+                        bound,
+                        seq,
+                        &quote,
+                        Decide::Approve,
+                    ) {
                         st.ignored.push(format!(
                             "event {seq}: a fix opened for findings cites no valid human turn and quote, or words written before the bound"
                         ));
@@ -2261,6 +2294,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     })
                     .collect();
                 let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                if let (Some(t), Some("pick")) =
+                    (ev["human"]["turn"].as_u64(), ev["opened_by"].as_str())
+                {
+                    counted_picks.insert(
+                        seq,
+                        (
+                            sv("checkpoint"),
+                            t,
+                            ev["human"]["quote"].as_str().unwrap_or("").to_string(),
+                            ids_named.clone(),
+                        ),
+                    );
+                }
                 st.ck_fix = Some(CkFixOpen {
                     checkpoint: sv("checkpoint"),
                     source: sv("source"),
@@ -2310,6 +2356,10 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.fix.built" => {
                 if let Some(o) = st.ck_fix.as_mut() {
+                    // New work ends a settled review: the next review round judges it.
+                    if let Some(last) = o.rounds_log.last_mut() {
+                        last["accepted"] = json!(false);
+                    }
                     o.phase = "review".into();
                     o.failed.clear();
                     o.request.clear();
@@ -2370,7 +2420,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let Some(parked_at) = st
                     .ck_fix
                     .as_ref()
-                    .filter(|f| f.phase == "parked")
+                    .filter(|f| matches!(f.phase.as_str(), "parked" | "low"))
                     .map(|f| f.park_seq)
                 else {
                     st.ignored.push(format!(

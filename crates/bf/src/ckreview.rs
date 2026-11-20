@@ -1401,6 +1401,46 @@ pub(crate) fn hold_refusal(what: &str, k: &str, h: &events::Hold) -> crate::refu
     )
 }
 
+/// The ids of a fix's review findings a spec names: `f<round>.<number>` separated by commas, or `low` while the
+/// fix waits in phase `low`. None when the spec names findings of the checkpoint's own review. A spec that
+/// mixes the two kinds is a refusal.
+fn fix_ids(st: &State, k: &str, spec: &str) -> Option<R<Vec<(u32, u32)>>> {
+    let words: Vec<&str> = spec
+        .split(',')
+        .map(|w| w.trim())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let fix_word = |w: &str| {
+        w.strip_prefix('f')
+            .and_then(|x| x.split_once('.'))
+            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+    };
+    let waiting = st
+        .ck_fix
+        .as_ref()
+        .filter(|f| f.checkpoint == k && f.phase == "low");
+    let any_fix = words.iter().any(|w| fix_word(w).is_some());
+    if let (Some(f), true) = (waiting, words == ["low"]) {
+        let ids: Vec<(u32, u32)> = crate::ckfix::open_ids(f)
+            .iter()
+            .filter_map(|(id, _)| fix_word(id))
+            .collect();
+        return Some(Ok(ids));
+    }
+    if !any_fix {
+        return None;
+    }
+    if words.iter().any(|w| fix_word(w).is_none()) {
+        return Some(Err(refuse_owned(
+            crate::strings::t("accept.fix.what", &[("k", k)]),
+            crate::strings::t("accept.fix.mixed", &[]),
+            vec![crate::strings::t("accept.fix.mixed.step", &[("k", k)])],
+            crate::strings::t("accept.fix.check", &[("k", k)]),
+        )));
+    }
+    Some(Ok(words.iter().filter_map(|w| fix_word(w)).collect()))
+}
+
 /// `bf checkpoint finding <K> --accept <ids> --quote ...` or `--decline <ids> --reason ... --quote ...`: the
 /// human ends findings in their own words. A decline needs a reason.
 pub fn settle(
@@ -1421,6 +1461,21 @@ pub fn settle(
             &["Add `--reason \"<why it is declined>\"`."],
             "`bf status` shows the reason with the finding.",
         ));
+    }
+    // The findings of a fix's review have ids of their own, `f<round>.<number>` (R-71).
+    if let Some(ids) = fix_ids(&st, k, spec) {
+        if fate_name != "accepted" {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.what", &[("k", k)]),
+                crate::strings::t("accept.fix.only_accept", &[]),
+                vec![crate::strings::t(
+                    "accept.fix.only_accept.step",
+                    &[("k", k)],
+                )],
+                crate::strings::t("accept.fix.check", &[("k", k)]),
+            ));
+        }
+        return crate::accept::settle_fix(p, k, &ids?, quote);
     }
     let picked = pick_findings(p, &st, k, spec)?;
     let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
@@ -1456,6 +1511,42 @@ pub fn settle(
     Ok(json!({"checkpoint": k, "settled": picked.len(), "fate": fate_name}))
 }
 
+/// The human's words on an earlier fix of these very findings that was aborted: the turn and the quote the fix
+/// was opened with, when that fix named every finding in `pairs`.
+fn earlier_words(
+    p: &Project,
+    st: &State,
+    k: &str,
+    pairs: &[(u32, u32)],
+) -> R<Option<(u64, String, Option<u64>)>> {
+    let log = events::load_log(p)?;
+    for a in st
+        .ck_fix_aborts
+        .iter()
+        .rev()
+        .filter(|a| a.checkpoint == k && pairs.iter().all(|x| a.ids.contains(x)))
+    {
+        let found = log.events.iter().rev().find(|e| {
+            e["kind"].as_str() == Some("checkpoint.fix.open")
+                && e["checkpoint"].as_str() == Some(k)
+                && e["seq"].as_u64().unwrap_or(u64::MAX) < a.seq
+                && e["human"]["turn"].as_u64().is_some()
+                && {
+                    let named = events::id_pairs(&e["finding_ids"]);
+                    pairs.iter().all(|x| named.contains(x))
+                }
+        });
+        if let Some(e) = found {
+            return Ok(Some((
+                e["human"]["turn"].as_u64().unwrap_or(0),
+                e["human"]["quote"].as_str().unwrap_or("").to_string(),
+                e["seq"].as_u64(),
+            )));
+        }
+    }
+    Ok(None)
+}
+
 /// `bf checkpoint finding <K> --fix-findings <ids>`: findings picked to be fixed open the checkpoint fix.
 pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("fix findings of {k}"))?;
@@ -1472,24 +1563,41 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         ));
     }
     let picked = pick_findings(p, &st, k, spec)?;
-    let human = if picked.iter().any(|x| blocking(&x.2)) {
-        if quote.trim().is_empty() {
-            return Err(refuse(
-                format!("fix findings of {k}"),
-                "a critical, high or medium finding is picked to be fixed, and that is the human's choice in their own words",
-                &["Ask the human, then run the command again with `--quote \"<the words of their message>\"`."],
-                "The command opens the fix.",
-            ));
-        }
+    let human: Option<(u64, String, Option<u64>)> = if picked.iter().any(|x| blocking(&x.2)) {
         let pairs: Vec<(u32, u32)> = picked.iter().map(|x| (x.0, x.1 as u32)).collect();
-        let base = events::put_to_human_seq(&st, k, &pairs);
-        run::observe_holds(p)?;
-        let st = events::require_chain(p)?;
-        let bound = match events::decision_bound(&st, k, base, u64::MAX) {
-            Ok(b) => b,
-            Err(h) => return Err(hold_refusal("fix findings", k, &h)),
-        };
-        Some(events::pick_turn(&st, bound, events::Decide::Approve, quote)?.0)
+        if quote.trim().is_empty() {
+            // A fix reopened after an abort for the same findings keeps the human's earlier words (R-71).
+            match earlier_words(p, &st, k, &pairs)? {
+                Some(w) => Some(w),
+                None => {
+                    return Err(refuse_owned(
+                        crate::strings::t("accept.pick.what", &[("k", k)]),
+                        crate::strings::t("accept.pick.because", &[]),
+                        vec![crate::strings::t("accept.pick.step", &[])],
+                        crate::strings::t("accept.pick.check", &[]),
+                    ));
+                }
+            }
+        } else {
+            let base = events::put_to_human_seq(&st, k, &pairs);
+            run::observe_holds(p)?;
+            let st = events::require_chain(p)?;
+            let bound = match events::decision_bound(&st, k, base, u64::MAX) {
+                Ok(b) => b,
+                Err(h) => {
+                    return Err(hold_refusal(
+                        &crate::strings::t("accept.pick.hold_what", &[]),
+                        k,
+                        &h,
+                    ))
+                }
+            };
+            Some((
+                events::pick_turn(&st, bound, events::Decide::Approve, quote)?.0,
+                quote.trim().to_string(),
+                None,
+            ))
+        }
     } else {
         None
     };
@@ -1512,7 +1620,7 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
         picked.into_iter().map(|x| x.2).collect(),
         ids,
         &content,
-        human.map(|t| (t, quote)),
+        human.as_ref().map(|(t, q, e)| (*t, q.as_str(), *e)),
         if human.is_some() { "pick" } else { "low" },
     )?;
     Ok(json!({"checkpoint": k, "phase": "fix", "fix_opened": true, "findings": named}))

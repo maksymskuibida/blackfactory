@@ -182,7 +182,16 @@ pub(crate) fn cmd_report(args: &Args) -> R<()> {
         args.flag("token"),
     )?;
     out(args, &v, || {
-        format!("{unit} is now {}", v["state"].as_str().unwrap_or(""))
+        // A checkpoint's report answers with the phase of its fix, not a unit's state.
+        let state = ["state", "phase"]
+            .iter()
+            .find_map(|key| v[*key].as_str().filter(|x| !x.is_empty()))
+            .unwrap_or("");
+        if state.is_empty() {
+            crate::strings::t("accept.report.no_state", &[("unit", unit)])
+        } else {
+            crate::strings::t("accept.report.now", &[("unit", unit), ("state", state)])
+        }
     });
     Ok(())
 }
