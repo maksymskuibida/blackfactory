@@ -17,6 +17,10 @@ pub fn unit_states(
             out.push((id, logged.to_string(), None));
         } else if let Some(why) = plan::not_ready(p, pl, st, &id, receipts) {
             out.push((id, "planned".into(), Some(why)));
+        } else if let Some(a) = super::next::amend_hold(st, &id) {
+            // An open amendment holds the unit: it is not ready, the same as in `bf next` (F-197, F-211).
+            let why = crate::strings::t("next.unit_held.line", &[("unit", &id), ("amend", &a)]);
+            out.push((id, "planned".into(), Some(why)));
         } else {
             out.push((id, "ready".into(), None));
         }
