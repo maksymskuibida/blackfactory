@@ -1,4 +1,4 @@
-//! `bf amend open|revise|narrow|approve|judge|withdraw`.
+//! `bf amend open|revise|narrow|approve|judge|seen|withdraw`.
 
 use super::{out, pretty, project, read_data_in, Args};
 use crate::gates;
@@ -48,6 +48,11 @@ pub(crate) fn cmd_amend(args: &Args) -> R<()> {
             args.need("file", &strings::t("cli.judge.need_file", &[]))?,
             args.flag("token"),
             args.need("model", &strings::t("cli.judge.need_model", &[]))?,
+        )?,
+        Some("seen") => crate::judge::seen(
+            &p,
+            args.pos.get(2).map(|x| x.as_str()).unwrap_or(""),
+            args.flag("quote").unwrap_or(""),
         )?,
         Some("checkpoint") => gates::amend_checkpoint(&p, &args.pos[2..], args.flag("title"))?,
         Some("revise") => gates::amend_revise(&p, &args.pos[2..])?,
