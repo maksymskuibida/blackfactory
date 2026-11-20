@@ -666,7 +666,7 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
     }
     match f.phase.as_str() {
         "fix" => {
-            json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
+            let mut d = json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
             "wave": f.wave,
             "source": f.source, "tier": p.policy.tiers.builder, "working_copy": wc,
             "brief": brief("builder"), "limits": lim,
@@ -674,7 +674,9 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "granted": crate::fixscope::granted(st, k), "from_saved": f.from_saved,
             "failing_checks": f.failed.iter().filter_map(|x| x["check"].as_str()).collect::<Vec<_>>(),
             "findings": f.findings.iter().map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]})).collect::<Vec<_>>(),
-            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort})
+            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort});
+            crate::scope::merge_fields(&mut d, retry_directive(f));
+            d
         }
         "review" => {
             json!({"role": "reviewer", "action": if f.source == "wave" { "review-wave-fix" } else { "review-checkpoint-fix" }, "checkpoint": k,
@@ -2233,6 +2235,54 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     Ok(path)
 }
 
+/// The latest refusal of the open fix when it is a `retry`, a `retry_spent` or an `extension` and no
+/// grant came after it: what the builder is told to do next.
+pub(crate) fn pending_refusal(f: &CkFixOpen) -> Option<&Value> {
+    let r = f
+        .refused
+        .last()
+        .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent" | "extension"))?;
+    let seq = r["seq"].as_u64().unwrap_or(0);
+    (!f.grants.last().is_some_and(|g| g.seq > seq)).then_some(r)
+}
+
+/// The directive's lines for a pending refusal: each file to ask for again with the reviewer's words,
+/// and the files that are not granted (R-70).
+fn retry_directive(f: &CkFixOpen) -> Value {
+    let Some(r) = pending_refusal(f) else {
+        return json!({});
+    };
+    let files = r["files"].as_array().cloned().unwrap_or_default();
+    let ask: Vec<Value> = files
+        .iter()
+        .filter(|x| s(x, "verdict") == "retry")
+        .map(|x| json!({"path": x["path"], "why": x["why"], "must": x["must"]}))
+        .collect();
+    let again: Vec<&str> = files
+        .iter()
+        .filter(|x| s(x, "verdict") == "needed")
+        .map(|x| s(x, "path"))
+        .collect();
+    let stuck: Vec<&str> = files
+        .iter()
+        .filter(|x| matches!(s(x, "verdict"), "extension" | "retry_spent"))
+        .map(|x| s(x, "path"))
+        .collect();
+    let any = !ask.is_empty() || !again.is_empty();
+    let mut o = json!({"ask_again": ask, "ask_again_same_patch": again});
+    if any {
+        o["retry_note"] = json!(crate::strings::t("fix.retry.directive.note", &[]));
+    }
+    if !stuck.is_empty() {
+        o["not_granted"] = json!(stuck);
+        o["not_granted_note"] = json!(crate::strings::t(
+            "fix.retry.directive.not_granted",
+            &[("files", &stuck.join(", "))]
+        ));
+    }
+    o
+}
+
 /// The builder's brief on grants, a corrected patch asked for, and saved work (R-70).
 fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
     use crate::strings::t;
@@ -2256,46 +2306,65 @@ fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
         }
     }
     // The latest answer was a `retry` and nothing was granted since: the builder asks again.
-    if let Some(r) = f.refused.last().filter(|r| s(r, "refusal") == "retry") {
-        let after_grant = f
-            .grants
-            .last()
-            .is_some_and(|g| g.seq > r["seq"].as_u64().unwrap_or(0));
-        if !after_grant {
-            let lim = crate::scope::retry::limit(p);
-            md.push_str(&format!(
-                "\n## {}\n\n{}\n\n",
-                t("fix.scope.brief.retry_title", &[]),
-                t("fix.scope.brief.retry_intro", &[])
-            ));
-            let mut needed = String::new();
-            for x in r["files"].as_array().into_iter().flatten() {
-                let path = s(x, "path");
-                if s(x, "verdict") == "retry" {
-                    md.push_str(&format!(
+    if let Some(r) = pending_refusal(f) {
+        let lim = crate::scope::retry::limit(p);
+        let counted = matches!(s(r, "refusal"), "retry" | "retry_spent");
+        let mut asks = String::new();
+        let mut needed = String::new();
+        let mut stuck = String::new();
+        for x in r["files"].as_array().into_iter().flatten() {
+            let path = s(x, "path");
+            let used = crate::scope::retry::rounds_used(&f.refused, path);
+            match s(x, "verdict") {
+                "retry" => {
+                    let key = if counted {
+                        "fix.retry.brief.file"
+                    } else {
+                        "fix.retry.brief.file_free"
+                    };
+                    asks.push_str(&format!(
                         "{}\n",
                         t(
-                            "fix.scope.brief.retry_file",
+                            key,
                             &[
                                 ("path", path),
                                 ("why", s(x, "why")),
                                 ("must", s(x, "must")),
-                                ("round", &x["round"].as_u64().unwrap_or(0).to_string()),
+                                ("round", &used.to_string()),
                                 ("limit", &lim.to_string()),
+                                ("left", &lim.saturating_sub(used).to_string()),
                             ]
                         )
                     ));
-                } else if s(x, "verdict") == "needed" {
-                    needed.push_str(&format!(
-                        "{}\n",
-                        t("fix.scope.brief.retry_needed", &[("path", path)])
-                    ));
                 }
+                "needed" => needed.push_str(&format!(
+                    "{}\n",
+                    t("fix.scope.brief.retry_needed", &[("path", path)])
+                )),
+                "extension" | "retry_spent" => stuck.push_str(&format!(
+                    "{}\n",
+                    t(
+                        "fix.retry.brief.not_granted_file",
+                        &[("path", path), ("why", s(x, "why"))]
+                    )
+                )),
+                _ => {}
             }
-            md.push_str(&needed);
+        }
+        if !(asks.is_empty() && needed.is_empty()) {
             md.push_str(&format!(
-                "\n{}\n",
+                "\n## {}\n\n{}\n\n{asks}{needed}\n{}\n",
+                t("fix.scope.brief.retry_title", &[]),
+                t("fix.scope.brief.retry_intro", &[]),
                 t("fix.scope.brief.retry_command", &[("k", k)])
+            ));
+        }
+        if !stuck.is_empty() {
+            md.push_str(&format!(
+                "\n## {}\n\n{}\n\n{stuck}\n{}\n",
+                t("fix.retry.brief.not_granted_title", &[]),
+                t("fix.retry.brief.not_granted_intro", &[]),
+                t("fix.retry.brief.not_granted_way", &[("k", k)])
             ));
         }
     }
@@ -2491,9 +2560,10 @@ fn scope_brief(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<PathBuf> {
         }
     }
     md.push_str(&format!(
-        "## {}\n\n{}\n\n## {}\n\n{} {}\n",
+        "## {}\n\n{} {}\n\n## {}\n\n{} {}\n",
         t("fix.scope.review.question_title", &[]),
         t("fix.scope.review.question", &[]),
+        t("fix.retry.review.holds", &[]),
         t("fix.scope.review.how_title", &[]),
         t("fix.scope.review.how_to", &[("k", k)]),
         t("fix.scope.review.answer", &[])
