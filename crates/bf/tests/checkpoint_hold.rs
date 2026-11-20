@@ -745,6 +745,10 @@ const CLASSES: &[(&str, &str)] = &[
     ("decide-unit", "neither"),
     ("reconsider", "neither"),
     ("review-scope", "neither"),
+    ("judge-repair", "neither"),
+    ("decide-repair", "neither"),
+    ("see-judged-repair", "neither"),
+    ("open-plan-repair", "neither"),
 ];
 
 // The guard of closure: every directive action `bf next` can give is classified as asking the human about

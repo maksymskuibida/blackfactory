@@ -1,0 +1,25 @@
+# Strings of the repair judge's flow (R-69, D-90): what `bf next` tells the conductor and the human, the units
+# an open amendment holds, and the verdict in the log. Keys are quoted and flat.
+
+"next.judge_repair.note" = "Plan repair {amend} is narrowed and holds no design part. Get the judge's one-use token with `bf roles token {amend} judge`, then start a subagent of type repair-judge with that token and the amendment. It gives its verdict with `bf amend judge {amend} --file - --token <token> --model <model>`. A go inside the engine's limits is approved with no human; any other verdict goes to the human."
+"next.judge_ask.note" = "The judge asks the human about plan repair {amend}: {reasons}. Show the human the repair and these reasons. When they approve it, run `bf amend approve {amend} --quote \"<the human's words>\"`. Only the units it touches wait."
+"next.judge_failed.note" = "The judge gave no verdict on plan repair {amend}: {reason}. The repair is the human's now. Show the human the repair and this reason. When they approve it, run `bf amend approve {amend} --quote \"<the human's words>\"`. Only the units it touches wait."
+"next.judge_idle.reason" = "a judge token was issued {minutes} minutes ago and no verdict came within the idle limit"
+"next.judge_stale.reason" = "the judge turn was issued for an earlier narrowing of this repair and ended with no verdict"
+"next.judge_running.line" = "{amend}: its repair judge has a token and no verdict yet"
+"next.judged_seen.approved" = "For the human to see: the judge approved plan repair {amend} with no human message. Reasons: {reasons}. Show the human the repair; when they say they saw it, run `bf amend seen {amend} --quote \"<the human's words>\"`."
+"next.judged_seen.ask" = "For the human to see: the judge asked about plan repair {amend} ({state}). Reasons: {reasons}. When they say they saw it, run `bf amend seen {amend} --quote \"<the human's words>\"`."
+"next.judged_seen.failed" = "For the human to see: the judge gave no verdict on plan repair {amend} ({state}): {reason}. When they say they saw it, run `bf amend seen {amend} --quote \"<the human's words>\"`."
+"next.judged_seen.state_withdrawn" = "withdrawn"
+
+"next.unit_held.line" = "{unit} is held by {amend}, which is open: it waits until {amend} is approved or withdrawn"
+"unit.start.held.refused" = "start {unit}"
+"unit.start.held.because" = "{amend} is open and holds {unit}, as a draft or in its set: it waits until {amend} is approved or withdrawn"
+"unit.start.held.do_this" = "Finish {amend} (`bf next` shows its step), or withdraw it with `bf amend withdraw {amend}`."
+"unit.start.held.worked_when" = "`bf next` lists {unit} as ready."
+
+"next.unit_parked.note" = "{id} is {state}; the human decides whether to re-plan, to release it (`bf unit release {id} --quote \"<the human's words>\"`) or to accept its findings (`bf unit accept {id} <F-ids> --quote \"<the human's words>\"`)."
+"next.unit_parked.refused" = " A request for files was refused ({refusal}): {files}. The plan repair is the human's."
+
+"wait.circle.note" = "{id} is blocked and waits for a file that a unit waiting for it holds: the circle {ring} (files {files}); no landing ends it. Open a plan repair that puts one of these units after the other, or moves the file: `bf amend open --repair {ids}`, change the records, `bf amend narrow --file <f>`, then ask for the judge. `bf next` shows the units at work again once it is approved."
+"wait.circle.open.line" = "{id}: in a circle of held files ({ring}); plan repair {amend} is open for it"
