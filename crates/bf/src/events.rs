@@ -2750,6 +2750,23 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                 }
             }
+            "unit.unblock" => {
+                // Only a `fixed` judgment moves the unit; rounds, attempts and the state it was
+                // blocked from stay, so a later loop still meets the park.
+                match st.units.get_mut(&sv("unit")).filter(|u| u.state == "blocked") {
+                    Some(u) => {
+                        if sv("judgment") == "fixed" {
+                            u.state = sv("to");
+                            u.last_seq = seq;
+                            u.last_at = at.clone();
+                        }
+                    }
+                    None => st.ignored.push(crate::strings::t(
+                        "unblock.ignored",
+                        &[("seq", &seq.to_string())],
+                    )),
+                }
+            }
             "unit.park" => {
                 let u = st.units.entry(sv("unit")).or_default();
                 if u.state != "parked" {

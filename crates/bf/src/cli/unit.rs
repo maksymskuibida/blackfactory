@@ -1,4 +1,4 @@
-//! `bf unit start|land|release|scope|pause|resume|accept|restore|format|sync`.
+//! `bf unit start|land|release|unblock|scope|pause|resume|accept|restore|format|sync`.
 
 use super::{out, project, Args};
 use crate::refusal::{refuse, R};
@@ -28,6 +28,10 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
                     )
                 })?;
             crate::scope::revert(&p, unit, n, args.flag("quote").unwrap_or(""))?
+        }
+        "unblock" => {
+            let why = args.flag("why").unwrap_or("");
+            run::unit_unblock(&p, unit, why, args.has("wait"), args.has("human"))?
         }
         "pause" => run::pause::unit_pause(&p, unit)?,
         "resume" => run::pause::unit_resume(&p, unit)?,
@@ -60,7 +64,7 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
             "{unit} is back at work ({})",
             v["state"].as_str().unwrap_or("")
         ),
-        "pause" | "resume" | "accept" | "restore" | "format" | "sync" => {
+        "unblock" | "pause" | "resume" | "accept" | "restore" | "format" | "sync" => {
             v["line"].as_str().unwrap_or("").to_string()
         }
         "scope" => format!(

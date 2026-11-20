@@ -4279,6 +4279,28 @@ fn agent_type(input: &Value) -> &str {
     input["agent_type"].as_str().unwrap_or("")
 }
 
+/// `bf unit unblock` is the conductor's own step (R-74 acceptance 21): a call whose payload names an
+/// agent type (every subagent, in a working copy or in the workspace) is refused. A stated limit: the
+/// guard trusts the harness's agent type as R-69 does, so a second top-level session that the harness
+/// does not mark as a subagent cannot be told from the conductor.
+fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
+    let hit = crate::shellparse::bf_calls(cmd).into_iter().any(|c| {
+        let rest = bf_rest(&c.words);
+        rest.first().map(|x| x.as_str()) == Some("unit")
+            && rest.get(1).map(|x| x.as_str()) == Some("unblock")
+    });
+    if !hit {
+        return None;
+    }
+    let t = |k: &str| crate::strings::t(k, &[("agent", agent)]);
+    Some(deny(
+        &t("unblock.guard.refused"),
+        &t("unblock.guard.because"),
+        &[&t("unblock.guard.step")],
+        &t("unblock.guard.worked"),
+    ))
+}
+
 /// What the repair judge may not do (U-63, R-69): every write tool, and the commands that put records,
 /// propose, narrow or approve an amendment, or issue a token. It cannot propose what it judges.
 fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
@@ -5096,6 +5118,11 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     };
     if agent_type(input) == crate::judge::AGENT_TYPE {
         if let Some(d) = judge_role_denial(tool, ti["command"].as_str().unwrap_or("")) {
+            return d;
+        }
+    }
+    if tool == "Bash" && !agent_type(input).is_empty() {
+        if let Some(d) = unblock_denial(agent_type(input), ti["command"].as_str().unwrap_or("")) {
             return d;
         }
     }
