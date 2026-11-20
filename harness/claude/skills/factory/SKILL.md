@@ -62,6 +62,7 @@ A fresh session knows nothing about the earlier one; the engine knows everything
 | `checkpoint.md` | Checkpoint actions, fixes, syncs, the end of a run, test mode |
 | `spaces-intents.md` | Spaces, intents, rules and notes of code knowledge |
 | `asking.md` | Asking the human, pages, how a report is written |
+| `repair.md` | The repair judge, the circle of held files, the plan's tests rule |
 | `roles.md` | The roles, their tokens, the commands the engine adds for them |
 
 ## Commands to know of

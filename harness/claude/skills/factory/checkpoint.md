@@ -15,6 +15,12 @@ A checkpoint is briefed to its verifier, its reviewer and its fix builder (`bf b
 
 Aborting a fix that has a built round is the human's choice; never abort it yourself. When the engine offers the fix designer, start it like any worker on the model its directive names (see `roles.md`). A fix that needs a plan change goes to the human as `decide-checkpoint-fix`.
 
+What to run on a checkpoint fix:
+- `--open`: `bf checkpoint fix <K> --open` opens a fix for a failed check of the checkpoint's current content when none is open. A failed format or lint check ends with no review round once every change is accounted for.
+- `scope`: a fix builder's request for files (`--need-files`) gives a scope reviewer directive. Start that reviewer like any worker, then relay its verdict list with `bf checkpoint scope <K> --verdict - --token <token>`. A `retry` goes back to the builder; a gap goes to the human.
+- `low`: low findings of a review are the human's: `bf checkpoint finding <K> --accept low --quote "<their words>"` accepts them together, `--fix-findings <ids>` picks some to be fixed.
+- The human may accept any finding of a parked fix or review in their own words.
+
 ## Syncs
 
 - `main_ahead` is information only. When the human asks to take main in (or to update from the remote): pull into the local main branch only if they said so, let running units land, then run `bf checkpoint sync <K> --quote "<their words>"` for the open checkpoint at the tip of the stack.
