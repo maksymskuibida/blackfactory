@@ -620,3 +620,184 @@ fn protected_paths_inside_the_reviewers_copy_stay_denied_to_the_reviewer() {
     let (d, _) = write_decision(&fx, &copy, &copy.join(".git/config"));
     assert_eq!(d, "deny");
 }
+
+#[test]
+fn checkpoint_review_settles_when_every_open_finding_is_accepted_and_asks_for_no_further_round() {
+    let fx = Fx::new();
+    project(&fx, "test -f src/a.txt");
+    brief_text(&fx);
+    let o = findings(
+        &fx,
+        json!([
+            {"title": "no edge case", "severity": "medium", "where": "src/a.txt:1", "action": "handle it"},
+            {"title": "a name", "severity": "low", "where": "src/a.txt:1", "action": "rename it"}
+        ]),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    assert!(directive(&fx, "decide-checkpoint-fix").is_some());
+    fx.human("The edge case never happens here, accept both.");
+    fx.must(&[
+        "checkpoint", "finding", "K-1", "--accept", "r1.1,r1.2", "--quote", "accept both",
+    ]);
+    // Every finding is accepted: the review is settled, no round 2 is asked for, nobody is asked again.
+    assert!(directive(&fx, "review-checkpoint").is_none());
+    assert!(directive(&fx, "decide-checkpoint-fix").is_none());
+    assert!(directive(&fx, "decide-low-findings").is_none());
+    // The engine goes on to the checkpoint's own checks, with no further review round.
+    let run = directive(&fx, "run-checkpoint-checks").expect("the checks run next");
+    assert_eq!(run["checks"], json!(["X-2"]), "{run}");
+}
+
+/// A reopen of the findings of `from` (an opening in the log) that cites `from` as the earlier words.
+fn again_event(from: Value) -> Value {
+    json!({"checkpoint": "K-1", "source": "review", "failed": [], "findings": from["findings"],
+        "finding_ids": from["finding_ids"],
+        "human": {"quote": from["human"]["quote"], "earlier": from["seq"]},
+        "allowed": [], "test_dirs": [], "units": [], "before": [], "content": from["content"],
+        "wave": 0, "from_saved": "", "opened_by": "reopen"})
+}
+
+#[test]
+fn checkpoint_review_a_fix_reopened_after_an_abort_keeps_the_humans_earlier_words() {
+    let fx = Fx::new();
+    project(&fx, "test -f src/a.txt");
+    brief_text(&fx);
+    let o = findings(
+        &fx,
+        json!([{"title": "no edge case", "severity": "high", "where": "src/a.txt:1", "action": "handle it"}]),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The fix was opened by the report, not by the human: no earlier words, so words are needed.
+    let o = fx.bf(&["checkpoint", "finding", "K-1", "--fix-findings", "r1.1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    fx.human("Yes, fix the edge case.");
+    fx.must(&[
+        "checkpoint", "finding", "K-1", "--fix-findings", "r1.1", "--quote", "fix the edge case",
+    ]);
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    // The same findings again need no new words: the human's earlier words stand.
+    let o = fx.must(&["checkpoint", "finding", "K-1", "--fix-findings", "r1.1"]);
+    assert!(o.stdout.contains("a fix opened"), "{}", o.all());
+    let open: Vec<Value> = fs::read_to_string(fx.root.join("factory/log/events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["kind"] == "checkpoint.fix.open" && e["human"]["quote"].is_string())
+        .collect();
+    assert_eq!(open.len(), 2, "{open:?}");
+    assert_eq!(open[0]["opened_by"], "pick", "{open:?}");
+    assert_eq!(open[1]["opened_by"], "reopen", "{open:?}");
+    assert_eq!(open[1]["human"]["earlier"], open[0]["seq"], "{open:?}");
+    assert_eq!(open[0]["human"]["quote"], open[1]["human"]["quote"], "{open:?}");
+    // The replay counts it: a fix is open for the finding, and no event of the log is ignored.
+    let st = bf::events::replay(&fx.project()).unwrap();
+    let f = st.ck_fix.expect("the reopened fix is open in the replayed state");
+    assert_eq!(f.phase, "fix");
+    assert_eq!(f.origin_ids, vec![(1, 1)]);
+    assert!(st.ignored.is_empty(), "{:?}", st.ignored);
+    assert!(directive(&fx, "fix-checkpoint").is_some());
+    // A second reopen with no abort between, and a reopen written while a fix is at work, are ignored: the
+    // reopened fix stays as it is, and one abort pays for one reopen.
+    let first_open_seq = f.open_seq;
+    let again = again_event(open[1].clone());
+    bf::events::append(&fx.project(), "checkpoint.fix.open", again).unwrap();
+    let st = bf::events::replay(&fx.project()).unwrap();
+    assert_eq!(st.ck_fix.unwrap().open_seq, first_open_seq, "a second reopen replaced the open fix");
+    assert!(
+        st.ignored.iter().any(|x| x.contains("earlier words")),
+        "{:?}",
+        st.ignored
+    );
+    // No fix is open and no abort came after the latest counted opening (the fix ended on its own): a reopen
+    // citing that opening is not counted either, so the abort rule stands on its own, apart from the holds.
+    let p = fx.project();
+    bf::events::append(
+        &p,
+        "checkpoint.fix.done",
+        json!({"checkpoint": "K-1", "files": [], "units": [], "by_file": {}, "marks": {}}),
+    )
+    .unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    assert!(st.ck_fix.is_none(), "the fix did not end");
+    let ignored_before = st.ignored.len();
+    bf::events::append(&p, "checkpoint.fix.open", again_event(open[1].clone())).unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    assert!(st.ck_fix.is_none(), "a reopen with no abort since the opening was counted");
+    assert_eq!(st.ignored.len(), ignored_before + 1, "{:?}", st.ignored);
+}
+
+#[test]
+fn checkpoint_review_a_reopen_citing_earlier_words_that_are_no_aborted_opening_is_ignored() {
+    let fx = Fx::new();
+    project(&fx, "test -f src/a.txt");
+    brief_text(&fx);
+    let o = findings(
+        &fx,
+        json!([{"title": "no edge case", "severity": "high", "where": "src/a.txt:1", "action": "handle it"}]),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    fx.human("Yes, fix the edge case.");
+    fx.must(&[
+        "checkpoint", "finding", "K-1", "--fix-findings", "r1.1", "--quote", "fix the edge case",
+    ]);
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    let log: Vec<Value> = fs::read_to_string(fx.root.join("factory/log/events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    let open = log
+        .iter()
+        .rev()
+        .find(|e| e["kind"] == "checkpoint.fix.open")
+        .unwrap()
+        .clone();
+    let p = fx.project();
+    let fake = |how: &str, human: Value| {
+        json!({"checkpoint": "K-1", "source": "review", "failed": [], "findings": open["findings"],
+               "finding_ids": open["finding_ids"], "human": human, "allowed": [],
+               "test_dirs": [], "units": [], "before": [], "content": open["content"], "wave": 0,
+               "from_saved": "", "opened_by": how})
+    };
+    let quote = open["human"]["quote"].clone();
+    // A reopen citing an opening that never existed.
+    bf::events::append(
+        &p,
+        "checkpoint.fix.open",
+        fake("reopen", json!({"quote": quote, "earlier": 999_999})),
+    )
+    .unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    assert!(st.ck_fix.is_none(), "a forged reopen opened a fix");
+    assert!(
+        st.ignored.iter().any(|x| x.contains("earlier words")),
+        "{:?}",
+        st.ignored
+    );
+    // An opening that is in the log but that the replay ignored (it cites a turn already used) is no earlier
+    // words either, even when a later fix of the same findings is aborted.
+    // A pick that cites a turn already used is in the log but the replay ignores it.
+    bf::events::append(&p, "checkpoint.fix.open", fake("pick", open["human"].clone())).unwrap();
+    let ignored_seq = bf::events::load_log(&p).unwrap().events.last().unwrap()["seq"]
+        .as_u64()
+        .unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    assert!(st.ck_fix.is_none(), "a pick that cites a used turn opened a fix");
+    // A genuine fix of the same findings, opened on new words and aborted, comes after the ignored opening.
+    fx.human("Once more, fix the edge case.");
+    fx.must(&[
+        "checkpoint", "finding", "K-1", "--fix-findings", "r1.1", "--quote", "fix the edge case",
+    ]);
+    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+    bf::events::append(
+        &p,
+        "checkpoint.fix.open",
+        fake("reopen", json!({"quote": quote, "earlier": ignored_seq})),
+    )
+    .unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    assert!(st.ck_fix.is_none(), "an ignored opening gave its words again");
+}

@@ -517,7 +517,7 @@ fn rounds_and_failing_attempts_count_against_the_unit_limits_and_a_parked_fix_go
         &["report", "K-1", "--role", "builder", "--result", "built"],
     );
     let findings =
-        json!([{"title": "again", "severity": "low", "where": "src/a.txt", "action": "x"}]);
+        json!([{"title": "again", "severity": "medium", "where": "src/a.txt", "action": "x"}]);
     for round in 1..=4 {
         let d = one_directive(&fx, "review-checkpoint-fix");
         assert_eq!(d["round"], round, "{d}");

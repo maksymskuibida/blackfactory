@@ -1,10 +1,8 @@
 //! The accept of findings on a parked review (D-91, H-23, H-24): the replay of `checkpoint.fix.finding.settle`
 //! and `unit.finding.accept`, and the stub of the fix review's command.
 
-use crate::events::{
-    decision_bound, decision_turn_ok, id_pairs, Accepted, Decide, State,
-};
-use crate::refusal::R;
+use crate::events::{self, decision_bound, decision_turn_ok, id_pairs, Accepted, Decide, State};
+use crate::refusal::{refuse_owned, R};
 use crate::store::Project;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -14,9 +12,103 @@ fn ignore(st: &mut State, key: &str, seq: u64) {
         .push(crate::strings::t(key, &[("seq", &seq.to_string())]));
 }
 
-/// Settle findings of the open fix's review in the human's own words. A stub: it writes nothing.
-pub fn settle_fix(_p: &Project, _checkpoint: &str, _ids: &[(u32, u32)], _quote: &str) -> R<Value> {
-    Ok(json!({}))
+/// Settle findings of the open fix's review in the human's own words (`bf checkpoint finding <K> --accept
+/// f1.2 --quote ...`). The accept counts only with a valid human turn after that review. When no open
+/// finding is left, the review is settled and the fix goes on to its checks and its end, with no further
+/// round (R-71). The engine lock is held by the caller.
+pub fn settle_fix(p: &Project, k: &str, ids: &[(u32, u32)], quote: &str) -> R<Value> {
+    let st = events::require_chain(p)?;
+    crate::run::need_run(&st)?;
+    let what = crate::strings::t("accept.fix.what", &[("k", k)]);
+    let bad = |because: String, step: String| {
+        refuse_owned(
+            what.clone(),
+            because,
+            vec![step],
+            crate::strings::t("accept.fix.check", &[("k", k)]),
+        )
+    };
+    let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
+        return Err(bad(
+            crate::strings::t("accept.fix.none_open", &[]),
+            crate::strings::t("accept.fix.step_status", &[]),
+        ));
+    };
+    if !matches!(f.phase.as_str(), "low" | "parked") {
+        return Err(bad(
+            crate::strings::t("accept.fix.not_waiting", &[("phase", &f.phase)]),
+            crate::strings::t("accept.fix.step_next", &[]),
+        ));
+    }
+    let open = crate::ckfix::open_ids(&f);
+    let names: Vec<String> = open.iter().map(|x| x.0.clone()).collect();
+    let mut levels = Vec::new();
+    for (r, i) in ids {
+        let id = format!("f{r}.{i}");
+        let Some((_, x)) = open.iter().find(|x| x.0 == id) else {
+            return Err(bad(
+                crate::strings::t("accept.fix.unknown", &[("id", &id)]),
+                crate::strings::t("accept.fix.step_open", &[("open", &names.join(", "))]),
+            ));
+        };
+        levels.push(x["severity"].as_str().unwrap_or("").to_string());
+    }
+    if ids.is_empty() {
+        return Err(bad(
+            crate::strings::t("accept.fix.none_named", &[]),
+            crate::strings::t("accept.fix.step_open", &[("open", &names.join(", "))]),
+        ));
+    }
+    let base = ids
+        .iter()
+        .flat_map(|(r, _)| {
+            f.round_seqs
+                .iter()
+                .filter(move |(round, _)| round == r)
+                .map(|(_, q)| *q)
+        })
+        .max()
+        .unwrap_or(0);
+    crate::run::observe_holds(p)?;
+    let st = events::require_chain(p)?;
+    let bound = match decision_bound(&st, k, base, u64::MAX) {
+        Ok(b) => b,
+        Err(h) => {
+            return Err(crate::ckreview::hold_refusal(
+                &crate::strings::t("accept.fix.hold_what", &[]),
+                k,
+                &h,
+            ))
+        }
+    };
+    let (turn, _) = events::pick_turn(&st, bound, Decide::Approve, quote)?;
+    events::append(
+        p,
+        "checkpoint.fix.finding.settle",
+        json!({"checkpoint": k, "fate": "accepted",
+               "ids": ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
+               "levels": levels, "turn": turn, "quote": quote.trim()}),
+    )?;
+    crate::ckfix::write_overlay(p)?;
+    p.write_guard()?;
+    // Every open finding is accepted: the review is settled as clean and the engine goes on.
+    let st = events::require_chain(p)?;
+    let mut v = json!({"checkpoint": k, "settled": ids.len(), "fate": "accepted"});
+    if let Some(g) = st
+        .ck_fix
+        .clone()
+        .filter(|g| g.checkpoint == k && crate::ckfix::settled(g))
+        .filter(|g| {
+            g.rounds_log.len() > f.rounds_log.len()
+                && g.rounds_log.last().map(|r| r["accepted"] == json!(true)) == Some(true)
+        })
+    {
+        let pl = crate::plan::load(p)?;
+        let end = crate::ckfix::go_on(p, &pl, &g)?;
+        v["settled_review"] = json!(true);
+        v["fix"] = end;
+    }
+    Ok(v)
 }
 
 /// Replay of `checkpoint.fix.finding.settle`: counts only with a valid human turn after the fix review
@@ -113,6 +205,8 @@ pub(crate) fn replay_fix(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, s
             // Every open finding is accepted: the review is settled as clean.
             o.rounds_log
                 .push(json!({"round": round, "result": "clean", "accepted": true}));
+            // The review is settled: the log of rounds ends with the accept, and `ckfix::settled` says the fix
+            // goes on to its checks and its end, never to another round.
             o.phase = "review".into();
             o.reason.clear();
         }
