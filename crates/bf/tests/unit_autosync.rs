@@ -48,7 +48,8 @@ fn syncs(fx: &Fx) -> Vec<Value> {
 }
 
 fn write(wc: &Path, file: &str, text: &str) {
-    fs::create_dir_all(wc.join("src")).unwrap();
+    let dir = wc.join(file).parent().map(|d| d.to_path_buf()).unwrap();
+    fs::create_dir_all(dir).unwrap();
     fs::write(wc.join(file), text).unwrap();
 }
 
