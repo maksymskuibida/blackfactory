@@ -752,13 +752,13 @@ fn repair_judge_an_existing_test_file_given_to_a_unit_is_refused() {
 
 #[test]
 fn repair_judge_a_glob_or_a_folder_under_a_tests_folder_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
-    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/*.rs", &[], 5))]);
-    refused_naming(&fx, &aid, "go", &["crates/bf/tests/*.rs", "U-1"]);
-    fx.must(&["amend", "withdraw", &aid, "--reason", "no"]);
-    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/more/", &[], 5))]);
-    refused_naming(&fx, &aid, "go", &["crates/bf/tests/more/", "U-1"]);
+    for path in ["crates/bf/tests/*.rs", "crates/bf/tests/more/"] {
+        let fx = Fx::new();
+        plan(&fx);
+        let file = format!("src/f1.txt\", \"{path}");
+        let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", &file, &[], 5))]);
+        refused_naming(&fx, &aid, "go", &[path, "U-1"]);
+    }
 }
 
 #[test]

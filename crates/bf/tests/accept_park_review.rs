@@ -153,6 +153,9 @@ fn accept_park_review_a_fix_parked_by_a_park_cannot_have_the_last_reviews_findin
     land_unit(&fx);
     let k = fx.work("K-1");
     fx.bf_in(&k, &["evidence", "run", "X-2", "--", "grep", "-q", "fixed", "src/a.txt"]);
+    // `bf next` opens the fix of the failed check.
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
     build(&fx, &k, "fixed\n");
     let low = |t: &str| json!({"title": t, "severity": "low", "where": "src/a.txt", "action": "tidy"});
     let o = fx.bf_stdin(
@@ -170,7 +173,7 @@ fn accept_park_review_a_fix_parked_by_a_park_cannot_have_the_last_reviews_findin
     .unwrap();
     fx.human("Both are fine, accept them.");
     let o = fx.bf(&[
-        "checkpoint", "finding", "K-1", "--accept", "low", "--quote", "Both are fine, accept them.",
+        "checkpoint", "finding", "K-1", "--accept", "f1.1,f1.2", "--quote", "Both are fine, accept them.",
     ]);
     assert_eq!(o.code, 2, "{}", o.all());
     assert!(o.stderr.contains("idle for 90 minutes"), "{}", o.all());
