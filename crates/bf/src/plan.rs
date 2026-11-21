@@ -120,7 +120,7 @@ pub fn load(p: &Project) -> R<Plan> {
         notes: vec![],
         bad,
     };
-    finish(p, &mut plan, &ids);
+    finish(p, &mut plan, &ids, &[]);
     Ok(plan)
 }
 
@@ -222,12 +222,15 @@ fn new_checks_by_marked_approvals(p: &Project) -> HashSet<String> {
 
 /// The plan problems of a plan the amendment's checkpoint operations would leave: the same check as
 /// `load`, on the edited units, handoffs, checkpoints and checks instead of the files (R-64).
+/// `reopened` are the units the approval would send back to work: they count as not landed for the
+/// clash rule, and no other unit does (the plan in force passes an empty list).
 pub fn problems_of_edited(
     p: &Project,
     base: &Plan,
     units: Vec<Value>,
     checkpoints: Vec<Value>,
     checks: Vec<Value>,
+    reopened: &[String],
 ) -> R<Vec<String>> {
     let mut ids: HashSet<String> = HashSet::new();
     for r in p.list_records(None)? {
@@ -264,14 +267,25 @@ pub fn problems_of_edited(
         notes: vec![],
         bad: base.bad.clone(),
     };
-    finish(p, &mut plan, &ids);
+    finish(p, &mut plan, &ids, reopened);
     Ok(plan.problems)
 }
 
-fn finish(p: &Project, plan: &mut Plan, ids: &HashSet<String>) {
-    analyse(p, plan, ids);
+fn finish(p: &Project, plan: &mut Plan, ids: &HashSet<String>, reopened: &[String]) {
+    let st = crate::events::replay(p).ok();
+    // Landed units are left out of the clash rule; with no log nothing counts as landed.
+    let landed: HashSet<String> = match &st {
+        Some(st) => plan
+            .units
+            .iter()
+            .map(|u| s(u, "id").to_string())
+            .filter(|id| st.unit_state(id) == "landed" && !reopened.contains(id))
+            .collect(),
+        None => HashSet::new(),
+    };
+    analyse(p, plan, ids, &landed);
     // A required named check appears in the plan as a check record that names it.
-    if let Ok(st) = crate::events::replay(p) {
+    if let Some(st) = st {
         // Decided means the log says so: a recorded setting for the project default or for a run. A
         // run begun before the engine knew the checks does not decide them.
         let decided = crate::checks::decided(&st);
@@ -339,7 +353,7 @@ fn question_problems(pl: &Plan, st: &State) -> Vec<String> {
     out
 }
 
-fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
+fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>, landed: &HashSet<String>) {
     let mut bad: Vec<String> = Vec::new();
     let unit_ids: HashSet<String> = pl.units.iter().map(|u| s(u, "id").to_string()).collect();
     let cp_ids: HashSet<String> = pl
@@ -635,6 +649,9 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
             let (a, b) = (&ids[i], &ids[j]);
             let cp = cp_of(a);
             if cp.is_empty() || cp != cp_of(b) || repo_of(a) != repo_of(b) {
+                continue;
+            }
+            if landed.contains(a) || landed.contains(b) {
                 continue;
             }
             if depends_transitively(&deps_of, a, b) || depends_transitively(&deps_of, b, a) {

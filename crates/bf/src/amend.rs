@@ -1034,14 +1034,18 @@ pub fn edit_of(p: &Project, st: &State, ops: &[Value]) -> R<Edit> {
 }
 
 /// The plan problems the result has that the plan on disk does not.
-pub fn result_problems(p: &Project, e: &Edit) -> R<Vec<String>> {
+/// The units the approval of `a` would send back to work count as not landed on the result's side.
+pub fn result_problems(p: &Project, a: &Amend, e: &Edit) -> R<Vec<String>> {
     let base = crate::plan::load(p)?;
+    let st = crate::events::replay(p)?;
+    let reopened = crate::gates::reopen_units_of(&e.units, &st, a);
     let after = crate::plan::problems_of_edited(
         p,
         &base,
         e.units.clone(),
         e.cps.clone(),
         e.checks.clone(),
+        &reopened,
     )?;
     Ok(after
         .into_iter()
@@ -1051,7 +1055,7 @@ pub fn result_problems(p: &Project, e: &Edit) -> R<Vec<String>> {
 
 /// Refuse approval when the plan check finds a problem in what the operations would leave.
 pub fn refuse_if_result_breaks_plan(p: &Project, a: &Amend, e: &Edit) -> R<()> {
-    let problems = result_problems(p, e)?;
+    let problems = result_problems(p, a, e)?;
     if problems.is_empty() {
         return Ok(());
     }
