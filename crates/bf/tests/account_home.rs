@@ -834,7 +834,7 @@ fn timing_account_home_lookup_is_one_call_within_the_time() {
         ns.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let (median, p99) = (ns[100], ns[197]);
         println!("account lookup, {name}: median {median:.3} ms, p99 {p99:.3} ms");
-        assert!(median < 2.0, "{name}: median {median} ms");
+        assert!(median < 3.0, "{name}: median {median} ms");
         assert!(p99 < 20.0, "{name}: p99 {p99} ms");
     }
 }

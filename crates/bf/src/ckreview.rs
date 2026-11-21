@@ -1282,10 +1282,7 @@ pub fn judge(
 }
 
 /// The review rounds of every checkpoint, for `bf status`.
-pub fn status_json(p: &Project, st: &State) -> Value {
-    let Ok(pl) = plan::load(p) else {
-        return json!([]);
-    };
+pub fn status_json(p: &Project, st: &State, pl: &Plan) -> Value {
     let mut out = Vec::new();
     for kr in &pl.checkpoints {
         let k = s(kr, "id");
