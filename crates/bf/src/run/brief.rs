@@ -264,13 +264,34 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             Some(l) => {
                 md.push_str("This is a later round. The findings above are every earlier finding with its outcome: check that each open one is fixed, and start from the changes made since the content the round before judged. Do not review the whole scope again when nothing points there. You may file a new finding on what changed, on something a fix broke, or on anything you came across while following a change.\n\n");
                 let head = l["head"].as_str().unwrap_or("");
-                if !head.is_empty() {
+                if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
+                    let lines: Vec<&str> = d.lines().collect();
+                    let shown = if lines.len() > 400 {
+                        format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        )
+                    } else {
+                        d.clone()
+                    };
+                    md.push_str(&format!(
+                        "### {}\n\n{}\n\n```diff\n{}\n```\n\n",
+                        crate::strings::t("land_conflict.review.title", &[]),
+                        crate::strings::t("land_conflict.review.intro", &[("files", &files.join(", "))]),
+                        shown
+                    ));
+                } else if !head.is_empty() {
                     let d = gitx::must(&wc, &["diff", head]).unwrap_or_default();
                     let lines: Vec<&str> = d.lines().collect();
                     md.push_str(&format!(
                         "### Changes since round {}\n\n```diff\n{}\n```\n\n",
                         l["round"],
-                        if lines.len() > 400 { format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400) } else { d.clone() }
+                        if lines.len() > 400 { format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        ) } else { d.clone() }
                     ));
                 }
             }

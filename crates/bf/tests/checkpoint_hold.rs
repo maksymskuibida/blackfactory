@@ -742,6 +742,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("build", "neither"),
     ("fix", "neither"),
     ("review", "neither"),
+    ("security-audit", "neither"),
     ("land", "neither"),
     ("decide-unit", "neither"),
     ("reconsider", "neither"),

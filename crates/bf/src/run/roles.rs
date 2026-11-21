@@ -39,6 +39,10 @@ pub(crate) fn role_report(
         ev["threats_hash"] = json!(crate::enforce::threats_hash(p)?);
     }
     events::append(p, "unit.role-report", ev)?;
+    // The audit a reviewer asked for ends with the auditor's report, built or blocked (D-117).
+    if r == expert::ROLE && st.unit_state(subject) == "review" {
+        expert::close(p, subject, (result == "blocked").then_some(note))?;
+    }
     let state = if outside_run {
         String::new()
     } else {

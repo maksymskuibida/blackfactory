@@ -1,0 +1,11 @@
+# Strings of the group `expert_request`: keys are quoted and flat, `"run.expert.some.key" = "text"`.
+# U-105 (D-117): a reviewer of a unit asks for a security audit with a finding.
+
+"run.expert.answered" = "The security audit answered this ask."
+"run.expert.not_done" = "The security audit was not done: {reason}"
+"run.expert.not_done_no_reason" = "The security audit was not done: the auditor gave no reason."
+"run.expert.brief_heading" = "What the reviewer asks you to look at"
+"run.expert.brief_item" = "### {id} {title}"
+"run.expert.brief_where" = "Where: {where}"
+"run.expert.note" = "The reviewer of {unit} asked for a security audit ({finding}); report built when the audit is done, blocked when it cannot be."
+"cli.schema.finding.asks_security_unit" = "a finding that asks for a security audit names the `unit` it is about"

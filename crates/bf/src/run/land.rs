@@ -143,24 +143,6 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             &["commit", "-q", "-m", &format!("{unit}: {}", s(u, "title"))],
         )?;
     }
-    // Scope: every changed path must be inside the unit's files.
-    let diff = gitx::must(
-        &repo.path,
-        &["diff", "--name-only", &format!("{cpb}...{ub}")],
-    )?;
-    let scope = crate::scope::unit_files(&st, u);
-    let outside: Vec<&str> = diff
-        .lines()
-        .filter(|f| !scope.iter().any(|g| util::path_matches(g, f)))
-        .collect();
-    if !outside.is_empty() {
-        return Err(refuse(
-            format!("land {unit}"),
-            format!("the branch changes files outside the unit's scope: {}", outside.join(", ")),
-            &["Revert those changes in the working copy (`git checkout -- <file>` or remove them), commit, and run the checks again.", "If the scope is wrong, the human changes the plan."],
-            "`git diff --name-only` lists only files inside the scope.",
-        ));
-    }
     crate::scope::landing_check(&st, unit, &repo.path, &format!("{cpb}...{ub}"))?;
     let cpwt = ensure_checkpoint_worktree(p, &k, &repo)?;
     if !gitx::is_ancestor(&repo.path, &ub, &cpb) {
@@ -178,6 +160,11 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             &[],
         )?;
         if !out.ok {
+            let files: Vec<String> = gitx::must(&cpwt, &["diff", "--name-only", "--diff-filter=U"])
+                .unwrap_or_default()
+                .lines()
+                .map(String::from)
+                .collect();
             // Put the working copy back exactly as it was before the merge started.
             let _ = gitx::run(&cpwt, &["merge", "--abort"], &[]);
             let _ = gitx::run(&cpwt, &["reset", "--hard", &before], &[]);
@@ -193,12 +180,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
                     "`bf unit land` prints the merge.",
                 ));
             }
-            return Err(refuse(
-                format!("land {unit}"),
-                format!("the merge into {cpb} conflicts: {first}"),
-                &["Rebase or merge the checkpoint branch into the unit's working copy and resolve the conflict there.", "Run the checks again, then `bf unit land` again."],
-                "`bf unit land` prints the merge.",
-            ));
+            return back_to_builder(p, unit, &k, &cpb, files);
         }
     }
     crash_point("land-after-merge");
@@ -213,4 +195,56 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
     Ok(
         json!({"unit": unit, "landed": true, "checkpoint": k, "branch": cpb, "merge": tip, "content_hash": content}),
     )
+}
+
+/// The merge into the checkpoint branch conflicts: the unit goes from `reviewed` back to its builder, who
+/// gets the checkpoint branch in the working copy with the conflict left there. No attempt is counted.
+fn back_to_builder(p: &Project, unit: &str, k: &str, cpb: &str, files: Vec<String>) -> R<Value> {
+    use crate::strings::t;
+    let named = files.join(", ");
+    let note = t(
+        "land_conflict.note",
+        &[("unit", unit), ("checkpoint", cpb), ("files", &named)],
+    );
+    let protected = p.protected_paths();
+    if files
+        .iter()
+        .any(|f| protected.iter().any(|g| crate::util::path_matches(g, f)))
+    {
+        return Err(refuse_owned(
+            t("land_conflict.what", &[("unit", unit)]),
+            t(
+                "land_conflict.aborted.because",
+                &[("checkpoint", cpb), ("files", &named)],
+            ),
+            vec![t("land_conflict.aborted.step", &[("unit", unit)])],
+            &t("land_conflict.worked_aborted", &[]),
+        ));
+    }
+    events::append(
+        p,
+        "unit.report",
+        json!({
+            "unit": unit, "result": "conflict", "role": "engine", "from": "reviewed",
+            "to": "fixing", "note": note, "cost": 0.0, "findings": [],
+            "conflicts": files, "checkpoint": k,
+        }),
+    )?;
+    let st = events::replay(p)?;
+    let _ = unit_sync::take_in_for_land(p, &st, unit);
+    p.write_guard()?;
+    brief::write_brief(p, unit, "builder");
+    let steps = vec![
+        t("land_conflict.step.back", &[("unit", unit)]),
+        t("land_conflict.step.land", &[("unit", unit)]),
+    ];
+    Err(refuse_owned(
+        t("land_conflict.what", &[("unit", unit)]),
+        t(
+            "land_conflict.because",
+            &[("checkpoint", cpb), ("files", &named)],
+        ),
+        steps,
+        &t("land_conflict.worked", &[]),
+    ))
 }
