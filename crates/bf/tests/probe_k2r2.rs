@@ -1,4 +1,4 @@
-//! Probes of the K-2 checkpoint review, round 2, kept as permanent tests.
+//! Probes of the K-2 checkpoint review, round 2.
 
 mod common;
 use common::*;
