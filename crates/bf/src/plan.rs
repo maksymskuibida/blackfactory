@@ -595,7 +595,7 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
             ));
         }
     }
-    // Units in one wave share no files of the same repository.
+    // Units of one checkpoint that can run together share no files of the same repository.
     let scopes: HashMap<String, Vec<(String, String)>> = pl
         .units
         .iter()
@@ -616,20 +616,37 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>) {
             .and_then(|u| p.repo_of_unit(u).ok().map(|r| r.name.clone()))
             .unwrap_or_default()
     };
-    for (w, members) in &pl.waves() {
-        for i in 0..members.len() {
-            for j in i + 1..members.len() {
-                if repo_of(&members[i]) != repo_of(&members[j]) {
-                    continue;
-                }
-                for (na, fa) in &scopes[&members[i]] {
-                    for (nb, fb) in &scopes[&members[j]] {
-                        if util::norm_overlap(na, nb) {
-                            bad.push(format!(
-                                "wave {w}: {} and {} both touch `{fa}` / `{fb}`",
-                                members[i], members[j]
-                            ));
-                        }
+    let deps_of: HashMap<String, Vec<String>> = pl
+        .units
+        .iter()
+        .map(|u| (s(u, "id").to_string(), str_list(u, "depends_on")))
+        .collect();
+    let mut ids: Vec<String> = deps_of.keys().cloned().collect();
+    ids.sort();
+    let cp_of = |id: &str| -> String {
+        pl.units
+            .iter()
+            .find(|u| s(u, "id") == id)
+            .map(|u| s(u, "checkpoint").to_string())
+            .unwrap_or_default()
+    };
+    for i in 0..ids.len() {
+        for j in i + 1..ids.len() {
+            let (a, b) = (&ids[i], &ids[j]);
+            let cp = cp_of(a);
+            if cp.is_empty() || cp != cp_of(b) || repo_of(a) != repo_of(b) {
+                continue;
+            }
+            if depends_transitively(&deps_of, a, b) || depends_transitively(&deps_of, b, a) {
+                continue;
+            }
+            for (na, fa) in &scopes[a] {
+                for (nb, fb) in &scopes[b] {
+                    if util::norm_overlap(na, nb) {
+                        bad.push(crate::strings::t(
+                            "cli.plan_waves.clash",
+                            &[("checkpoint", &cp), ("a", a), ("b", b), ("fa", fa), ("fb", fb)],
+                        ));
                     }
                 }
             }
