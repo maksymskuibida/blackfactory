@@ -6131,7 +6131,7 @@ mod tests {
             !bash("git merge origin/x", "/p/.bf/work/U-1"),
             "a unit's working copy takes in no other branch's commits"
         );
-        assert!(bash("git revert HEAD", "/p/.bf/work/U-1"));
+        assert!(!bash("git revert HEAD", "/p/.bf/work/U-1"), "a revert is no allowed form in a copy");
         assert!(!bash("git fetch . bf/K-1:main", "/p"));
         assert!(!bash("git pull", "/p"));
         assert!(!bash("git reset --hard", "/p"));
