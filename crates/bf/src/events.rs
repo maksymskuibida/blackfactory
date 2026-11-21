@@ -351,6 +351,8 @@ pub struct Turn {
     /// What the harness's transcript said about this prompt when it was recorded:
     /// `match`, `differs`, `unparsed` or `absent`. Information only.
     pub transcript: String,
+    /// The session the hook saw the message in; empty for an older record.
+    pub session: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1012,6 +1014,11 @@ pub struct State {
     pub accepted: Vec<Accepted>,
     /// Orders between units set after the plan was made: `{unit, after, path, seq}`.
     pub orders: Vec<Value>,
+    /// The run's human-absent flag (R-72, D-94).
+    pub absent: crate::absent::Flag,
+    /// The sessions the log marks as started by another session, and every session the hook has seen.
+    pub absent_nested: std::collections::BTreeSet<String>,
+    pub absent_known: std::collections::BTreeSet<String>,
 }
 
 impl State {
@@ -1387,6 +1394,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
         match ev["kind"].as_str().unwrap_or("") {
             "human.turn" | "human.turn.rejected" => st.human_events += 1,
             "project.init" | "head.accept" | "policy.accept" => {}
+            k if k.starts_with("absent.") => {}
             _ => st.work_events += 1,
         }
         let kind = ev["kind"].as_str().unwrap_or("");
@@ -1402,7 +1410,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     at: at.clone(),
                     used: machine,
                     transcript: sv("transcript"),
+                    session: sv("session"),
                 });
+                crate::absent::replay_turn(&mut st, seq);
+            }
+            "absent.session" | "absent.set" | "absent.stay" | "absent.release" => {
+                crate::absent::replay(&mut st, &turn_ix, ev, seq, &at);
             }
             "gate.open" => {
                 st.gates.push(Gate {

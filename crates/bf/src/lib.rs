@@ -1,5 +1,6 @@
 //! Black Factory engine library. The `bf` binary is a thin wrapper over `cli::main_with`.
 
+pub mod absent;
 pub mod accept;
 pub mod adapter;
 pub mod amend;

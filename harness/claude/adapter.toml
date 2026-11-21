@@ -26,3 +26,16 @@ programs = ["claude"]
 
 # The folder of the harness's transcripts.
 transcript_dir = "~/.claude/projects"
+
+# The forms of the command with which the human says that they are absent (R-72, D-93). A message whose
+# whole text is one of them, recorded by the hook as the human's, sets the run's flag.
+absent_commands = ["/factory:human-absent"]
+
+# The forms a started session's first message begins with: the brief another session gives it (D-94).
+nested_forms = [
+  "Task (from the session that started this one):",
+  "Background (from the session that started this one):",
+]
+
+# The permission modes of the harness in which a tool asks the human before it runs.
+ask_modes = ["default", "plan", "acceptEdits"]

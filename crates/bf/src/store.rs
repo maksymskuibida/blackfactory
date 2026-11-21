@@ -353,12 +353,42 @@ impl Default for EvidencePol {
 pub struct GuardPol {
     pub allow: String,
     pub protected_extra: Vec<String>,
+    /// Names or prefixes of tools that run a command line or a script, added to the adapter's list (U-69).
+    pub command_tools: Vec<String>,
+    /// Names or prefixes of tools that type or send a message, added to the adapter's list (U-69).
+    pub input_tools: Vec<String>,
 }
 impl Default for GuardPol {
     fn default() -> Self {
         GuardPol {
             allow: "abstain".into(),
             protected_extra: vec![],
+            command_tools: vec![],
+            input_tools: vec![],
+        }
+    }
+}
+
+/// The `[absent]` section: the human-absent flag (R-72, D-93).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct AbsentPol {
+    /// false: the command sets nothing and says so.
+    pub enabled: bool,
+    pub judge_turns: u32,
+    pub deny_tools: Vec<String>,
+    pub stop_guard: bool,
+    /// Read by the judge of findings (U-74).
+    pub judge_findings: bool,
+}
+impl Default for AbsentPol {
+    fn default() -> Self {
+        AbsentPol {
+            enabled: true,
+            judge_turns: 3,
+            deny_tools: vec![],
+            stop_guard: true,
+            judge_findings: true,
         }
     }
 }
@@ -547,6 +577,7 @@ pub struct Policy {
     pub ledger: LedgerPol,
     pub evidence: EvidencePol,
     pub guard: GuardPol,
+    pub absent: AbsentPol,
     pub unit_checks: UnitChecksPol,
 }
 
@@ -1491,6 +1522,12 @@ impl Project {
                 {"words": ["git", "update-ref"], "reason": "Branch pointers are moved by the engine only."},
                 {"words": ["git", "merge"], "reason": "Merging onto a checkpoint branch or the main branch is done by `bf unit land` and `bf checkpoint close`.", "outside_units_only": true}
             ],
+            "command_tools": self.policy.guard.command_tools,
+            "input_tools": self.policy.guard.input_tools,
+            "absent": match state.as_ref() {
+                Some(s) => json!({"on": crate::absent::is_on(s), "returning": s.absent.returning.keys().collect::<Vec<_>>()}),
+                None => json!({"on": false, "returning": Vec::<String>::new()}),
+            },
             "transcript_root": self.transcript_root(),
             "gen": gen,
             "state_dir": self.state_dir().to_string_lossy(),

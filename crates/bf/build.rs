@@ -74,7 +74,13 @@ fn adapter_data(manifest: &Path, out_dir: &Path) {
     ] {
         writeln!(out, "    {k}: {:?},", text_of(k)).unwrap();
     }
-    for k in ["subagent_fields", "programs"] {
+    for k in [
+        "subagent_fields",
+        "programs",
+        "absent_commands",
+        "nested_forms",
+        "ask_modes",
+    ] {
         writeln!(out, "    {k}: &{:?},", list_of(k)).unwrap();
     }
     out.push_str("};\n");
