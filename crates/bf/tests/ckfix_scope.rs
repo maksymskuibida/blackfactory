@@ -141,7 +141,8 @@ fn ckfix_scope_a_fix_that_needs_two_existing_test_files_is_granted_with_no_amend
 {
     let fx = Fx::new();
     let k = open_fix(&fx);
-    assert_eq!(guard_says(&fx, &k, "tests/attacks.rs"), "deny");
+    // The list is only a recommendation now: the guard allows the write before any grant.
+    assert_ne!(guard_says(&fx, &k, "tests/attacks.rs"), "deny");
     let o = ask(
         &fx,
         &k,
@@ -182,7 +183,7 @@ fn ckfix_scope_a_fix_that_needs_two_existing_test_files_is_granted_with_no_amend
     assert_eq!(d["granted"].as_array().unwrap().len(), 2, "{d}");
     assert_ne!(guard_says(&fx, &k, "tests/attacks.rs"), "deny");
     assert_ne!(guard_says(&fx, &k, "tests/common/mod.rs"), "deny");
-    assert_eq!(guard_says(&fx, &k, "src/other.txt"), "deny");
+    assert_ne!(guard_says(&fx, &k, "src/other.txt"), "deny");
     let p = fx.project();
     let st = bf::events::replay(&p).unwrap();
     assert_eq!(bf::fixscope::granted(&st, "K-1").len(), 2);
