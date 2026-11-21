@@ -165,12 +165,22 @@ fn resolve(p: &str, cwd: &str) -> String {
     }
 }
 
+/// What follows `base` in `path`, when `path` is `base` or lies below it. Names are compared without
+/// regard to ASCII case, as on a volume that folds case; a name part that only looks like an ASCII one
+/// (a long s, the Kelvin sign) is refused by `has_lookalike` where a path is judged.
 fn under<'a>(path: &'a str, base: &str) -> Option<&'a str> {
     let base = base.trim_end_matches('/');
-    if path == base {
+    if path.len() < base.len() || !path.is_char_boundary(base.len()) {
+        return None;
+    }
+    if !path[..base.len()].eq_ignore_ascii_case(base) {
+        return None;
+    }
+    let rest = &path[base.len()..];
+    if rest.is_empty() {
         return Some("");
     }
-    path.strip_prefix(base).and_then(|r| r.strip_prefix('/'))
+    rest.strip_prefix('/')
 }
 
 struct Zone<'a> {
@@ -3237,6 +3247,11 @@ fn covers_protected(table: &Value, abs: &str) -> Option<String> {
         return None;
     }
     let base = abs.trim_end_matches('/');
+    // A name below the project that only looks like an ASCII one can be a protected folder on a volume
+    // that folds case: it covers one as well.
+    if under(base, root).is_some_and(has_lookalike) {
+        return Some(format!("{root}/.claude"));
+    }
     let mut places = vec![root.to_string()];
     places.extend(other_repos(table).into_iter().map(|r| format!("{r}/.git")));
     for e in table["protected"]
@@ -3272,7 +3287,7 @@ fn covers_protected(table: &Value, abs: &str) -> Option<String> {
     // A place strictly below the target (the root itself counts as a place, for targets above it).
     places
         .into_iter()
-        .find(|p| p.len() > base.len() && p.starts_with(base) && p[base.len()..].starts_with('/'))
+        .find(|p| p.len() > base.len() && under(p, base).is_some_and(|r| !r.is_empty()))
 }
 
 fn cover_denial(abs: &str, hit: &str, prog: &str, t: &str) -> Decision {
@@ -4092,6 +4107,12 @@ fn judge_text_path(
 /// config (aliases and hooks included), so none is set on a command line, by `env` or by `export`.
 fn git_env_assignment(w: &str) -> bool {
     let w = w.trim_start_matches(['"', '\'']);
+    // The programs git starts for an editor, a pager or a browser come from these as well.
+    for n in ["EDITOR", "VISUAL", "PAGER", "BROWSER"] {
+        if w.strip_prefix(n).is_some_and(|r| r.starts_with('=')) {
+            return true;
+        }
+    }
     let Some(rest) = w.strip_prefix("GIT_") else {
         return false;
     };
@@ -4113,6 +4134,90 @@ fn git_path_is_not_literal(dir: &str, word: &str) -> bool {
         || word.ends_with('/')
         || word.split('/').any(|c| c == "..")
         || Path::new(dir).join(word).is_dir()
+}
+
+/// Long options a read-only, `add`, `commit`, `rm` or `mv` call may carry, named in full (a value comes
+/// after `=`). None writes a file, runs a program, reads paths from a file or reaches another tree.
+const GIT_LONG_OK: &[&str] = &[
+    "--oneline",
+    "--stat",
+    "--numstat",
+    "--shortstat",
+    "--name-only",
+    "--name-status",
+    "--no-color",
+    "--color",
+    "--short",
+    "--branch",
+    "--porcelain",
+    "--cached",
+    "--staged",
+    "--all",
+    "--graph",
+    "--decorate",
+    "--abbrev-commit",
+    "--no-abbrev-commit",
+    "--pretty",
+    "--format",
+    "--abbrev",
+    "--max-count",
+    "--since",
+    "--until",
+    "--author",
+    "--follow",
+    "--merges",
+    "--no-merges",
+    "--first-parent",
+    "--reverse",
+    "--date",
+    "--relative",
+    "--no-renames",
+    "--summary",
+    "--patch",
+    "--no-patch",
+    "--unified",
+    "--verify",
+    "--show-toplevel",
+    "--abbrev-ref",
+    "--is-inside-work-tree",
+    "--list",
+    "--dry-run",
+    "--verbose",
+    "--quiet",
+    "--update",
+    "--intent-to-add",
+    "--message",
+    "--amend",
+    "--no-edit",
+    "--allow-empty",
+    "--no-verify",
+    "--recursive",
+    "--force",
+    "--stdin",
+    "--no-filters",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--ignore-space-change",
+    "--check",
+    "--untracked-files",
+];
+
+/// Short options, bundled or not, that take no program, file or tree: only these letters may appear.
+const GIT_SHORT_OK: &str = "aAunvqsmplrfkUwbz0123456789";
+
+/// Are the options before `--` all named in full from `GIT_LONG_OK`, and every short bundle made of
+/// letters from `GIT_SHORT_OK`? A word that is not an option is a value or a path, judged elsewhere.
+fn options_are_plain(rest: &[&str]) -> bool {
+    rest.iter().take_while(|a| **a != "--").all(|a| {
+        if let Some(long) = a.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or("");
+            GIT_LONG_OK.contains(&format!("--{name}").as_str())
+        } else if let Some(short) = a.strip_prefix('-') {
+            short.chars().all(|c| GIT_SHORT_OK.contains(c))
+        } else {
+            true
+        }
+    })
 }
 
 /// What a git command run from a working copy may be. An allow-list: the read-only forms, `add`,
@@ -4146,19 +4251,13 @@ fn wc_git_gate(dir: &str, w: &[String], i: usize, sub: &str, rest: &[&str]) -> O
     match sub {
         "status" | "diff" | "log" | "show" | "rev-parse" | "ls-files" | "ls-tree" | "blame"
         | "describe" | "shortlog" | "cat-file" | "merge-base" | "rev-list" | "diff-tree"
-        | "show-ref" | "for-each-ref" | "name-rev" | "grep" | "diff-files" | "diff-index"
+        | "show-ref" | "for-each-ref" | "name-rev" | "diff-files" | "diff-index"
         | "check-ignore" | "version" | "hash-object" | "update-index" | "checkout-index"
         | "add" | "commit" => {
-            // Output to a file, and a pager program, are writes and runs the guard does not judge.
-            if rest.iter().any(|a| {
-                a.starts_with("--output")
-                    || a.starts_with("--open-files-in-pager")
-                    || *a == "-O"
-                    || a.starts_with("-O")
-                    || a.starts_with("--ext-diff")
-                    || a.starts_with("--pathspec-from-file")
-                    || a.starts_with("--pathspec-file-nul")
-            }) {
+            // Index plumbing keeps its own judge below; every other form takes only options named in
+            // full from a short list: git accepts abbreviated long options and bundled short ones, so
+            // a block-list of the dangerous names (`--output`, `--ext-diff`, `-O`) would miss `--out`.
+            if !matches!(sub, "update-index" | "checkout-index") && !options_are_plain(rest) {
                 return refuse("guard_recommended.git.option");
             }
             None
@@ -4185,18 +4284,16 @@ fn wc_git_gate(dir: &str, w: &[String], i: usize, sub: &str, rest: &[&str]) -> O
             }
         }
         "rm" | "mv" => {
-            if rest.iter().any(|a| {
-                a.starts_with(':')
-                    || a.starts_with("--pathspec-from-file")
-                    || a.starts_with("--pathspec-file-nul")
-            }) {
+            if !options_are_plain(rest) || rest.iter().any(|a| a.starts_with(':')) {
                 refuse("guard_recommended.git.pathspec")
             } else {
                 None
             }
         }
         "stash" => {
-            if matches!(rest.first(), Some(&"list") | Some(&"show")) {
+            if matches!(rest.first(), Some(&"list") | Some(&"show"))
+                && options_are_plain(&rest[1..])
+            {
                 None
             } else {
                 refuse("guard_recommended.git.sub")
@@ -5294,6 +5391,15 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             .iter()
                             .chain(tp.dest.iter().filter(|d| !goes_into_folder(&tp, d, &start)))
                             .collect(),
+                        // A copy onto a name that is no folder yet makes that name: `cp -r evil .claude` makes the
+                        // protected folder out of `evil`.
+                        "cp" | "rsync" | "install" => tp
+                            .dest
+                            .iter()
+                            .filter(|d| {
+                                target_abs(d, &start).map_or(true, |a| !Path::new(&a).is_dir())
+                            })
+                            .collect(),
                         // A link that replaces a folder (`ln -sfn x .claude`) takes it with it; a link
                         // made inside a folder does not.
                         "ln" => tp
@@ -6131,7 +6237,10 @@ mod tests {
             !bash("git merge origin/x", "/p/.bf/work/U-1"),
             "a unit's working copy takes in no other branch's commits"
         );
-        assert!(!bash("git revert HEAD", "/p/.bf/work/U-1"), "a revert is no allowed form in a copy");
+        assert!(
+            !bash("git revert HEAD", "/p/.bf/work/U-1"),
+            "a revert is no allowed form in a copy"
+        );
         assert!(!bash("git fetch . bf/K-1:main", "/p"));
         assert!(!bash("git pull", "/p"));
         assert!(!bash("git reset --hard", "/p"));

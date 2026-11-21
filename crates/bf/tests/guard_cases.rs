@@ -264,7 +264,8 @@ fn table() -> Vec<Case> {
         c(56, Wc, Refused, "git switch main"),
         c(57, Wc, Passed, "git reset HEAD src/hello.txt"),
         c(58, Wc, Passed, "git reset --hard"),
-        // Not judged, stated in docs/engine.md: the paths live inside the patch or the stash.
+        // The paths live inside the patch or the stash, and the guard does not read them: refused in a copy
+        // (docs/engine.md still lists these as not judged; it is outside this unit and is to be updated).
         c(59, Wc, Refused, "git apply /tmp/p.patch"),
         c(60, Wc, Refused, "git stash pop"),
         c(61, Wc, Passed, "patch -p1 < /tmp/p.patch"),

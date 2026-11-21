@@ -632,3 +632,101 @@ fn in_a_workspace_copy_the_harness_and_factory_folders_are_closed_too() {
         assert_ne!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
     }
 }
+
+#[test]
+fn git_options_are_taken_by_exact_name_and_git_grep_is_out() {
+    let (fx, wc) = unit_place();
+    for cmd in [
+        "git grep pattern",
+        "git grep -iO'sh -c id' pattern",
+        "git grep --open='sh -c id' pattern",
+        "git grep --open-files-in-pager=cmd p",
+        "git diff --out=x",
+        "git diff --output=x",
+        "git diff --ext",
+        "git diff --ext-diff",
+        "git log --output=x",
+        "git log --out=factory/policy.toml",
+        "git show --ext-diff HEAD",
+        "git diff --pathspec-from=x",
+        "git diff -O orderfile",
+        "git diff -iO'sh -c id'",
+        "git diff -o x",
+        "git log -L1,2:src/a.rs",
+        "git branch -D x",
+        "git branch -d x",
+        "git branch -m x",
+        "git branch newbranch",
+        "git add --chmod=+x src/a.rs",
+        "git add --pathspec-from-file=x",
+        "git commit -F msg.txt",
+        "git commit -e",
+        "git commit --template=x",
+        "EDITOR='sh -c id' git commit",
+        "VISUAL=x git commit",
+        "PAGER='sh -c id' git log",
+        "env PAGER=x git log",
+        "git rm --pathspec-from-file=x",
+        "git rm -fO x",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    for cmd in [
+        "git diff --stat",
+        "git log --oneline --max-count=3",
+        "git log -n3",
+        "git show --stat HEAD",
+        "git status --short",
+        "git status -sb",
+        "git commit -am x",
+        "git commit --amend --no-edit",
+        "git add -A",
+        "git add -u",
+        "git diff --cached --name-only",
+        "git ls-files --cached",
+        "git rm -r --cached src/a.rs",
+        "git mv src/a.rs src/b.rs",
+    ] {
+        assert_ne!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+}
+
+#[test]
+fn a_case_variant_of_a_protected_folder_is_covered_by_every_writer() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    fs::create_dir_all(wc.join("evil")).unwrap();
+    fs::write(wc.join("evil/settings.json"), "{}\n").unwrap();
+    for cmd in [
+        "mv evil .CLAUDE",
+        "mv evil .Claude",
+        "mv evil .BF",
+        "mv evil FACTORY",
+        "mv evil Factory/records",
+        "mv evil .CLAUDE/skills",
+        "mv evil .claude/\u{17F}kills",
+        "cp -r evil .CLAUDE",
+        "cp -R evil .Claude/",
+        "cp -rT evil .CLAUDE",
+        "cp -a evil FACTORY",
+        "ln -s evil .CLAUDE",
+        "ln -sfn /tmp/x .Claude",
+        "rm -rf .CLAUDE",
+        "rm -rf .Claude/skills",
+        "rm -rf FACTORY",
+        "rm -rf Factory/Records",
+        "install -d .CLAUDE",
+        "install -m 644 evil/settings.json .CLAUDE/settings.json",
+        "rsync -a evil/ .CLAUDE/",
+        "rsync -a evil .Claude",
+        "rsync -a --delete evil/ FACTORY/",
+        "chmod -R 777 .CLAUDE",
+        "find .CLAUDE -delete",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    assert_ne!(bash(&fx, &wc, "mv evil build"), "deny");
+}
