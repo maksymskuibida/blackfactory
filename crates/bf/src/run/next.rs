@@ -45,6 +45,7 @@ fn directive_kind(d: &Value) -> &'static str {
         "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
         "reviewer" => "reviewer",
         "verifier" => "verifier",
+        "security-auditor" => "reviewer",
         _ => "conductor",
     }
 }
@@ -342,6 +343,11 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 super::unblock::decorate(p, &st, &id, &mut d);
                 super::unit_sync::decorate(p, &id, &mut d);
                 directives.push(d);
+            }
+            "review" if super::expert::asked(p, &st, &id)?.is_some() => {
+                let ask = super::expert::asked(p, &st, &id)?.unwrap_or_default();
+                directives.push(super::expert::directive(&id, &ask, &wc, &brief(super::expert::ROLE),
+                    limits(rounds), &p.policy.tiers.reviewer));
             }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
                 "working_copy": wc, "brief": brief("reviewer"), "limits": limits(rounds),

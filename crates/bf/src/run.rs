@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 mod brief;
 mod checkpoint;
+pub mod expert;
 mod land;
 mod next;
 pub(crate) mod pause;
@@ -222,7 +223,8 @@ pub fn stuck(p: &Project, dry: bool) -> R<Value> {
             && !pause::idle_exempt(p, &st, id)
         {
             let idle = now.saturating_sub(util::parse_rfc3339(&u.last_at));
-            if idle > limit {
+            let asked = u.state == "review" && expert::asked(p, &st, id)?.is_some();
+            if idle > expert::park_limit(limit, asked) {
                 parked
                     .push(json!({"unit": id, "reason": format!("idle for {} minutes", idle / 60)}));
             }
