@@ -342,7 +342,7 @@ fn land_merge_after_a_crash_the_next_landing_puts_back_only_the_turns_own_merges
     commit_in(&fx.work("K-1"), "by_hand.txt");
     built(&fx, "2", "src/b.txt", "two\n");
     built(&fx, "3", "src/c.txt", "three\n");
-    let o = fx.bf_env(&fx.root, &["unit", "land", "U-2"], "", &[("BF_CRASH_AT", "land-after-merge")]);
+    let o = fx.bf_env(&fx.root, &["unit", "land", "U-2"], "", &[("BF_CRASH_AT", "land-detached")]);
     assert_eq!(o.code, 137, "{}", o.all());
     assert!(mark(&fx).exists());
     let k = fx.work("K-1");

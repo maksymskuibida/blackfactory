@@ -235,7 +235,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
             }
         }
     }
-    crash_point("land-after-merge");
+    crash_point("land-detached");
 
     // The check, once, with only the turn's lock held.
     drop(eng);
@@ -333,6 +333,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     for (_, wt) in &cps {
         gitx::must(wt, &["checkout", "-q", "-B", &cpb, "HEAD"])?;
     }
+    crash_point("land-after-merge");
     for (r, tip, merged_hash) in &landed {
         events::append(
             p,
