@@ -101,10 +101,7 @@ pub fn replay(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, seq: u64, at
     match ev["kind"].as_str().unwrap_or("") {
         "absent.session" => {
             // The first mark of a session stands; a later one never changes it.
-            if !session.is_empty()
-                && st.absent_known.insert(session.clone())
-                && ev["nested"] == true
-            {
+            if !session.is_empty() && st.absent_known.insert(session.clone()) && ev["nested"] == true {
                 st.absent_nested.insert(session);
             }
         }
