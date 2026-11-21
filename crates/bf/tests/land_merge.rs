@@ -278,6 +278,7 @@ fn land_merge_the_unit_whose_merged_content_fails_twice_goes_to_its_builder() {
     assert!(sent["note"].as_str().unwrap().contains("land_merge::bad"), "{sent}");
     let brief = fs::read_to_string(fx.project().briefs_dir().join("U-2-builder.md")).unwrap();
     assert!(brief.contains("land_merge::bad"), "{brief}");
+    assert!(brief.contains("Fix the failing tests") && !brief.contains("Resolve the conflict"), "{brief}");
     // U-2's merge is out of the branch.
     assert!(!fx.work("K-1").join("src/bad.txt").exists());
     assert!(fx.work("K-1").join("src/c.txt").exists());
