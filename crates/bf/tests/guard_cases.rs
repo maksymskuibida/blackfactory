@@ -127,7 +127,7 @@ fn table() -> Vec<Case> {
             21,
             Wc,
             Refused,
-            "python3 -c \"open('src/other.txt','w').write('x')\"",
+            "python3 -c \"open('factory/policy.toml','w').write('x')\"",
         ),
         c(22, Wc, Refused, "tar xf /tmp/a.tar"),
         c(23, Wc, Refused, "unzip /tmp/a.zip"),
@@ -229,13 +229,13 @@ fn table() -> Vec<Case> {
             45,
             Wc,
             Refused,
-            "python3 -c \"from pathlib import Path; Path('src/other.txt').unlink()\"",
+            "python3 -c \"from pathlib import Path; Path('factory/policy.toml').unlink()\"",
         ),
         c(
             46,
             Wc,
             Refused,
-            "python3 -c \"import os; os.rename('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import os; os.rename('/tmp/x','factory/policy.toml')\"",
         ),
         // A variable the line does not assign is refused in any folder position, not only the first.
         c(47, Root, Refused, "echo x > ./$UNKNOWN/policy.toml"),
@@ -273,49 +273,49 @@ fn table() -> Vec<Case> {
             62,
             Wc,
             Refused,
-            "python3 -c \"import os; os.replace('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import os; os.replace('/tmp/x','factory/policy.toml')\"",
         ),
         c(
             63,
             Wc,
             Refused,
-            "python3 -c \"import shutil; shutil.move('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import shutil; shutil.move('/tmp/x','factory/policy.toml')\"",
         ),
         c(
             64,
             Wc,
             Refused,
-            "python3 -c \"import shutil; shutil.copy('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import shutil; shutil.copy('/tmp/x','factory/policy.toml')\"",
         ),
         c(
             65,
             Wc,
             Refused,
-            "python3 -c \"import os; os.symlink('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import os; os.symlink('/tmp/x','factory/policy.toml')\"",
         ),
         c(
             66,
             Wc,
             Refused,
-            "node -e \"require('fs').cpSync('/tmp/x','src/other.txt')\"",
+            "node -e \"require('fs').cpSync('/tmp/x','factory/policy.toml')\"",
         ),
         c(
             67,
             Wc,
             Refused,
-            "ruby -e \"File.write('src/other.txt','x')\"",
+            "ruby -e \"File.write('factory/policy.toml','x')\"",
         ),
         c(
             68,
             Wc,
             Refused,
-            "awk 'BEGIN{print 1 > \"src/other.txt\"}'",
+            "awk 'BEGIN{print 1 > \"factory/policy.toml\"}'",
         ),
         c(
             69,
             Wc,
             Refused,
-            "python3 -c \"open(('src/other.txt'),'w').write('x')\"",
+            "python3 -c \"open(('factory/policy.toml'),'w').write('x')\"",
         ),
         // Code that runs a string: `trap`, `source` of standard input or a process substitution, and a
         // shell given a process substitution, are read like `eval`.
@@ -651,46 +651,45 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         assert_ne!(d, "deny", "should pass: {cmd}\n{why}");
     }
     let refuses: &[(Place, &str)] = &[
-        // A backup is only removed beside a file the unit may touch.
-        (Wc, "rm -f src/other.txt.bak"),
-        (Wc, "rm -f src/other.txt"),
+        // A file outside the unit's list is a file of its copy; a protected one is not.
+        (Wc, "rm -f factory/policy.toml"),
         (
             Wc,
-            "python3 -c \"from pathlib import Path; Path('src/other.txt').write_text('')\"",
+            "python3 -c \"from pathlib import Path; Path('factory/policy.toml').write_text('')\"",
         ),
         (
             Wc,
-            "python3 -c \"from pathlib import Path; Path('src/other.txt').write_text('hello')\"",
+            "python3 -c \"from pathlib import Path; Path('factory/policy.toml').write_text('hello')\"",
         ),
         (
             Wc,
-            "python3 -c \"from pathlib import Path; Path('src/other.txt').touch()\"",
+            "python3 -c \"from pathlib import Path; Path('factory/policy.toml').touch()\"",
         ),
         (
             Wc,
-            "python3 -c \"import shutil; shutil.copyfile('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import shutil; shutil.copyfile('/tmp/x','factory/policy.toml')\"",
         ),
         (
             Wc,
-            "python3 -c \"import shutil; shutil.copy2('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import shutil; shutil.copy2('/tmp/x','factory/policy.toml')\"",
         ),
         (
             Wc,
-            "python3 -c \"import os; os.rename('/tmp/x','src/other.txt')\"",
+            "python3 -c \"import os; os.rename('/tmp/x','factory/policy.toml')\"",
         ),
         (
             Wc,
-            "node -e \"require('fs').copyFileSync('/tmp/x','src/other.txt')\"",
+            "node -e \"require('fs').copyFileSync('/tmp/x','factory/policy.toml')\"",
         ),
         (
             Wc,
-            "node -e \"require('fs').renameSync('/tmp/x','src/other.txt')\"",
+            "node -e \"require('fs').renameSync('/tmp/x','factory/policy.toml')\"",
         ),
         (
             Root,
             "python3 -c \"import shutil; shutil.copyfile('/tmp/x','factory/policy.toml')\"",
         ),
-        (Wc, "python3 -c \"import os; os.remove('src/other.txt')\""),
+        (Wc, "python3 -c \"import os; os.remove('factory/policy.toml')\""),
         (Root, "rm factory/policy.toml.bak"),
         (Root, "ln factory/policy.toml hard"),
     ];
@@ -850,11 +849,9 @@ fn a_copy_into_a_folder_of_a_working_copy_is_judged_on_the_file_that_lands() {
         &fx,
         &wc,
         &strings(&[
-            "cp /tmp/other.txt src/",
-            "cp -t src /tmp/other.txt",
-            "cp /tmp/a.txt /tmp/hello.txt src/",
-            "mv /tmp/other.txt src/",
-            "cp /tmp/hello.txt .",
+            "cp /tmp/other.txt factory/",
+            "cp -t factory /tmp/other.txt",
+            "mv /tmp/other.txt factory/",
         ]),
         "refused",
     );
@@ -888,12 +885,9 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
         &fx,
         &wc,
         &strings(&[
-            "chmod +x src/other.txt",
-            "chmod -w src/other.txt",
-            "chmod 755 other.sh",
-            "truncate -s 0 src/other.txt",
-            "touch -t 202401010000 src/other.txt",
-            "mkdir -m 755 other",
+            "chmod -w factory/policy.toml",
+            "truncate -s 0 factory/policy.toml",
+            "touch -t 202401010000 factory/policy.toml",
             "chmod +x factory/policy.toml",
         ]),
         "refused",
@@ -981,12 +975,9 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
             "rm -rf .",
             "rm -rf ./",
             "find . -delete",
-            "find . -name other.txt -delete",
-            "find src -name '*.orig' -delete",
             "git rm -r .",
             "find . -exec sh -c 'echo x > \"$1\"' _ {} \\;",
-            "rm -rf src",
-            "rm other.txt",
+            "rm -rf factory",
         ]),
         "refused",
     );
@@ -1075,8 +1066,8 @@ fn a_filtered_find_that_hands_matches_to_writing_code_is_judged_as_a_delete() {
         &fx,
         &wc,
         &strings(&[
-            "find src -name '*.txt' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
-            "find src -name '*.txt' -exec sh -c 'rm $1' _ {} +",
+            "find factory -name '*.toml' -exec python3 -c 'import os,sys; os.remove(sys.argv[1])' {} +",
+            "find factory -name '*.toml' -exec sh -c 'rm $1' _ {} +",
         ]),
         "refused",
     );

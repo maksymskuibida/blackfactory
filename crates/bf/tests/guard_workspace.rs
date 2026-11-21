@@ -230,12 +230,12 @@ fn a_delete_through_a_variable_is_held_to_the_file_scope_in_a_working_copy() {
     refused(
         &fx,
         &wc,
-        "ruby -e \"f=File.open('src/other.txt'); File.delete(f)\"",
+        "ruby -e \"f=File.open('factory/policy.toml'); File.delete(f)\"",
     );
     refused(
         &fx,
         &wc,
-        "ruby -e \"f=File.open('docs/x.md'); File.delete(f)\"",
+        "ruby -e \"f=File.open('factory/records/x.toml'); File.delete(f)\"",
     );
     passes(
         &fx,
@@ -271,7 +271,7 @@ fn node_unlink_through_a_variable_is_held_to_the_file_scope() {
     refused(
         &fx,
         &wc,
-        "node -e \"const p='src/other.txt'; require('fs').unlinkSync(p)\"",
+        "node -e \"const p='factory/policy.toml'; require('fs').unlinkSync(p)\"",
     );
     passes(
         &fx,
@@ -355,7 +355,7 @@ fn a_printed_word_with_a_period_and_a_joined_path_pass_in_a_working_copy() {
     refused(
         &fx,
         &wc,
-        "python3 -c \"import os; p=os.path.join('src','other.txt'); os.remove(p)\"",
+        "python3 -c \"import os; p=os.path.join('factory','policy.toml'); os.remove(p)\"",
     );
 }
 

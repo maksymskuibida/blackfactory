@@ -289,7 +289,7 @@ fn the_same_writers_pass_where_they_write_elsewhere_or_only_read() {
 }
 
 #[test]
-fn a_writer_in_a_unit_is_held_to_the_units_file_scope() {
+fn a_writer_in_a_unit_may_write_a_file_outside_its_list_but_not_a_protected_one() {
     let (fx, wc) = setup();
     for cmd in [
         "sort -o src/other.txt in.txt",
@@ -297,8 +297,14 @@ fn a_writer_in_a_unit_is_held_to_the_units_file_scope() {
         "split in.txt src/part-",
         "ed README.md",
     ] {
-        let why = refused(&fx, &wc, cmd);
-        assert!(why.contains("file scope"), "{cmd}: {why}");
+        passes(&fx, &wc, cmd);
+    }
+    for cmd in [
+        "sort -o factory/policy.toml in.txt",
+        "gzip factory/policy.toml",
+        "split in.txt factory/part-",
+    ] {
+        refused(&fx, &wc, cmd);
     }
 }
 
@@ -317,11 +323,13 @@ fn a_variable_assigned_again_later_does_not_hide_a_protected_target() {
 }
 
 #[test]
-fn a_wildcard_target_in_a_unit_is_held_to_the_file_scope() {
+fn a_wildcard_target_in_a_unit_is_judged_by_where_it_leads() {
     let (fx, wc) = setup();
     for cmd in ["rm -f src/*.rs", "rm -rf src/*"] {
-        let why = refused(&fx, &wc, cmd);
-        assert!(why.contains("file scope"), "{cmd}: {why}");
+        passes(&fx, &wc, cmd);
+    }
+    for cmd in ["rm -f factory/*.toml", "rm -rf factory/*"] {
+        refused(&fx, &wc, cmd);
     }
 }
 
@@ -330,8 +338,8 @@ fn a_compressor_option_value_is_not_a_file() {
     let (fx, wc) = setup();
     passes(&fx, &wc, "xz -T 4 src/hello.txt");
     passes(&fx, &wc, "zstd -b 9 src/hello.txt");
-    let why = refused(&fx, &wc, "xz -T 4 src/other.txt");
-    assert!(why.contains("file scope"), "{why}");
+    passes(&fx, &wc, "xz -T 4 src/other.txt");
+    refused(&fx, &wc, "xz -T 4 factory/policy.toml");
 }
 
 // ------------------------------------------------ the third review of the first checkpoint
@@ -342,8 +350,7 @@ fn an_in_place_edit_with_an_empty_suffix_word_is_read_with_its_files() {
     passes(&fx, &wc, "sed -i '' 's/hello/bye/' src/hello.txt");
     passes(&fx, &wc, "sed -i '' -e 's/hello/bye/' src/hello.txt");
     passes(&fx, &wc, "sed -i.bak 's/hello/bye/' src/hello.txt");
-    let why = refused(&fx, &wc, "sed -i '' 's/a/b/' src/other.txt");
-    assert!(why.contains("file scope"), "{why}");
+    passes(&fx, &wc, "sed -i '' 's/a/b/' src/other.txt");
     refused(&fx, &fx.root, "sed -i '' 's/a/b/' factory/policy.toml");
     refused(&fx, &wc, "sed -i '' 's/a/b/' ../../../factory/policy.toml");
 }
@@ -434,8 +441,8 @@ fn a_writer_started_through_xargs_is_judged_by_its_input() {
         passes(&fx, &fx.root, cmd);
     }
     passes(&fx, &wc, "echo src/hello.txt | xargs touch");
-    let why = refused(&fx, &wc, "echo src/other.txt | xargs touch");
-    assert!(why.contains("file scope"), "{why}");
+    passes(&fx, &wc, "echo src/other.txt | xargs touch");
+    refused(&fx, &wc, "echo factory/policy.toml | xargs touch");
     let why = refused(&fx, &wc, "find . -name '*.tmp' | xargs rm");
     assert!(why.contains("xargs"), "{why}");
     assert!(why.contains("Name the files"), "{why}");

@@ -62,7 +62,7 @@ fn judge(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
 }
 
 /// p4b: a unit's file list changed inside a plan repair that the human has not approved grants no
-/// file: the guard refuses the write, and the unit does not land on it.
+/// file: the guard refuses the write of a protected path, and the unit does not land on it.
 #[test]
 fn probe_p4b_a_file_list_changed_in_an_unapproved_repair_grants_nothing() {
     let fx = Fx::new();
@@ -76,7 +76,7 @@ fn probe_p4b_a_file_list_changed_in_an_unapproved_repair_grants_nothing() {
     let put = fx.bf(&["record", "put", "unit", "--file", f.to_str().unwrap(), "--replace"]);
     let _ = fs::remove_file(&f);
     fs::create_dir_all(wc.join("src")).unwrap();
-    let (d, why) = judge(&fx, &wc, "echo x > src/other.txt");
+    let (d, why) = judge(&fx, &wc, "echo x > factory/policy.toml");
     assert_eq!(d, "deny", "put {}: the draft file list granted a write: {why}", put.code);
     fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
     let run = fx.bf_in(&wc, &["evidence", "run", "X-1", "--unit", "U-1", "--", "test", "-f", "src/hello.txt"]);

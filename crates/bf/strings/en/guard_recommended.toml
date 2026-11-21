@@ -1,0 +1,13 @@
+# Strings of the guard once a file list is a recommendation (D-115, D-116).
+
+"guard_recommended.protected.step" = "Change only files inside your working copy that are not protected."
+"guard_recommended.protected.worked" = "The path is a file of your working copy outside the protected paths."
+"guard_recommended.outside.step" = "Write only inside your working copy."
+"guard_recommended.whole.because" = "{part} would {verb} {abs}, the whole working copy, and with it files you did not name"
+"guard_recommended.whole.step1" = "Name the files you mean, for example `rm src/old.rs`."
+"guard_recommended.whole.step2" = "To discard your own changes use `git restore <file>` on a file you changed."
+"guard_recommended.whole.worked" = "The command names files inside your working copy, not the working copy itself."
+"guard_recommended.checkout.because" = "a checkout onto the main branch or an engine branch brings in files that only the engine joins (`bf unit land`)"
+"guard_recommended.idle.because" = "the working copy of {id} is not at work: its unit has landed or is parked, so nothing is written in it"
+"guard_recommended.idle.step" = "Write inside the working copy of your own unit."
+"guard_recommended.idle.worked" = "The path starts with the folder of a working copy that is at work."

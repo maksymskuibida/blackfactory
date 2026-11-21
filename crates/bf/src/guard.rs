@@ -163,10 +163,10 @@ struct Zone<'a> {
     id: &'a str,
     base: String,
     files: Vec<String>,
-    /// Paths that existed when a checkpoint fix opened: a fix may not overwrite them unless a unit lists them.
-    existing: Vec<String>,
     /// A sync of the main branch into this checkpoint is waiting for its resolver or reviewer.
     sync: bool,
+    /// The working copy is in the signed table: a unit running or fixing, or a checkpoint's copy.
+    at_work: bool,
 }
 
 fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
@@ -195,15 +195,8 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            existing: w["existing"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
             sync: w["sync"].as_bool().unwrap_or(false),
+            at_work: true,
         },
         None => {
             // A working copy of a unit that has landed is no longer in the table. It is still a unit's
@@ -219,8 +212,8 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                                 id: name,
                                 base: format!("{}/{}", wp.trim_end_matches('/'), name),
                                 files: vec![],
-                                existing: vec![],
                                 sync: false,
+                                at_work: false,
                             };
                         }
                         if !name.starts_with("K-") {
@@ -229,8 +222,8 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                                 id: name,
                                 base: format!("{}/{}", wp.trim_end_matches('/'), name),
                                 files: vec![],
-                                existing: vec![],
                                 sync: false,
+                                at_work: false,
                             };
                         }
                     }
@@ -241,8 +234,8 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
                 id: "",
                 base: table["root"].as_str().unwrap_or("").to_string(),
                 files: vec![],
-                existing: vec![],
                 sync: false,
+                at_work: false,
             }
         }
     }
@@ -351,8 +344,8 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
                 return deny(
                     &format!("write {rel} in a code repository"),
                     "git hooks and git config belong to git and the human",
-                    &["Change only files inside your unit's working copy."],
-                    "The path is inside your unit's `files` list.",
+                    &[&crate::strings::t("guard_recommended.protected.step", &[])],
+                    &crate::strings::t("guard_recommended.protected.worked", &[]),
                 );
             }
             if here.kind == "unit" || here.kind == "checkpoint" {
@@ -391,7 +384,8 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
                 "`bf record get <id>` shows the change you asked the engine to make.",
             );
         }
-        if here.kind == "unit" {
+        if here.kind == "unit" || (here.kind == "checkpoint" && here.sync && !here.files.is_empty())
+        {
             return deny(
                 &format!("write {rel}"),
                 &format!(
@@ -409,8 +403,8 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
         return deny(
             &format!("write {rel} in {}", zone.id),
             "that path belongs to the engine, the human or git, not to a unit's work",
-            &["Change only files inside the unit's scope."],
-            "The path is inside the unit's `files` list.",
+            &[&crate::strings::t("guard_recommended.protected.step", &[])],
+            &crate::strings::t("guard_recommended.protected.worked", &[]),
         );
     }
     if zone.kind == "review" {
@@ -425,11 +419,9 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "The path starts with your own working copy's folder.",
         );
     }
-    if zone.kind == "checkpoint"
-        && zone.files.iter().any(|g| util::path_matches(g, rel))
-        && !zone.existing.iter().any(|e| e == rel)
-    {
-        // An open sync or checkpoint fix: the builder writes the files the engine named, and only those.
+    if zone.kind == "checkpoint" && zone.sync && !zone.files.is_empty() {
+        // An open sync (its resolver) or an open checkpoint fix: the list is a recommendation, so the
+        // builder writes any file of this working copy that is not protected (D-115, D-116).
         return allow();
     }
     if zone.kind == "checkpoint" {
@@ -448,21 +440,15 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "The path starts with your working copy's folder.",
         );
     }
-    if !zone.files.iter().any(|g| util::path_matches(g, rel)) {
+    if !zone.at_work {
         return deny(
-            &format!("write {rel}"),
-            &format!(
-                "it is outside the file scope of {}: {}",
-                zone.id,
-                zone.files.join(", ")
-            ),
-            &[
-                "Keep to the files the unit lists.",
-                "If the scope is too small, tell the conductor; only the human changes the plan.",
-            ],
-            "The path matches one of the unit's `files` entries.",
+            &format!("write {rel} in {}", zone.id),
+            &crate::strings::t("guard_recommended.idle.because", &[("id", zone.id)]),
+            &[&crate::strings::t("guard_recommended.idle.step", &[])],
+            &crate::strings::t("guard_recommended.idle.worked", &[]),
         );
     }
+    // A unit at work (the table holds only those): its list is a recommendation, not a limit.
     allow()
 }
 
@@ -4037,6 +4023,16 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         "switch" | "read-tree" if in_unit => {
             return why("switching branches or reading another tree into the working copy brings in files outside the unit's scope; the engine joins the branches (`bf unit land`)");
         }
+        // A checkout that names the main branch or an engine branch moves the working copy onto it.
+        "checkout" if in_unit => {
+            let before_paths: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
+            if before_paths
+                .iter()
+                .any(|a| *a == main_branch || a.starts_with(prefix) || a.starts_with("origin/"))
+            {
+                return why(&crate::strings::t("guard_recommended.checkout.because", &[]));
+            }
+        }
         "reset" if in_unit => {
             let before_paths: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
             let hard = before_paths
@@ -4080,10 +4076,10 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
                     &format!("run `git {sub}` that {s}"),
                     "a file of a working copy made into a symbolic link, or written without a name, can lead a later write to a place outside the unit's scope or to a protected place",
                     &[
-                        "Change files with the editing tools, inside the unit's files.",
+                        "Change files with the editing tools, inside your working copy.",
                         "Name each path on the command line; `git hash-object -w` and `git add <file>` stay open.",
                     ],
-                    "The command names only paths inside your unit's files and makes no link.",
+                    "The command names only paths inside your working copy and makes no link.",
                 )
             };
             if sub == "update-index" {
@@ -5028,7 +5024,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                 "{part} would write {abs}, which is somewhere else in the project; you work in {}",
                                 here.base
                             ),
-                            &["Write only inside your working copy, in the files your unit may touch."],
+                            &[&crate::strings::t("guard_recommended.outside.step", &[])],
                             "Every path you write is inside your working copy.",
                         );
                         }
@@ -5053,12 +5049,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                 };
                                 return deny(
                                     &format!("{verb} the whole working copy"),
-                                    &format!("{part} would {verb} {abs}, the whole working copy, and with it files outside the file scope of {}", here.id),
+                                    &crate::strings::t(
+                                        "guard_recommended.whole.because",
+                                        &[
+                                            ("part", part.as_str()),
+                                            ("verb", verb),
+                                            ("abs", abs.as_str()),
+                                        ],
+                                    ),
                                     &[
-                                        "Name the files you mean, inside the scope, for example `rm src/old.rs`.",
-                                        "To discard your own changes use `git restore <file>` on a file in scope.",
+                                        &crate::strings::t("guard_recommended.whole.step1", &[]),
+                                        &crate::strings::t("guard_recommended.whole.step2", &[]),
                                     ],
-                                    "The command names only paths inside your unit's files.",
+                                    &crate::strings::t("guard_recommended.whole.worked", &[]),
                                 );
                             }
                             let checked = match &pattern {
