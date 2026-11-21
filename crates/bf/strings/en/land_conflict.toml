@@ -7,7 +7,8 @@
 "land_conflict.step.land" = "After the builder's report the unit gets one review round on the resolution; run `bf unit land {unit}` after a clean one."
 "land_conflict.worked" = "`bf status` shows the unit `fixing`, and landing goes on after one clean review round."
 "land_conflict.aborted.because" = "the merge into {checkpoint} conflicts in a protected path no builder may write: {files}"
-"land_conflict.aborted.step" = "The sync of {unit} was aborted and its working copy is as it was. The human resolves the conflict in those files."
+"land_conflict.aborted.step" = "{unit} stays reviewed and its working copy is as it was. The human resolves the conflict in those files."
+"land_conflict.worked_aborted" = "`bf status` shows the unit still `reviewed`; no attempt was counted."
 "land_conflict.note" = "landing {unit} into {checkpoint} conflicts in: {files}"
 
 "land_conflict.brief.title" = "Sent back from landing"
@@ -16,3 +17,4 @@
 
 "land_conflict.review.title" = "What the builder changed while resolving the landing conflict"
 "land_conflict.review.intro" = "The unit was sent back from landing because its merge conflicted in: {files}. The diff below is only what the builder changed in those files against what git merges by itself, not what the merge brought in from other units. Judge the resolution."
+"land_conflict.review.more" = "... ({count} more lines)"

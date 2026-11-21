@@ -267,7 +267,11 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                 if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
                     let lines: Vec<&str> = d.lines().collect();
                     let shown = if lines.len() > 400 {
-                        format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400)
+                        format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        )
                     } else {
                         d.clone()
                     };
@@ -283,7 +287,11 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                     md.push_str(&format!(
                         "### Changes since round {}\n\n```diff\n{}\n```\n\n",
                         l["round"],
-                        if lines.len() > 400 { format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400) } else { d.clone() }
+                        if lines.len() > 400 { format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        ) } else { d.clone() }
                     ));
                 }
             }

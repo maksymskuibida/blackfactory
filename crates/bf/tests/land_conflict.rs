@@ -144,9 +144,10 @@ fn land_conflict_a_conflict_in_a_protected_path_is_aborted_and_named() {
     let o = fx.bf(&["unit", "land", "U-2"]);
     assert_ne!(o.code, 0, "{}", o.all());
     assert!(o.all().contains(".claude/settings.json") && o.all().contains("protected"), "{}", o.all());
-    let sync = log(&fx).into_iter().rev().find(|e| e["kind"] == "unit.sync").unwrap();
-    assert_eq!(sync["how"], "aborted");
-    assert_eq!(sync["files"], serde_json::json!([".claude/settings.json"]));
+    // The unit stays reviewed: no report moved it, no attempt was counted, no sync was written.
+    let u2 = state(&fx, "U-2");
+    assert_eq!((u2.state.as_str(), u2.attempts), ("reviewed", 0));
+    assert!(!log(&fx).iter().any(|e| e["kind"] == "unit.report" && e["role"] == "engine" && e["unit"] == "U-2"));
     assert!(!merging(&w2));
     assert_eq!(fs::read_to_string(w2.join(".claude/settings.json")).unwrap(), "two\n");
 }

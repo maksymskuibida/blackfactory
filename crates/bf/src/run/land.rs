@@ -160,12 +160,11 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
             &[],
         )?;
         if !out.ok {
-            let files: Vec<String> =
-                gitx::must(&cpwt, &["diff", "--name-only", "--diff-filter=U"])
-                    .unwrap_or_default()
-                    .lines()
-                    .map(String::from)
-                    .collect();
+            let files: Vec<String> = gitx::must(&cpwt, &["diff", "--name-only", "--diff-filter=U"])
+                .unwrap_or_default()
+                .lines()
+                .map(String::from)
+                .collect();
             // Put the working copy back exactly as it was before the merge started.
             let _ = gitx::run(&cpwt, &["merge", "--abort"], &[]);
             let _ = gitx::run(&cpwt, &["reset", "--hard", &before], &[]);
@@ -207,6 +206,21 @@ fn back_to_builder(p: &Project, unit: &str, k: &str, cpb: &str, files: Vec<Strin
         "land_conflict.note",
         &[("unit", unit), ("checkpoint", cpb), ("files", &named)],
     );
+    let protected = p.protected_paths();
+    if files
+        .iter()
+        .any(|f| protected.iter().any(|g| crate::util::path_matches(g, f)))
+    {
+        return Err(refuse_owned(
+            t("land_conflict.what", &[("unit", unit)]),
+            t(
+                "land_conflict.aborted.because",
+                &[("checkpoint", cpb), ("files", &named)],
+            ),
+            vec![t("land_conflict.aborted.step", &[("unit", unit)])],
+            &t("land_conflict.worked_aborted", &[]),
+        ));
+    }
     events::append(
         p,
         "unit.report",
@@ -217,25 +231,19 @@ fn back_to_builder(p: &Project, unit: &str, k: &str, cpb: &str, files: Vec<Strin
         }),
     )?;
     let st = events::replay(p)?;
-    let synced = unit_sync::take_in_for_land(p, &st, unit);
+    let _ = unit_sync::take_in_for_land(p, &st, unit);
     p.write_guard()?;
     brief::write_brief(p, unit, "builder");
-    let aborted = synced.as_ref().is_some_and(|e| s(e, "how") == "aborted");
-    let (because, step) = if aborted {
-        (
-            "land_conflict.aborted.because",
-            "land_conflict.aborted.step",
-        )
-    } else {
-        ("land_conflict.because", "land_conflict.step.back")
-    };
-    let mut steps = vec![t(step, &[("unit", unit)])];
-    if !aborted {
-        steps.push(t("land_conflict.step.land", &[("unit", unit)]));
-    }
+    let steps = vec![
+        t("land_conflict.step.back", &[("unit", unit)]),
+        t("land_conflict.step.land", &[("unit", unit)]),
+    ];
     Err(refuse_owned(
         t("land_conflict.what", &[("unit", unit)]),
-        t(because, &[("checkpoint", cpb), ("files", &named)]),
+        t(
+            "land_conflict.because",
+            &[("checkpoint", cpb), ("files", &named)],
+        ),
         steps,
         &t("land_conflict.worked", &[]),
     ))

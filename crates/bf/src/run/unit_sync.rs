@@ -53,9 +53,8 @@ struct Auto {
     wip: String,
 }
 
-/// Take the checkpoint branch in and append `unit.sync`. With `auto`, a conflict only in the unit's own
-/// files is left in the working copy with its marks, except one in a protected path, which is aborted
-/// and recorded.
+/// Take the checkpoint branch in and append `unit.sync`. With `auto`, any conflict is left in the working
+/// copy with its marks, except one in a protected path, which is aborted and recorded.
 fn take_in(
     p: &Project,
     unit: &str,
@@ -497,7 +496,12 @@ pub(crate) fn resolution_diff(p: &Project, unit: &str) -> Option<(Vec<String>, S
     }
     let o = gitx::run(
         &wt,
-        &["merge-tree", "--write-tree", &format!("{m}^1"), &format!("{m}^2")],
+        &[
+            "merge-tree",
+            "--write-tree",
+            &format!("{m}^1"),
+            &format!("{m}^2"),
+        ],
         &[],
     )
     .ok()?;
