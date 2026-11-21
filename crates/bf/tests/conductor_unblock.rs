@@ -158,7 +158,7 @@ fn conductor_unblock_the_human_release_starts_the_count_again() {
     let st = bf::events::replay(&fx.project()).unwrap();
     let evs = bf::events::load_log(&fx.project()).unwrap().events;
     assert_eq!(bf::run::unblock::releases_used(&evs, "U-1"), 2);
-    assert!(st.units.get("U-1").is_some());
+    assert!(st.units.contains_key("U-1"));
     confirmed(&fx, &wc, "reason");
     fx.human("Release U-1, please.");
     let o = fx.bf(&["unit", "release", "U-1", "--quote", "Release U-1, please."]);

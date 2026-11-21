@@ -25,8 +25,8 @@ mod roles;
 mod status;
 mod sync;
 mod tokens;
-mod unit;
 pub mod unblock;
+mod unit;
 pub(crate) mod unit_sync;
 
 pub use brief::*;
