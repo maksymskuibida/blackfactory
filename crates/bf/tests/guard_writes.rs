@@ -427,6 +427,9 @@ fn making_the_folder_of_the_units_own_file_passes_and_other_folder_forms_stay_re
     ] {
         passes(&fx, &wc, cmd);
     }
+    // A folder of the copy that the list names passes too.
+    passes(&fx, &wc, "rmdir src");
+    passes(&fx, &wc, "rm -rf src");
     for cmd in [
         "rmdir factory",
         "rm -rf factory",

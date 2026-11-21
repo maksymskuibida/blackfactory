@@ -842,6 +842,12 @@ fn a_copy_into_a_folder_of_a_working_copy_is_judged_on_the_file_that_lands() {
             "cp -t src /tmp/hello.txt",
             "mv -t src /tmp/hello.txt",
             "install -m 755 /tmp/run.sh scripts/",
+            // A file outside the list is a file of the copy: these pass now.
+            "cp /tmp/hello.txt .",
+            "cp /tmp/a.txt /tmp/hello.txt src/",
+            "cp /tmp/other.txt src/",
+            "cp -t src /tmp/other.txt",
+            "mv /tmp/other.txt src/",
         ]),
         "passed",
     );
@@ -876,6 +882,10 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
             "mkdir -m 755 scripts",
             "touch -t 202401010000 src/hello.txt",
             "touch -d '2024-01-01' src/hello.txt",
+            "chmod +x src/other.txt",
+            "chmod 755 other.sh",
+            "truncate -s 0 src/other.txt",
+            "mkdir -m 755 other",
             "mktemp -p /tmp x.XXXX",
             "mktemp -t x.XXXX",
         ]),
@@ -980,6 +990,18 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
             "rm -rf factory",
         ]),
         "refused",
+    );
+    // Files of the copy that the list does not name are not refused.
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&[
+            "find . -name other.txt -delete",
+            "find src -name '*.orig' -delete",
+            "rm other.txt",
+            "rm -rf src",
+        ]),
+        "passed",
     );
     check_rows(
         &fx,

@@ -419,9 +419,12 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             "The path starts with your own working copy's folder.",
         );
     }
-    if zone.kind == "checkpoint" && zone.sync && !zone.files.is_empty() {
-        // An open sync (its resolver) or an open checkpoint fix: the list is a recommendation, so the
-        // builder writes any file of this working copy that is not protected (D-115, D-116).
+    // The list is a recommendation only for a session that works in this very copy (D-115, D-116); a
+    // session anywhere else keeps the old rule.
+    let same_copy = under(cwd, &zone.base).is_some();
+    if zone.kind == "checkpoint" && zone.sync && !zone.files.is_empty() && same_copy {
+        // An open sync (its resolver) or an open checkpoint fix: the builder writes any file of this
+        // working copy that is not protected.
         return allow();
     }
     if zone.kind == "checkpoint" {
@@ -448,7 +451,19 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             &crate::strings::t("guard_recommended.idle.worked", &[]),
         );
     }
-    // A unit at work (the table holds only those): its list is a recommendation, not a limit.
+    // A unit at work (the table holds only those): its list is a recommendation, not a limit, for the
+    // session that works in the copy. Any other session writes only the listed files.
+    if !same_copy && !zone.files.iter().any(|g| util::path_matches(g, rel)) {
+        return deny(
+            &format!("write {rel}"),
+            &crate::strings::t(
+                "guard_recommended.foreign.because",
+                &[("id", zone.id), ("base", here.base.as_str())],
+            ),
+            &[&crate::strings::t("guard_recommended.foreign.step", &[])],
+            &crate::strings::t("guard_recommended.foreign.worked", &[]),
+        );
+    }
     allow()
 }
 
@@ -3944,7 +3959,7 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
     let Some((i, sub)) = git_sub(w) else {
         return allow();
     };
-    let target = {
+    let (target_dir, target) = {
         let mut d = dir.to_string();
         let mut j = 1;
         while j + 1 < w.len() && j < i {
@@ -3953,7 +3968,8 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
             }
             j += 1;
         }
-        zone_of(table, &d).kind.to_string()
+        let k = zone_of(table, &d).kind.to_string();
+        (d, k)
     };
     let in_unit = target == "unit";
     let in_wc = in_unit || target == "checkpoint";
@@ -4023,13 +4039,23 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         "switch" | "read-tree" if in_unit => {
             return why("switching branches or reading another tree into the working copy brings in files outside the unit's scope; the engine joins the branches (`bf unit land`)");
         }
-        // A checkout that names the main branch or an engine branch moves the working copy onto it.
-        "checkout" if in_unit => {
-            let before_paths: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
-            if before_paths
-                .iter()
-                .any(|a| *a == main_branch || a.starts_with(prefix) || a.starts_with("origin/"))
-            {
+        // A checkout that names a revision (a branch, a tag, a commit, `-`, a new branch) moves the whole
+        // working tree, the protected copy of the factory's files included. Only paths of the copy
+        // (and `HEAD`) may stand before `--`; anything else is refused.
+        "checkout" if in_wc => {
+            let before: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
+            let moves_tree = before.iter().any(|a| {
+                matches!(*a, "-" | "-b" | "-B" | "--detach" | "--orphan" | "--track" | "-t" | "--merge" | "-m" | "--patch" | "-p")
+                    || a.starts_with("--orphan=")
+                    || a.starts_with("--track=")
+                    || (!a.starts_with('-')
+                        && *a != "HEAD"
+                        && (*a == main_branch
+                            || a.starts_with(prefix)
+                            || a.starts_with("origin/")
+                            || std::fs::symlink_metadata(Path::new(&target_dir).join(a)).is_err()))
+            });
+            if moves_tree {
                 return why(&crate::strings::t("guard_recommended.checkout.because", &[]));
             }
         }
@@ -4076,10 +4102,10 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
                     &format!("run `git {sub}` that {s}"),
                     "a file of a working copy made into a symbolic link, or written without a name, can lead a later write to a place outside the unit's scope or to a protected place",
                     &[
-                        "Change files with the editing tools, inside your working copy.",
-                        "Name each path on the command line; `git hash-object -w` and `git add <file>` stay open.",
+                        &crate::strings::t("guard_recommended.link.step1", &[]),
+                        &crate::strings::t("guard_recommended.link.step2", &[]),
                     ],
-                    "The command names only paths inside your working copy and makes no link.",
+                    &crate::strings::t("guard_recommended.link.worked", &[]),
                 )
             };
             if sub == "update-index" {

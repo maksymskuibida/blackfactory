@@ -108,6 +108,11 @@ fn every_git_refusal_stays() {
         "git checkout main",
         "git checkout main -- src/hello.txt",
         "git switch main",
+        "git checkout HEAD~3",
+        "git checkout abc1234",
+        "git checkout -",
+        "git checkout -b x HEAD~5",
+        "git checkout --detach",
     ] {
         assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
     }
@@ -202,4 +207,160 @@ fn a_checkpoint_with_no_fix_or_sync_open_refuses_every_write() {
     land_unit(&fx);
     let k = fx.work("K-1");
     assert_eq!(write_tool(&fx, &k, &k.join("src/other.txt")), "deny");
+}
+
+// ---- a session writes freely only in its own copy (F-411)
+
+fn two_units() -> (Fx, PathBuf, PathBuf) {
+    let fx = Fx::new();
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n"),
+        ("requirement", "id=\"R-3\"\nkind=\"requirement\"\ntitle=\"C\"\nacceptance=[\"c\"]\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.rs\"]\ncheckpoint=\"K-1\"\n"),
+        ("unit", "id=\"U-3\"\nkind=\"unit\"\ntitle=\"C\"\ndelivers=[\"R-3\"]\nfiles=[\"beside/y.txt\"]\ncheckpoint=\"K-1\"\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"A\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("check", "id=\"X-3\"\nkind=\"check\"\ntitle=\"C\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-3\"]\nscope=\"unit\"\nunit=\"U-3\"\n"),
+        ("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"All\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\",\"R-3\"]\nscope=\"checkpoint\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Fixture.\"\ntitle=\"All\"\nafter=[\"U-1\",\"U-3\"]\nproves=[\"R-1\",\"R-3\"]\nchecks=[\"X-4\"]\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{k}: {}", o.all());
+    }
+    fs::create_dir_all(fx.root.join("src")).unwrap();
+    fs::write(fx.root.join("src/a.rs"), "fn a() {}\n").unwrap();
+    fx.commit_all("records and files");
+    fx.start_test_run();
+    let start = |u: &str| {
+        PathBuf::from(fx.must(&["unit", "start", u, "--json"]).json()["working_copy"].as_str().unwrap())
+    };
+    let w1 = start("U-1");
+    let w3 = start("U-3");
+    (fx, w1, w3)
+}
+
+#[test]
+fn another_session_writes_only_the_listed_files_of_an_unit_at_work() {
+    let (fx, w1, w3) = two_units();
+    // From the main checkout and from a second unit at work: the listed file only, nothing more.
+    for cwd in [fx.root.clone(), w3.clone()] {
+        assert_eq!(write_tool(&fx, &cwd, &w1.join("src/other.rs")), "deny", "{}", cwd.display());
+        assert_eq!(write_tool(&fx, &cwd, &w1.join("README.md")), "deny", "{}", cwd.display());
+    }
+    // The unit itself writes both.
+    assert_ne!(write_tool(&fx, &w1, &w1.join("src/other.rs")), "deny");
+    assert_ne!(write_tool(&fx, &w3, &w3.join("README.md")), "deny");
+    // A unit never writes into the other unit's copy, listed file or not.
+    assert_eq!(write_tool(&fx, &w3, &w1.join("src/a.rs")), "deny");
+}
+
+#[test]
+fn a_unit_does_not_write_into_a_checkpoint_copy_and_a_parked_copy_refuses_every_write() {
+    let fx = Fx::new();
+    plan(&fx);
+    land_unit(&fx);
+    let k = fx.work("K-1");
+    fx.bf_in(&k, &["evidence", "run", "X-2", "--", "grep", "-q", "fixed", "src/a.txt"]);
+    let n = fx.must(&["next", "--json"]).json();
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    // The builder of the fix writes in K-1; a session in another copy or in the main checkout does not.
+    assert_ne!(write_tool(&fx, &k, &k.join("src/other.txt")), "deny");
+    let other = k.parent().unwrap().join("U-1");
+    fs::create_dir_all(&other).unwrap();
+    assert_eq!(write_tool(&fx, &other, &k.join("src/other.txt")), "deny");
+    assert_eq!(write_tool(&fx, &fx.root, &k.join("src/other.txt")), "deny");
+    // The copy of the landed unit is not at work.
+    assert_eq!(write_tool(&fx, &other, &other.join("src/a.txt")), "deny");
+}
+
+#[test]
+fn the_state_folder_the_panel_the_briefs_the_table_and_extra_paths_stay_refused() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.set_policy("protected_extra = []", "protected_extra = [\"secrets/\"]");
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    for p in [fx.state_dir().join("key"), fx.root.join(".bf/briefs/U-1-builder.md"), fx.root.join(".bf/guard.json")] {
+        assert_eq!(write_tool(&fx, &wc, &p), "deny", "{}", p.display());
+    }
+    for rel in [".claude/skills/factory-panel/x.md", ".claude/settings.json", ".bf/guard.json", "secrets/x.txt"] {
+        assert_eq!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
+    }
+}
+
+#[test]
+fn a_checkout_of_a_revision_is_refused() {
+    let (fx, wc) = unit_place();
+    for cmd in [
+        "git checkout HEAD~3",
+        "git checkout abc1234",
+        "git checkout v1.0",
+        "git checkout -",
+        "git checkout -b x HEAD~5",
+        "git checkout -B x",
+        "git checkout --detach",
+        "git checkout HEAD~1 -- src/hello.txt",
+        "git checkout somebranch",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    // A path of the copy, with or without `--`, and `HEAD`, stay open.
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
+    for cmd in ["git checkout src/hello.txt", "git checkout -- src/hello.txt", "git checkout HEAD -- src/hello.txt"] {
+        assert_ne!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+}
+
+// ---- the resolver of an open sync
+
+fn plan_sync(fx: &Fx) {
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+    ] {
+        let r = fx.put(k, t);
+        assert_eq!(r.code, 0, "{k}: {}{}", r.stdout, r.stderr);
+    }
+    fx.commit_all("records");
+}
+
+#[test]
+fn the_resolver_of_an_open_sync_writes_any_unprotected_file_and_no_protected_one() {
+    let fx = Fx::new();
+    plan_sync(&fx);
+    fx.must(&["gate", "open", "plan"]);
+    fx.human("I approve the plan.");
+    fx.must(&["gate", "approve", "plan", "--quote", "I approve the plan."]);
+    fx.must(&["run", "start"]);
+    fx.answer_plan_questions();
+    let wc = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/a.txt"), "from the unit\n").unwrap();
+    fx.must_in(&wc, &["evidence", "run", "X-1", "--unit", "U-1", "--", "test", "-f", "src/a.txt"]);
+    fx.must(&["report", "U-1", "--result", "built"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
+    fx.must(&["unit", "land", "U-1"]);
+    let code = fx.root.clone();
+    fs::create_dir_all(code.join("src")).unwrap();
+    fs::write(code.join("src/a.txt"), "from main\n").unwrap();
+    git(&code, &["add", "src/a.txt"]);
+    git(&code, &["commit", "-q", "-m", "work on main"]);
+    fx.human("Yes, bring main into the checkpoint, and let the agents sort out conflicts.");
+    let o = fx
+        .must(&["checkpoint", "sync", "K-1", "--local", "--quote", "bring main into the checkpoint", "--json"])
+        .json();
+    assert_eq!(o["sync_open"], true, "{o}");
+    let k = fx.work("K-1");
+    // The conflicted file, a file neither side changed, and a new folder.
+    for rel in ["src/a.txt", "src/other.txt", "docs/new.md"] {
+        assert_ne!(write_tool(&fx, &k, &k.join(rel)), "deny", "{rel}");
+    }
+    for rel in ["factory/policy.toml", ".git/config", ".git/hooks/pre-commit"] {
+        assert_eq!(write_tool(&fx, &k, &k.join(rel)), "deny", "{rel}");
+    }
+    // Another session does not write there.
+    assert_eq!(write_tool(&fx, &fx.root, &k.join("src/other.txt")), "deny");
 }
