@@ -113,6 +113,63 @@ pub fn read_command(words: &[String]) -> Option<Read> {
     Some(r)
 }
 
+/// The test name that a path of a unit's `files` stands for, by the same rule `load` reads paths with: a
+/// file of a `tests/` folder is its stem, a folder of `tests/` its own name. None for any other path.
+pub fn test_name_of_path(path: &str) -> Option<String> {
+    let parts: Vec<String> = path
+        .trim()
+        .split('/')
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect();
+    // The package folder is not known here: the `tests` folder is the first one with no `src` folder
+    // before it, so a module `src/tests/` is not a test file.
+    let at = parts.iter().position(|x| x == "tests")?;
+    if parts[..at].iter().any(|x| x == "src") {
+        return None;
+    }
+    test_name_below(&parts[at..])
+}
+
+/// The one rule of a test file's name, by the path below the package folder (starting at `tests`): a
+/// file of `tests/` is its stem (a name that does not end in `.rs` is kept as it is), a folder of
+/// `tests/` its own name. None for any other path.
+fn test_name_below<S: AsRef<str>>(parts: &[S]) -> Option<String> {
+    let stem = |x: &str| x.strip_suffix(".rs").unwrap_or(x).to_string();
+    match parts {
+        [d, f] if d.as_ref() == "tests" => Some(stem(f.as_ref())),
+        [d, f, ..] if d.as_ref() == "tests" => Some(f.as_ref().to_string()),
+        _ => None,
+    }
+}
+
+/// A command of `cargo test` or `cargo nextest run` as its shape and its test names: the words with the
+/// `--test <name>` pairs and the `<name>::` filters taken out, and the names they held (a filter's first
+/// segment). None for a command of any other program.
+pub fn command_shape(words: &[String]) -> Option<(Vec<String>, Vec<String>)> {
+    let read = read_command(words)?;
+    let mut names: Vec<String> = read.tests.clone();
+    for f in &read.filters {
+        if let Some(first) = f.split("::").find(|x| !x.is_empty()) {
+            names.push(first.to_string());
+        }
+    }
+    let mut shape = vec![];
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        i += 1;
+        if w == "--test" {
+            i += 1;
+        } else if w.starts_with("--test=") || (w.ends_with("::") && !w.starts_with('-')) {
+            // taken out
+        } else {
+            shape.push(w.to_string());
+        }
+    }
+    Some((shape, names))
+}
+
 /// The manifest of the package: the one named by `--package`, or else the only package of the repository.
 fn find_manifest(repo: &Path, package: Option<&str>) -> Option<(String, PathBuf, toml::Table)> {
     let mut found: Vec<(String, PathBuf, toml::Table)> = vec![];
@@ -167,15 +224,12 @@ fn load(repo: &Path, package: Option<&str>, extra_paths: &[String]) -> Option<Ta
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         let stem = |x: &str| x.strip_suffix(".rs").unwrap_or(x).to_string();
+        if let Some(name) = test_name_below(&parts) {
+            extra_tests.insert(name.clone());
+            extra.insert(name);
+            continue;
+        }
         match parts.as_slice() {
-            [d, f] if d == "tests" => {
-                extra_tests.insert(stem(f));
-                extra.insert(stem(f));
-            }
-            [d, f, ..] if d == "tests" => {
-                extra_tests.insert(f.clone());
-                extra.insert(f.clone());
-            }
             [d, .., f] if d == "src" => {
                 extra.insert(stem(f));
             }

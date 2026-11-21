@@ -169,8 +169,23 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
 /// refusal of the command that asks.
 pub fn refuse_if_names_missing(p: &Project, a: &Amend, stem: &str) -> R<()> {
     let mut missing: Vec<String> = Vec::new();
+    let mut st: Option<State> = None;
     for id in &a.ids {
         if p.get_record(id)?.is_none() {
+            // A unit that was in force and is gone is a removal (`bf record remove`): the narrowing
+            // lists it as removed with its old content, and the approval records it as gone (R-73).
+            if schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+                if st.is_none() {
+                    st = Some(crate::events::replay(p)?);
+                }
+                let in_force = st
+                    .as_ref()
+                    .and_then(|st| crate::gates::approved_entry(st, "plan", id))
+                    .is_some_and(|(h, _)| h != "missing");
+                if in_force {
+                    continue;
+                }
+            }
             missing.push(id.clone());
         }
     }

@@ -548,6 +548,12 @@ fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     })
 }
 
+/// The open plan repair that waits for the human and names this ID, by the rule that lets a put change a
+/// named record (`bf record remove` of a unit needs one, R-73).
+pub fn waiting_repair_naming<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
+    named_by_waiting(st, id).filter(|a| crate::amend::is_repair(a))
+}
+
 /// An amendment of any state names this ID.
 fn named_ever(st: &State, id: &str) -> bool {
     st.amends.iter().any(|a| {
@@ -560,6 +566,41 @@ fn named_ever(st: &State, id: &str) -> bool {
 /// The latest approval covering this ID found no record by that ID: the amendment lets the record be
 /// put once, after the approval (`bf record put` binds the content it puts).
 pub fn approved_missing(st: &State, id: &str) -> bool {
+    // A unit that an approval removed (its earlier approved entry had a real hash) is gone for good,
+    // and a later approval that writes `missing` again keeps it so: only a real hash brings it back
+    // (R-73). Worked out from the approvals in log order, so replay needs no extra state.
+    if crate::schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+        let mut was = st
+            .latest_gate("plan", None)
+            .filter(|g| g.status == "approved")
+            .and_then(|g| {
+                g.snapshot
+                    .as_object()
+                    .and_then(|o| o.get(id))
+                    .map(|e| e["h"] != "missing")
+            })
+            .unwrap_or(false);
+        let mut removed = false;
+        for a in &st.amends {
+            if a.status != "approved" {
+                continue;
+            }
+            if let Some(e) = a.approved.as_ref().and_then(|m| m.get(id)) {
+                if e["h"] == "missing" {
+                    if was {
+                        removed = true;
+                    }
+                    was = false;
+                } else {
+                    removed = false;
+                    was = true;
+                }
+            }
+        }
+        if removed {
+            return false;
+        }
+    }
     st.approved_content
         .get(id)
         .map(|(_, e)| e["h"] == "missing")
