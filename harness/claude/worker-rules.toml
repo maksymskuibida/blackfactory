@@ -100,6 +100,7 @@ files = [
   "agents/fix-designer.md",
   "agents/knowledge-writer.md",
   "agents/rule-proposer.md",
+  "agents/repair-judge.md",
 ]
 text = "Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused."
 
@@ -121,6 +122,7 @@ files = [
   "agents/uiux-designer.md",
   "agents/uiux-verifier.md",
   "agents/verifier.md",
+  "agents/repair-judge.md",
 ]
 text = "Write files with the file tools; with only a shell, write a file with a plain redirect of one printed text, never with shell heredocs, scripts or in-place stream edits."
 
@@ -148,6 +150,7 @@ files = [
   "agents/fix-designer.md",
   "agents/knowledge-writer.md",
   "agents/rule-proposer.md",
+  "agents/repair-judge.md",
 ]
 text = "Run long commands in the foreground, start no background command that waits in a loop, and never wait with a machine-wide process search."
 
@@ -175,6 +178,7 @@ files = [
   "agents/fix-designer.md",
   "agents/knowledge-writer.md",
   "agents/rule-proposer.md",
+  "agents/repair-judge.md",
 ]
 text = "End with a closing message of a few lines: the result, the receipts and anything the human must decide."
 
@@ -220,5 +224,6 @@ files = [
   "agents/fix-designer.md",
   "agents/knowledge-writer.md",
   "agents/rule-proposer.md",
+  "agents/repair-judge.md",
 ]
 text = "A required check runs only through the engine; never run one in a shell of your own."

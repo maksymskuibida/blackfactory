@@ -1,0 +1,20 @@
+# Strings of the group `fix.retry`: a checkpoint fix's file request answered with `retry`, `extension` or a
+# spent round, as the fix builder and the scope reviewer read it (A-19, D-89, D-62). Keys are quoted and flat.
+
+"fix.retry.request.extension" = "the scope reviewer judged this file to be more than the fix's own work, so it is not granted"
+"fix.retry.request.extension_step" = "Report a gap that names the file, so the human decides: `bf report {k} --role builder --result gap --note \"<each file it needs, one for each line, with the reason>\"`."
+"fix.retry.request.spent_step" = "Report a gap that names the file, so the human decides: `bf report {k} --role builder --result gap --note \"<each file it needs, one for each line, with the reason>\"`."
+
+"fix.retry.verdict.not_granted" = "{k}: nothing was granted; these files are not granted and the way on for them is a gap report that names them: {files}"
+
+"fix.retry.directive.note" = "The scope reviewer did not grant the last request. Nothing was granted. Ask again for the files listed under `ask_again` with a corrected patch that meets each `must`."
+"fix.retry.directive.not_granted" = "These files are not granted, and the way on for them is a gap report that names them: {files}."
+
+"fix.retry.brief.file" = "- `{path}`: the reviewer said: {why} The corrected patch must: {must} This was round {round} of {limit}, {left} left."
+"fix.retry.brief.file_free" = "- `{path}`: the reviewer said: {why} The corrected patch must: {must} This answer counted no round; {left} of {limit} rounds are left."
+"fix.retry.brief.not_granted_title" = "Files that are not granted"
+"fix.retry.brief.not_granted_intro" = "The reviewer will not grant these files to this fix. Asking for them again is refused."
+"fix.retry.brief.not_granted_file" = "- `{path}`: {why}"
+"fix.retry.brief.not_granted_way" = "The way on for them is a gap report that names them: `bf report {k} --role builder --result gap --note \"<each file, one for each line, with the reason>\"`. It goes to the human."
+
+"fix.retry.review.holds" = "A `retry` or an `extension` for any one file holds back the whole request: nothing is granted, not even a file you judge needed, and the builder asks for it again."

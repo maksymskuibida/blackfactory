@@ -99,7 +99,7 @@ fn records(fx: &Fx) -> String {
 /// Make U-1 depend on `dep` through an approved repair amendment (the records change).
 fn depend_on(fx: &Fx, dep: &str) {
     let o = fx.must(&["amend", "open", "--repair", "--json", "U-1"]).json();
-    let toml = format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"Part U-1\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.rs\"]\ndepends_on=[\"{dep}\"]\ncheckpoint=\"K-1\"\nestimate=1\n");
+    let toml = format!("id=\"U-1\"\nkind=\"unit\"\ntitle=\"Part U-1\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.rs\"]\ndepends_on=[\"{dep}\"]\ncheckpoint=\"K-1\"\nestimate=1\nfull_suite=\"fixture\"\n");
     let f = fx.root.join("x.toml");
     fs::write(&f, toml).unwrap();
     fx.must(&["record", "put", "unit", "--file", f.to_str().unwrap(), "--replace"]);

@@ -721,6 +721,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("review-sync", "holding:Sync"),
     ("fix-checkpoint", "holding:Fix"),
     ("review-checkpoint-fix", "holding:Fix"),
+    ("go-on-checkpoint-fix", "holding:Fix"),
     ("fix-wave", "holding:Fix"),
     ("review-wave-fix", "holding:Fix"),
     ("plan-gap", "holding:Fix"),
@@ -745,6 +746,11 @@ const CLASSES: &[(&str, &str)] = &[
     ("decide-unit", "neither"),
     ("reconsider", "neither"),
     ("review-scope", "neither"),
+    ("judge-repair", "neither"),
+    ("decide-repair", "neither"),
+    ("see-judged-repair", "neither"),
+    ("open-plan-repair", "neither"),
+    ("judge-block", "neither"),
 ];
 
 // The guard of closure: every directive action `bf next` can give is classified as asking the human about
@@ -1181,7 +1187,7 @@ fn scenario(action: &str) -> Fx {
             match action {
                 "review-checkpoint-fix" => fix_built(&fx, "from the unit, fixed\n"),
                 "plan-gap" => {
-                    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "gap", "--note", "needs behaviour no record describes"], "");
+                    let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "builder", "--result", "gap", "--note", "src/needs.txt: needs behaviour no record describes"], "");
                     assert_eq!(o.code, 2, "{}", o.all());
                 }
                 _ => {}
@@ -1235,6 +1241,21 @@ fn scenario(action: &str) -> Fx {
             report(&fx, json!([f("high", "the answer is wrong")]));
             actions(&fx);
             abort_fix(&fx);
+            fx
+        }
+        "go-on-checkpoint-fix" => {
+            // The fix's review filed a low finding, the human accepted it, and the process stopped before
+            // the checks ran: only the accept is on the log, and the review is settled.
+            let fx = setup(PASS);
+            report(&fx, json!([f("high", "the answer is wrong")]));
+            actions(&fx);
+            fix_built(&fx, "from the unit, fixed\n");
+            let o = fx.bf_stdin(&fx.work("K-1"), &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"], &json!([f("low", "a small thing")]).to_string());
+            assert_eq!(o.code, 0, "{}", o.all());
+            fx.human("Fine, accept the small thing.");
+            let turn = last_seq_of(&fx, "human.turn");
+            bf::events::append(&fx.project(), "checkpoint.fix.finding.settle", json!({"checkpoint": "K-1", "fate": "accepted",
+                "ids": [{"round": 1, "index": 1}], "levels": ["low"], "turn": turn, "quote": "Fine, accept the small thing."})).unwrap();
             fx
         }
         "decide-low-findings" => {
@@ -1294,6 +1315,7 @@ const ROW_TESTS: &[&str] = &[
     "decide-checkpoint-review", "decide-checkpoint-fix", "decide-low-findings", "decide-sync", "resolve-sync", "review-sync",
     "fix-checkpoint", "review-checkpoint-fix", "fix-wave", "review-wave-fix", "plan-gap", "decide-check", "answer-question",
     "decide-wave-check", "decide-gate", "open-gate", "add-records",
+    "go-on-checkpoint-fix",
 ];
 
 macro_rules! row_test {
@@ -1313,6 +1335,7 @@ row_test!(row_resolve_sync_holds, "resolve-sync");
 row_test!(row_review_sync_holds, "review-sync");
 row_test!(row_fix_checkpoint_holds, "fix-checkpoint");
 row_test!(row_review_checkpoint_fix_holds, "review-checkpoint-fix");
+row_test!(row_go_on_checkpoint_fix_holds, "go-on-checkpoint-fix");
 row_test!(row_fix_wave_holds, "fix-wave");
 row_test!(row_review_wave_fix_holds, "review-wave-fix");
 row_test!(row_plan_gap_holds, "plan-gap");

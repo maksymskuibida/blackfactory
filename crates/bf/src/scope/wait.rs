@@ -158,14 +158,30 @@ pub fn next_entry(p: &Project, pl: &Plan, st: &State, id: &str) -> Option<NextEn
     let paths = paths_of(&ev["files"]);
     if let Some(c) = circle(p, pl, st, &log.events, id) {
         let ring = format!("{} -> {id}", c.join(" -> "));
-        let note = format!(
-            "{id} is blocked and waits for a file that a unit waiting for it holds: the circle {ring} (files {}); no landing ends it. \
-             The plan repair is the human's: an amendment puts one of these units after the other, or moves the file. \
-             `bf next` shows the units at work again once it is approved.",
-            paths.join(", ")
+        // A plan repair already open for a unit of the ring is the step in hand.
+        if let Some(a) = st.amends.iter().find(|a| {
+            matches!(a.status.as_str(), "open" | "narrowed")
+                && c.iter().any(|u| a.ids.contains(u) || a.keep.contains(u))
+        }) {
+            return Some(NextEntry::Waiting(crate::strings::t(
+                "wait.circle.open.line",
+                &[("id", id), ("ring", &ring), ("amend", &a.id)],
+            )));
+        }
+        let mut units = c.clone();
+        units.sort();
+        units.dedup();
+        let note = crate::strings::t(
+            "wait.circle.note",
+            &[
+                ("id", id),
+                ("ring", &ring),
+                ("files", &paths.join(", ")),
+                ("ids", &units.join(" ")),
+            ],
         );
         return Some(NextEntry::Directive(
-            json!({"role": "human", "action": "decide-unit", "unit": id, "state": "blocked", "note": note}),
+            json!({"role": "conductor", "action": "open-plan-repair", "unit": id, "state": "blocked", "ring": c, "files": paths, "note": note}),
         ));
     }
     let mut holders = holders_of(p, pl, st, id, &paths);

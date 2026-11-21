@@ -6,9 +6,15 @@ use super::*;
 /// newest open checkpoint that has a branch there and how many commits of the main branch it lacks.
 /// Information only; `bf checkpoint sync` takes them in.
 pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
+    let heads: Vec<gitx::Heads> = p.repos.iter().map(|r| gitx::heads(&r.path)).collect();
+    main_ahead_in(p, st, pl, &heads)
+}
+
+/// The same, with each repository's branches already read, in the order of `p.repos`.
+pub fn main_ahead_in(p: &Project, st: &State, pl: &Plan, heads: &[gitx::Heads]) -> Vec<Value> {
     let mut out = Vec::new();
-    for r in &p.repos {
-        if !gitx::branch_exists(&r.path, &r.branch) {
+    for (r, h) in p.repos.iter().zip(heads) {
+        if !h.has(&r.branch) {
             continue;
         }
         for k in pl.checkpoints.iter().rev() {
@@ -17,7 +23,7 @@ pub fn main_ahead(p: &Project, st: &State, pl: &Plan) -> Vec<Value> {
                 continue;
             }
             let cpb = p.checkpoint_branch(kid);
-            if !gitx::branch_exists(&r.path, &cpb) {
+            if !h.has(&cpb) {
                 continue;
             }
             let n = gitx::must(

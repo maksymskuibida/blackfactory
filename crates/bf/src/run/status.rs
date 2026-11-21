@@ -17,6 +17,10 @@ pub fn unit_states(
             out.push((id, logged.to_string(), None));
         } else if let Some(why) = plan::not_ready(p, pl, st, &id, receipts) {
             out.push((id, "planned".into(), Some(why)));
+        } else if let Some(a) = super::next::amend_hold(st, &id) {
+            // An open amendment holds the unit: it is not ready, the same as in `bf next` (F-197, F-211).
+            let why = crate::strings::t("next.unit_held.line", &[("unit", &id), ("amend", &a)]);
+            out.push((id, "planned".into(), Some(why)));
         } else {
             out.push((id, "ready".into(), None));
         }
@@ -64,11 +68,13 @@ pub fn page_set(p: &Project, name: &str, url: &str) -> R<Value> {
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
     // The positions are worked out once (each costs git calls); the combined one is built from them.
-    let repo_positions = main_positions(p, &st)?;
+    let heads: Vec<gitx::Heads> = p.repos.iter().map(|r| gitx::heads(&r.path)).collect();
+    let repo_positions = super::checkpoint::main_positions_in(p, &st, &heads)?;
     let main = combine_positions(&repo_positions);
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
     let states = unit_states(p, &pl, &st, &receipts);
+    let log_events = events::load_log(p).map(|l| l.events).unwrap_or_default();
     let mut counts = serde_json::Map::new();
     for (_, s_, _) in &states {
         let c = counts.entry(s_.clone()).or_insert(json!(0));
@@ -91,14 +97,16 @@ pub fn status(p: &Project) -> R<Value> {
                 Some(r) => json!(format!("a scope review of {} requested file(s)", r.files.len())),
                 None => json!(why),
             },
+            "sync_conflicts": super::unit_sync::unmerged(&p.work_dir().join(i)),
+            "sync_aborted": super::unit_sync::aborted_in(p, &log_events, i),
             "scope_request": crate::scope::request_json(&st, i),
             "scope_grants": crate::scope::grants_json(&st, i),
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
-            "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
+            "review_rounds": st.units.get(i).map(|u| u.review_rounds.iter().filter(|r| r["accepted"] != true).cloned().collect::<Vec<_>>()).unwrap_or_default()})).collect::<Vec<_>>(),
         "checkpoint_fix": crate::ckfix::status_json(&st),
         "wave_checks": crate::wavecheck::status_json(&st),
         "plan_questions": crate::wavecheck::plan_questions(&st),
-        "checkpoint_reviews": crate::ckreview::status_json(p, &st),
+        "checkpoint_reviews": crate::ckreview::status_json(p, &st, &pl),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
@@ -114,7 +122,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
-        "main_ahead": main_ahead(p, &st, &pl),
+        "main_ahead": super::sync::main_ahead_in(p, &st, &pl, &heads),
         "sync_open": st.sync_open.as_ref().map(|o| json!({
             "checkpoint": o.checkpoint, "phase": o.phase, "rounds": o.rounds, "reason": o.reason,
             "files": sync_files(o),

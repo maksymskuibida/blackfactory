@@ -57,6 +57,15 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         ));
     }
     if cur.is_empty() {
+        if let Some(a) = amend_hold(&st, unit) {
+            let vals = [("unit", unit), ("amend", a.as_str())];
+            return Err(refuse_owned(
+                crate::strings::t("unit.start.held.refused", &vals),
+                crate::strings::t("unit.start.held.because", &vals),
+                vec![crate::strings::t("unit.start.held.do_this", &vals)],
+                crate::strings::t("unit.start.held.worked_when", &vals),
+            ));
+        }
         let receipts = evidence::load_receipts(p)?;
         if let Some(why) = plan::not_ready(p, &pl, &st, unit, &receipts) {
             return Err(refuse(

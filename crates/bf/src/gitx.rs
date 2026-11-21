@@ -115,6 +115,55 @@ pub fn must(dir: &Path, args: &[&str]) -> R<String> {
     }
 }
 
+/// The local branches of a repository with their commits, and its tags with their ids, from one call.
+#[derive(Default, Clone, Debug)]
+pub struct Heads {
+    pub branches: std::collections::HashMap<String, String>,
+    pub tags: std::collections::HashMap<String, String>,
+}
+
+impl Heads {
+    /// What `branch_exists` answers.
+    pub fn has(&self, branch: &str) -> bool {
+        self.branches.contains_key(branch)
+    }
+
+    /// What `rev-parse <name>` gives for a branch: a tag of the same name is taken first.
+    pub fn tip(&self, branch: &str) -> Option<String> {
+        self.tags
+            .get(branch)
+            .or_else(|| self.branches.get(branch))
+            .cloned()
+    }
+}
+
+/// Every local branch and tag of the repository, from one git call. Empty when git cannot read it.
+pub fn heads(dir: &Path) -> Heads {
+    let mut h = Heads::default();
+    let Ok(o) = must(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads/",
+            "refs/tags/",
+        ],
+    ) else {
+        return h;
+    };
+    for l in o.lines() {
+        let Some((sha, r)) = l.split_once(' ') else {
+            continue;
+        };
+        if let Some(b) = r.strip_prefix("refs/heads/") {
+            h.branches.insert(b.to_string(), sha.to_string());
+        } else if let Some(t) = r.strip_prefix("refs/tags/") {
+            h.tags.insert(t.to_string(), sha.to_string());
+        }
+    }
+    h
+}
+
 pub fn branch_exists(dir: &Path, name: &str) -> bool {
     run(
         dir,
@@ -231,6 +280,9 @@ pub fn workdir_hash(dir: &Path, exclude_factory: bool) -> R<String> {
     Ok(crate::util::sha256_hex(text.as_bytes()))
 }
 
+#[cfg(feature = "test_seam")]
+use std::time::SystemTime;
+
 fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let gitdir = git_dir_of(top)
         .ok_or_else(|| err(format!("{} is not a git working copy", top.display())))?;
@@ -238,6 +290,21 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     let real = gitdir.join("index");
     if real.is_file() {
         fs::copy(&real, &tmp)?;
+        // Test seam (C-3): make the copy look newer, as a copy that does not keep times does.
+        #[cfg(feature = "test_seam")]
+        if std::env::var_os("BF_TEST_INDEX_COPY_FORWARD").is_some() {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&tmp)?
+                .set_modified(SystemTime::now() + std::time::Duration::from_secs(60))?;
+        }
+        // Git finds racy files by comparing their times with the index file's own modified time.
+        // Not every platform keeps that time on copy, so set it from the real index.
+        let modified = fs::metadata(&real)?.modified()?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp)?
+            .set_modified(modified)?;
     } else {
         let _ = fs::remove_file(&tmp);
     }

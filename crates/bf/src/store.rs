@@ -57,6 +57,15 @@ required = true       # a unit needs a clean review before it can land
 # unit's original scope needs it. true: a needed file is granted at once, with no step of the human.
 # false: every request goes to the human as a plan repair, as before.
 scope_review = true
+# A plan repair with no design part is judged by a strong model: a straightforward one inside the limits
+# below is approved with no human, any other one asks the human. false: every plan repair goes to the
+# human as before.
+repair_judge = true
+# The limits of that judge (the human's bound): the most a checkpoint's scope may change, in percent of
+# its estimate, counted over this repair and the judged repairs the human has not seen; and the longest
+# run of waves in a row that hold one unit of a checkpoint each that a repair may make or lengthen.
+judge_scope_percent = 30
+judge_chain_waves = 3
 
 [unit_checks]
 # Checks every unit must pass, each with its exact command, for example the lint step and the whole
@@ -269,12 +278,22 @@ pub struct Review {
     pub required: bool,
     /// Whether a cold reviewer judges a builder's request for files beyond its unit's list.
     pub scope_review: bool,
+    /// Whether a plan repair with no design part is judged by the repair judge (R-69, D-90). Off: every
+    /// plan repair goes to the human.
+    pub repair_judge: bool,
+    /// The most a checkpoint's scope may change in a judged go, in percent (D-88).
+    pub judge_scope_percent: u32,
+    /// The longest run of one-unit waves of a checkpoint that a judged go may make or lengthen (D-88).
+    pub judge_chain_waves: u32,
 }
 impl Default for Review {
     fn default() -> Self {
         Review {
             required: true,
             scope_review: true,
+            repair_judge: true,
+            judge_scope_percent: 30,
+            judge_chain_waves: 3,
         }
     }
 }
@@ -850,9 +869,11 @@ impl Project {
     /// The harness's transcript root from the accepted policy, as an absolute path.
     pub fn transcript_root(&self) -> String {
         let r = &self.policy.human.transcript_root;
-        let abs = match r.strip_prefix("~/") {
-            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
-            None => r.clone(),
+        // A path that begins with `~` and has no home resolves to nothing: no root, never the raw text.
+        let Some(abs) =
+            crate::session::home::resolve_tilde(r).map(|p| p.to_string_lossy().to_string())
+        else {
+            return String::new();
         };
         fs::canonicalize(&abs)
             .map(|p| p.to_string_lossy().to_string())
@@ -1143,7 +1164,9 @@ impl Project {
             .clone()
             .or_else(|| absolute_env("BF_STATE_HOME"))
             .or_else(|| absolute_env("XDG_STATE_HOME").map(|x| x.join("blackfactory")))
-            .or_else(|| absolute_env("HOME").map(|h| h.join(".local/state/blackfactory")))
+            .or_else(|| {
+                crate::session::home::account_home().map(|h| h.join(".local/state/blackfactory"))
+            })
             .unwrap_or_else(|| PathBuf::from("/nonexistent-state"));
         base.join(&self.config.project_id)
     }

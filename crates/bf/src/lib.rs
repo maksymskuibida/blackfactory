@@ -1,5 +1,6 @@
 //! Black Factory engine library. The `bf` binary is a thin wrapper over `cli::main_with`.
 
+pub mod accept;
 pub mod adapter;
 pub mod amend;
 pub mod checks;
@@ -12,11 +13,13 @@ pub mod doctor;
 pub mod enforce;
 pub mod events;
 pub mod evidence;
+pub mod fixscope;
 pub mod gates;
 pub mod gitx;
 pub mod guard;
 pub mod guardtable;
 pub mod intents;
+pub mod judge;
 pub mod knowledge;
 pub mod ledger;
 pub mod legal;
@@ -42,6 +45,7 @@ pub mod store;
 pub mod strings;
 pub mod summary;
 pub mod uiux;
+pub mod unitaccept;
 pub mod util;
 pub mod view;
 pub mod waits;

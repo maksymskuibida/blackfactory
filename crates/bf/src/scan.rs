@@ -292,6 +292,7 @@ fn run_tool(
             cmd.env(k, v);
         }
     }
+    crate::session::home::set_env(&mut cmd);
     let o = cmd.output().map_err(|e| {
         refuse(
             format!("run `{tool}`"),

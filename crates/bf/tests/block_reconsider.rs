@@ -162,7 +162,7 @@ fn a_built_report_from_it_goes_to_review() {
 fn a_plain_block_from_it_goes_to_the_human() {
     let (fx, wc) = setup(None);
     block(&fx, &wc, "first");
-    block(&fx, &wc, "a real gap in the design");
+    block(&fx, &wc, "");
     assert!(log(&fx).contains("\"confirmed\":true"));
     let n = fx.must(&["next", "--json"]).json();
     let ds = n["directives"].as_array().unwrap();

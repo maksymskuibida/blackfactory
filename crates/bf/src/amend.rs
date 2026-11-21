@@ -296,6 +296,19 @@ pub const EVENT_LINE_MAX: usize = 2000;
 /// their records, under the label of `cli.log.records`, where they hold the records' contents. The bool
 /// says whether contents were left out. The log itself is never changed.
 pub fn shorten_event(e: &Value) -> (Value, bool) {
+    // The judge's verdict shows its verdict, model and reasons and the record IDs it names, and nothing
+    // else: not the measures, the fingerprint, the session or the agent (S-26).
+    if s(e, "kind") == "amend.judge" {
+        let mut m = serde_json::Map::new();
+        for k in [
+            "seq", "at", "kind", "amend", "verdict", "model", "reasons", "records",
+        ] {
+            if let Some(v) = e.get(k) {
+                m.insert(k.to_string(), v.clone());
+            }
+        }
+        return (Value::Object(m), true);
+    }
     let drop: &[&str] = match s(e, "kind") {
         "amend.narrow" => &["changes"],
         "amend.approve" => &["content"],

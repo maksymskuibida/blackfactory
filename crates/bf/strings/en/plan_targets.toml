@@ -1,0 +1,4 @@
+# Strings of the group `plan_targets`: keys are quoted and flat, `"cli.plan_targets.some.key" = "text"`.
+"cli.plan_targets.no_test_target" = "{check}: the command names `--test {word}`, but package {package} has no test target of that name (it has: {have})"
+"cli.plan_targets.no_filter_match" = "{check}: the command names the filter `{word}`, but no test file of `tests/` and no `mod` of `src/` in package {package} has that name"
+"cli.plan_targets.note" = "note: {text}"

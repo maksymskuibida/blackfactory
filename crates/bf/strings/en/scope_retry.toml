@@ -1,0 +1,44 @@
+# Strings of the group `scope.retry`: the verdict `retry` of a file request, the corrected request, the
+# second look, the reviewer's brief and the run page row (A-19, D-89, D-62). Keys are quoted and flat.
+
+"scope.retry.verdict.word" = "the verdict must be `needed`, `extension` or `retry`"
+"scope.retry.verdict.must" = "a `retry` needs `must`: say what a corrected patch must do"
+"scope.retry.verdict.report_hint" = "Report a JSON list with one object for each requested file: {{\"path\", \"verdict\": \"needed\", \"extension\" or \"retry\", \"why\"}}, and \"must\" for a retry."
+
+"scope.retry.request.spent" = "the reviewer judged this file {rounds} times, the most the policy allows for one unit, and the rounds are spent"
+"scope.retry.request.spent_step" = "Tell the human in a plain blocked report that the file is still needed; they decide."
+"scope.retry.request.same_patch" = "the patch is the same as the one the reviewer asked to have corrected"
+"scope.retry.request.done_when" = "`bf report` accepts the request and `bf next` gives a review-scope directive."
+"scope.retry.request.same_patch_step" = "Change the patch to meet what the reviewer said it must do, then ask again."
+
+
+
+"scope.retry.brief.title" = "A corrected patch is asked for"
+"scope.retry.brief.intro" = "The scope reviewer did not grant what you asked for. It names what a corrected patch must do, and nothing was granted, not even a file it judged needed."
+"scope.retry.brief.file" = "- `{path}`: the reviewer said: {why} The corrected patch must: {must} This was round {round} of {limit}, {left} left."
+"scope.retry.brief.needed_title" = "Ask again for these files too"
+"scope.retry.brief.needed_file" = "- `{path}`: judged needed; ask for it again with the same patch."
+"scope.retry.brief.command" = "Ask again with `bf report {unit} --result blocked --token <token> --need-files -` and a JSON list of the retry files with a corrected patch each, and the needed files above with their patch as it was."
+"scope.retry.brief.plain" = "A plain blocked report goes to the human, not to the reviewer."
+
+"scope.retry.review.title" = "Earlier rounds of this request"
+"scope.retry.review.file" = "### `{path}`: round {round} of {limit}"
+"scope.retry.review.earlier" = "Round {round}: verdict `{verdict}`. Reason: {why} Must: {must}"
+"scope.retry.review.how_to" = "Report once with `bf report {unit} --role reviewer --result scope --verdict - --token <token>` and a JSON list on stdin, with every requested file once."
+"scope.retry.review.question" = "Answer each file one of three ways: `needed` when the patch is right; `retry` when the file belongs to the unit's work and a patch you can name would be granted, with `must` saying what it must do; `extension` when the file is not the unit's work. A `retry` for any file holds back the whole request: nothing is granted, not even the needed files, and the builder asks again. A `retry` in the last round goes to the human."
+"scope.retry.review.answer" = "Answer with `[{{\"path\": \"...\", \"verdict\": \"needed\" or \"extension\" or \"retry\", \"why\": \"...\", \"must\": \"...\"}}]`; `must` only for a retry."
+
+"scope.retry.row.title" = "The reviewer asked {unit} for a corrected patch and said what it must do"
+"scope.retry.row.file" = "`{path}`: {why} It must: {must} Round {round}."
+"scope.retry.row.waiting" = "The builder may ask again; refused {at}."
+"scope.retry.row.spent_title" = "A request of {unit} has spent its rounds: it waits for the human"
+"scope.retry.row.spent_file" = "`{path}`: {why} Round {round}, the last."
+"scope.retry.row.spent_waiting" = "The unit waits for the human; refused {at}."
+"scope.retry.row.handled_open" = "Corrected patch"
+"scope.retry.row.handled_human" = "Human"
+
+"scope.refusal.row.waiting" = "The unit waits for a plan repair; refused {at}."
+"scope.refusal.row.extension_title" = "A request of {unit} was refused as a scope extension: it waits for a plan repair"
+"scope.refusal.row.hard_title" = "A request of {unit} was refused by a hard rule: it waits for a plan repair"
+"scope.refusal.row.handled" = "Plan repair"
+"scope.refusal.row.must" = "`{path}`: the reviewer asked for a corrected patch, which must: {must}"

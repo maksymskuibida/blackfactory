@@ -1,0 +1,23 @@
+# Strings of the group `events.k2`: the lines the replay puts in `ignored` for the events of the repair judge,
+# a checkpoint fix's file requests and the accept of findings (D-91, D-62). Keys are quoted and flat.
+
+"events.k2.ignored.judge_verdict" = "event {seq}: a judge verdict for an amendment that is not narrowed at that fingerprint, or is the human's, or is neither go nor ask"
+"events.k2.ignored.judge_token" = "event {seq}: a judge token for an amendment that does not exist"
+"events.k2.ignored.judge_failed" = "event {seq}: a failed judge for an amendment that does not exist"
+"events.k2.ignored.judge_seen_none" = "event {seq}: an amendment seen that has no judge verdict, failed judge or judged approval"
+"events.k2.ignored.judge_seen_turn" = "event {seq}: an amendment seen cites no valid human turn and quote after the judge's turn"
+"events.k2.ignored.judge_approve" = "event {seq}: an approval by the judge that no rule counts; the amendment stays narrowed"
+"events.k2.ignored.fix_scope_request" = "event {seq}: a request for files of a checkpoint fix that is not at work"
+"events.k2.ignored.fix_scope_grant" = "event {seq}: a grant of files to a checkpoint fix that asked for none"
+"events.k2.ignored.fix_scope_refuse" = "event {seq}: a refusal of files for a checkpoint fix that asked for none"
+"events.k2.ignored.fix_settle_form" = "event {seq}: a fix review finding settled with no finding named or a fate other than accepted"
+"events.k2.ignored.fix_settle_none" = "event {seq}: a fix review finding settled when no fix of that checkpoint is open"
+"events.k2.ignored.fix_settle_unknown" = "event {seq}: a fix review finding settled that no review round of the fix filed"
+"events.k2.ignored.fix_settle_hold" = "event {seq}: a fix review finding settled while the human is not being asked"
+"events.k2.ignored.fix_settle_turn" = "event {seq}: a fix review finding settled with no valid human turn and quote after that review"
+"events.k2.ignored.fix_settle_not_review" = "event {seq}: a fix review finding settled while the fix is parked by a failing attempt or a park, not by its review"
+"events.k2.ignored.unit_accept_not_review" = "event {seq}: findings accepted on a unit that is not parked in its review"
+"events.k2.ignored.unit_accept_none" = "event {seq}: findings accepted on a unit that has not started"
+"events.k2.ignored.unit_accept_form" = "event {seq}: findings accepted with no finding named"
+"events.k2.ignored.unit_accept_unknown" = "event {seq}: findings accepted that include one the unit does not have open in its reports"
+"events.k2.ignored.unit_accept_turn" = "event {seq}: findings accepted with no valid human turn and quote after the unit's latest review"

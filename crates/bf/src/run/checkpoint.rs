@@ -128,6 +128,16 @@ pub struct MainPos {
 /// taken as theirs (they commit their records). Anything else is a move to account for. Independently,
 /// work of a unit that never landed, or landed in a test run, on the main branch is always one.
 pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
+    repo_main_position_in(p, st, repo, &gitx::heads(&repo.path))
+}
+
+/// The same, with the repository's branches already read (`gitx::heads`).
+pub fn repo_main_position_in(
+    p: &Project,
+    st: &State,
+    repo: &Repo,
+    heads: &gitx::Heads,
+) -> R<MainPos> {
     let main = &repo.branch;
     let rname = repo.name.clone();
     let ok = |tip: &str| MainPos {
@@ -137,7 +147,7 @@ pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
         tip: tip.to_string(),
         note: String::new(),
     };
-    if !gitx::branch_exists(&repo.path, main) {
+    if !heads.has(main) {
         // A branch that was there and is gone is a change to account for.
         if events::read_head(p)
             .and_then(|h| h.commit_of(&repo.name))
@@ -153,7 +163,10 @@ pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
         }
         return Ok(ok(""));
     }
-    let tip = gitx::must(&repo.path, &["rev-parse", main])?;
+    let tip = match heads.tip(main) {
+        Some(t) => t,
+        None => gitx::must(&repo.path, &["rev-parse", main])?,
+    };
     let recorded = events::read_head(p).and_then(|h| h.commit_of(&repo.name));
     if recorded.as_deref() == Some(tip.as_str()) {
         return Ok(ok(&tip));
@@ -167,7 +180,7 @@ pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
             continue;
         }
         let ub = p.unit_branch(id);
-        if !gitx::branch_exists(&repo.path, &ub) {
+        if !heads.has(&ub) {
             continue;
         }
         let work = gitx::must(
@@ -218,9 +231,16 @@ pub fn repo_main_position(p: &Project, st: &State, repo: &Repo) -> R<MainPos> {
 
 /// Every repository's main branch against what the engine recorded.
 pub fn main_positions(p: &Project, st: &State) -> R<Vec<MainPos>> {
+    let heads: Vec<gitx::Heads> = p.repos.iter().map(|r| gitx::heads(&r.path)).collect();
+    main_positions_in(p, st, &heads)
+}
+
+/// The same, with each repository's branches already read, in the order of `p.repos`.
+pub fn main_positions_in(p: &Project, st: &State, heads: &[gitx::Heads]) -> R<Vec<MainPos>> {
     p.repos
         .iter()
-        .map(|r| repo_main_position(p, st, r))
+        .zip(heads)
+        .map(|(r, h)| repo_main_position_in(p, st, r, h))
         .collect()
 }
 
@@ -658,6 +678,23 @@ pub(crate) fn skipped_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>
         .collect())
 }
 
+/// The id of a receipt that shows the command passed for the check on the content now in `top`.
+fn passing_receipt(p: &Project, check: &str, argv: &[String], top: &Path) -> R<Option<String>> {
+    let content = p.content_hash(top)?;
+    let command = argv.join(" ");
+    Ok(evidence::load_receipts(p)?
+        .iter()
+        .find(|r| {
+            r.is_run()
+                && r.seal_ok
+                && r.check() == check
+                && r.content() == content
+                && s(&r.v, "command") == command
+                && r.passes()
+        })
+        .map(|r| r.id().to_string()))
+}
+
 /// Run the checkpoint's own command checks that are switched on, on the content now in its working copy,
 /// through the engine (real receipts). Returns the failures: check, command, exit, output tail. Agent-judged checks and a
 /// checkpoint with none skip this.
@@ -678,7 +715,15 @@ pub(crate) fn run_k_checks(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
         let argv = evidence::command_words(c);
         // A check that already passed on this very content (the fix builder ran it through the engine)
         // is not run again: its receipt stands (R-32).
-        if evidence::passed_on_content(p, &cid, &argv, &top)? {
+        // Each skip is logged with the receipt it reused (R-71).
+        if let Some(receipt) = passing_receipt(p, &cid, &argv, &top)? {
+            events::append(
+                p,
+                "checkpoint.check.skip",
+                json!({"checkpoint": k, "check": cid, "receipt": receipt,
+                       "command": argv.join(" "),
+                       "note": crate::strings::t("accept.checks.skip", &[("k", k), ("check", &cid), ("receipt", &receipt)])}),
+            )?;
             continue;
         }
         // The engine runs the checks again on content they may already have run on: that is a deliberate

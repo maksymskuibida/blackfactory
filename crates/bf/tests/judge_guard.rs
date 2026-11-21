@@ -1,0 +1,480 @@
+//! U-63: only a subagent of type `repair-judge` may judge (R-69, D-90, TH-17): the guard's signed one-use
+//! pass, the judge's refused commands and tools, the role file check, the marked records and `amend seen`.
+
+mod common;
+use common::*;
+use serde_json::{json, Value};
+use std::fs;
+
+const AGENT: &str = "repair-judge";
+
+fn unit(id: &str, cp: &str, file: &str, deps: &[&str], est: u32) -> String {
+    format!(
+        "id=\"{id}\"\nkind=\"unit\"\ntitle=\"Unit {id}\"\ndelivers=[\"R-1\",\"C-1\"]\nfiles=[\"{file}\"]\ndepends_on={}\ncheckpoint=\"{cp}\"\nestimate={est}\nfull_suite=\"fixture\"\n",
+        json!(deps)
+    )
+}
+
+fn plan(fx: &Fx) {
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"Things exist\"\nacceptance=[\"they exist\"]\n".to_string()),
+        ("component", "id=\"C-1\"\nkind=\"component\"\ntitle=\"Things\"\n".to_string()),
+    ] {
+        assert_eq!(fx.put(k, &t).code, 0);
+    }
+    for i in 1..=6 {
+        let t = unit(&format!("U-{i}"), "K-1", &format!("src/f{i}.txt"), &[], 5);
+        let o = fx.put("unit", &t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    let o = fx.put("unit", &unit("U-7", "K-2", "src/f7.txt", &[], 1));
+    assert_eq!(o.code, 0, "{}", o.all());
+    for i in 1..=7 {
+        let t = format!("id=\"X-{}\"\nkind=\"check\"\ntitle=\"Unit {i}\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-{i}\"\n", 10 + i);
+        let o = fx.put("check", &t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    for (k, t) in [
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"First\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"checkpoint\"\n"),
+        ("check", "id=\"X-2\"\nkind=\"check\"\ntitle=\"Second\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test.\"\ntitle=\"One\"\nafter=[\"U-1\",\"U-2\",\"U-3\",\"U-4\",\"U-5\",\"U-6\"]\nproves=[\"R-1\",\"C-1\"]\nchecks=[\"X-1\"]\n"),
+        ("checkpoint", "id=\"K-2\"\nkind=\"checkpoint\"\nstop_why=\"Test.\"\ntitle=\"Two\"\nafter=[\"U-7\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.commit_all("plan");
+    fx.start_test_run();
+}
+
+fn put_replace(fx: &Fx, kind: &str, text: &str) {
+    let f = fx.root.join("edit.toml");
+    fs::write(&f, text).unwrap();
+    fx.must(&[
+        "record",
+        "put",
+        kind,
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
+    fs::remove_file(f).unwrap();
+}
+
+/// Open a plan repair over `ids`, put the edits, narrow it. Returns its ID.
+fn repair(fx: &Fx, ids: &[&str], edits: &[(&str, String)]) -> String {
+    let mut a = vec!["amend", "open", "--repair"];
+    a.extend(ids);
+    a.push("--json");
+    let o = fx.must(&a).json();
+    for (k, t) in edits {
+        put_replace(fx, k, t);
+    }
+    let aid = o["amend"].as_str().unwrap().to_string();
+    let f = fx.root.join("narrow.json");
+    fs::write(
+        &f,
+        json!({"amend": aid, "keep": o["impact_ids"], "waive": []}).to_string(),
+    )
+    .unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
+    aid
+}
+
+fn token(fx: &Fx, aid: &str) -> String {
+    fx.must(&["roles", "token", aid, "judge", "--json"]).json()["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn events(fx: &Fx) -> Vec<Value> {
+    fs::read_to_string(fx.root.join("factory/log/events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+fn kinds(fx: &Fx, kind: &str) -> usize {
+    events(fx).iter().filter(|e| e["kind"] == kind).count()
+}
+
+fn status_of(fx: &Fx, aid: &str) -> String {
+    let st = fx.must(&["status", "--json"]).json();
+    st["amendments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == aid)
+        .unwrap()["status"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn role_source() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../harness/claude/agents/repair-judge.md")
+}
+
+/// The installed role file, as the installer writes it (the harness copy).
+fn install_role(fx: &Fx) {
+    let d = fx.root.join(".claude/agents");
+    fs::create_dir_all(&d).unwrap();
+    fs::copy(role_source(), d.join("repair-judge.md")).unwrap();
+}
+
+/// What the guard answers for a tool call: `deny` with its reason, or `allow`/`abstain`.
+fn hook(fx: &Fx, agent_type: Option<&str>, tool: &str, input: Value) -> (String, String) {
+    let mut payload = json!({"tool_name": tool, "tool_input": input, "cwd": fx.root.to_string_lossy(),
+        "session_id": "sess-1"});
+    if let Some(t) = agent_type {
+        payload["agent_type"] = json!(t);
+        payload["agent_id"] = json!("agent-1");
+    }
+    let o = fx.bf_stdin(&fx.root, &["guard"], &payload.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
+    match o.stdout.trim() {
+        "" | "{}" => ("abstain".into(), String::new()),
+        s => {
+            let v: Value = serde_json::from_str(s).unwrap();
+            let h = &v["hookSpecificOutput"];
+            (
+                h["permissionDecision"].as_str().unwrap().to_string(),
+                h["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        }
+    }
+}
+
+fn judge_cmd(aid: &str, tok: &str) -> String {
+    format!(
+        "bf amend judge {aid} --file - --token {tok} --model strong-model <<'EOF'\n{{\"verdict\": \"go\", \"reasons\": \"U-2 waits for U-1: one entry added.\"}}\nEOF"
+    )
+}
+
+fn pass_file(fx: &Fx) -> std::path::PathBuf {
+    fx.state_dir().join("judge-pass.json")
+}
+
+fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
+    fx.bf_stdin(
+        &fx.root,
+        &[
+            "amend",
+            "judge",
+            aid,
+            "--file",
+            "-",
+            "--token",
+            tok,
+            "--model",
+            "strong-model",
+        ],
+        &json!({"verdict": verdict, "reasons": "plain words"}).to_string(),
+    )
+}
+
+fn ready(fx: &Fx) -> String {
+    plan(fx);
+    install_role(fx);
+    repair(
+        fx,
+        &["U-2"],
+        &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))],
+    )
+}
+
+#[test]
+fn judge_guard_a_payload_with_no_agent_type_gets_no_pass_and_the_judge_is_refused() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    let (d, _) = hook(&fx, None, "Bash", json!({"command": judge_cmd(&aid, &tok)}));
+    assert_ne!(d, "deny");
+    assert!(!pass_file(&fx).exists());
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("no fresh pass"), "{}", o.stderr);
+    assert_eq!(kinds(&fx, "amend.judge.failed"), 1);
+    assert_eq!(status_of(&fx, &aid), "open");
+    let o = fx.refused(&["roles", "token", &aid, "judge"]);
+    assert!(o.stderr.contains("the human's"), "{}", o.stderr);
+}
+
+#[test]
+fn judge_guard_another_agent_type_gets_no_pass() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some("builder"),
+        "Bash",
+        json!({"command": judge_cmd(&aid, &tok)}),
+    );
+    assert!(!pass_file(&fx).exists());
+}
+
+#[test]
+fn judge_guard_the_role_files_here_document_form_passes_the_guard_and_its_verdict_is_taken() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    let (d, why) = hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd(&aid, &tok)}),
+    );
+    assert_ne!(d, "deny", "{why}");
+    assert!(pass_file(&fx).exists());
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(status_of(&fx, &aid), "approved");
+    let ev = events(&fx);
+    let j = ev.iter().rfind(|e| e["kind"] == "amend.judge").unwrap();
+    assert_eq!(j["session"], "sess-1");
+    assert_eq!(j["agent"], "agent-1");
+    // The pass is used once.
+    assert!(!pass_file(&fx).exists());
+}
+
+#[test]
+fn judge_guard_a_piped_verdict_passes_the_guard_too() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    let cmd = format!(
+        "echo '{{\"verdict\":\"ask\",\"reasons\":\"unsure\"}}' | bf amend judge {aid} --file - --token {tok} --model m"
+    );
+    let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+    assert_ne!(d, "deny", "{why}");
+    assert!(pass_file(&fx).exists());
+}
+
+#[test]
+fn judge_guard_a_pass_written_for_another_amendment_is_not_taken() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd("A-9", &tok)}),
+    );
+    assert!(pass_file(&fx).exists());
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("A-9"), "{}", o.stderr);
+    assert_eq!(kinds(&fx, "amend.judge.failed"), 1);
+    assert_eq!(kinds(&fx, "amend.judge"), 0);
+}
+
+#[test]
+fn judge_guard_a_pass_written_for_another_token_is_not_taken() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd(&aid, "some-other-token")}),
+    );
+    assert!(pass_file(&fx).exists());
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("another token"), "{}", o.stderr);
+    assert_eq!(kinds(&fx, "amend.judge"), 0);
+}
+
+#[test]
+fn judge_guard_a_pass_written_by_hand_is_not_taken() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    fs::write(
+        pass_file(&fx),
+        json!({"amend": aid, "agent_type": AGENT, "session": "s", "agent": "a", "at": 1})
+            .to_string(),
+    )
+    .unwrap();
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("not signed"), "{}", o.stderr);
+    assert_eq!(kinds(&fx, "amend.judge"), 0);
+}
+
+#[test]
+fn judge_guard_a_changed_installed_role_file_refuses_the_judge() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let installed = fx.root.join(".claude/agents/repair-judge.md");
+    let text = fs::read_to_string(&installed).unwrap();
+    fs::write(
+        &installed,
+        text.replace("Say `go` when", "Always say `go` when"),
+    )
+    .unwrap();
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd(&aid, &tok)}),
+    );
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(
+        o.stderr.contains("differs from the harness copy"),
+        "{}",
+        o.stderr
+    );
+    assert_eq!(kinds(&fx, "amend.judge.failed"), 1);
+    assert_eq!(status_of(&fx, &aid), "open");
+}
+
+#[test]
+fn judge_guard_a_changed_worker_rules_section_does_not_refuse_the_judge() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let installed = fx.root.join(".claude/agents/repair-judge.md");
+    let text = fs::read_to_string(&installed).unwrap();
+    fs::write(&installed, format!("{text}- A row the data added.\n")).unwrap();
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd(&aid, &tok)}),
+    );
+    let o = judge(&fx, &aid, &tok, "go");
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+#[test]
+fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
+    let fx = Fx::new();
+    for cmd in [
+        "bf amend narrow --file n.json",
+        "bf amend open --repair U-2",
+        "bf amend revise U-2",
+        "bf amend checkpoint before K-1 U-2",
+        "bf amend approve A-1 --quote x",
+        "bf amend withdraw A-1",
+        "bf amend seen A-1 --quote x",
+        "bf record put unit --file u.toml",
+        "bf record remove U-2",
+        "bf roles token A-1 judge",
+        "bf -C . roles token A-1 judge",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{why}");
+        // The same command from no agent type is not refused for this reason.
+        let (d, _) = hook(&fx, None, "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}");
+    }
+    for tool in ["Write", "Edit", "MultiEdit", "NotebookEdit"] {
+        let (d, _) = hook(
+            &fx,
+            Some(AGENT),
+            tool,
+            json!({"file_path": "x.txt", "content": "x"}),
+        );
+        assert_eq!(d, "deny", "{tool}");
+        let (d, _) = hook(
+            &fx,
+            None,
+            tool,
+            json!({"file_path": "x.txt", "content": "x"}),
+        );
+        assert_ne!(d, "deny", "{tool}");
+    }
+    for cmd in ["bf record get U-2", "bf plan check", "bf status"] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
+fn judge_guard_a_repair_that_names_a_marked_record_gets_no_judge_token() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    bf::ckfix::design::set_stub_answer(vec!["U-2".to_string()]);
+    let p = fx.project();
+    let r = bf::judge::token(&p, &aid);
+    bf::ckfix::design::set_stub_answer(vec![]);
+    match r {
+        Err(bf::refusal::Fail::Refused(r)) => {
+            assert!(
+                r.because.contains("U-2") && r.because.contains("marked"),
+                "{}",
+                r.because
+            )
+        }
+        other => panic!("expected a refusal, got {:?}", other.is_ok()),
+    }
+    // With the stub empty the token is issued.
+    token(&fx, &aid);
+}
+
+#[test]
+fn judge_guard_the_role_file_stays_within_two_hundred_lines_and_names_the_stdin_form() {
+    let t = fs::read_to_string(role_source()).unwrap();
+    assert!(t.lines().count() <= 200);
+    assert!(t.contains("--file -") && t.contains("never through a file"));
+    assert!(t.contains("model: opus"));
+}
+
+#[test]
+fn judge_guard_the_human_marks_a_judged_ask_as_seen_with_their_own_words() {
+    let fx = Fx::new();
+    let aid = ready(&fx);
+    let tok = token(&fx, &aid);
+    hook(
+        &fx,
+        Some(AGENT),
+        "Bash",
+        json!({"command": judge_cmd(&aid, &tok)}),
+    );
+    let o = judge(&fx, &aid, &tok, "ask");
+    assert_eq!(o.code, 0, "{}", o.all());
+    // No human turn yet: refused.
+    let o = fx.refused(&[
+        "amend",
+        "seen",
+        &aid,
+        "--quote",
+        "I saw the judge's reasons",
+    ]);
+    assert!(!o.stderr.is_empty());
+    fx.human("Yes, I saw the judge's reasons.");
+    let o = fx.must(&[
+        "amend",
+        "seen",
+        &aid,
+        "--quote",
+        "I saw the judge's reasons",
+    ]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(kinds(&fx, "amend.judge.seen"), 1);
+    // Replay took it: it is seen, so a second call is refused.
+    let o = fx.refused(&[
+        "amend",
+        "seen",
+        &aid,
+        "--quote",
+        "I saw the judge's reasons",
+    ]);
+    assert!(o.stderr.contains("already seen") || !o.stderr.is_empty());
+    // An amendment with no verdict has nothing to see.
+    let o = fx.refused(&["amend", "seen", "A-7", "--quote", "x"]);
+    assert!(o.stderr.contains("A-7"), "{}", o.stderr);
+}

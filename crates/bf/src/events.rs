@@ -531,6 +531,9 @@ pub struct UnitSt {
     pub attempts: u32,
     /// The state before it was blocked or parked, so a release can put it back to work.
     pub prev_state: String,
+    /// Whether the unit's park is a parked review (its round limit, or a park while it was in review): only
+    /// then are its findings the human's to accept (R-71, R-95).
+    pub parked_in_review: bool,
     pub landed_hash: String,
     pub landed_run: String,
     /// The amendment that last sent this unit back to work.
@@ -544,6 +547,42 @@ pub struct UnitSt {
     pub paused: bool,
     /// Set when a blocked unit is to be reconsidered (A-73).
     pub reconsider: bool,
+    /// The finding IDs of the unit's reviews that are neither fixed nor accepted (D-91).
+    pub open_findings: Vec<String>,
+    /// The log position of the report that closed the unit's latest review round; 0 while none did.
+    pub review_seq: u64,
+}
+
+/// A finding the human accepted in their own words, of a unit's review or of a checkpoint fix's review (D-91).
+#[derive(Clone, Debug, Default)]
+pub struct Accepted {
+    /// `unit` or `fix`.
+    pub scope: String,
+    /// The unit, or the checkpoint of the fix.
+    pub subject: String,
+    /// The finding's ID for a unit; empty for a fix.
+    pub id: String,
+    /// For a fix: the review round and the finding's number inside it, from 1.
+    pub round: u32,
+    pub index: u32,
+    /// The finding's level (its severity); empty when the log does not say.
+    pub level: String,
+    /// The log position of the human's message, its words as quoted, and the log position of the accept.
+    pub turn: u64,
+    pub quote: String,
+    pub seq: u64,
+    /// For a fix: the log position of the opening of the fix the accept was given for, so an accept can
+    /// never be taken for a finding of another fix. 0 for a unit.
+    pub fix_open: u64,
+}
+
+/// A grant of files to a checkpoint fix: for each file its path, the reason and the patch the reviewer saw.
+#[derive(Clone, Debug, Default)]
+pub struct FixGrant {
+    pub files: Vec<String>,
+    pub reasons: Vec<String>,
+    pub patches: Vec<String>,
+    pub seq: u64,
 }
 
 /// One repository of an open sync: where the checkpoint branch stood before, the main branch's commit
@@ -586,6 +625,8 @@ pub struct CkFixAbort {
     /// The (round, number) of each finding the aborted fix was opened for.
     pub ids: Vec<(u32, u32)>,
     pub seq: u64,
+    /// The folder under the evidence folder that holds the work the fix left; empty when none was saved.
+    pub saved: String,
 }
 
 /// A fix of a checkpoint that failed a check or drew findings: a builder works in the checkpoint's own
@@ -633,6 +674,25 @@ pub struct CkFixOpen {
     pub wave: u32,
     /// The opening event cites a human turn of its own (a pick with words).
     pub own_turn: bool,
+    /// The files the fix's builder asked for, while the phase is `scope`: `{path, why, patch}` each.
+    pub request: Vec<Value>,
+    /// Files granted to this fix, in order.
+    pub grants: Vec<FixGrant>,
+    /// Requests refused: `{seq, files, refusal}`.
+    pub refused: Vec<Value>,
+    /// The folder of the saved work this fix started from; empty when it started clean.
+    pub from_saved: String,
+    /// The (review round, log position of its report) of each review round of this fix.
+    pub round_seqs: Vec<(u32, u64)>,
+    /// Whether the fix is parked (or `low`) by its review's findings: only then are they the human's to
+    /// accept. A fix parked by a failing attempt or by `checkpoint.fix.park` is not (R-71, R-95).
+    pub parked_in_review: bool,
+    /// The findings of this fix's review the human accepted, and the earlier words kept from a fix of the
+    /// same checkpoint that was aborted.
+    pub accepted: Vec<Accepted>,
+    /// The words the human gave to an earlier, aborted fix of the same checkpoint: kept to be shown, never
+    /// counted for a finding of this fix (its review rounds and numbers are its own).
+    pub inherited: Vec<Accepted>,
 }
 
 /// A hold the engine logged for a checkpoint: `marked`, `question` or `wave`, what it names, and the seq
@@ -780,6 +840,8 @@ pub struct CkFixDone {
     pub units: Vec<String>,
     /// File -> the units whose file lists hold it.
     pub by_file: Value,
+    /// File -> its mark (`format only`, R-58); Null for a fix recorded before marks were kept.
+    pub marks: Value,
     pub rounds_log: Vec<Value>,
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
@@ -790,7 +852,7 @@ pub struct CkFixDone {
     pub seq: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Amend {
     pub id: String,
     pub ids: Vec<String>,
@@ -819,6 +881,22 @@ pub struct Amend {
     /// Everything that differed from the last approved content when the amendment was narrowed: the
     /// list the page shows and the fingerprint covers. Empty until it is narrowed.
     pub changes: Vec<Value>,
+    /// The fingerprint of the latest narrowing (its `set_hash`).
+    pub fingerprint: String,
+    /// Opened from a fix design's marked item (D-30, R-64): never judged.
+    pub from_design: bool,
+    /// The human's for good: it once had a verdict `ask` or a failed judge, or was opened `from_design`.
+    pub human_only: bool,
+    /// The judge's verdict on its latest judged narrowing: verdict, reasons, model, seq, fingerprint.
+    pub verdict: Option<Value>,
+    /// The judge's turns, one for each token: `{fingerprint, seq, at}`.
+    pub judge_turns: Vec<Value>,
+    /// The failed judge's turn, if one failed: `{fingerprint, reason, seq}`.
+    pub failed: Option<Value>,
+    /// Approved by the judge with no human message (counted on replay).
+    pub judged: bool,
+    /// The human said they saw the judge's approval or `ask`.
+    pub seen: bool,
 }
 
 /// A closed checkpoint: where it closed in the log, the content it closed on, and whether it was merged.
@@ -837,6 +915,9 @@ pub struct Closed {
     /// The IDs left unproven at the close because every check that proves them was off, with those names.
     pub waived: BTreeMap<String, Vec<String>>,
 }
+
+/// A counted fix opening by the human's words: (checkpoint, turn, quote, the findings as (round, number)).
+pub type CkPick = (String, u64, String, Vec<(u32, u32)>);
 
 #[derive(Default)]
 pub struct State {
@@ -899,6 +980,10 @@ pub struct State {
     /// Every checkpoint fix that was aborted: (checkpoint, the findings it was opened for as (round, number),
     /// seq of the abort).
     pub ck_fix_aborts: Vec<CkFixAbort>,
+    /// The fix openings of review findings by the human's words that the replay counted: the seq of the
+    /// opening to (checkpoint, turn, quote, the findings as (round, number)). A fix reopened after an abort
+    /// for the same findings may keep these words by citing one of them (R-71).
+    pub ck_picks: HashMap<u64, CkPick>,
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
@@ -918,6 +1003,13 @@ pub struct State {
     pub wave_runs: BTreeMap<(String, u32), WaveRun>,
     /// Unit -> its open request, its grants and its refused requests.
     pub scope: BTreeMap<String, ScopeSt>,
+    /// Record ID -> the amendment whose narrowing of an unseen `ask` or failed judge changed it, kept
+    /// when that amendment is withdrawn, until its `amend.judge.seen` (D-91).
+    pub asked: BTreeMap<String, String>,
+    /// The amendments the judge approved that the human has not yet said they saw, in log order.
+    pub judged_unseen: Vec<String>,
+    /// Every finding the human accepted on a parked unit review or a checkpoint-fix review, in log order.
+    pub accepted: Vec<Accepted>,
     /// Orders between units set after the plan was made: `{unit, after, path, seq}`.
     pub orders: Vec<Value>,
 }
@@ -996,7 +1088,7 @@ pub fn replay_log(log: &Log) -> State {
 
 /// A decision is valid only if its turn exists, is unused, comes in the right place, and the quote
 /// and the message pass the decision rules.
-fn decision_turn_ok(
+pub(crate) fn decision_turn_ok(
     st: &State,
     ix: &HashMap<u64, usize>,
     tseq: u64,
@@ -1019,7 +1111,7 @@ fn decision_turn_ok(
         && check_decision(&t.text, quote, kind, &words).is_ok()
 }
 
-fn id_pairs(v: &Value) -> Vec<(u32, u32)> {
+pub(crate) fn id_pairs(v: &Value) -> Vec<(u32, u32)> {
     v.as_array()
         .into_iter()
         .flatten()
@@ -1041,6 +1133,26 @@ pub fn round_report_seq(st: &State, k: &str, round: u32) -> u64 {
         .map(|(_, _, q)| *q)
         .max()
         .unwrap_or(0)
+}
+
+/// The opening by the human's words that a fix of these findings may reopen with: the latest opening of the
+/// checkpoint that the replay counted and that names any of them, when it names them all and an abort of them
+/// all came after it. One abort pays for one reopen, because a reopen is itself a counted opening.
+pub fn reusable_pick<'a>(st: &'a State, k: &str, ids: &[(u32, u32)]) -> Option<(u64, &'a CkPick)> {
+    if ids.is_empty() {
+        return None;
+    }
+    let (seq, c) = st
+        .ck_picks
+        .iter()
+        .filter(|(_, c)| c.0 == k && ids.iter().any(|x| c.3.contains(x)))
+        .max_by_key(|(seq, _)| **seq)?;
+    let covered = ids.iter().all(|x| c.3.contains(x));
+    let ended = st
+        .ck_fix_aborts
+        .iter()
+        .any(|a| a.checkpoint == k && a.seq > *seq && ids.iter().all(|x| a.ids.contains(x)));
+    (covered && ended).then_some((*seq, c))
 }
 
 /// The seq of the latest event that put these findings (round, number) of a checkpoint to the human: for
@@ -1094,7 +1206,7 @@ pub fn hold(st: &State, k: &str, opened_before: u64) -> Option<Hold> {
         });
     }
     if let Some(f) = st.ck_fix.as_ref() {
-        if f.open_seq < opened_before && f.phase != "parked" {
+        if f.open_seq < opened_before && !matches!(f.phase.as_str(), "parked" | "low") {
             return Some(Hold::Fix {
                 checkpoint: f.checkpoint.clone(),
             });
@@ -1678,6 +1790,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if matches!(to.as_str(), "blocked" | "parked") && u.state != to {
                     u.prev_state = u.state.clone();
                 }
+                if to == "parked" {
+                    u.parked_in_review = sv("from") == "review";
+                }
                 u.state = to.clone();
                 if ev["result"] == "findings" {
                     u.rounds += 1;
@@ -1695,7 +1810,20 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if !note.is_empty() {
                     u.notes.push(note);
                 }
+                if ev["result"] == "findings" {
+                    for f in ev["findings"].as_array().into_iter().flatten() {
+                        if let Some(id) = f.as_str() {
+                            if !u.open_findings.iter().any(|o| o == id) {
+                                u.open_findings.push(id.to_string());
+                            }
+                        }
+                    }
+                } else if ev["from"] == "fixing" {
+                    // The builder's `fixed` report marks every open finding of the unit fixed.
+                    u.open_findings.clear();
+                }
                 if ev.get("round").is_some() {
+                    u.review_seq = seq;
                     u.review_rounds.push(json!({
                         "round": ev["round"], "content": ev["content"], "head": ev["head"],
                         "covered": ev["covered"], "result": ev["result"],
@@ -2113,6 +2241,33 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                                     }
                                 }
                             }
+                            "reopen" => {
+                                // A fix reopened after an abort for the same findings keeps the human's
+                                // earlier words (R-71): it cites no turn of its own, only the latest opening
+                                // of these findings that the replay counted, which an abort has ended since;
+                                // one abort pays for one reopen. It meets every hold a pick meets.
+                                let named = id_pairs(&ev["finding_ids"]);
+                                let quote = ev["human"]["quote"].as_str().unwrap_or("");
+                                let base = put_to_human_seq(&st, &ck, &named);
+                                let held = decision_bound(&st, &ck, base, seq).is_err()
+                                    || st.ck_fix.is_some()
+                                    || st.sync_open.is_some();
+                                let ok = !held
+                                    && ev["human"]["turn"].is_null()
+                                    && reusable_pick(&st, &ck, &named).is_some_and(|(e, c)| {
+                                        ev["human"]["earlier"].as_u64() == Some(e) && c.2 == quote
+                                    });
+                                if ok {
+                                    None
+                                } else {
+                                    marked_seen = true;
+                                    st.ignored.push(crate::strings::t(
+                                        "accept.events.ignored.reopen",
+                                        &[("seq", &seq.to_string())],
+                                    ));
+                                    continue;
+                                }
+                            }
                             _ => {
                                 Some("a fix of review findings names an unknown way it was opened")
                             }
@@ -2169,6 +2324,20 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     })
                     .collect();
                 let findings = ev["findings"].as_array().cloned().unwrap_or_default();
+                let counted_from = match ev["opened_by"].as_str() {
+                    Some("pick") => ev["human"]["turn"]
+                        .as_u64()
+                        .map(|t| (t, ev["human"]["quote"].as_str().unwrap_or("").to_string())),
+                    Some("reopen") => ev["human"]["earlier"]
+                        .as_u64()
+                        .and_then(|e| st.ck_picks.get(&e))
+                        .map(|c| (c.1, c.2.clone())),
+                    _ => None,
+                };
+                if let Some((t, q)) = counted_from {
+                    st.ck_picks
+                        .insert(seq, (sv("checkpoint"), t, q, ids_named.clone()));
+                }
                 st.ck_fix = Some(CkFixOpen {
                     checkpoint: sv("checkpoint"),
                     source: sv("source"),
@@ -2201,20 +2370,38 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     open_seq: seq,
                     wave: ev["wave"].as_u64().unwrap_or(0) as u32,
                     own_turn: ev["human"]["turn"].as_u64().is_some(),
+                    from_saved: sv("from_saved"),
+                    // The human's earlier words on the same findings of this checkpoint stay with the
+                    // fix reopened after an abort (R-71).
+                    inherited: st
+                        .accepted
+                        .iter()
+                        .filter(|a| a.scope == "fix" && a.subject == sv("checkpoint"))
+                        .filter(|a| {
+                            !sv("from_saved").is_empty() || ids_named.contains(&(a.round, a.index))
+                        })
+                        .cloned()
+                        .collect(),
                     ..Default::default()
                 });
             }
             "checkpoint.fix.built" => {
                 if let Some(o) = st.ck_fix.as_mut() {
+                    // New work ends a settled review: the next review round judges it.
+                    if let Some(last) = o.rounds_log.last_mut() {
+                        last["accepted"] = json!(false);
+                    }
                     o.phase = "review".into();
                     o.failed.clear();
+                    o.request.clear();
                 }
             }
             "checkpoint.fix.attempt" => {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.attempts += 1;
                     o.phase = sv("to");
-                    if o.phase == "parked" {
+                    o.parked_in_review = false;
+                    if matches!(o.phase.as_str(), "parked" | "low") {
                         o.park_seq = seq;
                         st.ck_end_seq = seq;
                     }
@@ -2229,10 +2416,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         "round": ev["round"], "content": ev["content"], "heads": ev["heads"],
                         "covered": ev["covered"], "result": ev["result"],
                     }));
+                    o.round_seqs
+                        .push((ev["round"].as_u64().unwrap_or(0) as u32, seq));
                     if sv("result") == "findings" {
                         o.rounds += 1;
                         o.phase = sv("to");
-                        if o.phase == "parked" {
+                        o.parked_in_review = matches!(o.phase.as_str(), "parked" | "low");
+                        if matches!(o.phase.as_str(), "parked" | "low") {
                             o.park_seq = seq;
                             st.ck_end_seq = seq;
                         }
@@ -2246,6 +2436,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.park" => {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.phase = "parked".into();
+                    o.parked_in_review = false;
                     o.park_seq = seq;
                     st.ck_end_seq = seq;
                     o.reason = sv("reason");
@@ -2263,7 +2454,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let Some(parked_at) = st
                     .ck_fix
                     .as_ref()
-                    .filter(|f| f.phase == "parked")
+                    .filter(|f| matches!(f.phase.as_str(), "parked" | "low"))
                     .map(|f| f.park_seq)
                 else {
                     st.ignored.push(format!(
@@ -2414,9 +2605,14 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         checkpoint: o.checkpoint.clone(),
                         ids: o.origin_ids.clone(),
                         seq,
+                        saved: sv("saved"),
                     });
-                    st.ck_declined
-                        .push(format!("{}@{}", o.checkpoint, o.content));
+                    // An abort of a fix opened for a failed check marks no content declined: the check
+                    // can be fixed again (R-70).
+                    if o.source != "check" {
+                        st.ck_declined
+                            .push(format!("{}@{}", o.checkpoint, o.content));
+                    }
                 }
             }
             "checkpoint.fix.done" => {
@@ -2435,6 +2631,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         files: crate::store::str_list(ev, "files"),
                         units: crate::store::str_list(ev, "units"),
                         by_file: ev["by_file"].clone(),
+                        marks: ev["marks"].clone(),
                         rounds_log: o.rounds_log.clone(),
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
@@ -2564,10 +2761,32 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                 }
             }
+            "unit.unblock" => {
+                // Only a `fixed` judgment moves the unit; rounds, attempts and the state it was
+                // blocked from stay, so a later loop still meets the park.
+                match st
+                    .units
+                    .get_mut(&sv("unit"))
+                    .filter(|u| u.state == "blocked")
+                {
+                    Some(u) => {
+                        if sv("judgment") == "fixed" {
+                            u.state = sv("to");
+                            u.last_seq = seq;
+                            u.last_at = at.clone();
+                        }
+                    }
+                    None => st.ignored.push(crate::strings::t(
+                        "unblock.ignored",
+                        &[("seq", &seq.to_string())],
+                    )),
+                }
+            }
             "unit.park" => {
                 let u = st.units.entry(sv("unit")).or_default();
                 if u.state != "parked" {
                     u.prev_state = u.state.clone();
+                    u.parked_in_review = u.state == "review";
                 }
                 u.state = "parked".into();
                 u.parked_reason = sv("reason");
@@ -2617,6 +2836,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 touched: vec![],
                 approved: None,
                 changes: vec![],
+                from_design: ev["from_design"].as_bool().unwrap_or(false)
+                    || ev["from_design"].as_str().is_some_and(|d| !d.is_empty()),
+                human_only: ev["from_design"].as_bool().unwrap_or(false)
+                    || ev["from_design"].as_str().is_some_and(|d| !d.is_empty()),
+                ..Default::default()
             }),
             "amend.checkpoint" => {
                 let id = sv("amend");
@@ -2678,18 +2902,133 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         .unwrap_or_default();
                     a.status = "narrowed".into();
                     a.changed_seq = seq;
+                    a.fingerprint = sv("set_hash");
                 }
+            }
+            "amend.judge" => {
+                let id = sv("amend");
+                let verdict = sv("verdict");
+                let fp = sv("fingerprint");
+                let ok = st.amends.iter().any(|a| {
+                    a.id == id
+                        && a.status == "narrowed"
+                        && a.fingerprint == fp
+                        && !a.from_design
+                        && !a.human_only
+                }) && matches!(verdict.as_str(), "go" | "ask");
+                if !ok {
+                    st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.judge_verdict",
+                        &[("seq", &seq.to_string())],
+                    ));
+                    continue;
+                }
+                if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+                    a.verdict = Some(json!({
+                        "verdict": verdict, "reasons": ev["reasons"], "model": ev["model"],
+                        "seq": seq, "fingerprint": fp,
+                    }));
+                    if verdict == "ask" {
+                        a.human_only = true;
+                    }
+                }
+                if verdict == "ask" {
+                    keep_asked(&mut st, &id);
+                }
+            }
+            "amend.judge.token" => {
+                let id = sv("amend");
+                if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+                    a.judge_turns
+                        .push(json!({"fingerprint": sv("fingerprint"), "seq": seq, "at": at}));
+                } else {
+                    st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.judge_token",
+                        &[("seq", &seq.to_string())],
+                    ));
+                }
+            }
+            "amend.judge.failed" => {
+                let id = sv("amend");
+                if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+                    a.failed = Some(json!({
+                        "fingerprint": sv("fingerprint"), "reason": sv("reason"), "seq": seq,
+                    }));
+                    a.human_only = true;
+                    keep_asked(&mut st, &id);
+                } else {
+                    st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.judge_failed",
+                        &[("seq", &seq.to_string())],
+                    ));
+                }
+            }
+            "amend.judge.seen" => {
+                let id = sv("amend");
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let after = st
+                    .amends
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| {
+                        [
+                            a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
+                            a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .max()
+                    })
+                    .unwrap_or(None);
+                let Some(after) = after else {
+                    st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.judge_seen_none",
+                        &[("seq", &seq.to_string())],
+                    ));
+                    continue;
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    after,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.judge_seen_turn",
+                        &[("seq", &seq.to_string())],
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+                    a.seen = true;
+                }
+                st.judged_unseen.retain(|x| *x != id);
+                st.asked.retain(|_, a| *a != id);
             }
             "amend.approve" => {
                 let id = sv("amend");
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let by_judge = sv("by") == "judge";
                 let changed = st
                     .amends
                     .iter()
                     .find(|a| a.id == id)
                     .map(|a| a.changed_seq)
                     .unwrap_or(0);
-                if !decision_turn_ok(
+                if by_judge {
+                    // Counts only where the judge module says so (a stub that says no until its unit).
+                    if !crate::judge::approve_counts(&st, ev) {
+                        st.ignored.push(crate::strings::t(
+                            "events.k2.ignored.judge_approve",
+                            &[("seq", &seq.to_string())],
+                        ));
+                        continue;
+                    }
+                } else if !decision_turn_ok(
                     &st,
                     &turn_ix,
                     tseq,
@@ -2709,6 +3048,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     .find(|a| a.id == id && a.status == "narrowed")
                 {
                     a.status = "approved".into();
+                    if by_judge {
+                        a.judged = true;
+                        a.seen = false;
+                        st.judged_unseen.push(id.clone());
+                    }
                     if let Some(c) = ev.get("content").and_then(|c| c.as_object()) {
                         let m: BTreeMap<String, Value> =
                             c.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -2717,7 +3061,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         }
                         a.approved = Some(m);
                     }
-                    st.turns[turn_ix[&tseq]].used = true;
+                    if !by_judge {
+                        st.turns[turn_ix[&tseq]].used = true;
+                    }
                     // The approved amendment re-opens what it touches: the units go back to work (what
                     // they landed stays in the log), the checkpoints open again, and the receipts for
                     // the changed checks that exist now stop counting.
@@ -2743,6 +3089,67 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         *e = (*e).max(floor);
                     }
                 }
+            }
+            "checkpoint.fix.scope.request" => {
+                let ck = sv("checkpoint");
+                match st.ck_fix.as_mut() {
+                    Some(o) if o.checkpoint == ck && o.phase == "fix" => {
+                        o.phase = "scope".into();
+                        o.request = ev["files"].as_array().cloned().unwrap_or_default();
+                    }
+                    _ => st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.fix_scope_request",
+                        &[("seq", &seq.to_string())],
+                    )),
+                }
+            }
+            "checkpoint.fix.scope.grant" => {
+                let ck = sv("checkpoint");
+                match st.ck_fix.as_mut() {
+                    Some(o) if o.checkpoint == ck && o.phase == "scope" => {
+                        let files = ev["files"].as_array().cloned().unwrap_or_default();
+                        let text = |k: &str| -> Vec<String> {
+                            files
+                                .iter()
+                                .map(|f| f[k].as_str().unwrap_or("").to_string())
+                                .collect()
+                        };
+                        o.grants.push(FixGrant {
+                            files: text("path"),
+                            reasons: text("why"),
+                            patches: text("patch"),
+                            seq,
+                        });
+                        o.request.clear();
+                        o.phase = "fix".into();
+                    }
+                    _ => st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.fix_scope_grant",
+                        &[("seq", &seq.to_string())],
+                    )),
+                }
+            }
+            "checkpoint.fix.scope.refuse" => {
+                let ck = sv("checkpoint");
+                match st.ck_fix.as_mut() {
+                    Some(o) if o.checkpoint == ck && o.phase == "scope" => {
+                        o.refused.push(json!({
+                            "seq": seq, "files": ev["files"], "refusal": sv("refusal"),
+                        }));
+                        o.request.clear();
+                        o.phase = "fix".into();
+                    }
+                    _ => st.ignored.push(crate::strings::t(
+                        "events.k2.ignored.fix_scope_refuse",
+                        &[("seq", &seq.to_string())],
+                    )),
+                }
+            }
+            "checkpoint.fix.finding.settle" => {
+                crate::accept::replay_fix(&mut st, &turn_ix, ev, seq);
+            }
+            "unit.finding.accept" => {
+                crate::accept::replay_unit(&mut st, &turn_ix, ev, seq);
             }
             "unit.scope.resume" => crate::scope::wait::replay(&mut st, ev, seq, &at),
             "unit.pause" | "unit.resume" => crate::run::pause::replay(&mut st, ev, seq, &at),
@@ -2772,6 +3179,25 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
         crate::scope::reconsider::after_event(&mut st, kind, ev, seq, &at);
     }
     st
+}
+
+/// The records the narrowing of an `ask` or a failed judge lists as changed belong to the amendment's
+/// `asked` entry until its `amend.judge.seen`; a withdrawn amendment keeps them (F-213).
+fn keep_asked(st: &mut State, amend: &str) {
+    let ids: Vec<String> = st
+        .amends
+        .iter()
+        .find(|a| a.id == amend)
+        .map(|a| {
+            a.changes
+                .iter()
+                .filter_map(|c| c["id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in ids {
+        st.asked.insert(id, amend.to_string());
+    }
 }
 
 /// Refuse when the log's hash chain is broken.

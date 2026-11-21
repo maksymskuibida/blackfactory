@@ -48,7 +48,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     }
     let mut md = String::new();
     md.push_str(&format!("# Brief: {} as {}\n\n", unit, role));
-    if role == "builder" && crate::scope::reconsider::request_from(&st, unit) {
+    if let Some(r) = crate::scope::reconsider::open_retry(&st, unit).filter(|_| role == "builder") {
+        md.push_str(&retry_md(p, unit, &r));
+    } else if role == "builder" && crate::scope::reconsider::request_from(&st, unit) {
         // The note of the blocked report itself, not the last note of any kind.
         let note = events::load_log(p)
             .ok()
@@ -247,7 +249,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         let prior: Vec<Value> = st
             .units
             .get(unit)
-            .map(|x| x.review_rounds.clone())
+            .map(|x| {
+                // The round an accept adds is not a review round the reviewer filed.
+                x.review_rounds
+                    .iter()
+                    .filter(|r| r["accepted"] != true)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         md.push_str(&format!("## Review round {}\n\n", prior.len() + 1));
         match prior.last() {
@@ -267,6 +276,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push_str("In any round you may read outside the changes, anywhere in the working copy, when you need to in order to judge them: what a change touches, calls or could break, and the code it relies on.\n\n");
+    }
+    if role == "builder" {
+        md.push_str(&unblock::brief_md(p, &st, unit));
+        md.push_str(&unit_sync::brief_md(p, unit));
     }
     md.push_str("## Limits\n\n");
     md.push_str(&format!(
@@ -293,4 +306,64 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     let path = p.briefs_dir().join(format!("{unit}-{role}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)
+}
+
+/// The section of a builder's brief for an open retry: each file to correct with the reviewer's
+/// words, its round and the rounds left, the needed files to ask for again and the command.
+fn retry_md(p: &Project, unit: &str, r: &Value) -> String {
+    use crate::strings::t;
+    let lim = crate::scope::retry::limit(p);
+    let mut md = format!(
+        "## {}\n\n{}\n\n",
+        t("scope.retry.brief.title", &[]),
+        t("scope.retry.brief.intro", &[])
+    );
+    let mut needed = String::new();
+    for f in r["files"].as_array().into_iter().flatten() {
+        let path = s(f, "path");
+        if s(f, "verdict") == "needed" {
+            needed.push_str(&format!(
+                "{}\n",
+                t("scope.retry.brief.needed_file", &[("path", path)])
+            ));
+            continue;
+        }
+        let round = f["round"].as_u64().unwrap_or(1) as u32;
+        md.push_str(&format!(
+            "{}\n",
+            t(
+                "scope.retry.brief.file",
+                &[
+                    ("path", path),
+                    (
+                        "why",
+                        &s(f, "why").split_whitespace().collect::<Vec<_>>().join(" ")
+                    ),
+                    (
+                        "must",
+                        &s(f, "must")
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    ("round", &round.to_string()),
+                    ("limit", &lim.to_string()),
+                    ("left", &lim.saturating_sub(round).to_string()),
+                ]
+            )
+        ));
+    }
+    md.push('\n');
+    if !needed.is_empty() {
+        md.push_str(&format!(
+            "{}\n\n{needed}\n",
+            t("scope.retry.brief.needed_title", &[])
+        ));
+    }
+    md.push_str(&format!(
+        "{}\n\n{}\n\n",
+        t("scope.retry.brief.command", &[("unit", unit)]),
+        t("scope.retry.brief.plain", &[])
+    ));
+    md
 }

@@ -437,12 +437,12 @@ fn a_change_outside_the_files_is_refused_as_a_plan_gap_for_the_human() {
     assert_eq!(d["role"], "human", "{d}");
     assert!(d["missing"].to_string().contains("src/other.txt"), "{d}");
     assert!(d["note"].as_str().unwrap().contains("amendment"), "{d}");
-    // The checkpoint goes back as it was, and no fix opens again for that content: the old way holds.
+    // The abort turns this attempt down; the failing check still has a fix open, so it opens again.
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
     assert!(!k.join("src/other.txt").exists());
     let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "run-checkpoint-checks", "{n}");
-    assert!(fx.must(&["status", "--json"]).json()["checkpoint_fix"]["open"].is_null());
+    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+    assert!(!fx.must(&["status", "--json"]).json()["checkpoint_fix"]["open"].is_null());
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn a_builder_can_report_a_gap_and_a_new_test_file_only_counts_when_it_is_new() {
             "--result",
             "gap",
             "--note",
-            "needs behaviour no record describes",
+            "src/needs.txt: needs behaviour no record describes",
         ],
     );
     assert_eq!(o.code, 2, "{}", o.all());
@@ -517,7 +517,7 @@ fn rounds_and_failing_attempts_count_against_the_unit_limits_and_a_parked_fix_go
         &["report", "K-1", "--role", "builder", "--result", "built"],
     );
     let findings =
-        json!([{"title": "again", "severity": "low", "where": "src/a.txt", "action": "x"}]);
+        json!([{"title": "again", "severity": "medium", "where": "src/a.txt", "action": "x"}]);
     for round in 1..=4 {
         let d = one_directive(&fx, "review-checkpoint-fix");
         assert_eq!(d["round"], round, "{d}");
@@ -690,7 +690,16 @@ fn parked_fix_after_old_words(old: &str) -> Fx {
     let findings = json!([{"title": "the answer is wrong", "severity": "high", "where": "src/a.txt", "action": "fix it"}]);
     let o = fx.bf_stdin(
         &k,
-        &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"],
+        &[
+            "report",
+            "K-1",
+            "--role",
+            "reviewer",
+            "--result",
+            "findings",
+            "--findings",
+            "-",
+        ],
         &findings.to_string(),
     );
     assert_eq!(o.code, 0, "{}", o.all());
@@ -703,7 +712,9 @@ fn parked_fix_after_old_words(old: &str) -> Fx {
 fn builder_report_note(fx: &Fx, k: &Path) -> Out {
     fx.bf_in(
         k,
-        &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck"],
+        &[
+            "report", "K-1", "--role", "builder", "--result", "blocked", "--note", "stuck",
+        ],
     )
 }
 
@@ -719,7 +730,14 @@ fn a_parked_fix_is_released_only_on_words_written_after_it_parked() {
     one_directive(&fx, "decide-checkpoint-fix");
     // A message written after the park releases it.
     fx.human("Yes, try the fix once more.");
-    let o = fx.bf(&["checkpoint", "fix", "K-1", "--release", "--quote", "try the fix once more"]);
+    let o = fx.bf(&[
+        "checkpoint",
+        "fix",
+        "K-1",
+        "--release",
+        "--quote",
+        "try the fix once more",
+    ]);
     assert_eq!(o.code, 0, "{}", o.all());
     one_directive(&fx, "fix-checkpoint");
 }

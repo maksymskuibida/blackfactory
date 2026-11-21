@@ -15,8 +15,9 @@ use crate::run;
 use crate::store::{s, str_list, Project};
 use crate::util;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a checkpoint fix may change.
 pub struct FileSet {
@@ -26,6 +27,14 @@ pub struct FileSet {
     pub test_dirs: Vec<String>,
     /// The units of the checkpoint.
     pub units: Vec<String>,
+}
+
+/// The files a fix may change right now: the checkpoint's units' files read from the records in force, the
+/// files a failed format or lint output names, and the fix's grants (R-70, D-91).
+#[derive(Clone, Debug, Default)]
+pub struct Live {
+    pub allowed: Vec<String>,
+    pub test_dirs: Vec<String>,
 }
 
 /// The test folder a file lies in: the path up to and including the first folder named for tests.
@@ -46,7 +55,7 @@ fn test_folder(path: &str) -> Option<String> {
     Some(format!("{folder}/"))
 }
 
-fn several_repos(p: &Project, pl: &Plan, k: &str) -> bool {
+pub(crate) fn several_repos(p: &Project, pl: &Plan, k: &str) -> bool {
     run::checkpoint_repos(p, pl, k)
         .map(|r| r.len() > 1)
         .unwrap_or(false)
@@ -107,6 +116,38 @@ pub fn file_set_of(p: &Project, pl: &Plan, k: &str, only: Option<&[String]>) -> 
     set
 }
 
+/// What the fix may change, worked out from the records and the grants as they stand now.
+pub fn live(p: &Project, pl: &Plan, st: &State, f: &CkFixOpen) -> Live {
+    let only = (f.source == "wave").then_some(f.units.as_slice());
+    let mut set = file_set_of(p, pl, &f.checkpoint, only);
+    if f.source == "check" && format_lint_only(&f.origin_failed) {
+        let top = p.work_dir().join(&f.checkpoint);
+        for path in named_in(&top, &f.origin_failed, &placed(p, pl, st, &f.checkpoint)).into_keys()
+        {
+            if !set.allowed.contains(&path) {
+                set.allowed.push(path);
+            }
+        }
+    }
+    for path in crate::fixscope::granted(st, &f.checkpoint) {
+        if !set.allowed.contains(&path) {
+            set.allowed.push(path);
+        }
+    }
+    Live {
+        allowed: set.allowed,
+        test_dirs: set.test_dirs,
+    }
+}
+
+/// The list the fix was opened with, for when the records cannot be read.
+fn frozen(f: &CkFixOpen) -> Live {
+    Live {
+        allowed: f.allowed.clone(),
+        test_dirs: f.test_dirs.clone(),
+    }
+}
+
 /// The units a changed file belongs to: those whose file lists hold it; a new test file that no list holds
 /// belongs to the units that use its test folder.
 pub fn units_of_file(p: &Project, pl: &Plan, k: &str, file: &str) -> Vec<String> {
@@ -134,7 +175,7 @@ pub fn units_of_file(p: &Project, pl: &Plan, k: &str, file: &str) -> Vec<String>
 }
 
 /// The repositories of a checkpoint with the folder of each working copy.
-fn wts(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, PathBuf)>> {
+pub(crate) fn wts(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
     for r in run::checkpoint_repos(p, pl, k)? {
         out.push((r.name.clone(), run::checkpoint_wt(p, pl, k, r)?));
@@ -326,7 +367,7 @@ fn open_locked_by(
     content: &str,
     strict: bool,
     wave: Option<(u32, &[String])>,
-    human: Option<(u64, &str)>,
+    human: Option<(u64, &str, Option<u64>)>,
     opened_by: Option<&str>,
 ) -> R<bool> {
     for (_, wt) in wts(p, pl, k)? {
@@ -342,19 +383,51 @@ fn open_locked_by(
             return Ok(false);
         }
     }
-    let set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
+    let mut set = file_set_of(p, pl, k, wave.map(|(_, u)| u));
+    // A fix of only format or lint checks may also change the files the failed output names (R-70).
+    if source == "check" && format_lint_only(&failed) {
+        let top = p.work_dir().join(k);
+        let st = events::replay(p)?;
+        for path in named_in(&top, &failed, &placed(p, pl, &st, k)).into_keys() {
+            if !set.allowed.contains(&path) {
+                set.allowed.push(path);
+            }
+        }
+    }
+    // The work an aborted fix of this checkpoint saved is applied first (R-70); what no longer applies is named.
+    let mut from_saved = String::new();
+    let mut applied: Vec<String> = Vec::new();
+    let mut not_applied: Vec<String> = Vec::new();
+    {
+        let st = events::replay(p)?;
+        if let Some(folder) = crate::fixscope::pending_saved(p, &st, k) {
+            let live = Live {
+                allowed: set.allowed.clone(),
+                test_dirs: set.test_dirs.clone(),
+            };
+            (applied, not_applied) = crate::fixscope::apply_saved(p, pl, k, &folder, &live)?;
+            from_saved = folder;
+        }
+    }
+    // `earlier` is the seq of an earlier opening whose words these are (a fix reopened after an abort).
     let by = human
-        .map(|(t, q)| json!({"turn": t, "quote": q.trim()}))
+        .map(|(t, q, earlier)| match earlier {
+            Some(e) => json!({"quote": q.trim(), "earlier": e}),
+            None => json!({"turn": t, "quote": q.trim()}),
+        })
         .unwrap_or(Value::Null);
     let mut ev = json!({"checkpoint": k, "source": source, "failed": failed, "findings": findings, "human": by,
                "finding_ids": finding_ids.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
                "allowed": set.allowed, "test_dirs": set.test_dirs, "units": set.units,
                "before": heads(p, pl, k)?, "content": content,
-               "wave": wave.map(|(w, _)| w).unwrap_or(0)});
+               "wave": wave.map(|(w, _)| w).unwrap_or(0), "from_saved": from_saved});
     if let Some(how) = opened_by {
         ev["opened_by"] = json!(how);
     }
     events::append(p, "checkpoint.fix.open", ev)?;
+    if !from_saved.is_empty() {
+        crate::fixscope::note_reopened(p, &from_saved, &applied, &not_applied)?;
+    }
     write_overlay(p)?;
     p.write_guard()?;
     Ok(true)
@@ -369,7 +442,7 @@ pub(crate) fn open_chosen(
     findings: Vec<Value>,
     ids: Vec<(u32, u32)>,
     content: &str,
-    human: Option<(u64, &str)>,
+    human: Option<(u64, &str, Option<u64>)>,
     opened_by: &str,
 ) -> R<()> {
     open_locked_by(
@@ -466,7 +539,7 @@ fn probe_tests_missing(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<String>> 
 
 /// The paths in the units' test folders that existed when the fix opened and that no unit lists: a fix may
 /// add new test files there, never change one that was already there.
-fn existing_test_files(p: &Project, f: &CkFixOpen) -> Vec<String> {
+fn existing_test_files(p: &Project, f: &CkFixOpen, live: &Live) -> Vec<String> {
     let Ok(pl) = plan::load(p) else {
         return vec![];
     };
@@ -487,8 +560,8 @@ fn existing_test_files(p: &Project, f: &CkFixOpen) -> Vec<String> {
             } else {
                 l.to_string()
             };
-            let listed = f.allowed.iter().any(|g| util::path_matches(g, &path));
-            if !listed && f.test_dirs.iter().any(|g| util::path_matches(g, &path)) {
+            let listed = live.allowed.iter().any(|g| util::path_matches(g, &path));
+            if !listed && live.test_dirs.iter().any(|g| util::path_matches(g, &path)) {
                 out.push(path);
             }
         }
@@ -504,15 +577,20 @@ pub fn write_overlay(p: &Project) -> R<()> {
     match st
         .ck_fix
         .as_ref()
-        .filter(|f| matches!(f.phase.as_str(), "fix" | "review"))
+        .filter(|f| matches!(f.phase.as_str(), "fix" | "review" | "scope"))
     {
         Some(f) => {
             let mut files: Vec<String> = Vec::new();
             let mut existing: Vec<String> = Vec::new();
-            if f.phase == "fix" {
-                files.extend(f.allowed.iter().cloned());
-                files.extend(f.test_dirs.iter().cloned());
-                existing = existing_test_files(p, f);
+            if matches!(f.phase.as_str(), "fix" | "scope") {
+                // Read live: the records in force now and the grants (R-70).
+                let live = match plan::load(p) {
+                    Ok(pl) => live(p, &pl, &st, f),
+                    Err(_) => frozen(f),
+                };
+                files.extend(live.allowed.iter().cloned());
+                files.extend(live.test_dirs.iter().cloned());
+                existing = existing_test_files(p, f, &live);
             }
             let body = json!({"checkpoint": f.checkpoint, "files": files, "existing": existing});
             let key = p.read_key().unwrap_or_default();
@@ -564,6 +642,10 @@ pub fn overlay(table: &mut Value) {
 /// The directive for the open fix.
 pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
     let k = &f.checkpoint;
+    let lv = match plan::load(p) {
+        Ok(pl) => live(p, &pl, st, f),
+        Err(_) => frozen(f),
+    };
     let wc = p.work_dir().join(k).to_string_lossy().to_string();
     let lim = json!({"max_rounds": p.policy.limits.max_rounds, "round": f.rounds,
         "max_attempts": p.policy.limits.max_attempts, "attempts": f.attempts,
@@ -576,16 +658,25 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             .to_string()
     };
     let abort = format!("bf checkpoint fix {k} --abort");
+    if settled(f) {
+        return json!({"role": "conductor", "action": "go-on-checkpoint-fix", "checkpoint": k,
+            "note": crate::strings::t("accept.fix.settled.note", &[("k", k)]),
+            "commands": [crate::strings::t("accept.fix.settled.command", &[("k", k)])],
+            "abort_command": abort});
+    }
     match f.phase.as_str() {
         "fix" => {
-            json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
+            let mut d = json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
             "wave": f.wave,
             "source": f.source, "tier": p.policy.tiers.builder, "working_copy": wc,
             "brief": brief("builder"), "limits": lim,
-            "may_change": f.allowed.iter().chain(f.test_dirs.iter()).collect::<Vec<_>>(),
+            "may_change": lv.allowed.iter().chain(lv.test_dirs.iter()).collect::<Vec<_>>(),
+            "granted": crate::fixscope::granted(st, k), "from_saved": f.from_saved,
             "failing_checks": f.failed.iter().filter_map(|x| x["check"].as_str()).collect::<Vec<_>>(),
             "findings": f.findings.iter().map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]})).collect::<Vec<_>>(),
-            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort})
+            "commands": [format!("bf brief {k} --role builder")], "abort_command": abort});
+            crate::scope::merge_fields(&mut d, retry_directive(f));
+            d
         }
         "review" => {
             json!({"role": "reviewer", "action": if f.source == "wave" { "review-wave-fix" } else { "review-checkpoint-fix" }, "checkpoint": k,
@@ -593,6 +684,26 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"),
             "limits": lim, "round": f.rounds_log.len() + 1,
             "commands": [format!("bf brief {k} --role reviewer")], "abort_command": abort})
+        }
+        "scope" => {
+            let files: Vec<String> = f.request.iter().map(|x| s(x, "path").to_string()).collect();
+            json!({"role": "reviewer", "action": "review-scope", "checkpoint": k,
+            "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"),
+            "limits": lim, "files": files,
+            "note": crate::strings::t("fix.scope.directive.note", &[("k", k)]),
+            "commands": [format!("bf brief {k} --role reviewer")],
+            "verdict_command": format!("bf checkpoint scope {k} --verdict - --token <token>"),
+            "abort_command": abort})
+        }
+        "low" => {
+            let open = open_ids(f);
+            let ids: Vec<String> = open.iter().map(|x| x.0.clone()).collect();
+            json!({"role": "human", "action": "decide-low-findings", "checkpoint": k,
+            "findings": open.iter().map(|(id, x)| json!({"id": id, "severity": x["severity"], "title": x["title"], "where": x["where"], "what_to_do": x["action"]})).collect::<Vec<_>>(),
+            "note": crate::strings::t("accept.fix.low.note", &[("k", k), ("ids", &ids.join(","))]),
+            "accept_command": crate::strings::t("accept.fix.low.accept_command", &[("k", k), ("ids", &ids.join(","))]),
+            "release_command": crate::strings::t("accept.fix.low.release_command", &[("k", k)]),
+            "abort_command": abort})
         }
         "gap" => json!({"role": "human", "action": "plan-gap", "checkpoint": k,
             "missing": f.missing,
@@ -603,6 +714,36 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "release_command": format!("bf checkpoint fix {k} --release --quote \"<the human's words>\""),
             "abort_command": abort}),
     }
+}
+
+/// Whether the fix's review is settled: every finding of its latest round is accepted and the builder has not
+/// worked since. The engine goes on to the checks and the end, with no further round (R-71).
+pub(crate) fn settled(f: &CkFixOpen) -> bool {
+    f.phase == "review" && f.rounds_log.last().map(|r| r["accepted"] == json!(true)) == Some(true)
+}
+
+/// The open findings of the fix's latest review round with their ids `f<round>.<number>`: those no accept covers.
+pub(crate) fn open_ids(f: &CkFixOpen) -> Vec<(String, Value)> {
+    let Some(h) = f
+        .history
+        .last()
+        .filter(|h| h["round"].as_u64().unwrap_or(0) >= 1)
+    else {
+        return vec![];
+    };
+    let round = h["round"].as_u64().unwrap_or(0) as u32;
+    h["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(n, _)| {
+            !f.accepted
+                .iter()
+                .any(|a| a.round == round && a.index as usize == n + 1)
+        })
+        .map(|(n, x)| (format!("f{round}.{}", n + 1), x.clone()))
+        .collect()
 }
 
 /// Whether a report on `k` belongs to the checkpoint fix part: a fix of `k` is open, or the checkpoint
@@ -660,7 +801,7 @@ fn changed(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<(String, char)>> {
 
 /// Whether the engine may let the fix change `path`: a file of the checkpoint's units, or a new file in a
 /// test folder those units use.
-fn within(f: &CkFixOpen, path: &str, status: char) -> bool {
+pub(crate) fn within(f: &Live, path: &str, status: char) -> bool {
     f.allowed.iter().any(|g| util::path_matches(g, path))
         || (status == 'A' && f.test_dirs.iter().any(|g| util::path_matches(g, path)))
 }
@@ -682,6 +823,320 @@ fn fail_lines(failed: &[Value]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The repository's checkout, the working copy, the path inside it and the commit the fix started from, for a
+/// path of the checkpoint's files.
+pub(crate) fn locate(
+    p: &Project,
+    pl: &Plan,
+    f: &CkFixOpen,
+    path: &str,
+) -> R<Option<(PathBuf, PathBuf, String, String)>> {
+    let several = several_repos(p, pl, &f.checkpoint);
+    for r in run::checkpoint_repos(p, pl, &f.checkpoint)? {
+        let (name, wt) = (r.name.clone(), run::checkpoint_wt(p, pl, &f.checkpoint, r)?);
+        let rel = if several {
+            match path.strip_prefix(&format!("{name}/")) {
+                Some(r) => r,
+                None => continue,
+            }
+        } else {
+            path
+        };
+        let before = f
+            .before
+            .iter()
+            .find(|(r, _)| *r == name)
+            .map(|(_, h)| h.clone())
+            .unwrap_or_default();
+        if before.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some((r.path.clone(), wt, rel.to_string(), before)));
+    }
+    Ok(None)
+}
+
+fn fmt_path(p: &Project) -> PathBuf {
+    p.state_dir().join("ckfix_fmt.json")
+}
+
+/// The files of the open fix of `k` accepted as format only, with the hash of the content accepted.
+pub fn fmt_load(p: &Project, k: &str, open_seq: u64) -> BTreeMap<String, String> {
+    let v: Value = fs::read_to_string(fmt_path(p))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let e = &v[k];
+    if e["open_seq"].as_u64() != Some(open_seq) {
+        return BTreeMap::new();
+    }
+    e["files"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(a, b)| (a.clone(), b.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fmt_save(p: &Project, k: &str, open_seq: u64, files: &BTreeMap<String, String>) -> R<()> {
+    let mut v: Value = fs::read_to_string(fmt_path(p))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(|v: &Value| v.is_object())
+        .unwrap_or_else(|| json!({}));
+    v[k] = json!({"open_seq": open_seq, "files": files});
+    let _ = fs::create_dir_all(p.state_dir());
+    fs::write(fmt_path(p), v.to_string()).map_err(|e| {
+        crate::refusal::err(crate::strings::t(
+            "cli.ckfix.format.save_failed",
+            &[("why", &e.to_string())],
+        ))
+    })?;
+    Ok(())
+}
+
+/// The kind of a check from its command: `format` for `cargo fmt` and `rustfmt`, `lint` for `cargo clippy`,
+/// and nothing for any other command or for one that chains several.
+fn command_kind(command: &str) -> &'static str {
+    if command.contains("&&") || command.contains(';') || command.contains('|') {
+        return "";
+    }
+    let w: Vec<&str> = command.split_whitespace().collect();
+    let sub = match w.as_slice() {
+        ["cargo", x, ..] if x.starts_with('+') => w.get(2).copied(),
+        ["cargo", x, ..] => Some(*x),
+        [x, ..] if *x == "rustfmt" || *x == "cargo-fmt" => Some("fmt"),
+        [x, ..] if *x == "cargo-clippy" => Some("clippy"),
+        _ => None,
+    };
+    match sub {
+        Some("fmt") => "format",
+        Some("clippy") => "lint",
+        _ => "",
+    }
+}
+
+/// Whether every failed check is a format or a lint check.
+fn format_lint_only(failed: &[Value]) -> bool {
+    !failed.is_empty()
+        && failed
+            .iter()
+            .all(|x| !command_kind(x["command"].as_str().unwrap_or("")).is_empty())
+}
+
+/// A path a failed output names, as a path inside the checkpoint's working copy folder; None for one that
+/// is not a file there, climbs out of the folder or lies in a folder of the engine or of git.
+fn named_path(top: &Path, raw: &str, keep: &dyn Fn(&str) -> bool) -> Option<String> {
+    let raw = raw.trim().trim_end_matches(':');
+    let mut rel = PathBuf::from(raw);
+    if rel.is_absolute() {
+        let canon = fs::canonicalize(top).unwrap_or_else(|_| top.to_path_buf());
+        rel = rel
+            .strip_prefix(top)
+            .or_else(|_| rel.strip_prefix(&canon))
+            .ok()?
+            .to_path_buf();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for c in rel.components() {
+        match c {
+            std::path::Component::Normal(x) => parts.push(x.to_string_lossy().to_string()),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let first = parts.first()?.as_str();
+    if matches!(first, ".git" | "factory" | ".bf") {
+        return None;
+    }
+    let path = parts.join("/");
+    (keep(&path) && top.join(&path).is_file()).then_some(path)
+}
+
+/// The places a grant may reach, applied to the paths a failed output names: the rule a unit's file request
+/// meets (`scope::hard_rule`), read for the checkpoint's own working copy folder (F-282).
+fn placed<'a>(
+    p: &'a Project,
+    pl: &'a Plan,
+    st: &'a State,
+    k: &'a str,
+) -> impl Fn(&str) -> bool + 'a {
+    move |path| crate::scope::hard_rule(p, pl, st, k, path).is_none()
+}
+
+/// The files of the failed format and lint outputs, each with the source lines the output names (`-->` of
+/// clippy and the numbered lines under it); rustfmt's `Diff in <path>` names a file with no line.
+fn named_in(
+    top: &Path,
+    failed: &[Value],
+    keep: &dyn Fn(&str) -> bool,
+) -> BTreeMap<String, BTreeSet<u32>> {
+    let mut out: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    for x in failed {
+        let mut cur: Option<String> = None;
+        for l in x["tail"].as_str().unwrap_or("").lines() {
+            let t = l.trim_start();
+            if let Some(rest) = t.strip_prefix("Diff in ") {
+                let rest = match rest.split_once(" at line ") {
+                    Some((a, _)) => a,
+                    None => {
+                        let r = rest.trim_end_matches(':');
+                        match r.rsplit_once(':') {
+                            Some((a, n)) if n.chars().all(|c| c.is_ascii_digit()) => a,
+                            _ => r,
+                        }
+                    }
+                };
+                if let Some(path) = named_path(top, rest, keep) {
+                    out.entry(path).or_default();
+                }
+            } else if let Some(rest) = t.strip_prefix("--> ") {
+                let mut it = rest.trim().rsplitn(3, ':');
+                let (col, line, path) = (it.next(), it.next(), it.next());
+                cur = None;
+                if let (Some(_), Some(line), Some(path)) = (col, line, path) {
+                    if let (Some(path), Ok(n)) = (named_path(top, path, keep), line.parse::<u32>())
+                    {
+                        out.entry(path.clone()).or_default().insert(n);
+                        cur = Some(path);
+                    }
+                }
+            } else if let Some(path) = &cur {
+                let num: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !num.is_empty() && t[num.len()..].trim_start().starts_with('|') {
+                    if let Ok(n) = num.parse::<u32>() {
+                        out.entry(path.clone()).or_default().insert(n);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One hunk of a diff: the old side's first line and length, then the new side's.
+type Hunk = (u32, u32, u32, u32);
+
+/// The hunks of each file's diff from `before` to the head, as `git diff -U0` gives them.
+fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Vec<Hunk>>> {
+    let several = several_repos(p, pl, &f.checkpoint);
+    let mut out: BTreeMap<String, Vec<Hunk>> = BTreeMap::new();
+    for (name, wt) in wts(p, pl, &f.checkpoint)? {
+        let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
+            continue;
+        };
+        let d = gitx::must(&wt, &["diff", "-U0", "--no-renames", before, "HEAD"])?;
+        let mut cur = String::new();
+        for l in d.lines() {
+            if let Some(rest) = l.strip_prefix("diff --git a/") {
+                // Both sides name one path (no renames); a binary file has no `+++` line.
+                let n = rest.len().saturating_sub(3) / 2;
+                let x = rest.get(..n).unwrap_or(rest);
+                cur = if several {
+                    format!("{name}/{x}")
+                } else {
+                    x.to_string()
+                };
+                out.entry(cur.clone()).or_default();
+            } else if l.starts_with("old mode ")
+                || l.starts_with("new mode ")
+                || l.starts_with("new file mode ")
+                || l.starts_with("deleted file mode ")
+            {
+                // A mode change is never a rewrite of named lines: a hunk no lint line can account for.
+                out.entry(cur.clone()).or_default().push((0, 0, 0, 0));
+            } else if let Some(rest) = l.strip_prefix("+++ ") {
+                cur = match rest.strip_prefix("b/") {
+                    Some(x) if several => format!("{name}/{x}"),
+                    Some(x) => x.to_string(),
+                    None => String::new(), // /dev/null: a deleted file
+                };
+                out.entry(cur.clone()).or_default();
+            } else if let Some(h) = hunk_of(l) {
+                out.entry(cur.clone()).or_default().push(h);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The hunk a `@@ -a,b +c,d @@` line gives; a side with no length is one line long.
+fn hunk_of(line: &str) -> Option<Hunk> {
+    let rest = line.strip_prefix("@@ -")?;
+    let mut sides = rest.split(' ');
+    let old = sides.next()?;
+    let new = sides.next()?.strip_prefix('+')?;
+    let one = |x: &str| -> Option<(u32, u32)> {
+        let (a, b) = x.split_once(',').unwrap_or((x, "1"));
+        Some((a.parse().ok()?, b.parse().ok()?))
+    };
+    let ((a, b), (c, d)) = (one(old)?, one(new)?);
+    Some((a, b, c, d))
+}
+
+/// Whether a hunk only rewrites lines the lint output names: every old line is named, and the new side is
+/// no longer than the old, so it adds nothing beside them. A pure insertion is never accounted for.
+fn hunk_accounted(lines: &BTreeSet<u32>, (a, b, _, d): Hunk) -> bool {
+    b > 0 && d <= b && (a..a + b).all(|n| lines.contains(&n))
+}
+
+/// Whether every change of the fix is accounted for: each file is proved format only, or is named by the
+/// lint output with each old line it changes among the lines named and nothing added beside them.
+fn lint_accounts(
+    p: &Project,
+    pl: &Plan,
+    st: &State,
+    f: &CkFixOpen,
+    by_format: &BTreeSet<String>,
+) -> R<bool> {
+    let top = p.work_dir().join(&f.checkpoint);
+    let named = named_in(&top, &f.origin_failed, &placed(p, pl, st, &f.checkpoint));
+    let diff = changed_hunks(p, pl, f)?;
+    let files = changed(p, pl, f)?;
+    if files.is_empty() {
+        return Ok(false);
+    }
+    // Walk every file the fix changed: one with no text hunk (a binary file, a mode-only change, a
+    // deletion) or with a mode line cannot be accounted for by lint output and goes to review.
+    for (path, _) in files {
+        let hunks = diff.get(&path).cloned().unwrap_or_default();
+        // A mode change (the (0,0,0,0) marker) is never format only: proved or not, it goes to review.
+        if hunks.contains(&(0, 0, 0, 0)) {
+            return Ok(false);
+        }
+        if by_format.contains(&path) {
+            continue;
+        }
+        let Some(lines) = named.get(&path) else {
+            return Ok(false);
+        };
+        if hunks.is_empty() || !hunks.iter().all(|h| hunk_accounted(lines, *h)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The checkpoint's command checks that are switched on: the ones that ran again on the fix.
+fn ran_again(p: &Project, pl: &Plan, k: &str) -> R<Vec<String>> {
+    let switched_off = run::skipped_k_checks(p, pl, k)?;
+    Ok(pl
+        .checkpoint(k)
+        .map(|kr| str_list(kr, "checks"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|cid| {
+            !switched_off.contains(cid)
+                && pl
+                    .checks
+                    .iter()
+                    .any(|c| s(c, "id") == cid && s(c, "how") == "command")
+        })
+        .collect())
 }
 
 /// A failing attempt: the fix goes back to its builder, or is parked when the attempts reach the limit.
@@ -752,24 +1207,50 @@ fn report_inner(
     let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
         return open_from_review(p, &st, &pl, k, result, role, findings, token, via_round);
     };
+    // The review is settled (every finding accepted): any report of `built` goes on to the checks and the end,
+    // with no further round. A stop between the accept and the checks leaves the fix here (R-71).
+    if settled(&f) {
+        if result != "built" {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.settled.what", &[("k", k)]),
+                crate::strings::t("accept.fix.settled.because", &[("result", result)]),
+                vec![crate::strings::t("accept.fix.settled.command", &[("k", k)])],
+                crate::strings::t("accept.fix.settled.check", &[]),
+            ));
+        }
+        return go_on(p, &pl, &f);
+    }
     let expected = match f.phase.as_str() {
         "fix" => "builder",
         "review" => "reviewer",
+        "low" => {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.low.report.what", &[("k", k)]),
+                crate::strings::t("accept.fix.low.report.because", &[]),
+                vec![crate::strings::t("accept.fix.low.report.step", &[("k", k)])],
+                crate::strings::t("accept.fix.low.report.check", &[]),
+            ));
+        }
         "gap" => {
             return Err(refuse(
                 format!("report on the fix of {k}"),
                 "the fix needs what the plan never gave it: the human decides by amendment",
-                &["`bf next` names what is missing.", "`bf checkpoint fix <K> --abort` puts the checkpoint back as it was."],
+                &[
+                    "`bf next` names what is missing.",
+                    "`bf checkpoint fix <K> --abort` puts the checkpoint back as it was.",
+                ],
                 "`bf status` shows the fix back at work or gone.",
-            ))
+            ));
         }
         _ => {
             return Err(refuse(
                 format!("report on the fix of {k}"),
                 "the fix is parked: the human decides",
-                &["The human releases it (`bf checkpoint fix <K> --release --quote \"...\"`) or the conductor aborts it (`--abort`)."],
+                &[
+                    "The human releases it (`bf checkpoint fix <K> --release --quote \"...\"`) or the conductor aborts it (`--abort`).",
+                ],
                 "`bf status` shows the fix back at work.",
-            ))
+            ));
         }
     };
     if role.map(|r| r != expected).unwrap_or(false) {
@@ -783,7 +1264,9 @@ fn report_inner(
     if p.policy.roles.tokens && !run::holds_token(p, &format!("{k}:{expected}"), token) {
         return Err(refuse(
             format!("report on the fix of {k} as {expected}"),
-            format!("a report needs the token of the {expected}'s directive; none, or the wrong one, was given"),
+            format!(
+                "a report needs the token of the {expected}'s directive; none, or the wrong one, was given"
+            ),
             &["`bf next --json` shows the directive with its `token`; pass it with `--token`."],
             "`bf status` shows the fix in its new phase.",
         ));
@@ -791,19 +1274,62 @@ fn report_inner(
     match (f.phase.as_str(), result) {
         ("fix", "blocked") => {
             let n = f.attempts + 1;
-            let reason = if note.is_empty() { "the builder is blocked" } else { note };
-            events::append(p, "checkpoint.fix.park", json!({"checkpoint": k, "reason": reason, "attempts": n}))?;
+            let reason = if note.is_empty() {
+                "the builder is blocked"
+            } else {
+                note
+            };
+            events::append(
+                p,
+                "checkpoint.fix.park",
+                json!({"checkpoint": k, "reason": reason, "attempts": n}),
+            )?;
             write_overlay(p)?;
             p.write_guard()?;
             Ok(json!({"checkpoint": k, "phase": "parked"}))
         }
         ("fix", "gap") => {
-            let missing: Vec<String> = if note.trim().is_empty() {
-                vec!["something the plan never gave this checkpoint (the builder gave no detail)".into()]
-            } else {
-                note.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
-            };
-            plan_gap(p, k, &missing, "the builder reports a need the plan never gave this checkpoint")
+            // A gap names each file it needs, and a file already in the fix's list is refused (R-70).
+            let what = crate::strings::t("fix.scope.gapfiles.what", &[("k", k)]);
+            let check = crate::strings::t("fix.scope.gapfiles.none_check", &[]);
+            let named = crate::fixscope::named_files(note);
+            if named.is_empty() {
+                return Err(refuse_owned(
+                    what,
+                    crate::strings::t("fix.scope.gapfiles.none", &[]),
+                    vec![
+                        crate::strings::t("fix.scope.gapfiles.none_step", &[]),
+                        crate::strings::t("fix.scope.gapfiles.none_ask", &[("k", k)]),
+                    ],
+                    check,
+                ));
+            }
+            let live = live(p, &pl, &st, &f);
+            if let Some(path) = named
+                .iter()
+                .find(|n| crate::fixscope::in_list(p, k, &live, n))
+            {
+                return Err(refuse_owned(
+                    what,
+                    crate::strings::t("fix.scope.gapfiles.listed", &[("path", path)]),
+                    vec![
+                        crate::strings::t("fix.scope.gapfiles.listed_step", &[("path", path)]),
+                        crate::strings::t("fix.scope.gapfiles.listed_ask", &[("k", k)]),
+                    ],
+                    check,
+                ));
+            }
+            let missing: Vec<String> = note
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            plan_gap(
+                p,
+                k,
+                &missing,
+                "the builder reports a need the plan never gave this checkpoint",
+            )
         }
         ("fix", "built" | "fixed") => {
             for (name, wt) in wts(p, &pl, k)? {
@@ -814,32 +1340,99 @@ fn report_inner(
                     return Err(refuse(
                         format!("report the fix of {k}"),
                         format!("{name}: the working copy has uncommitted changes"),
-                        &["Commit the fix in the checkpoint's working copy (`git add` the files, `git commit`), then report again."],
+                        &[
+                            "Commit the fix in the checkpoint's working copy (`git add` the files, `git commit`), then report again.",
+                        ],
                         "`bf status` shows the fix in review.",
                     ));
                 }
             }
             let files = changed(p, &pl, &f)?;
+            // R-58: a file accepted as format only must still equal the content accepted.
+            for (path, sha) in fmt_load(p, k, f.open_seq) {
+                if let Some((_, wt, rel, _)) = locate(p, &pl, &f, &path)? {
+                    let now = fs::read(wt.join(&rel)).ok().map(|b| util::sha256_hex(&b));
+                    let changed_now = files.iter().any(|x| x.0 == path);
+                    if changed_now && now.as_deref() != Some(sha.as_str()) {
+                        return Err(refuse_owned(
+                            crate::strings::t("cli.ckfix.format.stale.what", &[("k", k)]),
+                            crate::strings::t("cli.ckfix.format.stale.because", &[("path", &path)]),
+                            vec![crate::strings::t(
+                                "cli.ckfix.format.stale.step",
+                                &[("path", &path)],
+                            )],
+                            crate::strings::t("cli.ckfix.format.stale.check", &[]),
+                        ));
+                    }
+                }
+            }
+            let live = live(p, &pl, &st, &f);
+            let outside_any = files.iter().any(|(path, st)| !within(&live, path, *st));
+            let skip_wanted = f.source == "check" && format_lint_only(&f.origin_failed);
+            let mut proven: BTreeMap<String, Value> = BTreeMap::new();
+            let mut why_not: BTreeMap<String, String> = BTreeMap::new();
+            if outside_any || skip_wanted {
+                for (path, status) in &files {
+                    if *status != 'M' || (within(&live, path, *status) && !skip_wanted) {
+                        continue;
+                    }
+                    let Some((repo, wt, rel, before)) = locate(p, &pl, &f, path)? else {
+                        continue;
+                    };
+                    // The places and kinds of file a unit's acceptance refuses are refused here by the same rule.
+                    if let Some(why) = crate::scope::hard_rule(p, &pl, &st, k, path) {
+                        why_not.insert(path.clone(), why);
+                        continue;
+                    }
+                    let rel = crate::scope::normalize_path(&rel).unwrap_or(rel);
+                    match crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
+                        Ok(v) => {
+                            proven.insert(path.clone(), v);
+                        }
+                        Err(e) => {
+                            why_not.insert(path.clone(), e);
+                        }
+                    }
+                }
+            }
             let outside: Vec<String> = files
                 .iter()
-                .filter(|(path, st)| !within(&f, path, *st))
-                .map(|(path, st)| {
-                    if *st == 'A' || *st == 'M' || *st == 'D' {
-                        format!("{path} is outside the files of {k}'s units and is not a new test file")
+                .filter(|(path, status)| {
+                    !within(&live, path, *status) && !proven.contains_key(path)
+                })
+                .flat_map(|(path, status)| {
+                    let key = if matches!(*status, 'A' | 'M' | 'D') {
+                        "cli.ckfix.outside.not_test"
                     } else {
-                        format!("{path} is outside the files of {k}'s units")
+                        "cli.ckfix.outside.units"
+                    };
+                    let mut v = vec![crate::strings::t(key, &[("path", path), ("k", k)])];
+                    if let Some(w) = why_not.get(path) {
+                        v.push(crate::strings::t(
+                            "cli.ckfix.format.refused",
+                            &[("path", path), ("why", w)],
+                        ));
                     }
+                    v
                 })
                 .collect();
             if !outside.is_empty() {
-                return plan_gap(p, k, &outside, "the fix changed files the plan never gave to this checkpoint");
+                return plan_gap(
+                    p,
+                    k,
+                    &outside,
+                    "the fix changed files the plan never gave to this checkpoint",
+                );
             }
             if files.is_empty() {
-                return Err(refuse(
-                    format!("report the fix of {k}"),
-                    "no file changed since the fix opened",
-                    &["Make the change and commit it in the checkpoint's working copy, then report again.", "If the fix needs something outside the checkpoint's files, report `--result gap --note \"what is missing\"`."],
-                    "`bf status` shows the fix in review.",
+                return Err(refuse_owned(
+                    crate::strings::t("fix.scope.no_change.what", &[("k", k)]),
+                    crate::strings::t("fix.scope.no_change.because", &[]),
+                    vec![
+                        crate::strings::t("fix.scope.no_change.step", &[]),
+                        crate::strings::t("fix.scope.brief.no_change_gap", &[("k", k)]),
+                    ],
+                    crate::strings::t("fix.scope.no_change.check", &[]),
                 ));
             }
             // R-32: a probe that is not yet a permanent test is refused before any check runs again.
@@ -849,11 +1442,15 @@ fn report_inner(
                 steps.push(crate::strings::t("cli.ckfix.probe_missing.step", &[]));
                 return Err(refuse_owned(
                     crate::strings::t("cli.ckfix.probe_missing.what", &[("k", k)]),
-                    crate::strings::t("cli.ckfix.probe_missing.because", &[("n", &absent.len().to_string())]),
+                    crate::strings::t(
+                        "cli.ckfix.probe_missing.because",
+                        &[("n", &absent.len().to_string())],
+                    ),
                     steps,
                     crate::strings::t("cli.ckfix.probe_missing.check", &[]),
                 ));
             }
+            crate::fixscope::landing(p, &pl, &f)?;
             // A wave fix is tried on the wave checks; it counts only after the reviewer's clean round.
             let failed = if f.source == "wave" {
                 crate::wavecheck::rerun(p, &pl, k, f.wave, false)?
@@ -875,9 +1472,32 @@ fn report_inner(
                     "`bf status` shows the fix in review.",
                 ));
             }
-            events::append(p, "checkpoint.fix.built", json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>()}))?;
+            let accepted: BTreeMap<String, String> = files
+                .iter()
+                .filter(|(path, status)| !within(&live, path, *status))
+                .filter_map(|(path, _)| {
+                    let v = proven.get(path)?;
+                    Some((path.clone(), s(&v["format"], "result_sha256").to_string()))
+                })
+                .collect();
+            fmt_save(p, k, f.open_seq, &accepted)?;
+            events::append(
+                p,
+                "checkpoint.fix.built",
+                json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>()}),
+            )?;
             write_overlay(p)?;
             p.write_guard()?;
+            // R-70: a fix of only format or lint checks whose every change the failed output names needs
+            // no review round: the checks passed above, and the checkpoint's others ran again with them.
+            let by_format: BTreeSet<String> = proven.keys().cloned().collect();
+            if skip_wanted && lint_accounts(p, &pl, &st, &f, &by_format)? {
+                let again = ran_again(p, &pl, k)?;
+                let mut v = finish(p, &pl, &f, again)?;
+                v["reviewed"] = json!(false);
+                v["note"] = json!(crate::strings::t("cli.ckfix.lint.finished", &[("k", k)]));
+                return Ok(v);
+            }
             Ok(json!({"checkpoint": k, "phase": "review"}))
         }
         ("review", "findings") => {
@@ -886,61 +1506,89 @@ fn report_inner(
                 return Err(refuse(
                     format!("report findings on the fix of {k}"),
                     "no finding was given",
-                    &["Give the findings (`--findings -` with a JSON list), or report `built` when the fix is right."],
+                    &[
+                        "Give the findings (`--findings -` with a JSON list), or report `built` when the fix is right.",
+                    ],
                     "`bf status` shows the fix in its new phase.",
                 ));
             }
+            // R-71: a fix review that files only low findings asks the human to accept or fix them. A low
+            // finding the reviewer marks small (a test or a strings key inside the fix's own files) goes
+            // back to the builder with no human step.
+            let only_low = listed.iter().all(|x| s(x, "severity") == "low");
+            let all_small = listed.iter().all(|x| x["small"].as_bool() == Some(true));
             let over = f.rounds + 1 > p.policy.limits.max_rounds;
-            record_round(p, &pl, &f, "findings", if over { "parked" } else { "fix" }, &listed, if over { format!("more than {} review rounds", p.policy.limits.max_rounds) } else { String::new() })?;
-            Ok(json!({"checkpoint": k, "phase": if over { "parked" } else { "fix" }}))
+            let to = if only_low && (!all_small || over) {
+                "low"
+            } else if !over {
+                "fix"
+            } else {
+                "parked"
+            };
+            record_round(
+                p,
+                &pl,
+                &f,
+                "findings",
+                to,
+                &listed,
+                match to {
+                    "low" => crate::strings::t("accept.fix.low.reason", &[]),
+                    "parked" => crate::strings::t(
+                        "accept.fix.over_rounds",
+                        &[("max", &p.policy.limits.max_rounds.to_string())],
+                    ),
+                    _ => String::new(),
+                },
+            )?;
+            Ok(json!({"checkpoint": k, "phase": to}))
         }
         ("review", "built") => {
             record_round(p, &pl, &f, "clean", "done", &[], String::new())?;
-            // Clean: the checkpoint's checks run again on the new content, through the engine. A wave
-            // fix runs the wave checks again, and that run is the wave's new result.
-            if f.source == "wave" {
-                let failed = crate::wavecheck::rerun(p, &pl, k, f.wave, true)?;
-                if !failed.is_empty() {
-                    let to = attempt(p, &f, &failed)?;
-                    return Ok(json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
-                        "failed_checks": failed}));
-                }
-                let again: Vec<String> = crate::wavecheck::records(&pl)
-                    .iter()
-                    .map(|c| s(c, "id").to_string())
-                    .collect();
-                return finish(p, &pl, &f, again);
-            }
-            let failed = run::run_k_checks(p, &pl, k)?;
-            if !failed.is_empty() {
-                let to = attempt(p, &f, &failed)?;
-                return Ok(json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
-                    "failed_checks": failed}));
-            }
-            // Only the command checks that are switched on ran again; agent-judged ones did not.
-            let switched_off = run::skipped_k_checks(p, &pl, k)?;
-            let ran_again: Vec<String> = pl
-                .checkpoint(k)
-                .map(|kr| str_list(kr, "checks"))
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|cid| {
-                    !switched_off.contains(cid)
-                        && pl
-                            .checks
-                            .iter()
-                            .any(|c| s(c, "id") == cid && s(c, "how") == "command")
-                })
-                .collect();
-            finish(p, &pl, &f, ran_again)
+            go_on(p, &pl, &f)
         }
         (ph, r) => Err(refuse(
             format!("report {r} on the fix of {k}"),
             format!("a `{r}` report does not fit a fix in `{ph}`"),
-            &["The builder reports built, blocked or gap; the reviewer reports findings or built (clean)."],
+            &[
+                "The builder reports built, blocked or gap; the reviewer reports findings or built (clean).",
+            ],
             "`bf status` shows the fix in its new phase.",
         )),
     }
+}
+
+/// The fix's review is settled (clean, or every finding accepted): the checks run again on the new content,
+/// through the engine, and the fix is finished. A wave fix runs the wave checks again, and that run is the
+/// wave's new result.
+pub(crate) fn go_on(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Value> {
+    let k = f.checkpoint.as_str();
+    if f.source == "wave" {
+        let failed = crate::wavecheck::rerun(p, pl, k, f.wave, true)?;
+        if !failed.is_empty() {
+            let to = attempt(p, f, &failed)?;
+            return Ok(
+                json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+                "failed_checks": failed}),
+            );
+        }
+        let again: Vec<String> = crate::wavecheck::records(pl)
+            .iter()
+            .map(|c| s(c, "id").to_string())
+            .collect();
+        return finish(p, pl, f, again);
+    }
+    let failed = run::run_k_checks(p, pl, k)?;
+    if !failed.is_empty() {
+        let to = attempt(p, f, &failed)?;
+        return Ok(
+            json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+            "failed_checks": failed}),
+        );
+    }
+    // Only the command checks that are switched on ran again; agent-judged ones did not.
+    let ran_again = ran_again(p, pl, k)?;
+    finish(p, pl, f, ran_again)
 }
 
 /// The fix is a plan gap: record it and refuse, naming what is missing.
@@ -980,7 +1628,10 @@ fn open_from_review(
         refuse(
             format!("report on {k}"),
             because.to_string(),
-            &["Units are reported on with `bf report <U>`.", "A checkpoint is reported on only by its reviewer (findings), or while a sync or a fix of it is open."],
+            &[
+                "Units are reported on with `bf report <U>`.",
+                "A checkpoint is reported on only by its reviewer (findings), or while a sync or a fix of it is open.",
+            ],
             "`bf status` shows the new state.",
         )
     };
@@ -995,7 +1646,9 @@ fn open_from_review(
         || after.is_empty()
         || !after.iter().all(|u| st.unit_state(u) == "landed")
     {
-        return Err(bad("no fix is open for it, and this is not a review of a checkpoint whose units have landed"));
+        return Err(bad(
+            "no fix is open for it, and this is not a review of a checkpoint whose units have landed",
+        ));
     }
     // A checkpoint's review report goes through the review round (it needs an open round and the areas
     // probed), and a parked checkpoint is released only by the human. The older path stays only for a
@@ -1024,7 +1677,9 @@ fn open_from_review(
         return Err(refuse(
             format!("report findings on {k}"),
             "no finding was given",
-            &["Give the findings (`--findings -` with a JSON list of `{title, severity, where, action}`)."],
+            &[
+                "Give the findings (`--findings -` with a JSON list of `{title, severity, where, action}`).",
+            ],
             "`bf status` shows the fix at work.",
         ));
     }
@@ -1104,12 +1759,18 @@ fn finish(p: &Project, pl: &Plan, f: &CkFixOpen, rerun: Vec<String>) -> R<Value>
         }
         by_file.insert(path.clone(), json!(us));
     }
+    // R-58: a file accepted as format only carries its mark in a field of its own, apart from the units.
+    let marks: serde_json::Map<String, Value> = fmt_load(p, &f.checkpoint, f.open_seq)
+        .keys()
+        .filter(|path| files.iter().any(|x| &x.0 == *path))
+        .map(|path| (path.clone(), json!(crate::scope::fmtproof::MARK_FORMAT)))
+        .collect();
     units.sort();
     let names: Vec<String> = files.iter().map(|x| x.0.clone()).collect();
     events::append(
         p,
         "checkpoint.fix.done",
-        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file}),
+        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file, "marks": marks}),
     )?;
     write_overlay(p)?;
     p.write_guard()?;
@@ -1120,47 +1781,72 @@ fn finish(p: &Project, pl: &Plan, f: &CkFixOpen, rerun: Vec<String>) -> R<Value>
 }
 
 /// `bf checkpoint fix <K> --abort` and `--release --quote "..."`.
-pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) -> R<Value> {
+pub fn command(
+    p: &Project,
+    k: &str,
+    quote: &str,
+    abort: bool,
+    release: bool,
+    open: bool,
+) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("fix {k}"))?;
     let st = events::require_chain(p)?;
     run::need_run(&st)?;
+    if open {
+        return reopen(p, &st, k);
+    }
     let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
-        return Err(refuse(
-            format!("settle the fix of {k}"),
-            "no fix is open for it",
-            &["`bf status` shows an open fix when there is one."],
-            "`bf status` shows no open fix.",
+        return Err(refuse_owned(
+            crate::strings::t("cli.ckfix.settle.what", &[("k", k)]),
+            crate::strings::t("cli.ckfix.settle.none_open", &[]),
+            vec![
+                crate::strings::t("cli.ckfix.settle.step_status", &[]),
+                crate::strings::t("cli.ckfix.open.step_open", &[]),
+            ],
+            crate::strings::t("cli.ckfix.settle.check", &[]),
         ));
     };
     let pl = plan::load(p)?;
     if abort {
+        // The work is saved before anything is reset; a failure to save resets nothing.
+        let saved = crate::fixscope::save_work(p, &pl, &f)?;
         for (name, wt) in wts(p, &pl, k)? {
             if let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) {
                 gitx::must(&wt, &["reset", "--hard", "-q", before])?;
                 gitx::must(&wt, &["clean", "-fdq"])?;
             }
         }
-        events::append(p, "checkpoint.fix.abort", json!({"checkpoint": k}))?;
+        events::append(
+            p,
+            "checkpoint.fix.abort",
+            json!({"checkpoint": k, "saved": saved}),
+        )?;
         write_overlay(p)?;
         p.write_guard()?;
         return Ok(
-            json!({"checkpoint": k, "aborted": true, "message": "the checkpoint is as it was before the fix started; the human decides what to do with the failure"}),
+            json!({"checkpoint": k, "aborted": true, "saved": saved, "message": crate::strings::t("fix.scope.abort.message", &[])}),
         );
     }
     if release {
-        if f.phase != "parked" {
-            return Err(refuse(
-                format!("release the fix of {k}"),
-                format!("it is `{}`, not parked", f.phase),
-                &["`bf next` shows what it waits for."],
-                "`bf status` shows the fix back at work.",
+        if !matches!(f.phase.as_str(), "parked" | "low") {
+            return Err(refuse_owned(
+                crate::strings::t("accept.fix.release.what", &[("k", k)]),
+                crate::strings::t("accept.fix.release.because", &[("phase", &f.phase)]),
+                vec![crate::strings::t("accept.fix.step_next", &[])],
+                crate::strings::t("accept.fix.release.check", &[]),
             ));
         }
         run::observe_holds(p)?;
         let st = events::require_chain(p)?;
         let bound = match events::decision_bound(&st, k, f.park_seq, u64::MAX) {
             Ok(b) => b,
-            Err(h) => return Err(crate::ckreview::hold_refusal("release the fix", k, &h)),
+            Err(h) => {
+                return Err(crate::ckreview::hold_refusal(
+                    &crate::strings::t("accept.fix.release.hold_what", &[]),
+                    k,
+                    &h,
+                ))
+            }
         };
         let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
         events::append(
@@ -1172,12 +1858,153 @@ pub fn command(p: &Project, k: &str, quote: &str, abort: bool, release: bool) ->
         p.write_guard()?;
         return Ok(json!({"checkpoint": k, "released": true}));
     }
-    Err(refuse(
-        format!("run `bf checkpoint fix {k}`"),
-        "it needs --abort or --release",
-        &["Run `bf checkpoint fix <K> --abort`, or `bf checkpoint fix <K> --release --quote \"<the human's words>\"` for a parked fix."],
-        "The command prints the result.",
+    Err(refuse_owned(
+        crate::strings::t("cli.ckfix.needs.what", &[("k", k)]),
+        crate::strings::t("cli.ckfix.open.needs", &[]),
+        vec![crate::strings::t("cli.ckfix.open.needs_step", &[])],
+        crate::strings::t("cli.ckfix.needs.check", &[]),
     ))
+}
+
+/// `bf checkpoint fix <K> --open`: a fix for the failed checks of the checkpoint's current content, when
+/// none is open. The engine lock is held by the caller.
+fn reopen(p: &Project, st: &State, k: &str) -> R<Value> {
+    let what = crate::strings::t("cli.ckfix.open.what", &[("k", k)]);
+    let no = |because: String, step: String| {
+        refuse_owned(
+            what.clone(),
+            because,
+            vec![step],
+            crate::strings::t("cli.ckfix.open.worked", &[]),
+        )
+    };
+    let step = crate::strings::t("cli.ckfix.open.step_status", &[]);
+    if st.ck_fix.is_some() {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.fix_open", &[("k", k)]),
+            step,
+        ));
+    }
+    if st.sync_open.is_some() {
+        return Err(no(crate::strings::t("cli.ckfix.open.sync_open", &[]), step));
+    }
+    let pl = plan::load(p)?;
+    let Some(kr) = pl.checkpoint(k) else {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.no_checkpoint", &[]),
+            step,
+        ));
+    };
+    let after = str_list(kr, "after");
+    if st.closed.contains_key(k)
+        || after.is_empty()
+        || !after.iter().all(|u| st.unit_state(u) == "landed")
+    {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.not_landed", &[]),
+            step,
+        ));
+    }
+    let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+    let receipts = evidence::load_receipts(p)?;
+    let (failed, unreachable) = failing_checks(&pl, st, &receipts, kr, &content);
+    if unreachable {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.unreachable", &[("k", k)]),
+            step,
+        ));
+    }
+    if failed.is_empty() || content.is_empty() {
+        return Err(no(
+            crate::strings::t("cli.ckfix.open.none_failed", &[("k", k)]),
+            step,
+        ));
+    }
+    let ids: Vec<String> = failed
+        .iter()
+        .filter_map(|x| x["check"].as_str().map(String::from))
+        .collect();
+    open_locked(
+        p,
+        &pl,
+        k,
+        "check",
+        failed,
+        (vec![], vec![]),
+        &content,
+        true,
+        None,
+    )?;
+    Ok(json!({"checkpoint": k, "opened": true, "failed_checks": ids}))
+}
+
+/// The files of a finished fix marked format only, from its `marks`: the files in order.
+fn marked_files(marks: &Value) -> Vec<(String, String)> {
+    marks
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(f, v)| (f.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The checkpoint page's line for a finished fix: it says whether a review round happened, taken from the
+/// fix's rounds, and ends with the files accepted as format only.
+pub fn done_page(rounds_log: &[Value], marks: &Value) -> String {
+    let clean = rounds_log
+        .last()
+        .is_some_and(|r| r["result"].as_str() == Some("clean"));
+    let key = if !clean {
+        "cli.ckfix.done.no_review"
+    } else {
+        "cli.ckfix.done.reviewed"
+    };
+    format!("{}{}", crate::strings::t(key, &[]), marks_page(marks))
+}
+
+/// The sentence of a fix's page row that names its files accepted as format only, with a leading space;
+/// empty when it has none (R-58).
+pub fn marks_page(marks: &Value) -> String {
+    let files: Vec<String> = marked_files(marks)
+        .into_iter()
+        .map(|(f, _)| format!("`{f}`"))
+        .collect();
+    if files.is_empty() {
+        return String::new();
+    }
+    format!(
+        " {}",
+        crate::strings::t("cli.ckfix.format.page", &[("files", &files.join(", "))])
+    )
+}
+
+/// The checkpoint reviewer's section on the files of finished fixes of `k` accepted as format only, each
+/// with its mark; empty when no fix has one (R-58).
+pub fn marks_md(st: &State, k: &str) -> String {
+    let mut rows = String::new();
+    for d in st.ck_fixes.iter().filter(|d| d.checkpoint == k) {
+        let marks = marked_files(&d.marks);
+        if marks.is_empty() {
+            continue;
+        }
+        for path in &d.files {
+            let mark = marks
+                .iter()
+                .find(|(f, _)| f == path)
+                .map(|(_, m)| crate::strings::t("cli.ckfix.format.checkpoint_mark", &[("mark", m)]))
+                .unwrap_or_default();
+            rows.push_str(&crate::strings::t(
+                "cli.ckfix.format.checkpoint_row",
+                &[("fix", &d.id), ("path", path), ("mark", &mark)],
+            ));
+        }
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    crate::strings::t("cli.ckfix.format.checkpoint", &[("rows", &rows)])
 }
 
 /// The open fix and every finished fix, for `bf status`.
@@ -1191,7 +2018,7 @@ pub fn status_json(st: &State) -> Value {
         })),
         "done": st.ck_fixes.iter().map(|d| json!({
             "id": d.id, "checkpoint": d.checkpoint, "source": d.source, "files": d.files,
-            "units": d.units, "by_file": d.by_file, "review_rounds": d.rounds_log,
+            "units": d.units, "by_file": d.by_file, "marks": d.marks, "review_rounds": d.rounds_log,
         })).collect::<Vec<_>>(),
     })
 }
@@ -1222,6 +2049,9 @@ fn limited(t: String, max: usize) -> String {
 pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     let k = &f.checkpoint;
     let pl = plan::load(p)?;
+    if f.phase == "scope" && role == "reviewer" {
+        return scope_brief(p, &pl, f);
+    }
     let wc = p.work_dir().join(k);
     let mut md = format!("# Brief: the fix of {k} as {role}\n\n");
     md.push_str(&format!(
@@ -1273,17 +2103,51 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         }
         md.push('\n');
     }
+    let accepted = fmt_load(p, k, f.open_seq);
+    if role == "reviewer" && !accepted.is_empty() {
+        md.push_str(&crate::strings::t(
+            "cli.ckfix.format.reviewer",
+            &[("mark", crate::scope::fmtproof::MARK_FORMAT)],
+        ));
+        for path in accepted.keys() {
+            md.push_str(&format!(
+                "- `{path}` ({})\n",
+                crate::scope::fmtproof::MARK_FORMAT
+            ));
+        }
+        md.push('\n');
+    }
     if role == "builder" {
-        md.push_str("## What you may change\n\nOnly the files of this checkpoint's units, and new test files in the test folders they use:\n\n");
-        for g in f.allowed.iter().take(80) {
+        let st = events::replay(p)?;
+        let lv = live(p, &pl, &st, f);
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            crate::strings::t("fix.scope.brief.list_title", &[]),
+            crate::strings::t("fix.scope.brief.list_intro", &[])
+        ));
+        for g in lv.allowed.iter().take(80) {
             md.push_str(&format!("- `{g}`\n"));
         }
-        for g in &f.test_dirs {
-            md.push_str(&format!("- `{g}` (new test files only)\n"));
+        for g in &lv.test_dirs {
+            md.push_str(&format!(
+                "- `{g}` {}\n",
+                crate::strings::t("fix.scope.brief.new_tests", &[])
+            ));
         }
+        md.push_str(&builder_extras(p, &st, f));
         md.push_str(&format!(
-            "\n## Rules\n\n- Make the failing checks pass by fixing the code, never by weakening a test: do not delete, skip or loosen a test or an assertion to get a pass. A reviewer looks for it.\n- Commit the fix in the working copy (`git add` the files, `git commit`). Do not reset, check out, merge or rebase anything.\n- Run the failing checks again with `bf evidence run <check> -- <its command>` from inside `{}`.\n- Report with `bf report {k} --role builder --result built --token <token>`.\n- If the fix needs a file outside the list above, or behaviour that no record describes, do not work around it: `bf report {k} --role builder --result gap --note \"what is missing\"`. The human then decides by amendment.\n- If you cannot go on: `bf report {k} --role builder --result blocked --note \"why\"`.\n",
-            wc.display()
+            "\n## {}\n\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n",
+            crate::strings::t("fix.scope.brief.rules_title", &[]),
+            crate::strings::t("fix.scope.brief.rule_weaken", &[]),
+            crate::strings::t("fix.scope.brief.rule_commit", &[]),
+            crate::strings::t(
+                "fix.scope.brief.rule_run",
+                &[("wc", &wc.display().to_string())]
+            ),
+            crate::strings::t("fix.scope.brief.rule_report", &[("k", k)]),
+            crate::strings::t("fix.scope.brief.ask", &[("k", k)]),
+            crate::strings::t("fix.scope.brief.gap", &[("k", k)]),
+            crate::strings::t("fix.scope.brief.rule_blocked", &[("k", k)])
         ));
     } else {
         let round = f.rounds_log.len() + 1;
@@ -1371,7 +2235,416 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     Ok(path)
 }
 
+/// The latest refusal of the open fix when it is a `retry`, a `retry_spent` or an `extension` and no
+/// grant came after it: what the builder is told to do next.
+pub(crate) fn pending_refusal(f: &CkFixOpen) -> Option<&Value> {
+    let r = f
+        .refused
+        .last()
+        .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent" | "extension"))?;
+    let seq = r["seq"].as_u64().unwrap_or(0);
+    (!f.grants.last().is_some_and(|g| g.seq > seq)).then_some(r)
+}
+
+/// The directive's lines for a pending refusal: each file to ask for again with the reviewer's words,
+/// and the files that are not granted (R-70).
+fn retry_directive(f: &CkFixOpen) -> Value {
+    let Some(r) = pending_refusal(f) else {
+        return json!({});
+    };
+    let files = r["files"].as_array().cloned().unwrap_or_default();
+    let ask: Vec<Value> = files
+        .iter()
+        .filter(|x| s(x, "verdict") == "retry")
+        .map(|x| json!({"path": x["path"], "why": x["why"], "must": x["must"]}))
+        .collect();
+    let again: Vec<&str> = files
+        .iter()
+        .filter(|x| s(x, "verdict") == "needed")
+        .map(|x| s(x, "path"))
+        .collect();
+    let stuck: Vec<&str> = files
+        .iter()
+        .filter(|x| matches!(s(x, "verdict"), "extension" | "retry_spent"))
+        .map(|x| s(x, "path"))
+        .collect();
+    let any = !ask.is_empty() || !again.is_empty();
+    let mut o = json!({"ask_again": ask, "ask_again_same_patch": again});
+    if any {
+        o["retry_note"] = json!(crate::strings::t("fix.retry.directive.note", &[]));
+    }
+    if !stuck.is_empty() {
+        o["not_granted"] = json!(stuck);
+        o["not_granted_note"] = json!(crate::strings::t(
+            "fix.retry.directive.not_granted",
+            &[("files", &stuck.join(", "))]
+        ));
+    }
+    o
+}
+
+/// The builder's brief on grants, a corrected patch asked for, and saved work (R-70).
+fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
+    use crate::strings::t;
+    let k = &f.checkpoint;
+    let mut md = String::new();
+    if !f.grants.is_empty() {
+        md.push_str(&format!(
+            "\n## {}\n\n",
+            t("fix.scope.brief.granted_title", &[])
+        ));
+        for (i, g) in f.grants.iter().enumerate() {
+            for path in &g.files {
+                md.push_str(&format!(
+                    "{}\n",
+                    t(
+                        "fix.scope.brief.granted_file",
+                        &[("path", path), ("n", &(i + 1).to_string())]
+                    )
+                ));
+            }
+        }
+    }
+    // The latest answer was a `retry` and nothing was granted since: the builder asks again.
+    if let Some(r) = pending_refusal(f) {
+        let lim = crate::scope::retry::limit(p);
+        let counted = matches!(s(r, "refusal"), "retry" | "retry_spent");
+        let mut asks = String::new();
+        let mut needed = String::new();
+        let mut stuck = String::new();
+        for x in r["files"].as_array().into_iter().flatten() {
+            let path = s(x, "path");
+            let used = crate::scope::retry::rounds_used(&f.refused, path);
+            match s(x, "verdict") {
+                "retry" => {
+                    let key = if counted {
+                        "fix.retry.brief.file"
+                    } else {
+                        "fix.retry.brief.file_free"
+                    };
+                    asks.push_str(&format!(
+                        "{}\n",
+                        t(
+                            key,
+                            &[
+                                ("path", path),
+                                ("why", s(x, "why")),
+                                ("must", s(x, "must")),
+                                ("round", &used.to_string()),
+                                ("limit", &lim.to_string()),
+                                ("left", &lim.saturating_sub(used).to_string()),
+                            ]
+                        )
+                    ));
+                }
+                "needed" => needed.push_str(&format!(
+                    "{}\n",
+                    t("fix.scope.brief.retry_needed", &[("path", path)])
+                )),
+                "extension" | "retry_spent" => stuck.push_str(&format!(
+                    "{}\n",
+                    t(
+                        "fix.retry.brief.not_granted_file",
+                        &[("path", path), ("why", s(x, "why"))]
+                    )
+                )),
+                _ => {}
+            }
+        }
+        if !(asks.is_empty() && needed.is_empty()) {
+            md.push_str(&format!(
+                "\n## {}\n\n{}\n\n{asks}{needed}\n{}\n",
+                t("fix.scope.brief.retry_title", &[]),
+                t("fix.scope.brief.retry_intro", &[]),
+                t("fix.scope.brief.retry_command", &[("k", k)])
+            ));
+        }
+        if !stuck.is_empty() {
+            md.push_str(&format!(
+                "\n## {}\n\n{}\n\n{stuck}\n{}\n",
+                t("fix.retry.brief.not_granted_title", &[]),
+                t("fix.retry.brief.not_granted_intro", &[]),
+                t("fix.retry.brief.not_granted_way", &[("k", k)])
+            ));
+        }
+    }
+    if !f.from_saved.is_empty() {
+        let note = crate::fixscope::reopened(p, &f.from_saved);
+        md.push_str(&format!(
+            "\n## {}\n\n{}\n\n",
+            t("fix.scope.brief.saved_title", &[]),
+            t("fix.scope.brief.saved_intro", &[("saved", &f.from_saved)])
+        ));
+        for a in note["applied"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+        {
+            md.push_str(&format!(
+                "{}\n",
+                t("fix.scope.brief.saved_applied", &[("path", a)])
+            ));
+        }
+        for n in note["not_applied"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+        {
+            md.push_str(&format!(
+                "{}\n",
+                t("fix.scope.brief.saved_not", &[("why", n)])
+            ));
+        }
+    }
+    let _ = st;
+    md
+}
+
+/// The brief of the scope reviewer of a fix's open request (R-70).
+fn scope_brief(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<PathBuf> {
+    use crate::strings::t;
+    let k = &f.checkpoint;
+    let st = events::replay(p)?;
+    let kr = pl.checkpoint(k).cloned().unwrap_or_default();
+    let mut md = format!(
+        "# {}\n\n{}\n\n",
+        t("fix.scope.review.title", &[("k", k)]),
+        s(&kr, "title")
+    );
+    md.push_str(&format!("{}\n\n", t("fix.scope.review.intro", &[])));
+    md.push_str(&format!("## {}\n\n", t("fix.scope.review.proves", &[])));
+    for id in str_list(&kr, "proves") {
+        if let Some(r) = p.get_record(&id)? {
+            md.push_str(&format!("### {} {}\n\n", id, s(&r, "title")));
+            if !s(&r, "text").is_empty() {
+                md.push_str(&format!("{}\n\n", s(&r, "text")));
+            }
+            for a in str_list(&r, "acceptance") {
+                md.push_str(&format!(
+                    "{}\n",
+                    t("fix.scope.review.acceptance", &[("a", &a)])
+                ));
+            }
+            md.push('\n');
+        }
+    }
+    md.push_str(&format!("## {}\n\n", t("fix.scope.review.units", &[])));
+    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
+        md.push_str(&format!(
+            "{}\n",
+            t(
+                "fix.scope.review.unit_row",
+                &[
+                    ("id", s(u, "id")),
+                    ("title", s(u, "title")),
+                    ("files", &str_list(u, "files").join(", "))
+                ]
+            )
+        ));
+    }
+    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.cause", &[])));
+    for x in &f.origin_failed {
+        md.push_str(&format!(
+            "{}\n",
+            t(
+                "fix.scope.review.cause_check",
+                &[("check", s(x, "check")), ("command", s(x, "command"))]
+            )
+        ));
+    }
+    for x in &f.origin_findings {
+        md.push_str(&format!(
+            "{}\n",
+            t(
+                "fix.scope.review.cause_finding",
+                &[
+                    ("severity", s(x, "severity")),
+                    ("title", s(x, "title")),
+                    ("where", s(x, "where"))
+                ]
+            )
+        ));
+    }
+    let lv = live(p, pl, &st, f);
+    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.list", &[])));
+    for g in lv.allowed.iter().take(80) {
+        md.push_str(&format!("- `{g}`\n"));
+    }
+    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.earlier", &[])));
+    if f.grants.is_empty() {
+        md.push_str(&format!("{}\n", t("fix.scope.review.earlier_none", &[])));
+    }
+    for (i, g) in f.grants.iter().enumerate() {
+        md.push_str(&format!(
+            "{}\n",
+            t(
+                "fix.scope.page.granted",
+                &[("n", &(i + 1).to_string()), ("files", &g.files.join(", "))]
+            )
+        ));
+    }
+    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.changes", &[])));
+    for (name, wt) in wts(p, pl, k)? {
+        let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
+            continue;
+        };
+        md.push_str(&format!(
+            "{}\n\n",
+            t("fix.scope.review.changes_intro", &[("name", &name)])
+        ));
+        md.push_str(&format!(
+            "```diff\n{}\n```\n\n",
+            limited(gitx::must(&wt, &["diff", before]).unwrap_or_default(), 600)
+        ));
+    }
+    md.push_str(&format!("## {}\n\n", t("fix.scope.review.request", &[])));
+    let lim = crate::scope::retry::limit(p);
+    for x in &f.request {
+        let new = if x["new"].as_bool().unwrap_or(false) {
+            t("fix.scope.review.new_file", &[])
+        } else {
+            String::new()
+        };
+        md.push_str(&format!(
+            "{}\n```diff\n{}\n```\n\n",
+            t(
+                "fix.scope.review.request_file",
+                &[("path", s(x, "path")), ("new", &new), ("why", s(x, "why"))]
+            ),
+            s(x, "patch")
+        ));
+        let path = s(x, "path");
+        let earlier: Vec<&Value> = f
+            .refused
+            .iter()
+            .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent"))
+            .filter_map(|r| {
+                r["files"].as_array()?.iter().find(|e| {
+                    s(e, "path") == path && matches!(s(e, "verdict"), "retry" | "retry_spent")
+                })
+            })
+            .collect();
+        if !earlier.is_empty() {
+            md.push_str(&format!(
+                "## {}\n\n",
+                t("fix.scope.review.rounds_title", &[])
+            ));
+            md.push_str(&format!(
+                "{}\n\n",
+                t(
+                    "fix.scope.review.rounds_file",
+                    &[
+                        ("path", path),
+                        ("round", &(earlier.len() + 1).to_string()),
+                        ("limit", &lim.to_string())
+                    ]
+                )
+            ));
+            for (i, e) in earlier.iter().enumerate() {
+                md.push_str(&format!(
+                    "{}\n\n```diff\n{}\n```\n",
+                    t(
+                        "fix.scope.review.rounds_earlier",
+                        &[
+                            ("round", &(i + 1).to_string()),
+                            ("verdict", s(e, "verdict")),
+                            ("why", s(e, "why")),
+                            ("must", s(e, "must"))
+                        ]
+                    ),
+                    s(e, "patch")
+                ));
+            }
+        }
+    }
+    md.push_str(&format!(
+        "## {}\n\n{} {}\n\n## {}\n\n{} {}\n",
+        t("fix.scope.review.question_title", &[]),
+        t("fix.scope.review.question", &[]),
+        t("fix.retry.review.holds", &[]),
+        t("fix.scope.review.how_title", &[]),
+        t("fix.scope.review.how_to", &[("k", k)]),
+        t("fix.scope.review.answer", &[])
+    ));
+    let path = p.briefs_dir().join(format!("{k}-reviewer.md"));
+    fs::create_dir_all(p.briefs_dir())?;
+    util::atomic_write(&path, md.as_bytes())?;
+    Ok(path)
+}
+
 /// The file the guard reads, for tests and tools.
 pub fn overlay_path(p: &Project) -> PathBuf {
     p.state_dir().join("ckfix.json")
+}
+
+#[cfg(test)]
+mod ckfix_reopen {
+    use super::*;
+
+    #[test]
+    fn the_kind_of_a_check_is_read_from_its_command() {
+        assert_eq!(command_kind("cargo fmt --check"), "format");
+        assert_eq!(
+            command_kind("cargo +nightly fmt --all -- --check"),
+            "format"
+        );
+        assert_eq!(command_kind("rustfmt --check src/a.rs"), "format");
+        assert_eq!(
+            command_kind("cargo clippy --all-targets -- -D warnings"),
+            "lint"
+        );
+        assert_eq!(command_kind("cargo nextest run fmt"), "");
+        assert_eq!(command_kind("cargo fmt --check && cargo test"), "");
+    }
+
+    #[test]
+    fn the_output_names_files_and_lines() {
+        let top = std::env::temp_dir().join(format!("bf-ckfix-named-{}", std::process::id()));
+        fs::create_dir_all(top.join("src")).unwrap();
+        fs::write(top.join("src/a.rs"), "x\n").unwrap();
+        fs::write(top.join("src/b.rs"), "x\n").unwrap();
+        let tail = format!(
+            "Diff in {}/src/a.rs:3:\n-x\n+y\nwarning: w\n  --> src/b.rs:7:5\n   |\n7  |     let a = 1;\n8  |     let b = 2;\n   |\nDiff in ../outside.rs:1:\n--> .git/config:1:1\n",
+            top.display()
+        );
+        let n = named_in(&top, &[json!({"tail": tail})], &|_| true);
+        let _ = fs::remove_dir_all(&top);
+        assert_eq!(n.len(), 2, "{n:?}");
+        assert!(n["src/a.rs"].is_empty());
+        assert_eq!(
+            n["src/b.rs"].iter().copied().collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+    }
+
+    #[test]
+    fn a_hunk_is_accounted_for_only_when_it_rewrites_named_lines_and_adds_nothing() {
+        let named: BTreeSet<u32> = [4, 5].into_iter().collect();
+        assert_eq!(hunk_of("@@ -4 +4 @@ fn a()"), Some((4, 1, 4, 1)));
+        assert_eq!(hunk_of("@@ -4,2 +4,3 @@"), Some((4, 2, 4, 3)));
+        assert_eq!(hunk_of("@@ -3,0 +4,2 @@"), Some((3, 0, 4, 2)));
+        assert_eq!(hunk_of("diff --git a b"), None);
+        assert!(hunk_accounted(&named, (4, 1, 4, 1)));
+        assert!(hunk_accounted(&named, (4, 2, 4, 1)));
+        assert!(hunk_accounted(&named, (4, 1, 4, 0)));
+        // A pure insertion beside a named line, and a rewrite that grows, are not accounted for.
+        assert!(!hunk_accounted(&named, (4, 0, 5, 3)));
+        assert!(!hunk_accounted(&named, (3, 0, 4, 1)));
+        assert!(!hunk_accounted(&named, (4, 1, 4, 2)));
+        assert!(!hunk_accounted(&named, (3, 2, 3, 2)));
+    }
+
+    #[test]
+    fn a_named_path_the_place_rule_refuses_is_dropped() {
+        let top = std::env::temp_dir().join(format!("bf-ckfix-keep-{}", std::process::id()));
+        fs::create_dir_all(top.join("src")).unwrap();
+        fs::write(top.join("src/a.rs"), "x\n").unwrap();
+        fs::write(top.join("src/b.rs"), "x\n").unwrap();
+        let tail = "Diff in src/a.rs:1:\nDiff in src/b.rs:1:\n";
+        let n = named_in(&top, &[json!({"tail": tail})], &|path| path != "src/b.rs");
+        let _ = fs::remove_dir_all(&top);
+        assert_eq!(n.keys().cloned().collect::<Vec<_>>(), vec!["src/a.rs"]);
+    }
 }

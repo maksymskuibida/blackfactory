@@ -125,7 +125,7 @@ fn a_unit_waits_for_a_file_a_unit_beside_it_holds_and_resumes_when_that_unit_lan
 
 fn amend_after(fx: &Fx) {
     let opened = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
-    let u2 = "id=\"U-2\"\nkind=\"unit\"\ntitle=\"Part 2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/f2.txt\"]\ndepends_on=[\"U-1\"]\ncheckpoint=\"K-1\"\nestimate=1\n";
+    let u2 = "id=\"U-2\"\nkind=\"unit\"\ntitle=\"Part 2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/f2.txt\"]\ndepends_on=[\"U-1\"]\ncheckpoint=\"K-1\"\nestimate=1\nfull_suite=\"fixture\"\n";
     let f = fx.root.join("u2.toml");
     fs::write(&f, u2).unwrap();
     let put = format!("record put unit --file {} --replace", f.to_str().unwrap());
@@ -206,10 +206,22 @@ fn a_unit_refused_up_to_the_attempt_limit_is_parked_and_not_resumed() {
         assert_eq!(state(&fx, "U-1"), want);
     }
     assert_eq!(counts(&fx, "U-1"), (0, 3));
+    // The note of a parked unit names the accept beside the release (U-61).
+    let note = human_note(&fx, "U-1");
+    assert!(note.contains("bf unit release U-1"), "{note}");
+    assert!(note.contains("bf unit accept U-1"), "{note}");
+}
+
+/// The directive of the circle: the conductor's, with the ring and the files.
+fn circle_directive(fx: &Fx, id: &str) -> Value {
+    let d = directive(&next(fx), id, "conductor")
+        .unwrap_or_else(|| panic!("no conductor directive for {id}"));
+    assert_eq!(d["action"], "open-plan-repair", "{d}");
+    d
 }
 
 #[test]
-fn a_circle_of_waits_is_for_the_human_in_both_units() {
+fn a_circle_of_waits_is_for_the_conductor_in_both_units() {
     let fx = Fx::new();
     project(&fx, 2);
     let (wa, wb) = (start(&fx, "U-1"), start(&fx, "U-2"));
@@ -221,8 +233,30 @@ fn a_circle_of_waits_is_for_the_human_in_both_units() {
         waiting_line(&n, "U-1").is_none() && waiting_line(&n, "U-2").is_none(),
         "{n}"
     );
+    assert!(directive(&n, "U-1", "human").is_none() && directive(&n, "U-2", "human").is_none(), "{n}");
     for (id, other) in [("U-1", "U-2"), ("U-2", "U-1")] {
-        let note = human_note(&fx, id);
+        let d = circle_directive(&fx, id);
+        let note = d["note"].as_str().unwrap();
         assert!(note.contains(&format!("{id} -> {other} -> {id}")), "{note}");
+        assert!(note.contains("bf amend open --repair"), "{note}");
+        assert!(note.contains("src/f1.txt") || note.contains("src/f2.txt"), "{note}");
+        assert!(!note.contains("is the human's"), "{note}");
     }
+}
+
+#[test]
+fn an_open_repair_for_the_circle_is_the_step_in_hand() {
+    let fx = Fx::new();
+    project(&fx, 2);
+    let (wa, wb) = (start(&fx, "U-1"), start(&fx, "U-2"));
+    ask(&fx, "U-1", &wa, &["src/f2.txt"]);
+    ask(&fx, "U-2", &wb, &["src/f1.txt"]);
+    circle_directive(&fx, "U-1");
+    fx.must(&["amend", "open", "--repair", "U-2"]);
+    let n = next(&fx);
+    assert!(directive(&n, "U-1", "conductor").is_none(), "{n}");
+    assert!(
+        n["waiting"].as_array().unwrap().iter().any(|l| l.as_str().is_some_and(|l| l.contains("A-1"))),
+        "{n}"
+    );
 }

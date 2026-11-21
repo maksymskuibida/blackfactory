@@ -506,6 +506,7 @@ fn kind_of(role: &str) -> &'static str {
     match role {
         "builder" | "knowledge-writer" => "builder",
         "verifier" | "uiux-verifier" => "verifier",
+        "repair-judge" => "amender",
         "reviewer" | "security-auditor" | "legal-auditor" | "design-reviewer" => "reviewer",
         "designer" | "uiux-designer" | "fix-designer" | "rule-proposer" | "security-expert"
         | "lawyer" => "designer",

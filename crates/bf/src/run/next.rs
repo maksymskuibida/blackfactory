@@ -292,6 +292,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
             "title": s(q, "title"),
             "note": format!("{} asks: {}. Show the human the question; when they have answered, `bf answer {} --file <answer>`. Only {} waits.", s(q, "unit"), s(q, "title"), s(q, "id"), s(q, "unit"))}));
     }
+    judge_flow(p, &st, &mut directives, &mut waiting);
     for (id, state, why) in unit_states(p, &pl, &st, &receipts) {
         let u = pl.unit(&id).unwrap();
         if held(&id) && matches!(state.as_str(), "ready" | "running" | "fixing" | "review") {
@@ -313,6 +314,12 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 .to_string()
         };
         match state.as_str() {
+            "ready" if amend_hold(&st, &id).is_some() => {
+                waiting.push(crate::strings::t(
+                    "next.unit_held.line",
+                    &[("unit", &id), ("amend", &amend_hold(&st, &id).unwrap_or_default())],
+                ));
+            }
             "ready" if !unanswered_questions(&st).is_empty() => {
                 waiting.push(format!("{id}: waiting for the human's answers to the run's plan questions"))
             }
@@ -332,6 +339,8 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                     d["amendment"] = json!(a);
                 }
                 crate::scope::wait::decorate(&st, &id, &mut d);
+                super::unblock::decorate(p, &st, &id, &mut d);
+                super::unit_sync::decorate(p, &id, &mut d);
                 directives.push(d);
             }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
@@ -343,6 +352,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 let entry = if state == "blocked" {
                     crate::scope::reconsider::next_entry(p, &st, &id, limits(rounds))
                         .or_else(|| crate::scope::wait::next_entry(p, &pl, &st, &id))
+                        .or_else(|| super::unblock::next_entry(p, &pl, &st, &id))
                 } else {
                     None
                 };
@@ -357,7 +367,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                     }
                     None => {}
                 }
-                let mut note = format!("{id} is {state}; the human decides whether to re-plan or release it.");
+                let mut note = crate::strings::t("next.unit_parked.note", &[("id", &id), ("state", &state)]);
                 if let Some(r) = st.scope.get(&id).and_then(|sc| sc.refused.last()).filter(|_| state == "blocked") {
                     let files: Vec<String> = r["files"]
                         .as_array()
@@ -371,8 +381,12 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                             )
                         })
                         .collect();
-                    note.push_str(&format!(" A request for files was refused ({}): {}. The plan repair is the human's.", s(r, "refusal"), files.join("; ")));
+                    note.push_str(&crate::strings::t(
+                        "next.unit_parked.refused",
+                        &[("refusal", s(r, "refusal")), ("files", &files.join("; "))],
+                    ));
                 }
+                note.push_str(&super::unblock::human_note(p, &pl, &st, &id));
                 directives.push(json!({"role": "human", "action": "decide-unit", "unit": id, "state": state, "note": note}))
             }
             "planned" => waiting.push(format!("{id}: {}", why.unwrap_or_default())),
@@ -575,7 +589,9 @@ pub fn next(p: &Project) -> R<Value> {
     let pl = plan::load(p)?;
     let dirs = v["directives"].as_array().cloned().unwrap_or_default();
     let can_start = dirs.iter().any(|d| d["role"] != "human");
-    let human_needed = dirs.iter().any(|d| d["role"] == "human");
+    let human_needed = dirs
+        .iter()
+        .any(|d| d["role"] == "human" && d["info"] != true);
     let all_landed = !pl.units.is_empty()
         && pl
             .units
@@ -661,4 +677,206 @@ pub fn next(p: &Project) -> R<Value> {
     v["human_needed"] = json!(human_needed);
     v["idle_reason"] = reason;
     Ok(v)
+}
+
+/// The open amendment, neither approved nor withdrawn, that holds a unit not yet started: it adds the
+/// unit as a draft, or the unit is in its set or its kept impact (R-69 acceptance 7, F-197, F-211).
+pub(crate) fn amend_hold(st: &State, unit: &str) -> Option<String> {
+    if !st.unit_state(unit).is_empty() {
+        return None;
+    }
+    st.amends
+        .iter()
+        .find(|a| {
+            matches!(a.status.as_str(), "open" | "narrowed")
+                && (a.ids.iter().any(|i| i == unit)
+                    || a.keep.iter().any(|i| i == unit)
+                    || a.touched.iter().any(|i| i == unit)
+                    || a.changes
+                        .iter()
+                        .any(|c| c["id"] == unit && c["how"] == "new"))
+        })
+        .map(|a| a.id.clone())
+}
+
+fn reasons_text(v: &Value) -> String {
+    match v {
+        Value::String(x) => x.clone(),
+        Value::Array(x) => x
+            .iter()
+            .filter_map(|y| y.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => String::new(),
+    }
+}
+
+/// Whether the judge is due for a narrowed plan repair: the same conditions as the judge's token, so the
+/// conductor is never sent for a token the engine refuses.
+fn judge_due(p: &Project, st: &State, a: &events::Amend) -> bool {
+    let own = |v: &Option<Value>| {
+        v.as_ref()
+            .is_some_and(|v| v["fingerprint"].as_str() == Some(a.fingerprint.as_str()))
+    };
+    p.policy.review.repair_judge
+        && a.status == "narrowed"
+        && crate::amend::is_repair(a)
+        && crate::amend::designed_in(&a.ids).is_empty()
+        && !a.human_only
+        && !a.from_design
+        && !own(&a.verdict)
+        && a.failed.is_none()
+        && a.judge_turns.is_empty()
+        && !a
+            .changes
+            .iter()
+            .filter_map(|c| c["id"].as_str())
+            .any(|id| st.asked.contains_key(id))
+        && crate::judge::refused_records(st, a).is_empty()
+}
+
+/// The minutes since the judge's token of the latest narrowing was issued, when it was issued more than
+/// the policy's idle limit ago and no verdict or failure ended its turn.
+fn judge_idle(idle_minutes: u64, a: &events::Amend) -> Option<u64> {
+    if a.status != "narrowed" || a.verdict.is_some() || a.failed.is_some() {
+        return None;
+    }
+    let t = a
+        .judge_turns
+        .last()
+        .filter(|t| t["fingerprint"].as_str() == Some(a.fingerprint.as_str()))?;
+    let at = crate::util::parse_rfc3339(t["at"].as_str().unwrap_or(""));
+    let age = crate::util::now_secs().saturating_sub(at) / 60;
+    (at > 0 && age > idle_minutes).then_some(age)
+}
+
+/// The judge's part of `bf next`: the directive for the conductor, the human's step for an `ask`, a
+/// failed judge or a judge that cannot report, and the repairs the human has not yet seen (F-212, F-213).
+fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mut Vec<String>) {
+    use crate::strings::t;
+    for a in &st.amends {
+        let open = matches!(a.status.as_str(), "open" | "narrowed");
+        let verdict = a.verdict.as_ref();
+        let asked = verdict.is_some_and(|v| v["verdict"] == "ask");
+        let reasons = verdict
+            .map(|v| reasons_text(&v["reasons"]))
+            .unwrap_or_default();
+        let failed = a.failed.as_ref().map(|f| s(f, "reason").to_string());
+        if a.status == "narrowed" && crate::amend::is_repair(a) && judge_due(p, st, a) {
+            directives.push(
+                json!({"role": "conductor", "action": "judge-repair", "work": "amender",
+                "amendment": a.id, "commands": [format!("bf roles token {} judge", a.id)],
+                "note": t("next.judge_repair.note", &[("amend", &a.id)])}),
+            );
+            continue;
+        }
+        if open && a.judge_turns.last().is_some() && verdict.is_none() && failed.is_none() {
+            let stale = a
+                .judge_turns
+                .last()
+                .is_some_and(|t| t["fingerprint"].as_str() != Some(a.fingerprint.as_str()));
+            let idle = judge_idle(p.policy.limits.idle_minutes, a);
+            if stale || idle.is_some() {
+                let why = if stale {
+                    t("next.judge_stale.reason", &[])
+                } else {
+                    t(
+                        "next.judge_idle.reason",
+                        &[("minutes", &idle.unwrap_or(0).to_string())],
+                    )
+                };
+                directives.push(
+                    json!({"role": "human", "action": "decide-repair", "amendment": a.id,
+                    "judge": "failed", "reason": why,
+                    "note": t("next.judge_failed.note", &[("amend", &a.id), ("reason", &why)])}),
+                );
+            } else {
+                waiting.push(t("next.judge_running.line", &[("amend", &a.id)]));
+            }
+            continue;
+        }
+        if a.status == "narrowed" && asked && !a.seen {
+            directives.push(
+                json!({"role": "human", "action": "decide-repair", "amendment": a.id,
+                "judge": "ask", "reasons": reasons,
+                "note": t("next.judge_ask.note", &[("amend", &a.id), ("reasons", &reasons)])}),
+            );
+            continue;
+        }
+        if a.status == "narrowed" && failed.is_some() && !a.seen {
+            let why = failed.clone().unwrap_or_default();
+            directives.push(
+                json!({"role": "human", "action": "decide-repair", "amendment": a.id,
+                "judge": "failed", "reason": why,
+                "note": t("next.judge_failed.note", &[("amend", &a.id), ("reason", &why)])}),
+            );
+            continue;
+        }
+        // The information the human keeps seeing until they say they saw it.
+        if a.seen {
+            continue;
+        }
+        let state = if a.status == "withdrawn" {
+            t("next.judged_seen.state_withdrawn", &[])
+        } else {
+            a.status.clone()
+        };
+        let note = if a.judged && st.judged_unseen.contains(&a.id) {
+            Some(t(
+                "next.judged_seen.approved",
+                &[("amend", &a.id), ("reasons", &reasons)],
+            ))
+        } else if let Some(why) = &failed {
+            Some(t(
+                "next.judged_seen.failed",
+                &[("amend", &a.id), ("state", &state), ("reason", why)],
+            ))
+        } else if asked {
+            Some(t(
+                "next.judged_seen.ask",
+                &[("amend", &a.id), ("state", &state), ("reasons", &reasons)],
+            ))
+        } else {
+            None
+        };
+        if let Some(note) = note {
+            let kind = if a.judged {
+                "approved"
+            } else if failed.is_some() {
+                "failed"
+            } else {
+                "ask"
+            };
+            directives.push(
+                json!({"role": "human", "action": "see-judged-repair", "info": true,
+                "amendment": a.id, "judge": kind, "reasons": reasons, "note": note}),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod next_checks {
+    use super::*;
+
+    fn amend_with_turn(at: &str) -> events::Amend {
+        events::Amend {
+            status: "narrowed".into(),
+            fingerprint: "fp".into(),
+            judge_turns: vec![json!({"fingerprint": "fp", "seq": 5, "at": at})],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn next_checks_a_judge_token_past_the_idle_limit_with_no_verdict_is_idle() {
+        let p = 60u64;
+        let old = crate::util::rfc3339(crate::util::now_secs() - 3 * 3600);
+        let fresh = crate::util::now();
+        assert!(judge_idle(p, &amend_with_turn(&old)).is_some());
+        assert!(judge_idle(p, &amend_with_turn(&fresh)).is_none());
+        let mut a = amend_with_turn(&old);
+        a.failed = Some(json!({"reason": "x"}));
+        assert!(judge_idle(p, &a).is_none());
+    }
 }
