@@ -5638,8 +5638,9 @@ mod tests {
             .allow
         );
         assert!(call("Write", json!({"file_path": "docs/x/y.md"}), cwd).allow);
+        // The list is a recommendation: a file it does not hold is written too.
         assert!(
-            !call(
+            call(
                 "Write",
                 json!({"file_path": "/p/.bf/work/U-1/src/b.rs"}),
                 cwd
