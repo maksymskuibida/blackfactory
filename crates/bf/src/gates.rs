@@ -1627,7 +1627,7 @@ pub fn amend_checkpoint(p: &Project, pos: &[String], title: Option<&str>) -> R<V
     ops.push(op.clone());
     let edit = crate::amend::edit_of(p, &st, &ops)?;
     let touched = edit.touched();
-    let problems = crate::amend::result_problems(p, &edit)?;
+    let problems = crate::amend::result_problems(p, &open, &edit)?;
     events::append(
         p,
         "amend.checkpoint",
@@ -2054,6 +2054,7 @@ pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) ->
         before.units.clone(),
         before.checkpoints.clone(),
         before.checks.clone(),
+        &[],
     )?;
     if marker {
         // The human's approval carries the marker: a unit it adds, or changes in `files`, `text` or
@@ -2077,8 +2078,34 @@ pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) ->
     }
     // The plan after the narrowing holds the handoffs as they stand on disk now.
     before.handoffs = now.handoffs.clone();
-    let after = plan::problems_of_edited(p, &before, now.units, now.checkpoints, now.checks)?;
+    // The units the approval sends back to work count as not landed on this side only.
+    let st = events::replay(p)?;
+    let reopened = reopen_units_of(&now.units, &st, a);
+    let after = plan::problems_of_edited(
+        p,
+        &before,
+        now.units,
+        now.checkpoints,
+        now.checks,
+        &reopened,
+    )?;
     Ok(after.into_iter().filter(|x| !base.contains(x)).collect())
+}
+
+/// The units an approval of `a` sends back to work, from the units of the plan it leaves: the one
+/// function `finish_approval` writes as `reopen_units` and the plan comparisons count as not landed.
+pub(crate) fn reopen_units_of(units: &[Value], st: &State, a: &events::Amend) -> Vec<String> {
+    units
+        .iter()
+        .filter(|u| {
+            let uid = s(u, "id").to_string();
+            let del = str_list(u, "delivers");
+            a.keep.contains(&uid)
+                && st.units.contains_key(&uid)
+                && (del.is_empty() || del.iter().any(|d| !a.waive.contains(d)))
+        })
+        .map(|u| s(u, "id").to_string())
+        .collect()
 }
 
 /// Write the approval of `a` after its checks passed: what it re-opens is worked out from the plan now
@@ -2109,18 +2136,7 @@ pub(crate) fn finish_approval(
         .filter(|i| !a.waive.contains(i))
         .cloned()
         .collect();
-    let reopen_units: Vec<String> = pl
-        .units
-        .iter()
-        .filter(|u| {
-            let uid = s(u, "id").to_string();
-            let del = str_list(u, "delivers");
-            a.keep.contains(&uid)
-                && st.units.contains_key(&uid)
-                && (del.is_empty() || del.iter().any(|d| !a.waive.contains(d)))
-        })
-        .map(|u| s(u, "id").to_string())
-        .collect();
+    let reopen_units: Vec<String> = reopen_units_of(&pl.units, st, a);
     let reopen_checkpoints: Vec<String> = pl
         .checkpoints
         .iter()
