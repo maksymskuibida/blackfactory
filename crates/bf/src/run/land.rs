@@ -112,7 +112,7 @@ pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
 }
 
 /// Why no turn opens now: a sync of the main branch, a fix or a review round of the checkpoint is open.
-fn open_reason(p: &Project, st: &State, k: &str) -> Option<&'static str> {
+pub fn open_reason(p: &Project, st: &State, k: &str) -> Option<&'static str> {
     if st.sync_open.as_ref().is_some_and(|x| x.checkpoint == k) {
         Some("sync")
     } else if st.ck_fix.as_ref().is_some_and(|x| x.checkpoint == k) {
@@ -205,12 +205,17 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
         .unwrap_or_default(),
     )?;
     *marked = true;
+    // The turn's merges sit on a detached head: the checkpoint branch itself stays where it was until the
+    // turn passes, so no automatic sync of another unit can take in a merge that is later put back.
+    for (_, wt) in &cps {
+        gitx::must(wt, &["checkout", "-q", "--detach"])?;
+    }
 
     // The merge: each unit into the checkpoint's own working copy, in order. No event yet.
     let mut merged: Vec<Merged> = Vec::new();
     let mut conflicted: Vec<Ready> = Vec::new();
     for r in turn {
-        match merge_one(&cpwt_of(&r.repo.name), &cpb, &r)? {
+        match merge_one(&cpwt_of(&r.repo.name), &r)? {
             Merge::Done { before, tip } => merged.push(Merged { r, before, tip }),
             Merge::Conflict => conflicted.push(r),
             Merge::Failed(why) => {
@@ -274,7 +279,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
                     let cpwt = cpwt_of(&r.repo.name);
                     let step = {
                         let _g = lock::engine(p, &format!("land {unit}"))?;
-                        merge_one(&cpwt, &cpb, &r)?
+                        merge_one(&cpwt, &r)?
                     };
                     match step {
                         Merge::Conflict => conflicted.push(r),
@@ -307,6 +312,27 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
 
     // The outcome: one `unit.land` event for each unit, in order; then the mark goes.
     let _eng = lock::engine(p, &format!("land {unit}"))?;
+    // The log is read again: the suite ran for a long time without the engine lock.
+    let st3 = events::require_chain(p)?;
+    gates::refuse_if_drift(p, &st3, &format!("land {unit}"))?;
+    refuse_if_main_moved(p, &st3)?;
+    for (r, _, _) in &landed {
+        if let Some(why) = changed_since(p, &st3, &r.unit) {
+            abandon(p, &pl, k, &cpb, &heads)?;
+            let _ = fs::remove_file(lock::turn_mark(p, k));
+            *marked = false;
+            return Err(refuse_owned(
+                t("land_merge.recheck.what", &[("unit", unit)]),
+                t("land_merge.recheck.because", &[("unit", &r.unit), ("why", &why)]),
+                vec![t("land_merge.recheck.step", &[("unit", unit)])],
+                t("land_merge.recheck.worked", &[]),
+            ));
+        }
+    }
+    // Only now does each checkpoint branch move, to where the turn's merges end.
+    for (_, wt) in &cps {
+        gitx::must(wt, &["checkout", "-q", "-B", &cpb, "HEAD"])?;
+    }
     for (r, tip, merged_hash) in &landed {
         events::append(
             p,
@@ -495,8 +521,8 @@ fn ready(
                 return Err(refuse(
                     format!("land {unit}"),
                     why,
-                    &["It goes back to review when its own landing is asked for."],
-                    "`bf status` shows the unit reviewed.",
+                    &[&t("land_merge.left.review_step", &[("unit", unit)])],
+                    t("land_merge.left.review_worked", &[]),
                 ));
             }
             events::append(
@@ -562,7 +588,7 @@ fn ready(
 
 /// The unit's head is reached from the head its review judged by merges of the checkpoint branch that
 /// the engine made without a conflict (`unit.sync`), and nothing else.
-fn clean_engine_merge(p: &Project, unit: &str, wt: &Path, judged_head: &str) -> bool {
+pub fn clean_engine_merge(p: &Project, unit: &str, wt: &Path, judged_head: &str) -> bool {
     if judged_head.is_empty() || gitx::has_uncommitted(wt) {
         return false;
     }
@@ -594,9 +620,9 @@ fn clean_engine_merge(p: &Project, unit: &str, wt: &Path, judged_head: &str) -> 
 
 /// Merge one unit into the checkpoint's working copy with the `Land <U>` commit. A merge that does not
 /// finish leaves the working copy exactly as it was.
-fn merge_one(cpwt: &Path, cpb: &str, r: &Ready) -> R<Merge> {
+fn merge_one(cpwt: &Path, r: &Ready) -> R<Merge> {
     let before = gitx::must(cpwt, &["rev-parse", "HEAD"])?;
-    if gitx::is_ancestor(&r.repo.path, &r.ub, cpb) {
+    if gitx::is_ancestor(cpwt, &r.ub, "HEAD") {
         return Ok(Merge::Done {
             tip: gitx::head_short(cpwt),
             before,
@@ -666,15 +692,26 @@ struct Suite {
 }
 
 fn suite_for(p: &Project, pl: &Plan, st: &State, units: &[&Ready]) -> Suite {
+    // The landing runs the run's full suite, never a unit's named tests (R-62 is for a unit's own check): the
+    // list of a unit that names none gives the full command, so the runs are written for such a unit.
+    let plain = |u: &Value| s(u, "tests").trim().is_empty();
+    let k = units
+        .first()
+        .and_then(|r| pl.unit(&r.unit))
+        .map(|u| s(u, "checkpoint").to_string())
+        .unwrap_or_default();
     let exec = units
         .iter()
-        .find(|r| {
-            pl.unit(&r.unit)
-                .map(|u| s(u, "tests").trim().is_empty())
-                .unwrap_or(true)
-        })
-        .or(units.first())
+        .find(|r| pl.unit(&r.unit).is_some_and(plain))
         .map(|r| r.unit.clone())
+        .or_else(|| {
+            pl.units
+                .iter()
+                .find(|u| s(u, "checkpoint") == k && plain(u))
+                .or_else(|| pl.units.iter().find(|u| plain(u)))
+                .map(|u| s(u, "id").to_string())
+        })
+        .or_else(|| units.first().map(|r| r.unit.clone()))
         .unwrap_or_default();
     let list = crate::checks::attached_for_unit(p, pl, st, &exec).0;
     Suite { exec, list }
@@ -696,6 +733,14 @@ fn failing_names(r: &Value) -> Vec<String> {
     v
 }
 
+/// A passing receipt of the same run (`evidence::find_run`) that may be used again at landing: its sandbox
+/// names no compile cache, because landing decides what enters the checkpoint (D-104, TH-20).
+pub fn reusable_run(receipts: &[Receipt], keys: &[evidence::RunKey]) -> bool {
+    keys.iter()
+        .filter_map(|k| evidence::find_run(receipts, k))
+        .any(|r| r.passes() && !s(&r.v, "sandbox").contains("compile-cache"))
+}
+
 /// Each check of the suite on the content now in `top`, through the evidence runner. A passing receipt of the
 /// same command on the same content is used again, unless its sandbox names a compile cache; the turn's own
 /// run never uses the cache. With `retry`, a failing run is run once more on the same content before the
@@ -714,11 +759,7 @@ fn run_checks(
         let receipts = evidence::load_receipts(p)?;
         let mut keys = vec![evidence::run_key(p, &argv, &content, top)];
         keys.extend(units.iter().map(|r| evidence::run_key(p, &argv, &content, &r.wt)));
-        let reusable = keys
-            .iter()
-            .filter_map(|k| evidence::find_run(&receipts, k))
-            .any(|r| r.passes() && !s(&r.v, "sandbox").contains("compile-cache"));
-        if reusable {
+        if reusable_run(&receipts, &keys) {
             continue;
         }
         let mut tries = if retry { 2 } else { 1 };
@@ -742,6 +783,38 @@ fn run_checks(
         }
     }
     Ok((content, Verdict::Pass))
+}
+
+/// Why a unit of the turn may no longer land: it is no longer reviewed, it has an open finding or it is paused.
+fn changed_since(p: &Project, st: &State, unit: &str) -> Option<String> {
+    if st.unit_state(unit) != "reviewed" {
+        return Some(t("land_merge.recheck.state", &[]));
+    }
+    if st.units.get(unit).is_some_and(|x| x.paused) {
+        return Some(t("land_merge.left.paused", &[]));
+    }
+    let open = p
+        .list_records(schema::kind_by_name("finding"))
+        .ok()?
+        .iter()
+        .filter(|f| s(f, "unit") == unit && is_open(f))
+        .map(|f| s(f, "id").to_string())
+        .collect::<Vec<_>>();
+    (!open.is_empty()).then(|| t("land_merge.recheck.findings", &[("ids", &open.join(", "))]))
+}
+
+/// Give a turn up: every checkpoint branch is as it was and checked out again.
+fn abandon(p: &Project, pl: &Plan, k: &str, cpb: &str, heads: &[(String, String)]) -> R<()> {
+    put_back(p, pl, k, heads)?;
+    for (name, _) in heads {
+        if let Some(repo) = p.repos.iter().find(|r| &r.name == name) {
+            let wt = checkpoint_wt(p, pl, k, repo)?;
+            if wt.join(".git").exists() {
+                gitx::must(&wt, &["checkout", "-q", "-f", cpb])?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Put each repository's checkpoint branch back to the commit the mark names.
@@ -853,6 +926,10 @@ fn recover(p: &Project, st: &State, pl: &Plan, k: &str, unit: &str) -> R<()> {
     }
     for (wt, target) in resets {
         let _ = gitx::run(&wt, &["merge", "--abort"], &[]);
+        // A turn cut off before it passed left the head detached and the branch where it was.
+        if gitx::current_branch(&wt).is_none() {
+            gitx::must(&wt, &["checkout", "-q", "-f", &cpb])?;
+        }
         gitx::must(&wt, &["reset", "--hard", &target])?;
     }
     let _ = fs::remove_file(&path);

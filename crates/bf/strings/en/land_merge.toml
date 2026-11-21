@@ -39,3 +39,16 @@
 "land_merge.mark.worked" = "`bf unit land` lands the unit."
 
 "land_merge.hold.line" = "the landing turn of {checkpoint} is held open"
+
+"land_merge.left.review_step" = "{unit} goes back to review when its own landing is asked for."
+"land_merge.left.review_worked" = "`bf status` shows the unit reviewed."
+"land_merge.lock.error" = "cannot lock the landing turn: {e}"
+
+"land_merge.recheck.what" = "land {unit}"
+"land_merge.recheck.because" = "{unit} changed while the suite ran: {why}"
+"land_merge.recheck.step" = "Nothing landed and the checkpoint branch is as it was. Run `bf unit land {unit}` again."
+"land_merge.recheck.worked" = "`bf status` shows the units landed."
+"land_merge.recheck.state" = "it is no longer reviewed"
+"land_merge.recheck.findings" = "it has open findings: {ids}"
+
+"land_merge.brief.after" = "Fix the failing tests named above in your working copy, run the unit's checks again and report. The unit then gets one review round on the change, and lands after a clean one."

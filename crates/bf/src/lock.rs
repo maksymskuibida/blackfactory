@@ -97,7 +97,7 @@ pub fn turn(p: &Project, k: &str) -> R<Option<EngineLock>> {
     match file.try_lock() {
         Ok(()) => Ok(Some(EngineLock { _file: file })),
         Err(fs::TryLockError::WouldBlock) => Ok(None),
-        Err(fs::TryLockError::Error(e)) => Err(err(format!("cannot lock the landing turn: {e}"))),
+        Err(fs::TryLockError::Error(e)) => Err(err(crate::strings::t("land_merge.lock.error", &[("e", &e.to_string())]))),
     }
 }
 

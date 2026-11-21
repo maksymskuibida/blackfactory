@@ -17,16 +17,28 @@ fn files() -> [(&'static str, &'static str); 3] {
 /// Three units of K-1, each with its own file and unit check, and a run whose suite is `sh suite.sh`: the
 /// script logs where it ran, and fails in the checkpoint's copy on a file or a marker the test sets.
 fn plan(fx: &Fx) {
+    plan_with(fx, false);
+}
+
+/// With `named`, each of the three units names its tests (`true`) and a fourth unit names none.
+fn plan_with(fx: &Fx, named: bool) {
     let mut recs = vec![(
         "requirement",
         "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n".to_string(),
     )];
     for (n, f) in files() {
-        recs.push(("unit", format!("id=\"U-{n}\"\nkind=\"unit\"\ntitle=\"u{n}\"\ndelivers=[\"R-1\"]\nfiles=[\"src/{f}.txt\"]\ncheckpoint=\"K-1\"\n")));
+        recs.push(("unit", format!("id=\"U-{n}\"\nkind=\"unit\"\ntitle=\"u{n}\"\ndelivers=[\"R-1\"]\nfiles=[\"src/{f}.txt\"]\ncheckpoint=\"K-1\"\n{}\n", if named { "tests=\"true\"" } else { "" })));
         recs.push(("check", format!("id=\"X-{n}\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-{n}\"\n")));
     }
+    if named {
+        recs.push(("unit", "id=\"U-4\"\nkind=\"unit\"\ntitle=\"u4\"\ndelivers=[\"R-1\"]\nfiles=[\"src/d.txt\"]\ncheckpoint=\"K-1\"\n".to_string()));
+        recs.push(("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-4\"\n".to_string()));
+    }
+    if named {
+        recs.push(("check", "id=\"X-8\"\nkind=\"check\"\ntitle=\"s\"\nhow=\"command\"\ncommand=\"sh suite.sh\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".to_string()));
+    }
     recs.push(("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"k\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".into()));
-    recs.push(("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\",\"U-3\"]\nproves=[\"R-1\"]\nchecks=[\"X-9\"]\n".into()));
+    recs.push(("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\",\"U-3\"{}]\nproves=[\"R-1\"]\nchecks=[\"X-9\"{}]\n", if named { ",\"U-4\"" } else { "" }, if named { ",\"X-8\"" } else { "" })));
     for (k, t) in recs {
         let o = fx.put(k, &t);
         assert_eq!(o.code, 0, "{k}: {}", o.all());
@@ -374,4 +386,156 @@ fn land_merge_a_mark_with_a_foreign_commit_above_it_refuses_the_landing() {
     assert_eq!(git(&k, &["rev-parse", "HEAD"]), head);
     assert!(mark(&fx).exists());
     assert_eq!(state(&fx, "U-1").state, "reviewed");
+}
+
+fn hold_land(fx: &Fx, unit: &str) -> (std::process::Child, String) {
+    let mut child = Command::new(bin())
+        .args(["unit", "land", unit])
+        .current_dir(&fx.root)
+        .env("BF_STATE_HOME", &fx.state_base)
+        .env("BF_HOLD_AT", "land-turn")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut held = String::new();
+    BufReader::new(child.stderr.as_mut().unwrap()).read_line(&mut held).unwrap();
+    (child, held)
+}
+
+#[test]
+fn land_merge_a_unit_started_during_a_turn_does_not_hold_a_merge_that_is_put_back() {
+    let fx = Fx::new();
+    plan(&fx);
+    // U-1 is cut before U-2 lands, so its merged content is new and the suite runs on it.
+    let w1 = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    built(&fx, "2", "src/b.txt", "two\n");
+    fx.must(&["unit", "land", "U-2"]);
+    finish(&fx, "1", &w1, "src/bad.txt", "bad\n");
+    let (mut child, held) = hold_land(&fx, "U-1");
+    assert!(held.contains("K-1"), "{held}");
+    // The turn's merge is not on the checkpoint branch while the suite runs.
+    let w3 = PathBuf::from(fx.must(&["unit", "start", "U-3", "--json"]).json()["working_copy"].as_str().unwrap());
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(state(&fx, "U-1").state, "fixing");
+    assert!(!w3.join("src/bad.txt").exists());
+    assert!(!git(&w3, &["log", "--format=%s"]).contains("Land U-1"));
+    let k = fx.work("K-1");
+    assert!(!git(&k, &["log", "--format=%s"]).contains("Land U-1"));
+    assert!(git(&k, &["symbolic-ref", "--short", "HEAD"]).contains("K-1"));
+}
+
+#[test]
+fn land_merge_a_unit_that_changed_while_the_suite_ran_is_not_landed() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    let (mut child, _) = hold_land(&fx, "U-1");
+    let o = fx.put("finding", "id=\"F-1\"\nkind=\"finding\"\ntitle=\"t\"\nunit=\"U-1\"\nseverity=\"high\"\naction=\"Change it\"\n");
+    assert_eq!(o.code, 0, "{}", o.all());
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("changed while the suite ran"));
+    assert_eq!(state(&fx, "U-1").state, "reviewed");
+    assert!(lands(&fx).is_empty());
+    let k = fx.work("K-1");
+    assert!(!git(&k, &["log", "--format=%s"]).contains("Land U-1"));
+    assert!(git(&k, &["symbolic-ref", "--short", "HEAD"]).contains("K-1"));
+    assert!(!mark(&fx).exists());
+}
+
+#[test]
+fn land_merge_the_landing_runs_the_full_suite_when_every_unit_names_its_tests() {
+    let fx = Fx::new();
+    plan_with(&fx, true);
+    for (n, f) in files() {
+        let u = format!("U-{n}");
+        let wc = PathBuf::from(fx.must(&["unit", "start", &u, "--json"]).json()["working_copy"].as_str().unwrap());
+        fs::create_dir_all(wc.join("src")).unwrap();
+        fs::write(wc.join(format!("src/{f}.txt")), "x\n").unwrap();
+        fx.must_in(&wc, &["evidence", "run", &format!("X-{n}"), "--unit", &u, "--", "true"]);
+        // The unit's own suite is its named tests.
+        fx.must_in(&wc, &["evidence", "run", "attached:suite", "--unit", &u, "--", "true"]);
+        fx.must(&["report", &u, "--result", "built"]);
+        fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
+    }
+    fx.must(&["unit", "land", "U-1"]);
+    for n in ["1", "2", "3"] {
+        assert_eq!(state(&fx, &format!("U-{n}")).state, "landed");
+    }
+    assert_eq!(k_runs(&fx), 1, "the run's suite.sh ran once in the checkpoint's copy");
+}
+
+#[test]
+fn land_merge_a_turn_does_not_open_while_a_sync_or_a_fix_of_the_checkpoint_is_open() {
+    let fx = Fx::new();
+    plan(&fx);
+    let p = fx.project();
+    let mut st = bf::events::replay(&p).unwrap();
+    assert_eq!(bf::run::open_reason(&p, &st, "K-1"), None);
+    st.sync_open = Some(bf::events::SyncOpen {
+        checkpoint: "K-1".into(),
+        repos: vec![],
+        phase: "resolve".into(),
+        rounds: 0,
+        reason: String::new(),
+        findings: vec![],
+        open_seq: 1,
+        park_seq: 0,
+        floor: 0,
+        failed: vec![],
+    });
+    assert_eq!(bf::run::open_reason(&p, &st, "K-1"), Some("sync"));
+    assert_eq!(bf::run::open_reason(&p, &st, "K-2"), None);
+    st.sync_open = None;
+    st.ck_fix = Some(bf::events::CkFixOpen { checkpoint: "K-1".into(), ..Default::default() });
+    assert_eq!(bf::run::open_reason(&p, &st, "K-1"), Some("fix"));
+    assert_eq!(bf::run::open_reason(&p, &st, "K-2"), None);
+}
+
+#[test]
+fn land_merge_a_receipt_that_names_the_cache_is_not_reusable_even_when_the_key_matches() {
+    use bf::evidence::{Receipt, RunKey};
+    let key = |sandbox: &str| RunKey {
+        command: "sh suite.sh".into(),
+        content: "c1".into(),
+        repos: ".".into(),
+        folder: ".bf/work/K-1".into(),
+        sandbox: sandbox.into(),
+    };
+    let receipt = |sandbox: &str| Receipt {
+        v: json!({"type": "run", "check": "attached:suite", "command": "sh suite.sh", "content_hash": "c1",
+            "repos": ".", "folder": ".bf/work/K-1", "sandbox": sandbox, "exit": 0}),
+        seal_ok: true,
+        stale: false,
+        how: "command".into(),
+    };
+    assert!(bf::run::reusable_run(&[receipt("sandbox-exec")], &[key("sandbox-exec")]));
+    // find_run finds this one; only the landing's own rule turns it away.
+    assert!(bf::evidence::find_run(&[receipt("sandbox-exec+compile-cache")], &key("sandbox-exec+compile-cache")).is_some());
+    assert!(!bf::run::reusable_run(&[receipt("sandbox-exec+compile-cache")], &[key("sandbox-exec+compile-cache")]));
+}
+
+#[test]
+fn land_merge_the_engines_clean_merge_of_the_judged_content_is_not_a_change() {
+    let fx = Fx::new();
+    plan(&fx);
+    let w2 = PathBuf::from(fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"].as_str().unwrap());
+    built(&fx, "1", "src/a.txt", "one\n");
+    fx.must(&["unit", "land", "U-1"]);
+    fs::create_dir_all(w2.join("src")).unwrap();
+    fs::write(w2.join("src/b.txt"), "two\n").unwrap();
+    git(&w2, &["add", "-A"]);
+    git(&w2, &["commit", "-q", "-m", "work"]);
+    let judged = git(&w2, &["rev-parse", "HEAD"]);
+    fx.must(&["unit", "sync", "U-2"]);
+    assert_ne!(git(&w2, &["rev-parse", "HEAD"]), judged);
+    assert!(bf::run::clean_engine_merge(&fx.project(), "U-2", &w2, &judged));
+    // A commit of the builder in the chain is a change.
+    commit_in(&w2, "mine.txt");
+    assert!(!bf::run::clean_engine_merge(&fx.project(), "U-2", &w2, &judged));
 }
