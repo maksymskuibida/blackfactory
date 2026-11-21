@@ -740,6 +740,44 @@ fn repair_judge_a_new_test_file_is_allowed() {
 }
 
 #[test]
+fn repair_judge_an_existing_test_file_given_to_a_unit_is_refused() {
+    let fx = Fx::new();
+    plan(&fx);
+    fs::create_dir_all(fx.root.join("crates/bf/tests")).unwrap();
+    fs::write(fx.root.join("crates/bf/tests/existing_guard.rs"), "#[test]\nfn holds() {}\n").unwrap();
+    fx.commit_all("an existing test file");
+    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/existing_guard.rs", &[], 5))]);
+    refused_naming(&fx, &aid, "go", &["crates/bf/tests/existing_guard.rs", "U-1"]);
+}
+
+#[test]
+fn repair_judge_a_glob_or_a_folder_under_a_tests_folder_is_refused() {
+    let fx = Fx::new();
+    plan(&fx);
+    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/*.rs", &[], 5))]);
+    refused_naming(&fx, &aid, "go", &["crates/bf/tests/*.rs", "U-1"]);
+    fx.must(&["amend", "withdraw", &aid, "--reason", "no"]);
+    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/more/", &[], 5))]);
+    refused_naming(&fx, &aid, "go", &["crates/bf/tests/more/", "U-1"]);
+}
+
+#[test]
+fn repair_judge_the_token_guard_roles_and_plan_code_are_protected() {
+    for path in [
+        "crates/bf/src/run/tokens.rs",
+        "crates/bf/src/run/roles.rs",
+        "crates/bf/src/cli/guard.rs",
+        "crates/bf/src/plan/targets.rs",
+    ] {
+        let fx = Fx::new();
+        plan(&fx);
+        let file = format!("src/f2.txt\", \"{path}");
+        let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", &file, &[], 5))]);
+        refused_naming(&fx, &aid, "go", &[path, "U-2"]);
+    }
+}
+
+#[test]
 fn repair_judge_a_landed_units_record_is_refused() {
     let p = Old::new();
     let opened: Value =

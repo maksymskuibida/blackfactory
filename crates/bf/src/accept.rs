@@ -40,6 +40,12 @@ pub fn settle_fix(p: &Project, k: &str, ids: &[(u32, u32)], quote: &str) -> R<Va
             crate::strings::t("accept.fix.step_next", &[]),
         ));
     }
+    if !f.parked_in_review {
+        return Err(bad(
+            crate::strings::t("accept.fix.not_review", &[("reason", &f.reason)]),
+            crate::strings::t("accept.fix.step_next", &[]),
+        ));
+    }
     let open = crate::ckfix::open_ids(&f);
     let names: Vec<String> = open.iter().map(|x| x.0.clone()).collect();
     let mut levels = Vec::new();
@@ -129,6 +135,9 @@ pub(crate) fn replay_fix(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, s
             return ignore(st, "events.k2.ignored.fix_settle_none", seq);
         };
         fix_open = o.open_seq;
+        if !o.parked_in_review {
+            return ignore(st, "events.k2.ignored.fix_settle_not_review", seq);
+        }
         for (r, i) in &ids {
             let f = o
                 .history
@@ -239,6 +248,15 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
     let Some(after) = st.units.get(&unit).map(|u| u.review_seq) else {
         return ignore(st, "events.k2.ignored.unit_accept_none", seq);
     };
+    // Only a unit parked in its review has findings to accept: a unit parked while fixing holds work no
+    // reviewer saw (R-71, R-95).
+    if !st
+        .units
+        .get(&unit)
+        .is_some_and(|u| u.state == "parked" && u.parked_in_review)
+    {
+        return ignore(st, "events.k2.ignored.unit_accept_not_review", seq);
+    }
     if listed.is_empty() {
         return ignore(st, "events.k2.ignored.unit_accept_form", seq);
     }

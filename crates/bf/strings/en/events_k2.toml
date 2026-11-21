@@ -15,6 +15,8 @@
 "events.k2.ignored.fix_settle_unknown" = "event {seq}: a fix review finding settled that no review round of the fix filed"
 "events.k2.ignored.fix_settle_hold" = "event {seq}: a fix review finding settled while the human is not being asked"
 "events.k2.ignored.fix_settle_turn" = "event {seq}: a fix review finding settled with no valid human turn and quote after that review"
+"events.k2.ignored.fix_settle_not_review" = "event {seq}: a fix review finding settled while the fix is parked by a failing attempt or a park, not by its review"
+"events.k2.ignored.unit_accept_not_review" = "event {seq}: findings accepted on a unit that is not parked in its review"
 "events.k2.ignored.unit_accept_none" = "event {seq}: findings accepted on a unit that has not started"
 "events.k2.ignored.unit_accept_form" = "event {seq}: findings accepted with no finding named"
 "events.k2.ignored.unit_accept_unknown" = "event {seq}: findings accepted that include one the unit does not have open in its reports"

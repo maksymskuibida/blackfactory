@@ -4,6 +4,8 @@
 "cli.unit_accept.no_unit.step" = "Use a unit ID from `bf status`."
 "cli.unit_accept.not_parked" = "it is `{state}`; only a unit whose review is parked or used its rounds has findings to accept"
 "cli.unit_accept.not_parked.step" = "`bf next` shows what the unit is waiting for."
+"cli.unit_accept.not_review" = "it is parked while it was `{prev}` ({reason}), not in its review; the work since the last review has no reviewer's word"
+"cli.unit_accept.not_review.step" = "Release it with `bf unit release {unit} --quote \"<the human's words>\"` so the builder goes on and a review follows."
 "cli.unit_accept.none_named" = "no finding was named"
 "cli.unit_accept.none_named.step" = "Name the findings: `bf unit accept {unit} <F-ids> --quote \"<the human's words>\"`; the open ones are {open}."
 "cli.unit_accept.unknown" = "{ids} is not an open finding of {unit}"

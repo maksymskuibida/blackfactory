@@ -40,6 +40,10 @@ pub const PROTECTED: &[&str] = &[
     "crates/bf/src/policy.rs",
     "crates/bf/src/decisions.rs",
     "crates/bf/src/plan.rs",
+    "crates/bf/src/plan",
+    "crates/bf/src/run/tokens.rs",
+    "crates/bf/src/run/roles.rs",
+    "crates/bf/src/cli/guard.rs",
     "crates/bf/src/run/next.rs",
     "crates/bf/src/ckfix/design.rs",
     "harness/claude/agents",
@@ -572,9 +576,35 @@ fn protected_hit(path: &str) -> Option<&'static str> {
 
 /// Whether `path` is a new path in a tests folder: one of its folders is named `tests`.
 fn in_tests_folder(path: &str) -> bool {
+    let t = path.trim();
+    // One named file: never a glob and never a folder (R-69).
+    if t.ends_with('/') || t.contains(['*', '?', '[', '{']) {
+        return false;
+    }
     let n = norm(path);
     let parts: Vec<&str> = n.split('/').collect();
     parts.len() > 1 && parts[..parts.len() - 1].contains(&"tests")
+}
+
+/// Whether `path` exists already in the unit's repository, at the checkpoint's branch when it has one, else at
+/// the main branch. Without a repository to ask, every repository of the workspace is asked.
+fn exists_in_repo(p: &Project, unit: &Value, path: &str) -> bool {
+    let n = norm(path);
+    let repos: Vec<&crate::store::Repo> = match p.repo_of_unit(unit) {
+        Ok(r) => vec![r],
+        Err(_) => p.repos.iter().collect(),
+    };
+    let cp = p.checkpoint_branch(s(unit, "checkpoint"));
+    repos.iter().any(|r| {
+        let branch = if crate::gitx::branch_exists(&r.path, &cp) {
+            cp.clone()
+        } else {
+            r.branch.clone()
+        };
+        crate::gitx::run(&r.path, &["cat-file", "-e", &format!("{branch}:{n}")], &[])
+            .map(|o| o.ok)
+            .unwrap_or(false)
+    })
 }
 
 /// The wave of each unit: one after the highest wave of what it depends on, as `bf plan check` counts.
@@ -813,7 +843,21 @@ pub fn limits(p: &Project, st: &State, a: &Amend, mode: Mode) -> R<(Vec<String>,
         let moved = removed
             .iter()
             .any(|(u2, p2)| u2 != u && norm(p2) == norm(path));
-        if !moved && !in_tests_folder(path) {
+        let existing = !moved
+            && in_tests_folder(path)
+            && a.changes
+                .iter()
+                .find(|c| s(c, "id") == u)
+                .map(|c| {
+                    let rec = if c["record"].is_null() {
+                        &c["was"]
+                    } else {
+                        &c["record"]
+                    };
+                    exists_in_repo(p, rec, path)
+                })
+                .unwrap_or(false);
+        if !moved && (!in_tests_folder(path) || existing) {
             out.push(f("judge.limit.files_added", &[("id", u), ("path", path)]));
         }
         if let Some(q) = protected_hit(path) {

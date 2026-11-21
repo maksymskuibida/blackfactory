@@ -531,6 +531,9 @@ pub struct UnitSt {
     pub attempts: u32,
     /// The state before it was blocked or parked, so a release can put it back to work.
     pub prev_state: String,
+    /// Whether the unit's park is a parked review (its round limit, or a park while it was in review): only
+    /// then are its findings the human's to accept (R-71, R-95).
+    pub parked_in_review: bool,
     pub landed_hash: String,
     pub landed_run: String,
     /// The amendment that last sent this unit back to work.
@@ -681,6 +684,9 @@ pub struct CkFixOpen {
     pub from_saved: String,
     /// The (review round, log position of its report) of each review round of this fix.
     pub round_seqs: Vec<(u32, u64)>,
+    /// Whether the fix is parked (or `low`) by its review's findings: only then are they the human's to
+    /// accept. A fix parked by a failing attempt or by `checkpoint.fix.park` is not (R-71, R-95).
+    pub parked_in_review: bool,
     /// The findings of this fix's review the human accepted, and the earlier words kept from a fix of the
     /// same checkpoint that was aborted.
     pub accepted: Vec<Accepted>,
@@ -1784,6 +1790,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if matches!(to.as_str(), "blocked" | "parked") && u.state != to {
                     u.prev_state = u.state.clone();
                 }
+                if to == "parked" {
+                    u.parked_in_review = sv("from") == "review";
+                }
                 u.state = to.clone();
                 if ev["result"] == "findings" {
                     u.rounds += 1;
@@ -2391,6 +2400,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.attempts += 1;
                     o.phase = sv("to");
+                    o.parked_in_review = false;
                     if matches!(o.phase.as_str(), "parked" | "low") {
                         o.park_seq = seq;
                         st.ck_end_seq = seq;
@@ -2411,6 +2421,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     if sv("result") == "findings" {
                         o.rounds += 1;
                         o.phase = sv("to");
+                        o.parked_in_review = matches!(o.phase.as_str(), "parked" | "low");
                         if matches!(o.phase.as_str(), "parked" | "low") {
                             o.park_seq = seq;
                             st.ck_end_seq = seq;
@@ -2425,6 +2436,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.park" => {
                 if let Some(o) = st.ck_fix.as_mut() {
                     o.phase = "parked".into();
+                    o.parked_in_review = false;
                     o.park_seq = seq;
                     st.ck_end_seq = seq;
                     o.reason = sv("reason");
@@ -2774,6 +2786,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let u = st.units.entry(sv("unit")).or_default();
                 if u.state != "parked" {
                     u.prev_state = u.state.clone();
+                    u.parked_in_review = u.state == "review";
                 }
                 u.state = "parked".into();
                 u.parked_reason = sv("reason");

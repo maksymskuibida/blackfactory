@@ -34,6 +34,17 @@ pub fn accept(p: &Project, unit: &str, findings: &[String], quote: &str) -> R<Va
             t("cli.unit_accept.worked", &[("unit", unit)]),
         ));
     }
+    if !u.parked_in_review {
+        return Err(refuse(
+            what,
+            t(
+                "cli.unit_accept.not_review",
+                &[("reason", &u.parked_reason), ("prev", &u.prev_state)],
+            ),
+            &[&t("cli.unit_accept.not_review.step", &[("unit", unit)])],
+            t("cli.unit_accept.worked", &[("unit", unit)]),
+        ));
+    }
     // The open findings: those the log lists, and those only a record of the unit holds.
     let mut open: BTreeMap<String, String> = BTreeMap::new();
     for id in &u.open_findings {

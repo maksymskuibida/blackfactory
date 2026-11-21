@@ -4,6 +4,7 @@
 "accept.fix.none_open" = "no fix of this checkpoint is open"
 "accept.fix.step_status" = "`bf status` shows what the checkpoint waits for."
 "accept.fix.not_waiting" = "the fix is in `{phase}`; its findings are accepted while the human is asked about them (phase `low` or `parked`)"
+"accept.fix.not_review" = "the fix is parked by a failing attempt or a park ({reason}), not by its review; the work since the last review has no reviewer's word"
 "accept.fix.step_next" = "`bf next` shows what the fix waits for."
 "accept.fix.unknown" = "{id} is not an open finding of the fix's review"
 "accept.fix.none_named" = "no finding was named"
