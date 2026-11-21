@@ -265,7 +265,7 @@ fn table() -> Vec<Case> {
         c(57, Wc, Passed, "git reset HEAD src/hello.txt"),
         c(58, Wc, Passed, "git reset --hard"),
         // Not judged, stated in docs/engine.md: the paths live inside the patch or the stash.
-        c(59, Wc, Passed, "git apply /tmp/p.patch"),
+        c(59, Wc, Refused, "git apply /tmp/p.patch"),
         c(60, Wc, Passed, "git stash pop"),
         c(61, Wc, Passed, "patch -p1 < /tmp/p.patch"),
         // Other write forms in a unit's copy that the file scope must hold.

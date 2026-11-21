@@ -242,9 +242,12 @@ fn zone_of<'a>(table: &'a Value, abs: &'a str) -> Zone<'a> {
 }
 
 fn is_protected_rel(table: &Value, rel: &str) -> bool {
+    // A volume may fold case, and a path below a folder that does not exist yet is not folded by the
+    // lookup of the real name: judge every protected path without regard to case.
+    let rel = rel.to_lowercase();
     if let Some(a) = table["protected"].as_array() {
         for p in a.iter().filter_map(|x| x.as_str()) {
-            let p = p.trim_end_matches('/');
+            let p = p.trim_end_matches('/').to_lowercase();
             if rel == p || rel.starts_with(&format!("{p}/")) {
                 return true;
             }
@@ -340,7 +343,8 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
         // and a worker does not write into the repository's own checkout (the human edits it freely).
         if let Some(repo) = repo_containing(table, &abs) {
             let rel = under(&abs, &repo).unwrap_or("");
-            if rel == ".git/config" || rel == ".git/hooks" || rel.starts_with(".git/hooks/") {
+            let low = rel.to_lowercase();
+            if low == ".git/config" || low == ".git/hooks" || low.starts_with(".git/hooks/") {
                 return deny(
                     &format!("write {rel} in a code repository"),
                     "git hooks and git config belong to git and the human",
@@ -365,7 +369,7 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             // Outside the project. A worker still stays out of the other working copies' parent folders.
             return allow();
         };
-        if rel == ".bf/work" || rel.starts_with(".bf/work/") {
+        if rel.to_lowercase() == ".bf/work" || rel.to_lowercase().starts_with(".bf/work/") {
             return deny(
                 &format!("write {raw}"),
                 "that folder holds working copies and is not a unit's or checkpoint's own working copy",
@@ -399,7 +403,8 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
         return allow();
     }
     let rel = under(&abs, &zone.base).unwrap_or("");
-    if is_protected_in_wc(table, rel) || rel == ".git" || rel.starts_with(".git/") {
+    let low_rel = rel.to_lowercase();
+    if is_protected_in_wc(table, rel) || low_rel == ".git" || low_rel.starts_with(".git/") {
         return deny(
             &format!("write {rel} in {}", zone.id),
             "that path belongs to the engine, the human or git, not to a unit's work",
@@ -507,9 +512,11 @@ fn other_repos(table: &Value) -> Vec<String> {
 
 /// Is the path inside the git folder of a code repository (its hooks, its config and the rest of it)?
 fn in_repo_git(table: &Value, abs: &str) -> bool {
-    other_repos(table)
-        .iter()
-        .any(|p| under(abs, p).is_some_and(|rel| rel == ".git" || rel.starts_with(".git/")))
+    other_repos(table).iter().any(|p| {
+        under(abs, p).is_some_and(|rel| {
+            rel.to_lowercase() == ".git" || rel.to_lowercase().starts_with(".git/")
+        })
+    })
 }
 
 /// Does a path that is protected (in the project root or in any working copy) get named?
@@ -519,7 +526,7 @@ fn is_protected_abs(table: &Value, abs: &str) -> bool {
     }
     let root = table["root"].as_str().unwrap_or("");
     if let Some(rel) = under(abs, root) {
-        if rel == ".bf/work" || rel.starts_with(".bf/work/") {
+        if rel.to_lowercase() == ".bf/work" || rel.to_lowercase().starts_with(".bf/work/") {
             // A working copy: its own factory/ copy is protected, its source is not.
         } else if !is_open_rel(rel) && is_protected_rel(table, rel) {
             return true;
@@ -3953,13 +3960,32 @@ fn judge_text_path(
 }
 
 /// The refusal of a git command, or `allow()`.
+/// An assignment of one of the variables that change which repository, index or object store git uses.
+fn git_env_assignment(w: &str) -> bool {
+    const NAMES: [&str; 8] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_NAMESPACE",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+    ];
+    let w = w.trim_start_matches(['"', '\'']);
+    NAMES.iter().any(|n| {
+        w.strip_prefix(n)
+            .is_some_and(|r| r.starts_with('=') || r.starts_with("+="))
+    })
+}
+
 fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
     let main_branch = table["main_branch"].as_str().unwrap_or("main");
     let prefix = table["branch_prefix"].as_str().unwrap_or("bf/");
     let Some((i, sub)) = git_sub(w) else {
         return allow();
     };
-    let (target_dir, target) = {
+    let target = {
         let mut d = dir.to_string();
         let mut j = 1;
         while j + 1 < w.len() && j < i {
@@ -3968,8 +3994,7 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
             }
             j += 1;
         }
-        let k = zone_of(table, &d).kind.to_string();
-        (d, k)
+        zone_of(table, &d).kind.to_string()
     };
     let in_unit = target == "unit";
     let in_wc = in_unit || target == "checkpoint";
@@ -4039,23 +4064,22 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         "switch" | "read-tree" if in_unit => {
             return why("switching branches or reading another tree into the working copy brings in files outside the unit's scope; the engine joins the branches (`bf unit land`)");
         }
-        // A checkout that names a revision (a branch, a tag, a commit, `-`, a new branch) moves the whole
-        // working tree, the protected copy of the factory's files included. Only paths of the copy
-        // (and `HEAD`) may stand before `--`; anything else is refused.
+        // In a working copy a checkout is allowed in one form only: `git checkout [safe flags] [HEAD] --
+        // <paths>`. Without `--` git reads a word as a revision before a path, whatever is on disk, and a
+        // checkout of a revision moves the whole working tree, the protected files with it. A flag that
+        // makes a branch, detaches, reads paths from a file or merges is refused.
         "checkout" if in_wc => {
-            let before: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
-            let moves_tree = before.iter().any(|a| {
-                matches!(*a, "-" | "-b" | "-B" | "--detach" | "--orphan" | "--track" | "-t" | "--merge" | "-m" | "--patch" | "-p")
-                    || a.starts_with("--orphan=")
-                    || a.starts_with("--track=")
-                    || (!a.starts_with('-')
-                        && *a != "HEAD"
-                        && (*a == main_branch
-                            || a.starts_with(prefix)
-                            || a.starts_with("origin/")
-                            || std::fs::symlink_metadata(Path::new(&target_dir).join(a)).is_err()))
+            const SAFE: [&str; 11] = [
+                "-f", "--force", "-q", "--quiet", "--ours", "--theirs", "--overlay", "--no-overlay",
+                "--progress", "--no-progress", "--ignore-skip-worktree-bits",
+            ];
+            let dashdash = rest.iter().position(|a| *a == "--");
+            let ok = dashdash.is_some_and(|k| {
+                rest[..k]
+                    .iter()
+                    .all(|a| SAFE.contains(a) || *a == "HEAD")
             });
-            if moves_tree {
+            if !ok {
                 return why(&crate::strings::t("guard_recommended.checkout.because", &[]));
             }
         }
@@ -4074,6 +4098,17 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
                 .any(|a| *a == main_branch || a.starts_with(prefix) || a.starts_with("origin/"));
             if names_branch || (hard && !revs.is_empty()) {
                 return why("a reset onto the main branch, an engine branch or a revision brings in files outside the unit's scope; `git reset --hard` with no revision, and `git reset HEAD <file>`, stay open");
+            }
+        }
+        // A patch writes the files it names, links and other modes too, and the guard does not read
+        // it: in a working copy only the forms that write nothing pass.
+        "apply" if in_wc => {
+            let reads_only = rest
+                .iter()
+                .any(|a| matches!(*a, "--check" | "--stat" | "--numstat" | "--summary"))
+                && !rest.iter().any(|a| matches!(*a, "--apply" | "--index" | "--cached" | "--3way" | "-3"));
+            if !reads_only {
+                return why(&crate::strings::t("guard_recommended.apply.because", &[]));
             }
         }
         "merge" | "rebase" | "cherry-pick" | "revert" | "am" | "stash" | "clean" | "apply"
@@ -4555,6 +4590,16 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         let dir_str = start.clone().unwrap_or_else(|| cwd.to_string());
         let mut after = start.clone();
 
+        // The variables that point git at another folder, index or object store, set in any way:
+        // `VAR=x git ...`, `env VAR=x git ...`, `export VAR=x`.
+        if p.words.iter().any(|w| git_env_assignment(w)) {
+            return deny(
+                &crate::strings::t("guard_recommended.gitenv.refused", &[]),
+                &crate::strings::t("guard_recommended.gitenv.because", &[]),
+                &[&crate::strings::t("guard_recommended.gitenv.step", &[])],
+                &crate::strings::t("guard_recommended.gitenv.worked", &[]),
+            );
+        }
         // A path in the state folder, whatever the program and however it is spelled.
         for w in p.words.iter().chain(p.redirects.iter()) {
             for t in tokens(w) {
@@ -5116,8 +5161,8 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                                         let z = zone_of(table, &c);
                                         z.kind == "unit"
                                             && !is_protected_in_wc(table, rel)
-                                            && rel != ".git"
-                                            && !rel.starts_with(".git/")
+                                            && rel.to_lowercase() != ".git"
+                                            && !rel.to_lowercase().starts_with(".git/")
                                             && leads_to_scope(&z.files, rel)
                                     });
                                 if !d.allow && !backup_of_allowed && !leads {

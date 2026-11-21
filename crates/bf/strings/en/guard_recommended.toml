@@ -17,3 +17,8 @@
 "guard_recommended.link.step1" = "Change files with the editing tools, inside your working copy."
 "guard_recommended.link.step2" = "Name each path on the command line; `git hash-object -w` and `git add <file>` stay open."
 "guard_recommended.link.worked" = "The command names only paths inside your working copy and makes no link."
+"guard_recommended.gitenv.because" = "a git environment variable (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and the like) points git at another repository, index or object store, and hides what is being changed"
+"guard_recommended.gitenv.step" = "Run git in the working copy without these variables."
+"guard_recommended.gitenv.worked" = "The command sets none of the git location variables."
+"guard_recommended.gitenv.refused" = "point git at another repository, index or object store with an environment variable"
+"guard_recommended.apply.because" = "a patch writes the files it names, a link or a changed mode among them, and the guard does not read the patch; make the change with the editing tools (`git apply --check` and `--stat` stay open)"

@@ -304,10 +304,10 @@ fn a_checkout_of_a_revision_is_refused() {
     ] {
         assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
     }
-    // A path of the copy, with or without `--`, and `HEAD`, stay open.
+    // Paths after `--`, with `HEAD` or safe flags before it, stay open.
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
-    for cmd in ["git checkout src/hello.txt", "git checkout -- src/hello.txt", "git checkout HEAD -- src/hello.txt"] {
+    for cmd in ["git checkout -- src/hello.txt", "git checkout HEAD -- src/hello.txt", "git checkout -f -- src/hello.txt"] {
         assert_ne!(bash(&fx, &wc, cmd), "deny", "{cmd}");
     }
 }
@@ -363,4 +363,58 @@ fn the_resolver_of_an_open_sync_writes_any_unprotected_file_and_no_protected_one
     }
     // Another session does not write there.
     assert_eq!(write_tool(&fx, &fx.root, &k.join("src/other.txt")), "deny");
+}
+
+#[test]
+fn a_patch_is_refused_unless_it_only_reads_and_git_environment_variables_are_refused() {
+    let (fx, wc) = unit_place();
+    for cmd in [
+        "git apply link.patch",
+        "git apply --index link.patch",
+        "git apply --check --apply link.patch",
+        "git apply --cached p.patch",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    for cmd in ["git apply --check p.patch", "git apply --stat p.patch"] {
+        assert_ne!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    for cmd in [
+        "GIT_WORK_TREE=/tmp git status",
+        "GIT_DIR=/tmp/x git status",
+        "GIT_INDEX_FILE=/tmp/i git add src/a.txt",
+        "env GIT_DIR=/tmp/x git status",
+        "export GIT_WORK_TREE=/tmp && git status",
+        "GIT_COMMON_DIR=/tmp git log",
+        "GIT_OBJECT_DIRECTORY=/tmp git log",
+        "GIT_NAMESPACE=x git log",
+        "sh -c 'GIT_DIR=/tmp/x git status'",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    assert_ne!(bash(&fx, &wc, "git status"), "deny");
+}
+
+#[test]
+fn a_protected_path_is_refused_in_any_case_even_below_a_folder_that_does_not_exist() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.set_policy("protected_extra = []", "protected_extra = [\"secrets/\"]");
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    for rel in [
+        ".CLAUDE/settings.json",
+        ".Claude/skills/Factory-Panel/x.md",
+        ".BF/guard.json",
+        ".Bf/briefs/x.md",
+        "FACTORY/policy.toml",
+        "Factory/Records/R-1.toml",
+        "SECRETS/x.txt",
+        ".GIT/config",
+        ".Git/hooks/pre-commit",
+    ] {
+        assert_eq!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
+        assert_eq!(write_tool(&fx, &fx.root, &fx.root.join(rel)), "deny", "root {rel}");
+    }
 }
