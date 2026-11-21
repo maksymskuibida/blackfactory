@@ -37,9 +37,28 @@ pub(crate) fn cmd_human_turn(args: &Args) -> R<()> {
     if args.has("json") {
         println!("{}", pretty(&json!({"recorded": recorded, "event": ev})));
     }
-    // Stdout of this hook is added to the conductor's context: the note is the only thing printed.
-    if let Some(n) = statusline::context_note(&p, session, util::now_secs()) {
-        println!("{n}");
+    // The flag's part of the turn. A failure here never erases the prompt: the hook still exits 0.
+    let say = crate::absent::on_turn(&p, &payload, recorded, &ev).unwrap_or_default();
+    // Stdout of this hook is added to the conductor's context: the note is the only thing printed,
+    // unless the flag has something to say, which goes as the harness's JSON form.
+    let note = statusline::context_note(&p, session, util::now_secs());
+    if say.is_empty() {
+        if let Some(n) = note {
+            println!("{n}");
+        }
+    } else {
+        let mut context = say.conductor.clone();
+        context.extend(note);
+        let mut out = json!({
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context.join("\n\n"),
+            }
+        });
+        if !say.human.is_empty() {
+            out["systemMessage"] = json!(say.human.join("\n\n"));
+        }
+        println!("{}", pretty(&out));
     }
     Ok(())
 }

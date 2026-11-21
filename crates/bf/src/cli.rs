@@ -3,6 +3,7 @@
 //! Each command lives in a module of its own under `cli/`; this file keeps the argument type, the entry
 //! point, `dispatch` and the helpers several commands share.
 
+mod absent;
 mod amend;
 mod ask;
 mod brief;
@@ -524,6 +525,7 @@ fn dispatch(args: &Args) -> R<()> {
         "stuck" => stuck::cmd_stuck(args),
         "policy" => policy::cmd_policy(args),
         "head" => head::cmd_head(args),
+        "absent" => absent::cmd_absent(args),
         "doctor" => doctor::cmd_doctor(args),
         "intent" => intent::cmd_intent(args),
         "space" => space::cmd_space(args),

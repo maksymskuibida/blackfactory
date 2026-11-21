@@ -132,7 +132,7 @@ fn t2_a_torn_last_line_in_the_log_is_ignored_and_healed() {
     fx.human("second");
     let text = fs::read_to_string(&log).unwrap();
     assert!(!text.contains("human.tu\""), "{text}");
-    assert_eq!(text.lines().count(), 3); // init, first, second
+    assert_eq!(text.lines().count(), 4); // init, first turn, absent.session, second turn
     fx.must(&["log", "--verify"]);
 }
 
