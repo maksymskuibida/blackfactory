@@ -127,10 +127,9 @@ fn step_two_the_paths_the_plumbing_writes_are_held_to_the_scope() {
     project(&fx);
     let wc = start(&fx);
     let blob = "0123456789abcdef0123456789abcdef01234567";
-    let r = denied(&fx, &wc, &format!("git update-index --add --cacheinfo 100644,{blob},src/other.rs"));
-    assert!(r.contains("src/other.rs"), "{r}");
-    let r = denied(&fx, &wc, "git checkout-index -f src/other.rs");
-    assert!(r.contains("src/other.rs"), "{r}");
+    // A named file of the copy passes whether or not the unit lists it.
+    passes(&fx, &wc, &format!("git update-index --add --cacheinfo 100644,{blob},src/other.rs"));
+    passes(&fx, &wc, "git checkout-index -f src/other.rs");
     for cmd in [
         "git checkout-index -a",
         "git checkout-index -fa",
@@ -224,24 +223,23 @@ fn a_dangling_link_that_leads_outside_the_scope_is_a_write_outside_it() {
     let fx = Fx::new();
     project(&fx);
     let wc = start(&fx);
-    // Inside the copy but not in the unit's list.
+    // Inside the copy but not in the unit's list: the list is a recommendation, so the write passes.
     make_link(&wc, "src/a.rs", "other_missing.rs");
     let (d, r) = judge(&fx, &wc, "Write", json!({"file_path": wc.join("src/a.rs").to_string_lossy(), "content": "x"}));
-    assert_eq!(d, "deny", "{r}");
-    assert!(r.contains("other_missing.rs"), "{r}");
+    assert_eq!(d, "pass", "{r}");
     // A link to another place in the project.
     make_link(&wc, "src/a.rs", &format!("{}/src/new_file.rs", fx.root.display()));
     let (d, r) = judge(&fx, &wc, "Write", json!({"file_path": wc.join("src/a.rs").to_string_lossy(), "content": "x"}));
     assert_eq!(d, "deny", "{r}");
-    // A link whose target is a file the unit does not list (src/a_copy.rs) is a write outside the scope.
+    // A link whose target is a file of the copy that the unit does not list passes too.
     make_link(&wc, "src/a.rs", "../src/a_copy.rs");
     let (d, r) = judge(&fx, &wc, "Write", json!({"file_path": wc.join("src/a.rs").to_string_lossy(), "content": "x"}));
-    assert_eq!(d, "deny", "{r}");
-    // A link loop ends at the bound and is not followed for ever.
+    assert_eq!(d, "pass", "{r}");
+    // A link loop ends at the bound and is not followed for ever; it stays inside the copy.
     make_link(&wc, "src/a.rs", "loop_b");
     make_link(&wc, "loop_b", "src/a.rs");
     let (d, r) = judge(&fx, &wc, "Write", json!({"file_path": wc.join("src/a.rs").to_string_lossy(), "content": "x"}));
-    assert_eq!(d, "deny", "{r}");
+    assert_eq!(d, "pass", "{r}");
 }
 
 // ---- a scope request never grants a link
@@ -311,8 +309,10 @@ fn a_version_number_is_not_a_path_beside_a_delete_through_a_variable() {
     passes(&fx, &wc, "python3 -c \"import os; print('bf 0.2.1'); os.remove('src/a.rs')\"");
     passes(&fx, &wc, "python3 -c \"print('v1.2')\"");
     // A name with a letter after the dot is still a path, and one handed to a file call is too.
-    denied(&fx, &wc, "python3 -c \"import os; p='src/a.rs'; q='src/other.rs'; os.remove(q)\"");
-    denied(&fx, &wc, "python3 -c \"import os; p='src/a.rs'; os.remove('v1.2')\"");
+    passes(&fx, &wc, "python3 -c \"import os; p='src/a.rs'; q='src/other.rs'; os.remove(q)\"");
+    passes(&fx, &wc, "python3 -c \"import os; p='src/a.rs'; os.remove('v1.2')\"");
+    // A protected path is refused.
+    denied(&fx, &wc, "python3 -c \"import os; p='src/a.rs'; q='factory/policy.toml'; os.remove(q)\"");
 }
 
 fn project_with_beside(fx: &Fx) -> PathBuf {

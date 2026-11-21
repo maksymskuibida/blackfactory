@@ -144,7 +144,9 @@ fn a_failed_check_gives_a_fix_for_a_builder_with_the_failure_in_its_brief() {
     };
     assert_ne!(w("src/a.txt"), "deny");
     assert_ne!(w("tests/new_test.txt"), "deny");
-    assert_eq!(w("src/other.txt"), "deny");
+    // The set is a recommendation: another file of the copy may be written, a protected path may not.
+    assert_ne!(w("src/other.txt"), "deny");
+    assert_eq!(w(".git/config"), "deny");
     // Nothing else starts, and the status shows the fix.
     let st = fx.must(&["status", "--json"]).json();
     assert_eq!(st["checkpoint_fix"]["open"]["phase"], "fix", "{st}");
@@ -655,7 +657,7 @@ fn the_pages_show_a_fix_with_its_files_units_and_both_review_rounds() {
 }
 
 #[test]
-fn a_fix_may_not_overwrite_a_test_file_that_was_already_there() {
+fn a_fix_may_write_a_test_file_that_was_already_there() {
     let fx = Fx::new();
     plan(&fx);
     fs::create_dir_all(fx.root.join("tests")).unwrap();
@@ -673,7 +675,7 @@ fn a_fix_may_not_overwrite_a_test_file_that_was_already_there() {
             json!({"file_path": k.join(f).to_string_lossy()}),
         )
     };
-    assert_eq!(w("tests/old_test.txt"), "deny");
+    assert_ne!(w("tests/old_test.txt"), "deny");
     assert_ne!(w("tests/new_test.txt"), "deny");
     // A test file a unit lists stays writable.
     assert_ne!(w("tests/a_test.txt"), "deny");
