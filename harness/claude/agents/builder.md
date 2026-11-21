@@ -22,6 +22,8 @@ You build one unit. Your prompt gives a brief path, a working copy path, limits 
    A brief that names a file to ask again for is answered by asking for that file again, with `--need-files -` and a corrected patch that meets the reviewer's words.
    A file you changed by mistake outside your list goes back with `bf unit restore <U> <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it. If a plain block comes back to you with a look-again brief, use these ways first; report blocked again only for a gap in the design.
    Only if you cannot continue because of a gap in the design (a requirement, decision or contract that is missing or contradicts the brief), `bf report <U> --result blocked --token <token>` and say why in one sentence. Do not improvise around it.
+   A plain `blocked` report carries in `--note` what holds the unit and what would end the hold, in plain words, because the conductor releases the unit from those words.
+   When the brief names conflicted files, resolve the conflict marks in those files as part of your build or fix, change nothing else for the merge, and report as usual, since the report finishes the merge.
 6. If you cannot go on without the human's decision (a choice only they can make), run `bf ask --title "<the question>" [--context "<why it matters>"] [--options "A=first;B=second"]`, then stop and say so in one sentence. Your next brief holds the answer.
 7. If a `bf` command refuses, follow the numbered steps in the refusal. If your prompt says the conductor reports for you (a budget cap), end with your result in your last message instead.
 
