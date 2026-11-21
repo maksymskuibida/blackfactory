@@ -67,7 +67,14 @@ pub const FINDING_GATES: &[&str] = &[
     "plan",
 ];
 /// The stages a finding can ask to be redone.
-pub const FINDING_ASKS: &[&str] = &["requirements", "ui", "architecture", "legal", "plan"];
+pub const FINDING_ASKS: &[&str] = &[
+    "requirements",
+    "ui",
+    "architecture",
+    "legal",
+    "plan",
+    "security",
+];
 
 pub struct Kind {
     pub name: &'static str,
@@ -493,6 +500,15 @@ pub fn validate(kind: &Kind, rec: &Value) -> Vec<String> {
             "missing required field `unit` (a finding that names neither a `gate` nor an `amendment` belongs to a unit)"
                 .into(),
         );
+    }
+    if kind.name == "finding"
+        && !obj.contains_key("unit")
+        && obj.get("asks").and_then(|v| v.as_str()) == Some("security")
+    {
+        bad.push(crate::strings::t(
+            "cli.schema.finding.asks_security_unit",
+            &[],
+        ));
     }
     if kind.name == "plan_settings" {
         if obj.get("id").and_then(|v| v.as_str()) != Some("PL-1") {
