@@ -115,6 +115,55 @@ pub fn must(dir: &Path, args: &[&str]) -> R<String> {
     }
 }
 
+/// The local branches of a repository with their commits, and its tags with their ids, from one call.
+#[derive(Default, Clone, Debug)]
+pub struct Heads {
+    pub branches: std::collections::HashMap<String, String>,
+    pub tags: std::collections::HashMap<String, String>,
+}
+
+impl Heads {
+    /// What `branch_exists` answers.
+    pub fn has(&self, branch: &str) -> bool {
+        self.branches.contains_key(branch)
+    }
+
+    /// What `rev-parse <name>` gives for a branch: a tag of the same name is taken first.
+    pub fn tip(&self, branch: &str) -> Option<String> {
+        self.tags
+            .get(branch)
+            .or_else(|| self.branches.get(branch))
+            .cloned()
+    }
+}
+
+/// Every local branch and tag of the repository, from one git call. Empty when git cannot read it.
+pub fn heads(dir: &Path) -> Heads {
+    let mut h = Heads::default();
+    let Ok(o) = must(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads/",
+            "refs/tags/",
+        ],
+    ) else {
+        return h;
+    };
+    for l in o.lines() {
+        let Some((sha, r)) = l.split_once(' ') else {
+            continue;
+        };
+        if let Some(b) = r.strip_prefix("refs/heads/") {
+            h.branches.insert(b.to_string(), sha.to_string());
+        } else if let Some(t) = r.strip_prefix("refs/tags/") {
+            h.tags.insert(t.to_string(), sha.to_string());
+        }
+    }
+    h
+}
+
 pub fn branch_exists(dir: &Path, name: &str) -> bool {
     run(
         dir,

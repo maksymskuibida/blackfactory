@@ -358,6 +358,13 @@ pub fn judge(
         if s(c, "how") != "command" {
             continue;
         }
+        // Only a cargo test command that names a test target or a `::` filter can miss; any other
+        // check needs neither the branches' paths nor the units' files.
+        let names_a_target = read_command(&crate::evidence::command_words(c))
+            .is_some_and(|r| !r.tests.is_empty() || !r.filters.is_empty());
+        if !names_a_target {
+            continue;
+        }
         let unit = units.iter().find(|u| s(u, "id") == s(c, "unit"));
         let repo = match unit {
             Some(u) => p.repo_of_unit(u).ok(),
@@ -366,16 +373,17 @@ pub fn judge(
         };
         let Some(repo) = repo else { continue };
         // Files a unit of the plan lists will exist when its check runs; files on the run's branches do.
-        let mut paths = landed
-            .entry(repo.path.clone())
-            .or_insert_with(|| landed_paths(p, repo))
-            .clone();
-        for u in units {
-            if p.repo_of_unit(u).is_ok_and(|r| r.path == repo.path) {
-                paths.extend(crate::store::str_list(u, "files"));
+        // Gathered once for each repository.
+        let paths = landed.entry(repo.path.clone()).or_insert_with(|| {
+            let mut paths = landed_paths(p, repo);
+            for u in units {
+                if p.repo_of_unit(u).is_ok_and(|r| r.path == repo.path) {
+                    paths.extend(crate::store::str_list(u, "files"));
+                }
             }
-        }
-        for m in misses(&repo.path, c, &paths) {
+            paths
+        });
+        for m in misses(&repo.path, c, paths) {
             if strict(s(c, "id")) {
                 problems.push(m);
             } else {

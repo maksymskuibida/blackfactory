@@ -68,7 +68,8 @@ pub fn page_set(p: &Project, name: &str, url: &str) -> R<Value> {
 pub fn status(p: &Project) -> R<Value> {
     let st = events::replay(p)?;
     // The positions are worked out once (each costs git calls); the combined one is built from them.
-    let repo_positions = main_positions(p, &st)?;
+    let heads: Vec<gitx::Heads> = p.repos.iter().map(|r| gitx::heads(&r.path)).collect();
+    let repo_positions = super::checkpoint::main_positions_in(p, &st, &heads)?;
     let main = combine_positions(&repo_positions);
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
@@ -105,7 +106,7 @@ pub fn status(p: &Project) -> R<Value> {
         "checkpoint_fix": crate::ckfix::status_json(&st),
         "wave_checks": crate::wavecheck::status_json(&st),
         "plan_questions": crate::wavecheck::plan_questions(&st),
-        "checkpoint_reviews": crate::ckreview::status_json(p, &st),
+        "checkpoint_reviews": crate::ckreview::status_json(p, &st, &pl),
         "unit_counts": counts,
         "gates": st.gates.iter().map(gates::gate_json).collect::<Vec<_>>(),
         "amendments": gates::amendments_json(&st),
@@ -121,7 +122,7 @@ pub fn status(p: &Project) -> R<Value> {
             "ok": !m.moved, "tip": m.tip, "detail": m.detail, "note": m.note,
         })).collect::<Vec<_>>(),
         "workspace": p.workspace,
-        "main_ahead": main_ahead(p, &st, &pl),
+        "main_ahead": super::sync::main_ahead_in(p, &st, &pl, &heads),
         "sync_open": st.sync_open.as_ref().map(|o| json!({
             "checkpoint": o.checkpoint, "phase": o.phase, "rounds": o.rounds, "reason": o.reason,
             "files": sync_files(o),
