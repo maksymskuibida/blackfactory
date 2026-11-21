@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const K_CHECK: &str = "grep -q fixed src/a.txt";
 
@@ -61,7 +61,7 @@ fn fix_in_review(fx: &Fx) -> PathBuf {
     k
 }
 
-fn build(fx: &Fx, k: &PathBuf, text: &str) {
+fn build(fx: &Fx, k: &Path, text: &str) {
     fs::write(k.join("src/a.txt"), text).unwrap();
     git(k, &["add", "-A"]);
     git(k, &["commit", "-q", "-m", "the fix"]);
@@ -69,7 +69,7 @@ fn build(fx: &Fx, k: &PathBuf, text: &str) {
     fx.must_in(k, &["report", "K-1", "--role", "builder", "--result", "built"]);
 }
 
-fn review(fx: &Fx, k: &PathBuf, findings: Value) -> Out {
+fn review(fx: &Fx, k: &Path, findings: Value) -> Out {
     let o = fx.bf_stdin(
         k,
         &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"],
@@ -232,8 +232,7 @@ fn accept_findings_a_stop_after_the_accept_leaves_a_fix_that_goes_on_with_no_fur
         .unwrap()
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|e| e["kind"] == "human.turn")
-        .last()
+        .rfind(|e| e["kind"] == "human.turn")
         .unwrap()["seq"]
         .as_u64()
         .unwrap();

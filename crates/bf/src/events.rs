@@ -910,6 +910,9 @@ pub struct Closed {
     pub waived: BTreeMap<String, Vec<String>>,
 }
 
+/// A counted fix opening by the human's words: (checkpoint, turn, quote, the findings as (round, number)).
+pub type CkPick = (String, u64, String, Vec<(u32, u32)>);
+
 #[derive(Default)]
 pub struct State {
     pub chain_ok: bool,
@@ -974,7 +977,7 @@ pub struct State {
     /// The fix openings of review findings by the human's words that the replay counted: the seq of the
     /// opening to (checkpoint, turn, quote, the findings as (round, number)). A fix reopened after an abort
     /// for the same findings may keep these words by citing one of them (R-71).
-    pub ck_picks: HashMap<u64, (String, u64, String, Vec<(u32, u32)>)>,
+    pub ck_picks: HashMap<u64, CkPick>,
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
@@ -1129,11 +1132,7 @@ pub fn round_report_seq(st: &State, k: &str, round: u32) -> u64 {
 /// The opening by the human's words that a fix of these findings may reopen with: the latest opening of the
 /// checkpoint that the replay counted and that names any of them, when it names them all and an abort of them
 /// all came after it. One abort pays for one reopen, because a reopen is itself a counted opening.
-pub fn reusable_pick<'a>(
-    st: &'a State,
-    k: &str,
-    ids: &[(u32, u32)],
-) -> Option<(u64, &'a (String, u64, String, Vec<(u32, u32)>))> {
+pub fn reusable_pick<'a>(st: &'a State, k: &str, ids: &[(u32, u32)]) -> Option<(u64, &'a CkPick)> {
     if ids.is_empty() {
         return None;
     }
@@ -2753,7 +2752,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "unit.unblock" => {
                 // Only a `fixed` judgment moves the unit; rounds, attempts and the state it was
                 // blocked from stay, so a later loop still meets the park.
-                match st.units.get_mut(&sv("unit")).filter(|u| u.state == "blocked") {
+                match st
+                    .units
+                    .get_mut(&sv("unit"))
+                    .filter(|u| u.state == "blocked")
+                {
                     Some(u) => {
                         if sv("judgment") == "fixed" {
                             u.state = sv("to");

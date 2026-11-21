@@ -583,6 +583,7 @@ fn manifest_names_a_home_crate(manifest: &str) -> bool {
 }
 
 #[test]
+#[allow(clippy::absurd_extreme_comparisons)]
 fn no_code_but_the_resolver_reads_home() {
     let src = crate_dir().join("src");
     let found = home_reads(&src, PENDING);

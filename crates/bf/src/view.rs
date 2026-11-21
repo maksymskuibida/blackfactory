@@ -362,7 +362,10 @@ fn gate_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
                 crate::strings::t("pages.k2.settings.hint", &[]),
             )
         } else {
-            (plural(k), format!("{} in this gate", plural(k).to_lowercase()))
+            (
+                plural(k),
+                format!("{} in this gate", plural(k).to_lowercase()),
+            )
         };
         sections.push(json!({"id": *k, "title": title, "hint": hint, "open": true, "blocks": [], "rows": rows}));
     }

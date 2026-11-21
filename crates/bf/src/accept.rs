@@ -224,7 +224,10 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
         .flatten()
         .filter_map(|f| {
             let (id, level) = match f.as_str() {
-                Some(id) => (id.to_string(), ev["levels"][id].as_str().unwrap_or("").to_string()),
+                Some(id) => (
+                    id.to_string(),
+                    ev["levels"][id].as_str().unwrap_or("").to_string(),
+                ),
                 None => (
                     f["id"].as_str()?.to_string(),
                     f["severity"].as_str().unwrap_or("").to_string(),
@@ -241,7 +244,11 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
     }
     // An accept names only findings the unit's reports listed and that are still open. The log cannot
     // know a finding filed only with `bf record put finding`; it is not counted here (H-24).
-    let open = st.units.get(&unit).map(|u| u.open_findings.clone()).unwrap_or_default();
+    let open = st
+        .units
+        .get(&unit)
+        .map(|u| u.open_findings.clone())
+        .unwrap_or_default();
     if listed.iter().any(|(id, _)| !open.contains(id)) {
         return ignore(st, "events.k2.ignored.unit_accept_unknown", seq);
     }
@@ -266,7 +273,8 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
     }
     if let Some(u) = st.units.get_mut(&unit) {
         let had = !u.open_findings.is_empty();
-        u.open_findings.retain(|o| !listed.iter().any(|(id, _)| id == o));
+        u.open_findings
+            .retain(|o| !listed.iter().any(|(id, _)| id == o));
         // A parked unit whose open findings are all fixed or accepted goes on to `reviewed`.
         if had && u.open_findings.is_empty() && u.state == "parked" {
             u.state = "reviewed".into();

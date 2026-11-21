@@ -152,14 +152,6 @@ fn with_line(rec: &str, from: &str, to: &str) -> String {
 }
 
 impl Old {
-    fn state_dir(&self) -> PathBuf {
-        fs::read_dir(self.base.join("state"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-    }
     fn log(&self) -> Vec<Value> {
         fs::read_to_string(self.root.join("factory/log/events.jsonl"))
             .unwrap()

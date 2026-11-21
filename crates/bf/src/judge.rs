@@ -574,7 +574,7 @@ fn protected_hit(path: &str) -> Option<&'static str> {
 fn in_tests_folder(path: &str) -> bool {
     let n = norm(path);
     let parts: Vec<&str> = n.split('/').collect();
-    parts.len() > 1 && parts[..parts.len() - 1].iter().any(|x| *x == "tests")
+    parts.len() > 1 && parts[..parts.len() - 1].contains(&"tests")
 }
 
 /// The wave of each unit: one after the highest wave of what it depends on, as `bf plan check` counts.
