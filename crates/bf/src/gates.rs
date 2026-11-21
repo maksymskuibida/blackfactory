@@ -566,9 +566,40 @@ fn named_ever(st: &State, id: &str) -> bool {
 /// The latest approval covering this ID found no record by that ID: the amendment lets the record be
 /// put once, after the approval (`bf record put` binds the content it puts).
 pub fn approved_missing(st: &State, id: &str) -> bool {
-    // A unit that an approval removed (it was in force before) is gone for good: its ID is put again only by an amendment (R-73).
-    if st.removed_units.contains(id) {
-        return false;
+    // A unit that an approval removed (its earlier approved entry had a real hash) is gone for good,
+    // and a later approval that writes `missing` again keeps it so: only a real hash brings it back
+    // (R-73). Worked out from the approvals in log order, so replay needs no extra state.
+    if crate::schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+        let mut was = st
+            .latest_gate("plan", None)
+            .filter(|g| g.status == "approved")
+            .and_then(|g| {
+                g.snapshot
+                    .as_object()
+                    .and_then(|o| o.get(id))
+                    .map(|e| e["h"] != "missing")
+            })
+            .unwrap_or(false);
+        let mut removed = false;
+        for a in &st.amends {
+            if a.status != "approved" {
+                continue;
+            }
+            if let Some(e) = a.approved.as_ref().and_then(|m| m.get(id)) {
+                if e["h"] == "missing" {
+                    if was {
+                        removed = true;
+                    }
+                    was = false;
+                } else {
+                    removed = false;
+                    was = true;
+                }
+            }
+        }
+        if removed {
+            return false;
+        }
     }
     st.approved_content
         .get(id)

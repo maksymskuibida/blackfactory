@@ -147,6 +147,46 @@ fn record_remove_approved_takes_the_unit_out_of_the_plan_for_good() {
     assert!(!fx.root.join("factory/records/U-3.toml").exists());
 }
 
+/// A later approval that writes `missing` again for a removed unit keeps it removed: only an approval
+/// that writes a real hash brings it back.
+#[test]
+fn record_remove_a_second_approval_of_missing_keeps_the_unit_removed() {
+    let fx = project();
+    let opened = open_repair(&fx, &["U-3", "X-4", "K-1"]);
+    free_the_unit(&fx);
+    fx.must(&["record", "remove", "U-3"]);
+    narrow(&fx, &opened);
+    fx.human("Yes, approve the removal of the third unit.");
+    fx.must(&["amend", "approve", "A-1", "--quote", "approve the removal of the third unit"]);
+    let p = fx.project();
+    assert!(!bf::gates::approved_missing(&bf::events::replay(&p).unwrap(), "U-3"));
+    // A second repair is approved with content that holds the ID as `missing` again.
+    let opened2 = fx.must(&["amend", "open", "--repair", "X-4", "--json"]).json();
+    let keep: Vec<String> = opened2["impact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let f = fx.root.join("narrow2.json");
+    fs::write(&f, json!({"amend": "A-2", "keep": keep, "waive": []}).to_string()).unwrap();
+    fx.must(&["amend", "narrow", "--file", f.to_str().unwrap(), "--json"]);
+    fx.human("Yes, approve the second repair too.");
+    let turn = bf::events::replay(&p).unwrap().turns.last().unwrap().seq;
+    bf::events::append(
+        &p,
+        "amend.approve",
+        json!({"amend": "A-2", "turn": turn, "quote": "approve the second repair too",
+            "content": {"U-3": {"h": "missing"}},
+            "reopen_units": [], "reopen_checkpoints": [], "reopen_checks": [], "receipt_floor": 0}),
+    )
+    .unwrap();
+    let st = bf::events::replay(&p).unwrap();
+    let a2 = st.amends.iter().find(|a| a.id == "A-2").unwrap();
+    assert_eq!(a2.approved.as_ref().unwrap()["U-3"]["h"], "missing");
+    assert!(!bf::gates::approved_missing(&st, "U-3"));
+}
+
 /// R-43 acceptance 4: a log of an earlier engine that bound a unit after its approval replays unchanged;
 /// only a unit that was in force and removed stays out.
 #[test]
