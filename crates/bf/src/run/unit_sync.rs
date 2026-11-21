@@ -48,14 +48,14 @@ fn status(wt: &Path) -> R<String> {
 }
 
 /// What the automatic sync knows when it takes the checkpoint branch in: the commit of the builder's
-/// changes it made first (or empty) and the files the unit may write.
+/// changes it made first (or empty).
 struct Auto {
-    allowed: Vec<String>,
     wip: String,
 }
 
 /// Take the checkpoint branch in and append `unit.sync`. With `auto`, a conflict only in the unit's own
-/// files is left in the working copy with its marks, and any other conflict is aborted and recorded.
+/// files is left in the working copy with its marks, except one in a protected path, which is aborted
+/// and recorded.
 fn take_in(
     p: &Project,
     unit: &str,
@@ -79,10 +79,11 @@ fn take_in(
             gitx::must(&c.wt, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
         let files: Vec<String> = files.lines().map(String::from).collect();
         if let Some(a) = auto {
+            let protected = p.protected_paths();
             let inside = !files.is_empty()
-                && files
+                && !files
                     .iter()
-                    .all(|f| a.allowed.iter().any(|g| util::path_matches(g, f)));
+                    .any(|f| protected.iter().any(|g| util::path_matches(g, f)));
             let ev = if inside {
                 json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": new_base, "how": "merge", "commit": head, "wip_commit": a.wip, "conflicts": files})
             } else {
@@ -304,6 +305,14 @@ pub(crate) fn brief_md(p: &Project, unit: &str) -> String {
         }
         md.push('\n');
     }
+    if let Some(e) = sent_back(p, unit) {
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n{}\n\n",
+            t("land_conflict.brief.title", &[]),
+            t("land_conflict.brief.reason", &[("note", s(&e, "note"))]),
+            t("land_conflict.brief.after", &[])
+        ));
+    }
     let aborted = aborted_files(p, unit);
     if !aborted.is_empty() {
         md.push_str(&format!(
@@ -396,13 +405,25 @@ pub(crate) fn finish_merge(p: &Project, unit: &str) -> R<()> {
 
 /// At start, release and unblock, and at each new round: bring the unit's branch up to the checkpoint
 /// branch. The builder's uncommitted changes are committed first; the checkpoint branch is taken in as
-/// a fast-forward for a unit with no commits of its own and as a merge otherwise. A conflict only in the
-/// unit's own files is left in the working copy; any other is aborted. Returns how far the unit's
-/// branch is still behind the checkpoint branch.
+/// a fast-forward for a unit with no commits of its own and as a merge otherwise. A conflict is left in
+/// the working copy for the builder, except one in a protected path, which is aborted. Returns how far
+/// the unit's branch is still behind the checkpoint branch.
 pub(crate) fn auto_ff(p: &Project, st: &State, unit: &str, cause: &str) -> u64 {
-    let Some(c) = ctx(p, unit) else { return 0 };
+    auto_inner(p, st, unit, cause).0
+}
+
+/// A landing whose merge conflicts: take the checkpoint branch into the unit's working copy, which
+/// leaves the conflict there. Returns the sync event, or none when nothing was taken in.
+pub(crate) fn take_in_for_land(p: &Project, st: &State, unit: &str) -> Option<Value> {
+    auto_inner(p, st, unit, "land").1
+}
+
+fn auto_inner(p: &Project, st: &State, unit: &str, cause: &str) -> (u64, Option<Value>) {
+    let Some(c) = ctx(p, unit) else {
+        return (0, None);
+    };
     if !gitx::branch_exists(&c.repo, &c.ub) || !gitx::branch_exists(&c.repo, &c.cpb) {
-        return 0;
+        return (0, None);
     }
     let behind = |c: &Ctx| count(c, &format!("{}..{}", c.ub, c.cpb));
     let free = crate::scope::open_request(st, unit).is_none()
@@ -411,7 +432,7 @@ pub(crate) fn auto_ff(p: &Project, st: &State, unit: &str, cause: &str) -> u64 {
         && !merge_in_progress(&c.wt)
         && !gitx::is_ancestor(&c.repo, &c.cpb, &c.ub);
     if !free {
-        return behind(&c);
+        return (behind(&c), None);
     }
     let mut wip = String::new();
     if gitx::has_uncommitted(&c.wt) {
@@ -421,20 +442,71 @@ pub(crate) fn auto_ff(p: &Project, st: &State, unit: &str, cause: &str) -> u64 {
             .and_then(|_| gitx::must(&c.wt, &["rev-parse", "HEAD"]));
         match made {
             Ok(h) => wip = h,
-            Err(_) => return behind(&c),
+            Err(_) => return (behind(&c), None),
         }
     }
-    let allowed = plan::load(p)
-        .ok()
-        .and_then(|pl| pl.unit(unit).map(|u| crate::scope::unit_files(st, u)))
-        .unwrap_or_default();
     let ff = count(&c, &format!("{}..{}", c.cpb, c.ub)) == 0;
-    let auto = Auto { allowed, wip };
-    if let Ok((ev, _)) = take_in(p, unit, &c, cause, ff, Some(&auto)) {
-        if s(&ev, "how") == "aborted" || !str_list(&ev, "conflicts").is_empty() {
+    let auto = Auto { wip };
+    let mut ev = None;
+    if let Ok((e, _)) = take_in(p, unit, &c, cause, ff, Some(&auto)) {
+        if s(&e, "how") == "aborted" || !str_list(&e, "conflicts").is_empty() {
             let _ = p.write_guard();
             let _ = super::brief::write_brief(p, unit, "builder");
         }
+        ev = Some(e);
     }
-    behind(&c)
+    (behind(&c), ev)
+}
+
+/// The note of the engine's latest report that sent the unit from `reviewed` back to `fixing`, while no
+/// later report of the unit has moved it on.
+fn sent_back(p: &Project, unit: &str) -> Option<Value> {
+    let log = events::load_log(p).ok()?;
+    let last = log
+        .events
+        .iter()
+        .rev()
+        .find(|e| e["kind"] == "unit.report" && s(e, "unit") == unit)?;
+    (s(last, "role") == "engine" && s(last, "from") == "reviewed" && s(last, "to") == "fixing")
+        .then(|| last.clone())
+}
+
+/// The reviewer's view of a resolution round: the conflicted files of the landing that sent the unit
+/// back and what the builder changed while resolving them, as a diff against what git merges by itself.
+pub(crate) fn resolution_diff(p: &Project, unit: &str) -> Option<(Vec<String>, String)> {
+    let log = events::load_log(p).ok()?;
+    let mine = |e: &&Value| e["kind"] == "unit.report" && s(e, "unit") == unit;
+    let sent = log.events.iter().rposition(|e| {
+        mine(&e) && s(e, "role") == "engine" && s(e, "from") == "reviewed" && s(e, "to") == "fixing"
+    })?;
+    let found = log
+        .events
+        .iter()
+        .rposition(|e| mine(&e) && s(e, "result") == "findings");
+    if found.is_some_and(|j| j > sent) {
+        return None;
+    }
+    let files = str_list(&log.events[sent], "conflicts");
+    if files.is_empty() {
+        return None;
+    }
+    let wt = p.work_dir().join(unit);
+    let m = gitx::must(&wt, &["rev-list", "--merges", "-n1", "HEAD"]).ok()?;
+    if m.is_empty() {
+        return None;
+    }
+    let o = gitx::run(
+        &wt,
+        &["merge-tree", "--write-tree", &format!("{m}^1"), &format!("{m}^2")],
+        &[],
+    )
+    .ok()?;
+    let tree = o.stdout.lines().next()?.trim().to_string();
+    if tree.len() < 40 {
+        return None;
+    }
+    let mut args = vec!["diff", tree.as_str(), "--"];
+    args.extend(files.iter().map(|f| f.as_str()));
+    let d = gitx::must(&wt, &args).ok()?;
+    Some((files, d))
 }

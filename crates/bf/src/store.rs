@@ -1437,9 +1437,8 @@ impl Project {
 
     // ---- guard table ----
 
-    /// Rewrite `.bf/guard.json`. Called by every command that changes state.
-    pub fn write_guard(&self) -> R<()> {
-        let state = crate::events::replay(self).ok();
+    /// The paths no agent may write: the list the signed table holds and the automatic sync reads.
+    pub fn protected_paths(&self) -> Vec<String> {
         let mut protected: Vec<String> = vec![
             "factory/".into(),
             ".bf/".into(),
@@ -1450,6 +1449,13 @@ impl Project {
             ".git/config".into(),
         ];
         protected.extend(self.policy.guard.protected_extra.iter().cloned());
+        protected
+    }
+
+    /// Rewrite `.bf/guard.json`. Called by every command that changes state.
+    pub fn write_guard(&self) -> R<()> {
+        let state = crate::events::replay(self).ok();
+        let protected = self.protected_paths();
 
         let mut worktrees: Vec<Value> = Vec::new();
         let units = self

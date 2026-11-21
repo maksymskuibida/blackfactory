@@ -68,6 +68,25 @@ fn directive(fx: &Fx, unit: &str) -> Value {
         .unwrap_or_else(|| panic!("no builder directive for {unit}: {n}"))
 }
 
+/// Commit a change to `file` on the checkpoint branch, in the checkpoint's working copy.
+fn ck_commit(fx: &Fx, file: &str, text: &str) {
+    let list = git(&fx.root, &["worktree", "list", "--porcelain"]);
+    let ck = list
+        .split("\n\n")
+        .find(|b| b.contains("refs/heads/bf/K-1"))
+        .and_then(|b| b.lines().next())
+        .map(|l| PathBuf::from(l.trim_start_matches("worktree ")))
+        .expect("the checkpoint worktree");
+    if let Some(d) = ck.join(file).parent() {
+        fs::create_dir_all(d).unwrap();
+    }
+    fs::write(ck.join(file), text).unwrap();
+    git(&ck, &["add", "-A"]);
+    git(&ck, &["commit", "-q", "-m", "theirs"]);
+}
+
+const PROTECTED: &str = ".claude/settings.json";
+
 fn merging(wc: &Path) -> bool {
     let g = git(wc, &["rev-parse", "--git-path", "MERGE_HEAD"]);
     let p = PathBuf::from(&g);
@@ -177,16 +196,7 @@ fn unit_autosync_a_conflict_in_the_units_own_file_is_left_for_the_builder() {
     let wc = start(&fx, "U-2");
     write(&wc, "src/b.txt", "mine b\n");
     // Something else lands a change to the unit's own file on the checkpoint branch.
-    let list = git(&fx.root, &["worktree", "list", "--porcelain"]);
-    let ck = list
-        .split("\n\n")
-        .find(|b| b.contains("refs/heads/bf/K-1"))
-        .and_then(|b| b.lines().next())
-        .map(|l| PathBuf::from(l.trim_start_matches("worktree ")))
-        .expect("the checkpoint worktree");
-    write(&ck, "src/b.txt", "theirs\n");
-    git(&ck, &["add", "-A"]);
-    git(&ck, &["commit", "-q", "-m", "theirs"]);
+    ck_commit(&fx, "src/b.txt", "theirs\n");
     let cp = git(&fx.root, &["rev-parse", "bf/K-1"]);
     fx.must(&["unit", "start", "U-2"]);
     let ev = syncs(&fx);
@@ -220,7 +230,7 @@ fn unit_autosync_a_conflict_in_the_units_own_file_is_left_for_the_builder() {
 }
 
 #[test]
-fn unit_autosync_a_conflict_outside_the_units_files_is_aborted_and_named() {
+fn unit_autosync_a_conflict_outside_the_units_files_is_left_for_the_builder() {
     let fx = Fx::new();
     plan(&fx, false);
     let wc = start(&fx, "U-2");
@@ -229,20 +239,44 @@ fn unit_autosync_a_conflict_outside_the_units_files_is_aborted_and_named() {
     git(&wc, &["commit", "-q", "-m", "own"]);
     write(&wc, "src/b.txt", "loose\n");
     advance(&fx);
+    fx.must(&["unit", "start", "U-2"]);
+    let ev = syncs(&fx);
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!(ev[0]["how"], "merge");
+    assert_eq!(ev[0]["conflicts"], serde_json::json!(["src/a.txt"]));
+    assert!(merging(&wc));
+    assert!(fs::read_to_string(wc.join("src/a.txt")).unwrap().contains("<<<<<<<"));
+    let d = directive(&fx, "U-2");
+    assert_eq!(d["sync_conflicts"], serde_json::json!(["src/a.txt"]));
+    assert!(d.get("sync_aborted").is_none());
+    let brief = fs::read_to_string(d["brief"].as_str().unwrap()).unwrap();
+    assert!(brief.contains("src/a.txt") && brief.contains("Sync conflicts"), "{brief}");
+}
+
+#[test]
+fn unit_autosync_a_conflict_in_a_protected_path_is_aborted_and_named() {
+    let fx = Fx::new();
+    plan(&fx, false);
+    let wc = start(&fx, "U-2");
+    write(&wc, PROTECTED, "own\n");
+    git(&wc, &["add", "-A"]);
+    git(&wc, &["commit", "-q", "-m", "own"]);
+    write(&wc, "src/b.txt", "loose\n");
+    ck_commit(&fx, PROTECTED, "theirs\n");
     let base = bf::events::replay(&fx.project()).unwrap().units["U-2"].base_commit.clone();
     fx.must(&["unit", "start", "U-2"]);
     let ev = syncs(&fx);
     assert_eq!(ev.len(), 1, "{ev:?}");
     assert_eq!(ev[0]["how"], "aborted");
-    assert_eq!(ev[0]["files"], serde_json::json!(["src/a.txt"]));
+    assert_eq!(ev[0]["files"], serde_json::json!([PROTECTED]));
     assert!(!merging(&wc));
-    assert_eq!(fs::read_to_string(wc.join("src/a.txt")).unwrap(), "own\n");
+    assert_eq!(fs::read_to_string(wc.join(PROTECTED)).unwrap(), "own\n");
     assert_eq!(git(&wc, &["status", "--porcelain"]), "");
     assert_eq!(fs::read_to_string(wc.join("src/b.txt")).unwrap(), "loose\n");
     let after = bf::events::replay(&fx.project()).unwrap().units["U-2"].base_commit.clone();
     assert_eq!(after, base);
     let d = directive(&fx, "U-2");
-    assert_eq!(d["sync_aborted"], serde_json::json!(["src/a.txt"]));
+    assert_eq!(d["sync_aborted"], serde_json::json!([PROTECTED]));
     assert!(d.get("sync_conflicts").is_none());
 }
 
@@ -278,22 +312,22 @@ fn unit_autosync_an_aborted_notice_ends_when_the_merge_is_resolved_by_hand() {
     let fx = Fx::new();
     plan(&fx, false);
     let wc = start(&fx, "U-2");
-    write(&wc, "src/a.txt", "own\n");
+    write(&wc, PROTECTED, "own\n");
     git(&wc, &["add", "-A"]);
     git(&wc, &["commit", "-q", "-m", "own"]);
-    advance(&fx);
+    ck_commit(&fx, PROTECTED, "theirs\n");
     fx.must(&["unit", "start", "U-2"]);
     assert_eq!(syncs(&fx)[0]["how"], "aborted");
-    assert_eq!(directive(&fx, "U-2")["sync_aborted"], serde_json::json!(["src/a.txt"]));
+    assert_eq!(directive(&fx, "U-2")["sync_aborted"], serde_json::json!([PROTECTED]));
     let st = fx.must(&["status", "--json"]).json();
     let u2 = st["units"].as_array().unwrap().iter().find(|u| u["id"] == "U-2").unwrap().clone();
-    assert_eq!(u2["sync_aborted"], serde_json::json!(["src/a.txt"]));
+    assert_eq!(u2["sync_aborted"], serde_json::json!([PROTECTED]));
     // The human merges by hand and resolves the conflict.
     let cp = git(&fx.root, &["rev-parse", "bf/K-1"]);
     let _ = fx.bf_in(&wc, &["status"]);
     let o = std::process::Command::new("git").current_dir(&wc).args(["merge", "--no-edit", "-q", &cp]).output().unwrap();
     assert!(!o.status.success());
-    write(&wc, "src/a.txt", "resolved\n");
+    write(&wc, PROTECTED, "resolved\n");
     git(&wc, &["add", "-A"]);
     git(&wc, &["commit", "-q", "-m", "merge"]);
     fx.must(&["unit", "start", "U-2"]);

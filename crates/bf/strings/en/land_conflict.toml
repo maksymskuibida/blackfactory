@@ -1,0 +1,18 @@
+# Strings of a landing whose merge conflicts (D-115, D-116, FU-47): the unit goes back to its builder
+# with the conflict left in its working copy, and one review round judges the resolution.
+
+"land_conflict.what" = "land {unit}"
+"land_conflict.because" = "the merge into {checkpoint} conflicts in: {files}"
+"land_conflict.step.back" = "{unit} went back to its builder: the checkpoint branch is in its working copy with the conflict left there. `bf next` gives the builder's directive."
+"land_conflict.step.land" = "After the builder's report the unit gets one review round on the resolution; run `bf unit land {unit}` after a clean one."
+"land_conflict.worked" = "`bf status` shows the unit `fixing`, and landing goes on after one clean review round."
+"land_conflict.aborted.because" = "the merge into {checkpoint} conflicts in a protected path no builder may write: {files}"
+"land_conflict.aborted.step" = "The sync of {unit} was aborted and its working copy is as it was. The human resolves the conflict in those files."
+"land_conflict.note" = "landing {unit} into {checkpoint} conflicts in: {files}"
+
+"land_conflict.brief.title" = "Sent back from landing"
+"land_conflict.brief.reason" = "The unit was reviewed clean, but its landing was refused: {note}."
+"land_conflict.brief.after" = "Resolve the conflict as the sync section says, run the unit's checks again and report. The unit then gets one review round on your resolution, and lands after a clean one."
+
+"land_conflict.review.title" = "What the builder changed while resolving the landing conflict"
+"land_conflict.review.intro" = "The unit was sent back from landing because its merge conflicted in: {files}. The diff below is only what the builder changed in those files against what git merges by itself, not what the merge brought in from other units. Judge the resolution."
