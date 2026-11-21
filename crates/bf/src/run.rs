@@ -211,8 +211,12 @@ pub fn observe_holds(p: &Project) -> R<()> {
 }
 
 pub fn stuck(p: &Project, dry: bool) -> R<Value> {
+    stuck_at(p, dry, util::now_secs())
+}
+
+/// `stuck` judged at the clock `now` (seconds), so a test can move time without waiting.
+pub fn stuck_at(p: &Project, dry: bool, now: u64) -> R<Value> {
     let st = events::require_chain(p)?;
-    let now = util::now_secs();
     let limit = p.policy.limits.idle_minutes * 60;
     let mut parked = Vec::new();
     let mut listed = Vec::new();

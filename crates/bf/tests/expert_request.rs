@@ -92,9 +92,12 @@ fn an_ask_that_names_no_unit_is_refused() {
     let fx = Fx::new();
     fx.tiny();
     let f = fx.root.join("ask.toml");
-    fs::write(&f, "kind=\"finding\"\ntitle=\"t\"\ngate=\"plan\"\nasks=\"security\"\n").unwrap();
+    fs::write(&f, "kind=\"finding\"\ntitle=\"t\"\nasks=\"security\"\n").unwrap();
     let o = fx.bf(&["record", "put", "finding", "--file", f.to_str().unwrap()]);
     assert!(o.code != 0, "{}", o.all());
+    let cause = bf::strings::t("cli.schema.finding.asks_security_unit", &[]);
+    assert!(!cause.is_empty());
+    assert!(o.stderr.contains(&cause), "{}", o.all());
 }
 
 #[test]
@@ -186,12 +189,22 @@ fn a_unit_with_an_open_ask_waits_twice_the_idle_limit() {
     use bf::run::expert::park_limit;
     assert_eq!(park_limit(3600, false), 3600);
     assert_eq!(park_limit(3600, true), 7200);
-    // With a long limit neither is parked by `bf stuck` right after the ask.
     let fx = Fx::new();
     let wc = in_review(&fx);
+    let p = fx.project();
+    let limit = p.policy.limits.idle_minutes * 60;
+    let base = bf::util::now_secs();
+    let parked = |now: u64| -> bool {
+        let v = bf::run::stuck_at(&p, true, now).unwrap();
+        v["parked_now"].as_array().unwrap().iter().any(|x| x["unit"] == "U-1")
+    };
+    // Control: no ask, parked after one limit.
+    assert!(!parked(base));
+    assert!(parked(base + limit + 120), "a unit with no ask is parked after one limit");
+    // With an open ask: left alone past one limit, parked past two.
     assert_eq!(put_in(&fx, &wc, ASK, None).code, 0);
-    let v = fx.must(&["stuck", "--dry-run", "--json"]).json();
-    assert!(v["parked_now"].as_array().unwrap().is_empty(), "{v}");
+    assert!(!parked(base + limit + 120), "an open ask doubles the limit");
+    assert!(parked(base + 2 * limit + 120), "past two limits it is parked");
 }
 
 #[test]
