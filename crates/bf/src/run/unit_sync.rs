@@ -336,9 +336,13 @@ pub(crate) fn marked_files(p: &Project, unit: &str) -> Vec<String> {
             std::fs::read_to_string(wt.join(f))
                 .map(|x| {
                     x.lines().any(|l| {
-                        l.starts_with("<<<<<<<")
-                            || l.starts_with("=======")
-                            || l.starts_with(">>>>>>>")
+                        // The separator is a line of its own: a setext heading underline is longer or
+                        // carries text after the seven signs.
+                        let mark = |m: &str| {
+                            l.strip_prefix(m)
+                                .is_some_and(|r| r.is_empty() || r.starts_with(' '))
+                        };
+                        mark("<<<<<<<") || l == "=======" || mark(">>>>>>>")
                     })
                 })
                 .unwrap_or(false)

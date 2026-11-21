@@ -296,6 +296,13 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
         // A parked unit whose open findings are all fixed or accepted goes on to `reviewed`.
         if had && u.open_findings.is_empty() && u.state == "parked" {
             u.state = "reviewed".into();
+            // The accepted unit lands only on the content of the round that filed the findings, as a clean
+            // review binds it (R-95): the round is counted as judged for the landing check.
+            if let Some(mut r) = u.review_rounds.last().cloned() {
+                r["result"] = json!("built");
+                r["accepted"] = json!(true);
+                u.review_rounds.push(r);
+            }
             u.parked_reason.clear();
             u.attempts = 0;
         }

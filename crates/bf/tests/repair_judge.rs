@@ -274,6 +274,11 @@ fn unit(id: &str, cp: &str, file: &str, deps: &[&str], est: u32) -> String {
 }
 
 fn plan(fx: &Fx) {
+    plan_holding(fx, "");
+}
+
+/// The plan, with U-3 also holding `held` (a file another unit may be given by a moved entry).
+fn plan_holding(fx: &Fx, held: &str) {
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"Things exist\"\nacceptance=[\"they exist\"]\n".to_string()),
         ("component", "id=\"C-1\"\nkind=\"component\"\ntitle=\"Things\"\n".to_string()),
@@ -281,7 +286,12 @@ fn plan(fx: &Fx) {
         assert_eq!(fx.put(k, &t).code, 0);
     }
     for i in 1..=6 {
-        let t = unit(&format!("U-{i}"), "K-1", &format!("src/f{i}.txt"), &[], 5);
+        let file = if i == 3 && !held.is_empty() {
+            format!("src/f3.txt\", \"{held}")
+        } else {
+            format!("src/f{i}.txt")
+        };
+        let t = unit(&format!("U-{i}"), "K-1", &file, &[], 5);
         let o = fx.put("unit", &t);
         assert_eq!(o.code, 0, "{}", o.all());
     }
@@ -769,12 +779,50 @@ fn repair_judge_the_token_guard_roles_and_plan_code_are_protected() {
         "crates/bf/src/cli/guard.rs",
         "crates/bf/src/plan/targets.rs",
     ] {
+        // The entry is moved from U-3 to U-2, which the move rule allows; only the protected path stops it.
         let fx = Fx::new();
-        plan(&fx);
+        plan_holding(&fx, path);
         let file = format!("src/f2.txt\", \"{path}");
-        let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", &file, &[], 5))]);
-        refused_naming(&fx, &aid, "go", &[path, "U-2"]);
+        let aid = repair(
+            &fx,
+            &["U-2", "U-3"],
+            &[
+                ("unit", unit("U-2", "K-1", &file, &[], 5)),
+                ("unit", unit("U-3", "K-1", "src/f3.txt", &[], 5)),
+            ],
+        );
+        refused_naming(&fx, &aid, "go", &["overlaps the protected path", path, "U-2"]);
     }
+}
+
+#[test]
+fn repair_judge_a_glob_under_a_nested_tests_folder_is_refused() {
+    let fx = Fx::new();
+    plan(&fx);
+    let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/sub/*.rs", &[], 5))]);
+    refused_naming(&fx, &aid, "go", &["crates/bf/tests/sub/*.rs", "not a new test file"]);
+}
+
+#[test]
+fn repair_judge_a_test_file_that_exists_only_on_the_checkpoint_branch_is_refused() {
+    let fx = Fx::new();
+    plan(&fx);
+    // The checkpoint branch holds a test file that main does not.
+    fx.must(&["unit", "start", "U-1"]);
+    let list = git(&fx.root, &["worktree", "list", "--porcelain"]);
+    let ck = list
+        .split("\n\n")
+        .find(|b| b.contains("refs/heads/bf/K-1"))
+        .and_then(|b| b.lines().next())
+        .map(|l| std::path::PathBuf::from(l.trim_start_matches("worktree ")))
+        .expect("the checkpoint worktree");
+    fs::create_dir_all(ck.join("crates/bf/tests")).unwrap();
+    fs::write(ck.join("crates/bf/tests/only_on_branch.rs"), "#[test]\nfn holds() {}\n").unwrap();
+    git(&ck, &["add", "-A"]);
+    git(&ck, &["commit", "-q", "-m", "a test file on the checkpoint branch"]);
+    assert!(!fx.root.join("crates/bf/tests/only_on_branch.rs").exists());
+    let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt\", \"crates/bf/tests/only_on_branch.rs", &[], 5))]);
+    refused_naming(&fx, &aid, "go", &["crates/bf/tests/only_on_branch.rs", "U-2"]);
 }
 
 #[test]
