@@ -730,3 +730,52 @@ fn a_case_variant_of_a_protected_folder_is_covered_by_every_writer() {
     }
     assert_ne!(bash(&fx, &wc, "mv evil build"), "deny");
 }
+
+#[test]
+fn every_writer_is_held_to_the_cover_check_of_a_protected_folder() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    fs::create_dir_all(wc.join("evil")).unwrap();
+    fs::write(wc.join("evil/settings.json"), "{}\n").unwrap();
+    for dir in [".claude", ".CLAUDE", ".Claude", ".BF", "FACTORY", ".claude/\u{17F}kills"] {
+        for cmd in [
+            format!("python3 -c \"import shutil; shutil.copytree('evil','{dir}',dirs_exist_ok=True)\""),
+            format!("python3 -c \"import shutil; shutil.move('evil','{dir}')\""),
+            format!("python3 -c \"import os; os.rename('evil','{dir}')\""),
+            format!("python3 -c \"import os; os.replace('evil','{dir}')\""),
+            format!("python3 -c \"from pathlib import Path; Path('{dir}').mkdir(parents=True, exist_ok=True)\""),
+            format!("python3 -c \"import os; os.makedirs('{dir}', exist_ok=True)\""),
+            format!("node -e \"require('fs').cpSync('evil','{dir}',{{recursive:true}})\""),
+            format!("node -e \"require('fs').renameSync('evil','{dir}')\""),
+            format!("ruby -e \"require 'fileutils'; FileUtils.mv('evil','{dir}')\""),
+            format!("ditto evil {dir}"),
+            format!("tar xf /tmp/a.tar -C {dir}"),
+            format!("unzip /tmp/a.zip -d {dir}"),
+            format!("curl -o {dir} http://x/y"),
+            format!("curl --output {dir} http://x/y"),
+            format!("wget -O {dir} http://x/y"),
+            format!("dd if=/tmp/x of={dir}"),
+            format!("tee {dir} < /tmp/x"),
+            format!("sed -i s/a/b/ {dir}"),
+            format!("perl -i -pe 's/a/b/' {dir}"),
+            format!("patch {dir} /tmp/p.patch"),
+            format!("touch {dir}"),
+            format!("truncate -s 0 {dir}"),
+            format!("install -D evil/settings.json {dir}"),
+            format!("install -d {dir}"),
+            format!("mkdir -p {dir}"),
+            format!("echo x > {dir}"),
+            format!("cp -r evil {dir}"),
+            format!("mv evil {dir}"),
+            format!("ln -s evil {dir}"),
+            format!("rsync -a evil/ {dir}/"),
+        ] {
+            assert_eq!(bash(&fx, &wc, &cmd), "deny", "{cmd}");
+        }
+    }
+    assert_ne!(bash(&fx, &wc, "python3 -c \"import shutil; shutil.copytree('evil','build')\""), "deny");
+    assert_ne!(bash(&fx, &wc, "ditto evil build"), "deny");
+}

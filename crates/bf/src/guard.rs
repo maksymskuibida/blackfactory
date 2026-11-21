@@ -5544,6 +5544,26 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 Err(d) => return d,
                 Ok(found) => {
                     for (abs, pattern) in found {
+                        // Whatever the writer, a target that is a folder above a protected place (`.claude`,
+                        // `.bf`, the root) is made, replaced or filled whole: refused like a write inside it.
+                        // (Archives have their own rule, and taking permissions away gives no access.)
+                        let own_rule = [
+                            "`tar`", "`bsdtar`", "`gtar`", "`unzip`", "`chmod`", "`chown`",
+                            "`chgrp`",
+                        ]
+                        .iter()
+                        .any(|n| part.starts_with(n));
+                        if pattern.is_none()
+                            && !own_rule
+                            && matches!(
+                                reach,
+                                Reach::Write | Reach::Make | Reach::Perm | Reach::Delete
+                            )
+                        {
+                            if let Some(hit) = covers_protected(table, &abs) {
+                                return cover_denial(&abs, &hit, &part, &t);
+                            }
+                        }
                         // -- writes from a working copy stay in it
                         let inside_root =
                             under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
