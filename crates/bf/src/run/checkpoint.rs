@@ -163,10 +163,9 @@ pub fn repo_main_position_in(
         }
         return Ok(ok(""));
     }
-    let Some(tip) = heads.tip(main) else {
-        return Err(crate::refusal::err(format!(
-            "git rev-parse {main} failed: unknown revision"
-        )));
+    let tip = match heads.tip(main) {
+        Some(t) => t,
+        None => gitx::must(&repo.path, &["rev-parse", main])?,
     };
     let recorded = events::read_head(p).and_then(|h| h.commit_of(&repo.name));
     if recorded.as_deref() == Some(tip.as_str()) {
