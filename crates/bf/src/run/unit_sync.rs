@@ -245,7 +245,11 @@ fn latest_auto_in(evs: &[Value], unit: &str) -> Option<Value> {
 /// The files of the unit's latest `unit.sync` (of any cause) when it was aborted and its checkpoint
 /// commit is still not in the unit's branch, else none.
 pub(crate) fn aborted_files(p: &Project, unit: &str) -> Vec<String> {
-    aborted_in(p, &events::load_log(p).map(|l| l.events).unwrap_or_default(), unit)
+    aborted_in(
+        p,
+        &events::load_log(p).map(|l| l.events).unwrap_or_default(),
+        unit,
+    )
 }
 
 /// The same from events already loaded (`bf status` loads the log once).
@@ -290,7 +294,11 @@ pub(crate) fn brief_md(p: &Project, unit: &str) -> String {
     let mut md = String::new();
     let conflicts = unmerged(&wt);
     if !conflicts.is_empty() {
-        md.push_str(&format!("## {}\n\n{}\n\n", t("autosync.brief.conflicts.title", &[]), t("autosync.brief.conflicts.body", &[])));
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            t("autosync.brief.conflicts.title", &[]),
+            t("autosync.brief.conflicts.body", &[])
+        ));
         for f in &conflicts {
             md.push_str(&format!("{}\n", t("autosync.brief.file", &[("path", f)])));
         }
@@ -298,7 +306,11 @@ pub(crate) fn brief_md(p: &Project, unit: &str) -> String {
     }
     let aborted = aborted_files(p, unit);
     if !aborted.is_empty() {
-        md.push_str(&format!("## {}\n\n{}\n\n", t("autosync.brief.aborted.title", &[]), t("autosync.brief.aborted.body", &[])));
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            t("autosync.brief.aborted.title", &[]),
+            t("autosync.brief.aborted.body", &[])
+        ));
         for f in &aborted {
             md.push_str(&format!("{}\n", t("autosync.brief.file", &[("path", f)])));
         }
@@ -324,7 +336,9 @@ pub(crate) fn marked_files(p: &Project, unit: &str) -> Vec<String> {
             std::fs::read_to_string(wt.join(f))
                 .map(|x| {
                     x.lines().any(|l| {
-                        l.starts_with("<<<<<<<") || l.starts_with("=======") || l.starts_with(">>>>>>>")
+                        l.starts_with("<<<<<<<")
+                            || l.starts_with("=======")
+                            || l.starts_with(">>>>>>>")
                     })
                 })
                 .unwrap_or(false)
@@ -360,7 +374,10 @@ pub(crate) fn finish_merge(p: &Project, unit: &str) -> R<()> {
     for f in &files {
         gitx::must(&wt, &["add", "-A", "--", f])?;
     }
-    let msg = t("autosync.merge_commit", &[("unit", unit), ("files", &files.join(", "))]);
+    let msg = t(
+        "autosync.merge_commit",
+        &[("unit", unit), ("files", &files.join(", "))],
+    );
     gitx::must(&wt, &["commit", "-q", "-m", &msg])?;
     Ok(())
 }
