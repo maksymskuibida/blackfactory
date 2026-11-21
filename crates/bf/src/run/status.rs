@@ -102,7 +102,7 @@ pub fn status(p: &Project) -> R<Value> {
             "scope_request": crate::scope::request_json(&st, i),
             "scope_grants": crate::scope::grants_json(&st, i),
             "checkpoint_fixes": crate::ckfix::fixes_of_unit(&st, i),
-            "review_rounds": st.units.get(i).map(|u| u.review_rounds.clone()).unwrap_or_default()})).collect::<Vec<_>>(),
+            "review_rounds": st.units.get(i).map(|u| u.review_rounds.iter().filter(|r| r["accepted"] != true).cloned().collect::<Vec<_>>()).unwrap_or_default()})).collect::<Vec<_>>(),
         "checkpoint_fix": crate::ckfix::status_json(&st),
         "wave_checks": crate::wavecheck::status_json(&st),
         "plan_questions": crate::wavecheck::plan_questions(&st),

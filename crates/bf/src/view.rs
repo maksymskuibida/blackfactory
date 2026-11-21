@@ -1491,6 +1491,12 @@ fn round_lines(rounds: &[Value]) -> Vec<Value> {
         .map(|r| {
             let content = r["content"].as_str().unwrap_or("");
             let result = r["result"].as_str().unwrap_or("");
+            if r["accepted"] == true {
+                return text(&crate::strings::t(
+                    "pages.k2.round.accepted",
+                    &[("content", &content[..content.len().min(12)])],
+                ));
+            }
             text(&format!(
                 "Review round {} judged content {}; covered: {}.{}",
                 r["round"],

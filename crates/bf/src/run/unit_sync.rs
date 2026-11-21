@@ -333,16 +333,24 @@ pub(crate) fn marked_files(p: &Project, unit: &str) -> Vec<String> {
     files
         .into_iter()
         .filter(|f| {
+            // The marks are as long as the file's `conflict-marker-size` attribute (7 when unset).
+            let size = gitx::run(&wt, &["check-attr", "conflict-marker-size", "--", f], &[])
+                .ok()
+                .filter(|o| o.ok)
+                .and_then(|o| o.stdout.trim().rsplit(": ").next()?.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(7);
+            let (open, sep, close) = ("<".repeat(size), "=".repeat(size), ">".repeat(size));
             std::fs::read_to_string(wt.join(f))
                 .map(|x| {
                     x.lines().any(|l| {
                         // The separator is a line of its own: a setext heading underline is longer or
-                        // carries text after the seven signs.
+                        // carries text after the signs.
                         let mark = |m: &str| {
                             l.strip_prefix(m)
                                 .is_some_and(|r| r.is_empty() || r.starts_with(' '))
                         };
-                        mark("<<<<<<<") || l == "=======" || mark(">>>>>>>")
+                        mark(&open) || l == sep || mark(&close)
                     })
                 })
                 .unwrap_or(false)

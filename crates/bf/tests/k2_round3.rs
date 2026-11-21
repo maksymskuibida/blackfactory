@@ -62,6 +62,31 @@ fn k2_round3_an_accepted_unit_changed_after_the_review_is_sent_back_to_review_at
 }
 
 #[test]
+fn k2_round3_the_made_up_round_of_an_accept_is_not_counted_by_the_brief_the_panel_or_the_page() {
+    let fx = Fx::new();
+    let wc = parked_with_finding(&fx);
+    let words = "I accept that finding as it is";
+    fx.human(words);
+    fx.must(&["unit", "accept", "U-1", "F-1", "--quote", words]);
+    fs::write(wc.join("src/hello.txt"), "hello, changed after the review\n").unwrap();
+    fx.must_in(&wc, &["evidence", "run", "X-1", "--unit", "U-1", "--", "test", "-f", "src/hello.txt"]);
+    fx.refused(&["unit", "land", "U-1"]);
+    assert_eq!(state_of(&fx, "U-1"), "review");
+    // One real round was filed: the next is round 2.
+    let brief = fs::read_to_string(fx.project().briefs_dir().join("U-1-reviewer.md")).unwrap();
+    assert!(brief.contains("## Review round 2\n"), "{brief}");
+    // The panel's list holds the real round only.
+    let st = fx.must(&["status", "--json"]).json();
+    let u = st["units"].as_array().unwrap().iter().find(|u| u["id"] == "U-1").unwrap();
+    assert_eq!(u["review_rounds"].as_array().unwrap().len(), 1, "{u}");
+    // The page shows one review round and the human's accept, no second round "Result: built".
+    let page = fx.must(&["view", "run", "--json"]).json().to_string();
+    assert_eq!(page.matches("Review round 1 judged").count(), 1, "{page}");
+    assert!(!page.contains("Review round 2 judged"), "{page}");
+    assert!(page.contains("The human accepted the findings"), "{page}");
+}
+
+#[test]
 fn k2_round3_an_accepted_unit_with_the_reviewed_content_still_lands() {
     let fx = Fx::new();
     parked_with_finding(&fx);
@@ -161,4 +186,43 @@ fn k2_round3_a_lone_separator_line_is_still_a_conflict_mark() {
     let o = fx.bf_in(&wc, &["report", "U-2", "--result", "built"]);
     assert_ne!(o.code, 0, "{}", o.all());
     assert!(merging(&wc));
+}
+
+#[test]
+fn k2_round3_marks_as_long_as_the_files_conflict_marker_size_are_conflict_marks() {
+    let fx = Fx::new();
+    fs::write(fx.root.join(".gitattributes"), "*.md conflict-marker-size=10\n").unwrap();
+    plan(&fx);
+    let wc = PathBuf::from(
+        fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    write(&wc, "src/b.md", "mine b\n");
+    let list = git(&fx.root, &["worktree", "list", "--porcelain"]);
+    let ck = list
+        .split("\n\n")
+        .find(|b| b.contains("refs/heads/bf/K-1"))
+        .and_then(|b| b.lines().next())
+        .map(|l| PathBuf::from(l.trim_start_matches("worktree ")))
+        .expect("the checkpoint worktree");
+    write(&ck, "src/b.md", "theirs\n");
+    git(&ck, &["add", "-A"]);
+    git(&ck, &["commit", "-q", "-m", "theirs"]);
+    fx.must(&["unit", "start", "U-2"]);
+    assert!(merging(&wc));
+    let text = fs::read_to_string(wc.join("src/b.md")).unwrap();
+    assert!(text.contains("<<<<<<<<<< ") && text.contains("\n==========\n"), "{text}");
+    // Git wrote the marks at the attribute's size: the file is not resolved while they stand.
+    fx.must_in(&wc, &["evidence", "run", "X-2", "--unit", "U-2", "--", "true"]);
+    let o = fx.bf_in(&wc, &["report", "U-2", "--result", "built"]);
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(o.all().contains("src/b.md"), "{}", o.all());
+    assert!(merging(&wc));
+    // Seven signs are no mark at this size: a resolved file with such a heading finishes the merge.
+    write(&wc, "src/b.md", "Title\n=======\n\nresolved\n");
+    fx.must_in(&wc, &["evidence", "run", "X-2", "--unit", "U-2", "--", "true"]);
+    let o = fx.bf_in(&wc, &["report", "U-2", "--result", "built"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(!merging(&wc));
 }

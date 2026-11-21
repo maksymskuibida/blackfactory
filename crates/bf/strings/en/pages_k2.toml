@@ -3,6 +3,7 @@
 # the accepted findings, and the question about tests in the scope reviewer's brief (D-62, D-92). Keys are
 # quoted and flat.
 
+"pages.k2.round.accepted" = "The human accepted the findings of the review; the unit lands only on content {content}."
 "pages.k2.unit.tests" = "Runs these tests as its report: {tests}"
 "pages.k2.unit.full_suite" = "Runs the full suite as its report. Why: {why}"
 "pages.k2.unit.old_plan" = "Runs the full suite as its report: the plan was approved before units named their tests."

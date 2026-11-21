@@ -249,7 +249,14 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         let prior: Vec<Value> = st
             .units
             .get(unit)
-            .map(|x| x.review_rounds.clone())
+            .map(|x| {
+                // The round an accept adds is not a review round the reviewer filed.
+                x.review_rounds
+                    .iter()
+                    .filter(|r| r["accepted"] != true)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         md.push_str(&format!("## Review round {}\n\n", prior.len() + 1));
         match prior.last() {
