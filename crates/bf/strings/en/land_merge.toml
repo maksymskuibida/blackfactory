@@ -1,0 +1,41 @@
+# Strings of the landing turn (D-115, D-116, FU-47): one turn for each checkpoint merges the reviewed
+# units together, runs the run's checks once on the merged content and lands them in plan order.
+
+"land_merge.line.landed" = "{unit} landed on {branch}"
+"land_merge.line.same_turn" = "landed in the same turn: {units}"
+"land_merge.line.left" = "{unit} stays reviewed and waits for a later turn: {reason}"
+"land_merge.line.sent_back" = "{unit} went back to its builder: {reason}"
+
+"land_merge.waits.turn" = "{unit} waits: a landing turn of {checkpoint} is running, and the units wait behind it. `bf next` offers them again when it ends."
+"land_merge.waits.open" = "{unit} waits: {why} of {checkpoint} is open, and no landing turn opens meanwhile. `bf next` offers it again when that ends."
+"land_merge.waits.why.sync" = "a sync of the main branch"
+"land_merge.waits.why.fix" = "a fix"
+"land_merge.waits.why.review" = "a review round"
+
+"land_merge.left.paused" = "it is paused"
+"land_merge.left.merge_failed" = "git could not merge it into {checkpoint}: {why}"
+"land_merge.left.conflict_gone" = "its merge conflicted with a unit that did not land in this turn, and no longer conflicts"
+"land_merge.left.step" = "Run `bf unit land {unit}` again; the unit joins the next turn."
+"land_merge.left.worked" = "`bf status` shows the unit landed."
+
+"land_merge.turn.refused.refused" = "run `bf checkpoint {sub} {k}`"
+"land_merge.turn.refused.because" = "a landing turn of {k} is open: it holds the checkpoint's working copy and the content its suite runs on"
+"land_merge.turn.refused.do_this.1" = "Wait until the turn ends: `bf status` shows its units landed or back with their builders."
+"land_merge.turn.refused.do_this.2" = "Then run `bf checkpoint {sub} {k}` again."
+"land_merge.turn.refused.worked_when" = "The command runs once no turn of {k} is open."
+
+"land_merge.rerun.reason" = "the engine runs the check again on the same content before it blames the unit"
+"land_merge.fail.none" = "the output names no failing test"
+"land_merge.fail.note" = "landing {unit} into {checkpoint}: {check} failed twice on the merged content. Failing tests: {tests}"
+"land_merge.fail.what" = "land {unit}"
+"land_merge.fail.because" = "{check} failed twice on the content of {checkpoint} with {unit} merged. Failing tests: {tests}"
+"land_merge.fail.step" = "{unit} went back to its builder; the failing tests are named in its brief. `bf next` gives the builder's directive."
+"land_merge.fail.worked" = "`bf status` shows the unit `fixing`, and landing goes on after a clean review round."
+
+"land_merge.mark.what" = "land {unit}"
+"land_merge.mark.because" = "a landing turn of {checkpoint} was cut off, and its branch holds commits above the turn's mark that no landing of that turn made: {commits}"
+"land_merge.mark.unreadable" = "a landing turn of {checkpoint} was cut off, and its mark {mark} cannot be read"
+"land_merge.mark.step" = "The engine left the branch and the mark as they are. The human looks at the branch (`git log` in {where}) and removes {mark} when the branch is as it should be."
+"land_merge.mark.worked" = "`bf unit land` lands the unit."
+
+"land_merge.hold.line" = "the landing turn of {checkpoint} is held open"

@@ -72,10 +72,13 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
             v["withdrawn"],
             v["state"].as_str().unwrap_or("")
         ),
-        _ => format!(
-            "{unit} landed on {}",
-            v["branch"].as_str().unwrap_or("its checkpoint branch")
-        ),
+        _ => match v["line"].as_str() {
+            Some(line) => line.to_string(),
+            None => format!(
+                "{unit} landed on {}",
+                v["branch"].as_str().unwrap_or("its checkpoint branch")
+            ),
+        },
     });
     Ok(())
 }

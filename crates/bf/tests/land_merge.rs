@@ -1,0 +1,377 @@
+//! U-99 (D-115, D-116, FU-47): one landing turn for each checkpoint. The turn merges the reviewed units
+//! together, runs the run's suite once on the merged content, lands the units in plan order, and sends
+//! back only the unit whose merged content fails twice.
+
+mod common;
+use common::*;
+use serde_json::{json, Value};
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+fn files() -> [(&'static str, &'static str); 3] {
+    [("1", "a"), ("2", "b"), ("3", "c")]
+}
+
+/// Three units of K-1, each with its own file and unit check, and a run whose suite is `sh suite.sh`: the
+/// script logs where it ran, and fails in the checkpoint's copy on a file or a marker the test sets.
+fn plan(fx: &Fx) {
+    let mut recs = vec![(
+        "requirement",
+        "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n".to_string(),
+    )];
+    for (n, f) in files() {
+        recs.push(("unit", format!("id=\"U-{n}\"\nkind=\"unit\"\ntitle=\"u{n}\"\ndelivers=[\"R-1\"]\nfiles=[\"src/{f}.txt\"]\ncheckpoint=\"K-1\"\n")));
+        recs.push(("check", format!("id=\"X-{n}\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-{n}\"\n")));
+    }
+    recs.push(("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"k\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".into()));
+    recs.push(("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\",\"U-3\"]\nproves=[\"R-1\"]\nchecks=[\"X-9\"]\n".into()));
+    for (k, t) in recs {
+        let o = fx.put(k, &t);
+        assert_eq!(o.code, 0, "{k}: {}", o.all());
+    }
+    let out = out_dir(fx);
+    fs::create_dir_all(&out).unwrap();
+    let script = format!(
+        "echo \"$PWD\" >> {out}/suite.log\ncase \"$PWD\" in */K-1) ;; *) exit 0 ;; esac\nif [ -f src/bad.txt ]; then echo \"test land_merge::bad ... FAILED\"; exit 1; fi\nif [ -f {out}/flaky ] && [ ! -f {out}/flaky.done ]; then touch {out}/flaky.done; echo \"test land_merge::flaky ... FAILED\"; exit 1; fi\nexit 0\n",
+        out = out.display()
+    );
+    fs::write(fx.root.join("suite.sh"), script).unwrap();
+    fx.commit_all("records");
+    fx.human("yes, make this a test run with simulated approvals");
+    fx.must(&["test-mode", "grant", "--quote", "yes, make this a test run with simulated approvals"]);
+    fx.must(&["run", "start"]);
+    fx.must(&["checks", "wave", "propose", "none"]);
+    fx.human("No wave checks for this run.");
+    fx.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
+    fx.must(&["checks", "unit", "propose", "override", "suite=sh suite.sh"]);
+    fx.human("Use the suite for every unit.");
+    fx.must(&["checks", "unit", "set", "--quote", "Use the suite for every unit"]);
+    fx.must(&["gate", "open", "plan"]);
+    fx.must(&["gate", "approve", "plan", "--simulated"]);
+}
+
+fn out_dir(fx: &Fx) -> PathBuf {
+    fx.root.parent().unwrap().join("out")
+}
+
+/// How many times the suite ran in the checkpoint's own working copy.
+fn k_runs(fx: &Fx) -> usize {
+    fs::read_to_string(out_dir(fx).join("suite.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.ends_with("/K-1"))
+        .count()
+}
+
+/// The receipts of runs in the checkpoint's copy, each a command that ran or counted.
+fn k_receipts(fx: &Fx) -> Vec<bf::evidence::Receipt> {
+    bf::evidence::load_receipts(&fx.project())
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.v["folder"].as_str() == Some(".bf/work/K-1"))
+        .collect()
+}
+
+fn built(fx: &Fx, n: &str, file: &str, text: &str) -> PathBuf {
+    let u = format!("U-{n}");
+    let wc = PathBuf::from(fx.must(&["unit", "start", &u, "--json"]).json()["working_copy"].as_str().unwrap());
+    finish(fx, n, &wc, file, text);
+    wc
+}
+
+fn finish(fx: &Fx, n: &str, wc: &Path, file: &str, text: &str) {
+    let u = format!("U-{n}");
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join(file), text).unwrap();
+    fx.must_in(wc, &["evidence", "run", &format!("X-{n}"), "--unit", &u, "--", "true"]);
+    fx.must_in(wc, &["evidence", "run", "attached:suite", "--unit", &u, "--", "sh", "suite.sh"]);
+    fx.must(&["report", &u, "--result", "built"]);
+    fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
+}
+
+fn all_built(fx: &Fx) -> Vec<PathBuf> {
+    files()
+        .iter()
+        .map(|(n, f)| built(fx, n, &format!("src/{f}.txt"), &format!("unit {n}\n")))
+        .collect()
+}
+
+fn state(fx: &Fx, u: &str) -> bf::events::UnitSt {
+    bf::events::replay(&fx.project()).unwrap().units[u].clone()
+}
+
+fn log(fx: &Fx) -> Vec<Value> {
+    fs::read_to_string(fx.project().log_path())
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect()
+}
+
+fn lands(fx: &Fx) -> Vec<Value> {
+    log(fx).into_iter().filter(|e| e["kind"] == "unit.land").collect()
+}
+
+fn mark(fx: &Fx) -> PathBuf {
+    fx.root.join(".bf/land-K-1.mark")
+}
+
+#[test]
+fn land_merge_three_clean_units_land_in_one_turn_with_one_run() {
+    let fx = Fx::new();
+    plan(&fx);
+    let wcs = all_built(&fx);
+    let o = fx.must(&["unit", "land", "U-2", "--json"]).json();
+    assert_eq!(o["landed"], true, "{o}");
+    assert!(o["line"].as_str().unwrap().contains("landed in the same turn: U-1, U-3"), "{o}");
+    for n in ["1", "2", "3"] {
+        assert_eq!(state(&fx, &format!("U-{n}")).state, "landed");
+    }
+    assert_eq!(k_runs(&fx), 1);
+    let ks: Vec<_> = k_receipts(&fx).into_iter().filter(|r| r.check() == "attached:suite").collect();
+    assert_eq!(ks.len(), 1, "one receipt of the suite on the merged content");
+    assert!(ks.iter().all(|r| !r.v["command"].as_str().unwrap().contains("extended")));
+    let ls = lands(&fx);
+    let units: Vec<&str> = ls.iter().map(|e| e["unit"].as_str().unwrap()).collect();
+    assert_eq!(units, ["U-1", "U-2", "U-3"]);
+    let p = fx.project();
+    let receipts = bf::evidence::load_receipts(&p).unwrap();
+    for (e, wc) in ls.iter().zip(&wcs) {
+        assert_eq!(e["hash"].as_str().unwrap(), p.content_hash(wc).unwrap());
+        assert_eq!(e["merged_hash"], ls[0]["merged_hash"]);
+        assert_ne!(e["merged_hash"], e["hash"]);
+        // The ledger finds the unit's receipts by the unit's own content.
+        let u = e["unit"].as_str().unwrap();
+        let n = &u[2..];
+        for c in [format!("X-{n}"), "attached:suite".to_string()] {
+            assert!(bf::evidence::satisfied_unit_at(&receipts, &c, e["hash"].as_str().unwrap()).is_some(), "{u} {c}");
+        }
+    }
+    assert!(!mark(&fx).exists());
+}
+
+#[test]
+fn land_merge_one_unit_not_behind_lands_on_its_own_receipt_with_no_new_run() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(k_runs(&fx), 0);
+    assert!(k_receipts(&fx).is_empty());
+}
+
+#[test]
+fn land_merge_a_receipt_that_names_the_compile_cache_is_not_used() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    let p = fx.project();
+    let key = bf::evidence::read_key(&p).unwrap();
+    for r in bf::evidence::load_receipts(&p).unwrap().into_iter().filter(|r| r.check() == "attached:suite") {
+        let path = p.receipts_dir().join(format!("{}.toml", r.id()));
+        let mut v: Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        v["sandbox"] = json!("sandbox-exec+compile-cache");
+        v.as_object_mut().unwrap().remove("seal");
+        v["seal"] = json!(bf::evidence::seal(&key, &v));
+        fs::write(&path, toml::to_string_pretty(&v).unwrap()).unwrap();
+    }
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(k_runs(&fx), 1, "the suite ran in the checkpoint's copy");
+}
+
+#[test]
+fn land_merge_a_land_during_a_turn_waits_and_the_turn_keeps_sync_and_fix_out() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    built(&fx, "2", "src/b.txt", "two\n");
+    let mut child = Command::new(bin())
+        .args(["unit", "land", "U-1"])
+        .current_dir(&fx.root)
+        .env("BF_STATE_HOME", &fx.state_base)
+        .env("BF_HOLD_AT", "land-turn")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut held = String::new();
+    BufReader::new(child.stderr.as_mut().unwrap()).read_line(&mut held).unwrap();
+    assert!(held.contains("K-1"), "{held}");
+    // A second land of the checkpoint waits and counts as no attempt.
+    let o = fx.must(&["unit", "land", "U-2", "--json"]).json();
+    assert_eq!(o["waiting"], true, "{o}");
+    assert!(o["line"].as_str().unwrap().contains("waits"), "{o}");
+    let u2 = state(&fx, "U-2");
+    assert_eq!((u2.state.as_str(), u2.attempts), ("reviewed", 0));
+    // The turn keeps a sync, a fix and a close out, with the key's text naming it.
+    for args in [
+        vec!["checkpoint", "sync", "K-1", "--local", "--quote", "x"],
+        vec!["checkpoint", "fix", "K-1", "--abort"],
+        vec!["checkpoint", "close", "K-1"],
+    ] {
+        let o = fx.bf(&args);
+        assert_eq!(o.code, 2, "{}", o.all());
+        assert!(o.stderr.contains("landing turn of K-1 is open"), "{}", o.stderr);
+    }
+    // A third unit reviewed meanwhile lands afterwards.
+    built(&fx, "3", "src/c.txt", "three\n");
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(state(&fx, "U-2").state, "landed");
+    assert_eq!(state(&fx, "U-3").state, "reviewed");
+    fx.must(&["unit", "land", "U-3"]);
+    assert_eq!(state(&fx, "U-3").state, "landed");
+    // No turn is open now.
+    assert!(!fx.bf(&["checkpoint", "fix", "K-1", "--abort"]).all().contains("landing turn"));
+}
+
+#[test]
+fn land_merge_a_unit_with_an_open_finding_is_left_out() {
+    let fx = Fx::new();
+    plan(&fx);
+    all_built(&fx);
+    let o = fx.put("finding", "id=\"F-1\"\nkind=\"finding\"\ntitle=\"t\"\nunit=\"U-2\"\nseverity=\"high\"\naction=\"Change it\"\n");
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
+    assert!(o["line"].as_str().unwrap().contains("U-2 stays reviewed"), "{o}");
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(state(&fx, "U-3").state, "landed");
+    assert_eq!(state(&fx, "U-2").state, "reviewed");
+}
+
+#[test]
+fn land_merge_the_unit_whose_merged_content_fails_twice_goes_to_its_builder() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    built(&fx, "2", "src/bad.txt", "bad\n");
+    built(&fx, "3", "src/c.txt", "three\n");
+    let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
+    assert_eq!(o["landed"], true, "{o}");
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(state(&fx, "U-3").state, "landed");
+    let u2 = state(&fx, "U-2");
+    assert_eq!((u2.state.as_str(), u2.attempts), ("fixing", 0));
+    // The combined run, none for U-1 (its own receipt is on the same content), two for U-2 and one for U-3.
+    assert_eq!(k_runs(&fx), 4);
+    let sent = log(&fx).into_iter().rev().find(|e| e["kind"] == "unit.report" && e["unit"] == "U-2").unwrap();
+    assert_eq!((sent["role"].as_str(), sent["from"].as_str(), sent["to"].as_str()), (Some("engine"), Some("reviewed"), Some("fixing")));
+    assert!(sent["note"].as_str().unwrap().contains("land_merge::bad"), "{sent}");
+    let brief = fs::read_to_string(fx.project().briefs_dir().join("U-2-builder.md")).unwrap();
+    assert!(brief.contains("land_merge::bad"), "{brief}");
+    // U-2's merge is out of the branch.
+    assert!(!fx.work("K-1").join("src/bad.txt").exists());
+    assert!(fx.work("K-1").join("src/c.txt").exists());
+    assert!(!mark(&fx).exists());
+}
+
+#[test]
+fn land_merge_a_suite_that_fails_once_lands_the_unit_with_both_receipts_kept() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    built(&fx, "2", "src/b.txt", "two\n");
+    fs::write(out_dir(&fx).join("flaky"), "").unwrap();
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(state(&fx, "U-1").state, "landed");
+    assert_eq!(state(&fx, "U-2").state, "landed");
+    // The combined run failed once; the units were then landed one at a time.
+    let exits: Vec<i64> = k_receipts(&fx).iter().map(|r| r.v["exit"].as_i64().unwrap()).collect();
+    assert!(exits.contains(&0) && exits.iter().any(|e| *e != 0), "{exits:?}");
+}
+
+#[test]
+fn land_merge_one_unit_that_fails_once_is_run_again_before_it_is_blamed() {
+    let fx = Fx::new();
+    plan(&fx);
+    // U-2 is cut before U-1 lands, so it is behind and its merged content is new.
+    let w2 = PathBuf::from(fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"].as_str().unwrap());
+    built(&fx, "1", "src/a.txt", "one\n");
+    fx.must(&["unit", "land", "U-1"]);
+    finish(&fx, "2", &w2, "src/b.txt", "two\n");
+    fs::write(out_dir(&fx).join("flaky"), "").unwrap();
+    fx.must(&["unit", "land", "U-2"]);
+    assert_eq!(state(&fx, "U-2").state, "landed");
+    assert_eq!(k_runs(&fx), 2);
+    let ks = k_receipts(&fx);
+    assert_eq!(ks.len(), 2);
+    assert_eq!(ks[0].v["exit"].as_i64(), Some(1));
+    assert_eq!(ks[1].v["exit"].as_i64(), Some(0));
+}
+
+fn commit_in(wt: &Path, file: &str) {
+    fs::write(wt.join(file), "by hand\n").unwrap();
+    git(wt, &["add", "-A"]);
+    git(wt, &["commit", "-q", "-m", "by hand"]);
+}
+
+fn crashed_turn(fx: &Fx) {
+    let o = fx.bf_env(&fx.root, &["unit", "land", "U-1"], "", &[("BF_CRASH_AT", "land-after-merge")]);
+    assert_eq!(o.code, 137, "{}", o.all());
+    assert!(mark(fx).exists());
+    assert!(lands(fx).len() <= 1);
+}
+
+#[test]
+fn land_merge_after_a_crash_the_next_landing_puts_back_only_the_turns_own_merges() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    fx.must(&["unit", "land", "U-1"]);
+    // A commit on the checkpoint branch with no mark is the human's.
+    commit_in(&fx.work("K-1"), "by_hand.txt");
+    built(&fx, "2", "src/b.txt", "two\n");
+    built(&fx, "3", "src/c.txt", "three\n");
+    let o = fx.bf_env(&fx.root, &["unit", "land", "U-2"], "", &[("BF_CRASH_AT", "land-after-merge")]);
+    assert_eq!(o.code, 137, "{}", o.all());
+    assert!(mark(&fx).exists());
+    let k = fx.work("K-1");
+    assert!(k.join("src/b.txt").exists() && k.join("src/c.txt").exists());
+    fx.must(&["unit", "land", "U-2"]);
+    assert!(!mark(&fx).exists());
+    assert_eq!(state(&fx, "U-2").state, "landed");
+    assert_eq!(state(&fx, "U-3").state, "landed");
+    let subjects = git(&k, &["log", "--first-parent", "--format=%s"]);
+    assert_eq!(subjects.matches("Land U-2").count(), 1, "{subjects}");
+    assert_eq!(subjects.matches("Land U-3").count(), 1, "{subjects}");
+    assert!(subjects.contains("by hand"), "{subjects}");
+}
+
+#[test]
+fn land_merge_a_commit_after_a_fix_with_no_mark_is_kept() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    fx.must(&["unit", "land", "U-1"]);
+    commit_in(&fx.work("K-1"), "by_hand.txt");
+    built(&fx, "2", "src/b.txt", "two\n");
+    fx.must(&["unit", "land", "U-2"]);
+    let k = fx.work("K-1");
+    assert!(k.join("by_hand.txt").exists());
+    assert!(git(&k, &["log", "--first-parent", "--format=%s"]).contains("by hand"));
+}
+
+#[test]
+fn land_merge_a_mark_with_a_foreign_commit_above_it_refuses_the_landing() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    built(&fx, "2", "src/b.txt", "two\n");
+    crashed_turn(&fx);
+    let k = fx.work("K-1");
+    commit_in(&k, "by_hand.txt");
+    let head = git(&k, &["rev-parse", "HEAD"]);
+    let o = fx.bf(&["unit", "land", "U-1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("by hand"), "{}", o.stderr);
+    assert_eq!(git(&k, &["rev-parse", "HEAD"]), head);
+    assert!(mark(&fx).exists());
+    assert_eq!(state(&fx, "U-1").state, "reviewed");
+}
