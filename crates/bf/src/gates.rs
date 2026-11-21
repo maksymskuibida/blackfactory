@@ -566,8 +566,8 @@ fn named_ever(st: &State, id: &str) -> bool {
 /// The latest approval covering this ID found no record by that ID: the amendment lets the record be
 /// put once, after the approval (`bf record put` binds the content it puts).
 pub fn approved_missing(st: &State, id: &str) -> bool {
-    // A unit that an approval removed is gone for good: its ID is put again only by an amendment (R-73).
-    if schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+    // A unit that an approval removed (it was in force before) is gone for good: its ID is put again only by an amendment (R-73).
+    if st.removed_units.contains(id) {
         return false;
     }
     st.approved_content

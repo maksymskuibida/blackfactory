@@ -545,3 +545,14 @@ fn judge_free_the_pair_the_plan_in_force_already_had_is_not_refused() {
     });
     passes(&out);
 }
+
+#[test]
+fn judge_free_the_test_name_rule_is_the_one_load_reads() {
+    use bf::plan::targets::test_name_of_path as name;
+    assert_eq!(name("crates/bf/tests/foo.rs").as_deref(), Some("foo"));
+    assert_eq!(name("crates/bf/tests/dir/mod.rs").as_deref(), Some("dir"));
+    assert_eq!(name("crates/bf/tests/data.txt").as_deref(), Some("data.txt"));
+    // A module folder named `tests` under `src/` is no test file.
+    assert_eq!(name("crates/bf/src/tests/foo.rs"), None);
+    assert_eq!(name("crates/bf/src/foo.rs"), None);
+}

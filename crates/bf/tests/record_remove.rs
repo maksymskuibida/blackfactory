@@ -146,3 +146,30 @@ fn record_remove_approved_takes_the_unit_out_of_the_plan_for_good() {
     assert!(o.stderr.contains("U-3"), "{}", o.stderr);
     assert!(!fx.root.join("factory/records/U-3.toml").exists());
 }
+
+/// R-43 acceptance 4: a log of an earlier engine that bound a unit after its approval replays unchanged;
+/// only a unit that was in force and removed stays out.
+#[test]
+fn record_remove_a_legacy_unit_bind_after_approval_replays_unchanged() {
+    let fx = project();
+    let opened = open_repair(&fx, &["U-3"]);
+    narrow(&fx, &opened);
+    fx.human("Yes, approve the repair.");
+    let p = fx.project();
+    let st = bf::events::replay(&p).unwrap();
+    let turn = st.turns.last().unwrap().seq;
+    bf::events::append(
+        &p,
+        "amend.approve",
+        json!({"amend": "A-1", "turn": turn, "quote": "approve the repair",
+            "content": {"U-7": {"h": "missing"}},
+            "reopen_units": [], "reopen_checkpoints": [], "reopen_checks": [], "receipt_floor": 0}),
+    )
+    .unwrap();
+    let before = bf::events::replay(&p).unwrap();
+    assert!(bf::gates::approved_missing(&before, "U-7"));
+    bf::events::append(&p, "amend.bind", json!({"id": "U-7", "content_h": "abc"})).unwrap();
+    let after = bf::events::replay(&p).unwrap();
+    assert!(!bf::gates::approved_missing(&after, "U-7"));
+    assert_eq!(after.approved_content["U-7"].1["h"], "abc");
+}

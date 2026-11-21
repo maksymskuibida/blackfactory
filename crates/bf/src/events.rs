@@ -935,6 +935,9 @@ pub struct State {
     /// ID -> (log position of the approval, {h, unit}): the content the latest approved amendment
     /// covering the ID approved.
     pub approved_content: BTreeMap<String, (u64, Value)>,
+    /// Units that an approval took out of the plan after they were in force: the ID is put again only
+    /// by an amendment (R-73).
+    pub removed_units: std::collections::BTreeSet<String>,
     /// Log positions of the `designer.lift`, `review.finding.accept` and `design-review.release`
     /// events that count: each cites a valid, unused message of the human with the quote, written after
     /// the work it answers (the amendment's opening or the stage's gate before, the park). The readers
@@ -3042,6 +3045,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ));
                     continue;
                 }
+                let mut gone: Vec<(String, bool)> = vec![];
+                if let Some(c) = ev.get("content").and_then(|c| c.as_object()) {
+                    for (k, v) in c {
+                        if crate::schema::kind_of_id(k).is_some_and(|x| x.name == "unit") {
+                            let was = crate::gates::approved_entry(&st, "plan", k)
+                                .is_some_and(|(h, _)| h != "missing");
+                            gone.push((k.clone(), v["h"] == "missing" && was));
+                        }
+                    }
+                }
                 if let Some(a) = st
                     .amends
                     .iter_mut()
@@ -3060,6 +3073,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             st.approved_content.insert(k.clone(), (seq, v.clone()));
                         }
                         a.approved = Some(m);
+                        for (k, removed) in gone {
+                            if removed {
+                                st.removed_units.insert(k);
+                            } else {
+                                st.removed_units.remove(&k);
+                            }
+                        }
                     }
                     if !by_judge {
                         st.turns[turn_ix[&tseq]].used = true;

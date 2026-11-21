@@ -116,14 +116,30 @@ pub fn read_command(words: &[String]) -> Option<Read> {
 /// The test name that a path of a unit's `files` stands for, by the same rule `load` reads paths with: a
 /// file of a `tests/` folder is its stem, a folder of `tests/` its own name. None for any other path.
 pub fn test_name_of_path(path: &str) -> Option<String> {
-    let parts: Vec<&str> = path.trim().split('/').filter(|x| !x.is_empty()).collect();
-    let at = parts.iter().rposition(|x| *x == "tests")?;
-    let first = parts.get(at + 1)?;
-    let last = at + 2 == parts.len();
-    if last {
-        first.strip_suffix(".rs").map(|x| x.to_string())
-    } else {
-        Some(first.to_string())
+    let parts: Vec<String> = path
+        .trim()
+        .split('/')
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect();
+    // The package folder is not known here: the `tests` folder is the first one with no `src` folder
+    // before it, so a module `src/tests/` is not a test file.
+    let at = parts.iter().position(|x| x == "tests")?;
+    if parts[..at].iter().any(|x| x == "src") {
+        return None;
+    }
+    test_name_below(&parts[at..])
+}
+
+/// The one rule of a test file's name, by the path below the package folder (starting at `tests`): a
+/// file of `tests/` is its stem (a name that does not end in `.rs` is kept as it is), a folder of
+/// `tests/` its own name. None for any other path.
+fn test_name_below<S: AsRef<str>>(parts: &[S]) -> Option<String> {
+    let stem = |x: &str| x.strip_suffix(".rs").unwrap_or(x).to_string();
+    match parts {
+        [d, f] if d.as_ref() == "tests" => Some(stem(f.as_ref())),
+        [d, f, ..] if d.as_ref() == "tests" => Some(f.as_ref().to_string()),
+        _ => None,
     }
 }
 
@@ -208,15 +224,12 @@ fn load(repo: &Path, package: Option<&str>, extra_paths: &[String]) -> Option<Ta
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         let stem = |x: &str| x.strip_suffix(".rs").unwrap_or(x).to_string();
+        if let Some(name) = test_name_below(&parts) {
+            extra_tests.insert(name.clone());
+            extra.insert(name);
+            continue;
+        }
         match parts.as_slice() {
-            [d, f] if d == "tests" => {
-                extra_tests.insert(stem(f));
-                extra.insert(stem(f));
-            }
-            [d, f, ..] if d == "tests" => {
-                extra_tests.insert(f.clone());
-                extra.insert(f.clone());
-            }
             [d, .., f] if d == "src" => {
                 extra.insert(stem(f));
             }
