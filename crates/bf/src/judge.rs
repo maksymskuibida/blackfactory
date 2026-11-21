@@ -15,6 +15,8 @@ use crate::util;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
+pub mod free;
+
 /// The role of the judge's token, `<A-n>:judge`.
 pub const ROLE: &str = "judge";
 
@@ -51,6 +53,17 @@ pub const PROTECTED: &[&str] = &[
     "harness/claude/skills",
     "harness/claude/settings.fragment.json",
     "harness/claude/install.sh",
+    // The paths of the free reshuffle's own feature (R-73).
+    "crates/bf/src/judge",
+    "crates/bf/src/absent.rs",
+    "crates/bf/src/hooks.rs",
+    "crates/bf/src/guard",
+    "crates/bf/src/plan/targets.rs",
+    "crates/bf/src/cli/human_turn.rs",
+    "crates/bf/src/cli/hook.rs",
+    "crates/bf/src/cli/record.rs",
+    "harness/claude/commands",
+    "harness/claude/adapter.toml",
 ];
 
 /// The mode of the judging. Only the one with the human present is here; the free rules of the

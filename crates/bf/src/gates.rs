@@ -548,6 +548,12 @@ fn named_by_waiting<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
     })
 }
 
+/// The open plan repair that waits for the human and names this ID, by the rule that lets a put change a
+/// named record (`bf record remove` of a unit needs one, R-73).
+pub fn waiting_repair_naming<'a>(st: &'a State, id: &str) -> Option<&'a events::Amend> {
+    named_by_waiting(st, id).filter(|a| crate::amend::is_repair(a))
+}
+
 /// An amendment of any state names this ID.
 fn named_ever(st: &State, id: &str) -> bool {
     st.amends.iter().any(|a| {
@@ -560,6 +566,10 @@ fn named_ever(st: &State, id: &str) -> bool {
 /// The latest approval covering this ID found no record by that ID: the amendment lets the record be
 /// put once, after the approval (`bf record put` binds the content it puts).
 pub fn approved_missing(st: &State, id: &str) -> bool {
+    // A unit that an approval removed is gone for good: its ID is put again only by an amendment (R-73).
+    if schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+        return false;
+    }
     st.approved_content
         .get(id)
         .map(|(_, e)| e["h"] == "missing")
