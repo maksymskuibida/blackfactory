@@ -113,7 +113,7 @@ pub fn replay(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, seq: u64, at
                     .is_some();
             if !ok {
                 st.ignored
-                    .push(format!("event {seq}: the set of the human-absent flag cites no valid human turn"));
+                    .push(t("absent.ignored.set", &[("seq", &seq.to_string())]));
                 return;
             }
             st.turns[ix[&tseq]].used = true;
@@ -138,7 +138,7 @@ pub fn replay(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, seq: u64, at
                 };
             if !ok {
                 st.ignored
-                    .push(format!("event {seq}: the stay of the human-absent flag is not valid"));
+                    .push(t("absent.ignored.stay", &[("seq", &seq.to_string())]));
                 return;
             }
             if by == "message" {
@@ -167,7 +167,7 @@ pub fn replay(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, seq: u64, at
                 };
             if !ok {
                 st.ignored
-                    .push(format!("event {seq}: the release of the human-absent flag is not valid"));
+                    .push(t("absent.ignored.release", &[("seq", &seq.to_string())]));
                 return;
             }
             if by == "message" {
@@ -306,13 +306,14 @@ pub fn on_turn(p: &Project, payload: &Value, recorded: bool, turn_ev: &Value) ->
     let tseq = turn_ev["seq"].as_u64().unwrap_or(0);
     if !recorded || is_subagent(payload) {
         if holds_command(prompt) {
-            let why = turn_ev["reason"].as_str().unwrap_or("not recorded");
+            let fallback = t("absent.reason.not_recorded", &[]);
+            let why = turn_ev["reason"].as_str().unwrap_or(&fallback);
             refuse_set(p, &session, why)?;
             wrote = true;
         }
     } else if nested {
         if holds_command(prompt) {
-            refuse_set(p, &session, "the session was started by another session")?;
+            refuse_set(p, &session, &t("absent.reason.nested", &[]))?;
             wrote = true;
         }
         if cmd {
@@ -322,7 +323,7 @@ pub fn on_turn(p: &Project, payload: &Value, recorded: bool, turn_ev: &Value) ->
         }
     } else if cmd {
         if !enabled {
-            refuse_set(p, &session, "the policy has enabled = false")?;
+            refuse_set(p, &session, &t("absent.reason.disabled", &[]))?;
             wrote = true;
             say.human.push(t("absent.refused.disabled", &[]));
         } else if !is_on(&st) {
@@ -343,7 +344,7 @@ pub fn on_turn(p: &Project, payload: &Value, recorded: bool, turn_ev: &Value) ->
             say.conductor.push(t("absent.stay.conductor", &[]));
         }
     } else if holds_command(prompt) {
-        refuse_set(p, &session, "the command is inside a longer message")?;
+        refuse_set(p, &session, &t("absent.reason.longer", &[]))?;
         wrote = true;
     }
     if recorded && !nested && !cmd && is_on(&st) && !session.is_empty() {
