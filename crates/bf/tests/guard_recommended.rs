@@ -418,3 +418,217 @@ fn a_protected_path_is_refused_in_any_case_even_below_a_folder_that_does_not_exi
         assert_eq!(write_tool(&fx, &fx.root, &fx.root.join(rel)), "deny", "root {rel}");
     }
 }
+
+// ---- round 3: an allow-list for git, folded names, links before `..`, covers, roles, the outside
+
+fn says_as(fx: &Fx, cwd: &Path, agent: &str, tool: &str, input: Value) -> String {
+    let payload = json!({"tool_name": tool, "tool_input": input, "cwd": cwd.to_string_lossy(), "agent_type": agent});
+    let o = fx.bf_stdin(cwd, &["guard"], &payload.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
+    match o.stdout.trim() {
+        "" | "{}" => "abstain".into(),
+        t => serde_json::from_str::<Value>(t).unwrap()["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    }
+}
+
+#[test]
+fn git_from_a_working_copy_runs_only_the_allowed_forms() {
+    let (fx, wc) = unit_place();
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
+    let root = fx.root.display().to_string();
+    for cmd in [
+        "git reset v1.0",
+        "git reset abc1234",
+        "git reset --soft abc1234",
+        "git reset -q 0123456789abcdef0123456789abcdef01234567",
+        "git reset --hard v1.0",
+        "git stash pop",
+        "git stash apply",
+        "git stash store abc",
+        "git restore --source=v1.0 -- ':(icase)FACTORY'",
+        "git restore --source=v1.0 -- ':(exclude)z'",
+        "git restore --source=v1.0 -- src/hello.txt",
+        "git restore -s v1.0 src/hello.txt",
+        "git restore -- .",
+        "git restore --pathspec-from-file=list",
+        "git checkout -- ':(icase)FACTORY'",
+        "git checkout -- ':!x'",
+        "git checkout -- ':/'",
+        "git checkout -- .",
+        "git checkout -- 'src/*'",
+        "git checkout -- src",
+        "git checkout HEAD -- .",
+        "git -c ALIAS.yy='!echo x' yy",
+        "git -c include.path=/tmp/c qq",
+        "git -c includeIf.gitdir:/.path=/tmp/c qq",
+        "git -c core.hooksPath=/tmp status",
+        "git --config-env=alias.zz=V zz",
+        "git --config-env alias.zz=V zz",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz GIT_CONFIG_VALUE_0='!echo x' git zz",
+        "GIT_CONFIG_PARAMETERS=\"'alias.zz=!echo x'\" git zz",
+        "GIT_CONFIG_GLOBAL=/tmp/c git status",
+        "GIT_AUTHOR_NAME=x git commit -m x",
+        "export GIT_EXEC_PATH=/tmp && git status",
+        "env GIT_SSH_COMMAND=x git status",
+        "git switch other",
+        "git tag t",
+        "git clean -fd",
+        "git revert HEAD",
+        "git remote add o /tmp/x",
+        "git diff --output=factory/policy.toml",
+        "git grep -O sh pattern",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    // `-C` to another folder, the project root or another unit's copy.
+    for cmd in [
+        format!("git -C {root} checkout -- factory/records/R-1.toml"),
+        "git -C ../U-99 restore -- src/hello.txt".to_string(),
+        format!("git -C {root} restore --source=HEAD~5 -- factory/"),
+        "git -C .. status".to_string(),
+    ] {
+        assert_eq!(bash(&fx, &wc, &cmd), "deny", "{cmd}");
+    }
+    // The forms that stay open.
+    for cmd in [
+        "git status",
+        "git diff",
+        "git log --oneline",
+        "git show HEAD",
+        "git rev-parse HEAD",
+        "git ls-files",
+        "git branch --show-current",
+        "git add src/hello.txt",
+        "git commit -m x",
+        "git checkout -- src/hello.txt",
+        "git checkout HEAD -- src/hello.txt",
+        "git restore src/hello.txt",
+        "git restore --staged src/hello.txt",
+        "git restore --source=HEAD -- src/hello.txt",
+        "git reset HEAD src/hello.txt",
+        "git reset --hard",
+        "git stash list",
+        "git -C . status",
+        "git --no-pager log",
+    ] {
+        assert_ne!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+}
+
+#[test]
+fn a_name_that_folds_to_a_protected_one_is_refused_before_its_folder_exists() {
+    let (fx, wc) = unit_place();
+    for rel in [
+        ".claude/\u{17F}ettings.json",
+        ".claude/\u{17F}kills/factory-panel/x.md",
+        ".claude/hoo\u{212A}s/x",
+        ".\u{212A}laude/settings.json",
+        "\u{17F}ecrets/x.txt",
+        "fa\u{17F}ctory/x",
+        "fact\u{FB00}/x",
+        ".git/\u{17F}onfig",
+    ] {
+        assert_eq!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
+    }
+}
+
+#[test]
+fn a_link_in_the_copy_is_followed_before_a_dotdot_is_taken() {
+    let (fx, wc) = unit_place();
+    let target = fx.root.join("factory/records");
+    symlink(&target, wc.join("lnk")).unwrap();
+    assert_eq!(write_tool(&fx, &wc, &wc.join("lnk/../escaped.txt")), "deny");
+    assert_eq!(write_tool(&fx, &wc, &wc.join("lnk/../policy.toml")), "deny");
+    assert_eq!(bash(&fx, &wc, "echo x > lnk/../policy.toml"), "deny");
+    assert_eq!(bash(&fx, &wc, "echo x > lnk/../escaped.txt"), "deny");
+    assert_ne!(bash(&fx, &wc, "echo x > src/new.txt"), "deny");
+}
+
+#[test]
+fn a_folder_that_holds_a_protected_place_of_the_copy_cannot_be_removed_moved_or_replaced() {
+    let fx = Fx::new();
+    fx.tiny();
+    fx.set_policy("protected_extra = []", "protected_extra = [\"config/prod.toml\"]");
+    fx.start_test_run();
+    let o = fx.must(&["unit", "start", "U-1", "--json"]);
+    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
+    fs::create_dir_all(wc.join("x")).unwrap();
+    for cmd in [
+        "rm -rf .claude",
+        "rm -rf .claude/skills",
+        "mv .claude y",
+        "mv x .claude",
+        "mv x .claude/skills/factory-panel",
+        "find .claude -delete",
+        "chmod -R 777 .claude",
+        "ln -sfn /tmp/x .claude",
+        "rm -rf config",
+        "mv x config",
+        "rm -rf factory",
+        "rm -rf .bf",
+        "mv x factory",
+    ] {
+        assert_eq!(bash(&fx, &wc, cmd), "deny", "{cmd}");
+    }
+    assert_ne!(bash(&fx, &wc, "rm -rf x"), "deny");
+}
+
+#[test]
+fn the_widened_allow_is_for_the_builder_of_the_copy_only() {
+    let (fx, wc) = unit_place();
+    let f = wc.join("src/other.txt");
+    let input = json!({"file_path": f.to_string_lossy(), "content": "x"});
+    assert_ne!(says_as(&fx, &wc, "builder", "Write", input.clone()), "deny");
+    for agent in ["verifier", "reviewer", "security-auditor", "repair-judge", "designer"] {
+        assert_eq!(says_as(&fx, &wc, agent, "Write", input.clone()), "deny", "{agent}");
+    }
+    // A session with no agent type that stands in a folder of the copy, not at its root, is no builder.
+    fs::create_dir_all(wc.join("src")).unwrap();
+    assert_eq!(write_tool(&fx, &wc.join("src"), &f), "deny");
+    // The main checkout session does not step into a copy.
+    assert_eq!(bash(&fx, &fx.root, "cd .bf/work/U-1 && echo x > src/other.txt"), "deny");
+    let rel = wc.strip_prefix(&fx.root).unwrap().display().to_string();
+    assert_eq!(bash(&fx, &fx.root, &format!("cd {rel}")), "deny");
+}
+
+#[test]
+fn a_builder_writes_nothing_outside_the_project_but_scratch_places() {
+    let (fx, wc) = unit_place();
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() {
+        for p in [".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md", ".gitconfig", ".zshrc"] {
+            let path = PathBuf::from(&home).join(p);
+            assert_eq!(write_tool(&fx, &wc, &path), "deny", "{p}");
+            assert_eq!(bash(&fx, &wc, &format!("echo x > ~/{p}")), "deny", "~/{p}");
+        }
+    }
+    assert_ne!(write_tool(&fx, &wc, Path::new("/tmp/bf-scratch/x.txt")), "deny");
+    assert_ne!(bash(&fx, &wc, "echo x > /tmp/bf-scratch-y.txt"), "deny");
+}
+
+#[test]
+fn in_a_workspace_copy_the_harness_and_factory_folders_are_closed_too() {
+    let fx = Fx::workspace(&["app"]);
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/**\"]\ncheckpoint=\"K-1\"\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+    ] {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.commit_all("records");
+    fx.start_test_run();
+    let wc = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    for rel in [".claude/settings.json", ".claude/skills/x.md", ".bf/x", ".CLAUDE/settings.json", ".git/config"] {
+        assert_eq!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
+    }
+    for rel in ["src/new.rs", "README.md", "docs/x.md", "factory/data.txt"] {
+        assert_ne!(write_tool(&fx, &wc, &wc.join(rel)), "deny", "{rel}");
+    }
+}

@@ -253,7 +253,7 @@ fn table() -> Vec<Case> {
         // `git restore --source=<rev>` from another tree.
         c(105, Wc, Refused, "git checkout main"),
         c(106, Wc, Refused, "git checkout main -- src/hello.txt"),
-        c(107, Wc, Passed, "git restore --source=main src/hello.txt"),
+        c(107, Wc, Refused, "git restore --source=main src/hello.txt"),
         // Cargo hands trailing words to the program with or without `--`.
         c(51, Root, Refused, "cargo run -q human-turn"),
         c(52, Root, Refused, "cargo run -q -- --json human-turn"),
@@ -266,7 +266,7 @@ fn table() -> Vec<Case> {
         c(58, Wc, Passed, "git reset --hard"),
         // Not judged, stated in docs/engine.md: the paths live inside the patch or the stash.
         c(59, Wc, Refused, "git apply /tmp/p.patch"),
-        c(60, Wc, Passed, "git stash pop"),
+        c(60, Wc, Refused, "git stash pop"),
         c(61, Wc, Passed, "patch -p1 < /tmp/p.patch"),
         // Other write forms in a unit's copy that the file scope must hold.
         c(
@@ -611,7 +611,6 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         ),
         (Wc, "python3 -c \"open('src/hello.txt','w').write('x')\""),
         (Wc, "tar xf /tmp/a.tar src/hello.txt"),
-        (Wc, "git revert HEAD"),
         (Wc, "rm -f src/hello.txt~"),
         (
             Wc,
@@ -1010,11 +1009,18 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
             "find . -name '*.json' -exec python3 -m json.tool {} \\;",
             "find src -name '*.py' -exec python3 -m py_compile {} \\;",
             "find src -name '*.rs' -exec sh -c 'rustfmt --check \"$1\"' _ {} \\;",
-            "git restore --staged .",
-            "git checkout -- .",
+            "git restore --staged src/hello.txt",
+            "git checkout -- src/hello.txt",
             "rm -f src/hello.txt",
         ]),
         "passed",
+    );
+    // The copy's root, a revert and a stash are no literal path of the copy: refused.
+    check_rows(
+        &fx,
+        &wc,
+        &strings(&["git restore --staged .", "git checkout -- .", "git revert HEAD", "git stash pop"]),
+        "refused",
     );
 }
 

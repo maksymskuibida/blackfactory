@@ -433,7 +433,7 @@ fn a_recursive_permission_change_of_the_whole_working_copy_is_refused() {
     std::fs::create_dir_all(wc.join("src")).unwrap();
     for cmd in ["chmod -R 000 .", "chmod -R 755 ./", "chown -R nobody ."] {
         let why = refused(&fx, &wc, cmd);
-        assert!(why.contains("whole working copy"), "{why}");
+        assert!(why.contains("whole working copy") || why.contains("protected place"), "{why}");
     }
     for cmd in [
         "chmod -R go-w .",

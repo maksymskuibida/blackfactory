@@ -77,53 +77,68 @@ fn expand_home(p: &str) -> String {
     }
 }
 
+/// An absolute path with `~` read as the home, and with its `.` and `..` parts still in it: the links are
+/// followed before a `..` is taken, as the system does.
 fn absolutize(p: &str, cwd: &str) -> String {
     let p = expand_home(p);
     if p.starts_with('/') {
-        normalize(&p)
+        p
     } else {
-        normalize(&format!("{cwd}/{p}"))
+        format!("{cwd}/{p}")
     }
 }
 
 /// How many links in a row are followed before the path is judged where it stands.
 const LINK_BOUND: usize = 40;
 
-/// Follow symbolic links in an absolute, normalised path by reading each one, from the outermost folder
-/// inwards, so a link whose target does not exist is followed too. A relative target is taken from the
-/// folder that holds the link. Stops after `LINK_BOUND` links.
-fn follow_links(lex: &str) -> String {
-    let mut cur = lex.to_string();
-    for _ in 0..LINK_BOUND {
-        let parts: Vec<&str> = cur.split('/').filter(|s| !s.is_empty()).collect();
-        let mut prefix = String::new();
-        let mut hit: Option<(usize, String, String)> = None;
-        for (i, seg) in parts.iter().enumerate() {
-            let folder = prefix.clone();
-            prefix.push('/');
-            prefix.push_str(seg);
-            let is_link = fs::symlink_metadata(&prefix)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
-            if is_link {
-                if let Ok(t) = fs::read_link(&prefix) {
-                    hit = Some((i, folder, t.to_string_lossy().to_string()));
+/// Walk a path from the root, part by part, reading each link as it is met (an unresolved one too). A
+/// `..` takes the parent of what has been resolved so far, not of the words before it, so
+/// `link/../x` is the parent of the link's target. A relative target is taken from the folder that
+/// holds the link. Stops after `LINK_BOUND` links and then takes the rest as it stands.
+fn follow_links(path: &str) -> String {
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending: std::collections::VecDeque<String> =
+        path.split('/').map(|s| s.to_string()).collect();
+    let mut links = 0;
+    while let Some(seg) = pending.pop_front() {
+        match seg.as_str() {
+            "" | "." => {}
+            ".." => {
+                stack.pop();
+            }
+            _ => {
+                stack.push(seg);
+                let cur = format!("/{}", stack.join("/"));
+                let is_link = fs::symlink_metadata(&cur)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false);
+                if !is_link {
+                    continue;
+                }
+                let Ok(t) = fs::read_link(&cur) else { continue };
+                links += 1;
+                if links > LINK_BOUND {
                     break;
+                }
+                stack.pop();
+                let t = t.to_string_lossy().to_string();
+                if t.starts_with('/') {
+                    stack.clear();
+                }
+                for part in t.split('/').rev() {
+                    pending.push_front(part.to_string());
                 }
             }
         }
-        let Some((i, folder, target)) = hit else {
-            return cur;
-        };
-        let tail = parts[i + 1..].join("/");
-        let base = if target.starts_with('/') {
-            target
-        } else {
-            format!("{folder}/{target}")
-        };
-        cur = normalize(&format!("{base}/{tail}"));
     }
-    cur
+    // What is left after the bound is taken lexically.
+    let rest: Vec<String> = pending.into_iter().collect();
+    let mut all = format!("/{}", stack.join("/"));
+    if !rest.is_empty() {
+        all.push('/');
+        all.push_str(&rest.join("/"));
+    }
+    normalize(&all)
 }
 
 /// Absolute, normalised, and with symlinks followed, an unresolved one included.
@@ -261,10 +276,19 @@ fn is_protected_rel(table: &Value, rel: &str) -> bool {
 /// repository, whose own `factory/` or `.claude/` folders are its source like any other.
 fn is_protected_in_wc(table: &Value, rel: &str) -> bool {
     if table["workspace"].as_bool() == Some(true) {
-        return false;
+        // The harness reads `.claude/` and `.bf/` in the copy too, so nobody who works there writes them
+        // (F-439). The repository's own `factory/` folder is its source.
+        let low = rel.to_lowercase();
+        return WORKSPACE_PROTECTED
+            .iter()
+            .any(|p| low == *p || low.starts_with(&format!("{p}/")));
     }
     is_protected_rel(table, rel)
 }
+
+/// The folders no builder writes in a working copy of a workspace. The repository's own `factory/`
+/// folder is its source and stays open there (see `workspace.rs`); landing and the reviewer hold it.
+const WORKSPACE_PROTECTED: [&str; 2] = [".claude", ".bf"];
 
 /// Where the conductor and planners may write inside the protected folders.
 fn is_open_rel(rel: &str) -> bool {
@@ -327,6 +351,57 @@ fn repo_containing(table: &Value, abs: &str) -> Option<String> {
         .map(|p| p.to_string())
 }
 
+thread_local! {
+    /// The kind of session judged now: 0 a session with no agent type (the top-level one), 1 a builder
+    /// agent, 2 any other agent (reviewer, verifier, auditor, judge, conductor's helpers).
+    static ROLE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// A name part that is not ASCII but folds to an ASCII letter (`ſ`, the Kelvin sign, `ß`, a ligature)
+/// names the same file as its ASCII look-alike on a volume that folds case: it is never written.
+fn has_lookalike(rel: &str) -> bool {
+    rel.chars().any(|c| {
+        !c.is_ascii()
+            && (c.to_lowercase().any(|x| x.is_ascii()) || c.to_uppercase().any(|x| x.is_ascii()))
+    })
+}
+
+/// Is this session the builder of the copy it stands in? An agent of another type never is; a session
+/// that tells no type is taken for it only at the root of the copy, where it started.
+fn builder_in_copy(cwd: &str, base: &str) -> bool {
+    if under(cwd, base).is_none() {
+        return false;
+    }
+    match ROLE.with(|r| r.get()) {
+        1 => true,
+        0 => cwd.trim_end_matches('/') == base.trim_end_matches('/'),
+        _ => false,
+    }
+}
+
+/// The places a builder may write outside the project: the system's scratch folders and the null device.
+fn is_scratch(abs: &str) -> bool {
+    let mut roots: Vec<String> = [
+        "/tmp",
+        "/private/tmp",
+        "/var/folders",
+        "/private/var/folders",
+        "/dev/null",
+        "/dev/stderr",
+        "/dev/stdout",
+        "/dev/tty",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let Ok(t) = std::env::var("TMPDIR") {
+        if !t.is_empty() && t != "/" {
+            roots.push(t.trim_end_matches('/').to_string());
+        }
+    }
+    roots.iter().any(|r| under(abs, r).is_some())
+}
+
 fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
     let abs = resolve(raw, cwd);
     if in_state(table, &abs) {
@@ -366,9 +441,31 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
             return allow();
         }
         let Some(rel) = under(&abs, root) else {
-            // Outside the project. A worker still stays out of the other working copies' parent folders.
+            // Outside the project. A builder in a working copy writes nothing there but scratch places.
+            if (here.kind == "unit" || here.kind == "checkpoint") && !is_scratch(&abs) {
+                return deny(
+                    &format!("write {raw}"),
+                    &crate::strings::t(
+                        "guard_recommended.outside_project.because",
+                        &[("base", here.base.as_str())],
+                    ),
+                    &[&crate::strings::t(
+                        "guard_recommended.outside_project.step",
+                        &[],
+                    )],
+                    &crate::strings::t("guard_recommended.outside_project.worked", &[]),
+                );
+            }
             return allow();
         };
+        if has_lookalike(rel) {
+            return deny(
+                &format!("write {rel}"),
+                &crate::strings::t("guard_recommended.lookalike.because", &[]),
+                &[&crate::strings::t("guard_recommended.lookalike.step", &[])],
+                &crate::strings::t("guard_recommended.lookalike.worked", &[]),
+            );
+        }
         if rel.to_lowercase() == ".bf/work" || rel.to_lowercase().starts_with(".bf/work/") {
             return deny(
                 &format!("write {raw}"),
@@ -403,6 +500,14 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
         return allow();
     }
     let rel = under(&abs, &zone.base).unwrap_or("");
+    if has_lookalike(rel) {
+        return deny(
+            &format!("write {rel} in {}", zone.id),
+            &crate::strings::t("guard_recommended.lookalike.because", &[]),
+            &[&crate::strings::t("guard_recommended.lookalike.step", &[])],
+            &crate::strings::t("guard_recommended.lookalike.worked", &[]),
+        );
+    }
     let low_rel = rel.to_lowercase();
     if is_protected_in_wc(table, rel) || low_rel == ".git" || low_rel.starts_with(".git/") {
         return deny(
@@ -426,7 +531,7 @@ fn check_write(table: &Value, cwd: &str, raw: &str) -> Decision {
     }
     // The list is a recommendation only for a session that works in this very copy (D-115, D-116); a
     // session anywhere else keeps the old rule.
-    let same_copy = under(cwd, &zone.base).is_some();
+    let same_copy = builder_in_copy(cwd, &zone.base);
     if zone.kind == "checkpoint" && zone.sync && !zone.files.is_empty() && same_copy {
         // An open sync (its resolver) or an open checkpoint fix: the builder writes any file of this
         // working copy that is not protected.
@@ -3141,6 +3246,29 @@ fn covers_protected(table: &Value, abs: &str) -> Option<String> {
     {
         places.push(format!("{root}/{}", e.trim_end_matches('/')));
     }
+    // The same places inside each working copy: a folder that holds one of them takes it along, and a
+    // move or a copy onto such a folder replaces it. In a workspace the copy's own protected places are
+    // the same three folders and `.git`.
+    let workspace = table["workspace"].as_bool() == Some(true);
+    if let Some(ws) = table["worktrees"].as_array() {
+        for w in ws.iter().filter_map(|w| w["path"].as_str()) {
+            let w = w.trim_end_matches('/');
+            // The copy's own root is judged by the whole-copy rule, not as a cover.
+            if w == base {
+                continue;
+            }
+            places.push(format!("{w}/.git"));
+            if workspace {
+                for e in WORKSPACE_PROTECTED {
+                    places.push(format!("{w}/{e}"));
+                }
+            } else if let Some(a) = table["protected"].as_array() {
+                for e in a.iter().filter_map(|x| x.as_str()) {
+                    places.push(format!("{w}/{}", e.trim_end_matches('/')));
+                }
+            }
+        }
+    }
     // A place strictly below the target (the root itself counts as a place, for targets above it).
     places
         .into_iter()
@@ -3960,23 +4088,202 @@ fn judge_text_path(
 }
 
 /// The refusal of a git command, or `allow()`.
-/// An assignment of one of the variables that change which repository, index or object store git uses.
+/// An assignment of any `GIT_*` variable: they point git at another repository, index, object store or
+/// config (aliases and hooks included), so none is set on a command line, by `env` or by `export`.
 fn git_env_assignment(w: &str) -> bool {
-    const NAMES: [&str; 8] = [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_NAMESPACE",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-    ];
     let w = w.trim_start_matches(['"', '\'']);
-    NAMES.iter().any(|n| {
-        w.strip_prefix(n)
-            .is_some_and(|r| r.starts_with('=') || r.starts_with("+="))
-    })
+    let Some(rest) = w.strip_prefix("GIT_") else {
+        return false;
+    };
+    let name_len = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let after = &rest[name_len..];
+    name_len > 0 && (after.starts_with('=') || after.starts_with("+="))
+}
+
+/// A path word that git would read as more than one literal name: pathspec magic, a glob, the copy's
+/// root or a folder.
+fn git_path_is_not_literal(dir: &str, word: &str) -> bool {
+    word.is_empty()
+        || word.starts_with(':')
+        || word.contains(['*', '?', '[', '\\'])
+        || word == "."
+        || word == ".."
+        || word.ends_with('/')
+        || word.split('/').any(|c| c == "..")
+        || Path::new(dir).join(word).is_dir()
+}
+
+/// What a git command run from a working copy may be. An allow-list: the read-only forms, `add`,
+/// `commit`, and `checkout`, `restore` and `reset` on literal paths of the copy. Everything else is
+/// refused, because the guard does not follow what it would change in the tree, the index or the config.
+fn wc_git_gate(dir: &str, w: &[String], i: usize, sub: &str, rest: &[&str]) -> Option<String> {
+    let refuse = |key: &str| Some(crate::strings::t(key, &[("sub", sub)]));
+    // Options before the subcommand: only `-C` to the folder the command already runs in, and the pager.
+    let mut j = 1;
+    while j < i {
+        match w[j].as_str() {
+            "--no-pager" | "-P" | "--paginate" | "-p" | "--no-optional-locks" => j += 1,
+            "-C" => {
+                let to = w.get(j + 1).map(|d| resolve(d, dir));
+                if to.as_deref() != Some(resolve(".", dir).as_str()) {
+                    return refuse("guard_recommended.git.option");
+                }
+                j += 2;
+            }
+            _ => return refuse("guard_recommended.git.option"),
+        }
+    }
+    let dashdash = rest.iter().position(|a| *a == "--");
+    let paths_after = |from: usize| -> Option<String> {
+        rest[from..]
+            .iter()
+            .filter(|a| **a != "--")
+            .find(|a| git_path_is_not_literal(dir, a))
+            .and_then(|_| refuse("guard_recommended.git.pathspec"))
+    };
+    match sub {
+        "status" | "diff" | "log" | "show" | "rev-parse" | "ls-files" | "ls-tree" | "blame"
+        | "describe" | "shortlog" | "cat-file" | "merge-base" | "rev-list" | "diff-tree"
+        | "show-ref" | "for-each-ref" | "name-rev" | "grep" | "diff-files" | "diff-index"
+        | "check-ignore" | "version" | "hash-object" | "update-index" | "checkout-index"
+        | "add" | "commit" => {
+            // Output to a file, and a pager program, are writes and runs the guard does not judge.
+            if rest.iter().any(|a| {
+                a.starts_with("--output")
+                    || a.starts_with("--open-files-in-pager")
+                    || *a == "-O"
+                    || a.starts_with("-O")
+                    || a.starts_with("--ext-diff")
+                    || a.starts_with("--pathspec-from-file")
+                    || a.starts_with("--pathspec-file-nul")
+            }) {
+                return refuse("guard_recommended.git.option");
+            }
+            None
+        }
+        "branch" => {
+            let read = rest.iter().all(|a| {
+                matches!(
+                    *a,
+                    "--show-current"
+                        | "-a"
+                        | "-r"
+                        | "-l"
+                        | "--list"
+                        | "-v"
+                        | "-vv"
+                        | "--all"
+                        | "--remotes"
+                )
+            });
+            if read {
+                None
+            } else {
+                refuse("guard_recommended.git.sub")
+            }
+        }
+        "rm" | "mv" => {
+            if rest.iter().any(|a| {
+                a.starts_with(':')
+                    || a.starts_with("--pathspec-from-file")
+                    || a.starts_with("--pathspec-file-nul")
+            }) {
+                refuse("guard_recommended.git.pathspec")
+            } else {
+                None
+            }
+        }
+        "stash" => {
+            if matches!(rest.first(), Some(&"list") | Some(&"show")) {
+                None
+            } else {
+                refuse("guard_recommended.git.sub")
+            }
+        }
+        "apply" => None, // judged by its own rule below
+        "checkout" => {
+            const SAFE: [&str; 11] = [
+                "-f",
+                "--force",
+                "-q",
+                "--quiet",
+                "--ours",
+                "--theirs",
+                "--overlay",
+                "--no-overlay",
+                "--progress",
+                "--no-progress",
+                "--ignore-skip-worktree-bits",
+            ];
+            let Some(k) = dashdash else {
+                return refuse("guard_recommended.checkout.because_plain");
+            };
+            if !rest[..k].iter().all(|a| SAFE.contains(a) || *a == "HEAD") || rest.len() == k + 1 {
+                return refuse("guard_recommended.checkout.because_plain");
+            }
+            paths_after(k + 1)
+        }
+        "restore" => {
+            let mut k = 0;
+            let mut paths: Vec<&str> = Vec::new();
+            while k < rest.len() {
+                let a = rest[k];
+                match a {
+                    "--" => {
+                        paths.extend(rest[k + 1..].iter().copied());
+                        break;
+                    }
+                    "--staged"
+                    | "-S"
+                    | "--worktree"
+                    | "-W"
+                    | "-q"
+                    | "--quiet"
+                    | "--ours"
+                    | "--theirs"
+                    | "--overlay"
+                    | "--no-overlay"
+                    | "--progress"
+                    | "--no-progress"
+                    | "--ignore-skip-worktree-bits" => {}
+                    "--source=HEAD" => {}
+                    "--source" | "-s" if rest.get(k + 1) == Some(&"HEAD") => k += 1,
+                    _ if a.starts_with('-') => return refuse("guard_recommended.git.option"),
+                    _ => paths.push(a),
+                }
+                k += 1;
+            }
+            if paths.is_empty() || paths.iter().any(|a| git_path_is_not_literal(dir, a)) {
+                return refuse("guard_recommended.git.pathspec");
+            }
+            None
+        }
+        "reset" => {
+            let before: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
+            let flags_ok = before
+                .iter()
+                .filter(|a| a.starts_with('-'))
+                .all(|a| matches!(*a, "--soft" | "--mixed" | "--hard" | "-q" | "--quiet"));
+            let words: Vec<&&str> = before.iter().filter(|a| !a.starts_with('-')).collect();
+            let rev_ok = words.first().is_none_or(|a| **a == "HEAD");
+            if !flags_ok || !rev_ok {
+                return refuse("guard_recommended.git.reset");
+            }
+            let from = dashdash.map_or(0, |d| d + 1);
+            let tail: Vec<&str> = if dashdash.is_some() {
+                rest[from..].to_vec()
+            } else {
+                words.iter().skip(1).map(|a| **a).collect()
+            };
+            if tail.iter().any(|a| git_path_is_not_literal(dir, a)) {
+                return refuse("guard_recommended.git.pathspec");
+            }
+            None
+        }
+        _ => refuse("guard_recommended.git.sub"),
+    }
 }
 
 fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
@@ -4010,22 +4317,71 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
             "The branch you need is updated by the engine.",
         )
     };
-    if w.iter()
-        .any(|x| matches!(x.as_str(), "--git-dir" | "--work-tree"))
-        || w.iter()
-            .any(|x| x.starts_with("--git-dir=") || x.starts_with("--work-tree="))
-    {
+    if w.iter().any(|x| {
+        matches!(
+            x.as_str(),
+            "--git-dir" | "--work-tree" | "--exec-path" | "--namespace" | "--super-prefix"
+        )
+    }) || w.iter().any(|x| {
+        x.starts_with("--git-dir=")
+            || x.starts_with("--work-tree=")
+            || x.starts_with("--exec-path=")
+            || x.starts_with("--namespace=")
+    }) {
         return why("pointing git at another repository would hide what is being changed");
     }
-    if w.windows(2).any(|p| {
-        p[0] == "-c"
-            && (p[1].starts_with("core.")
-                || p[1].starts_with("alias.")
-                || p[1].starts_with("filter."))
-    }) {
+    // Config given on the command line, by `-c` or `--config-env`, with the key compared in any case.
+    let bad_key = |k: &str| {
+        let k = k.to_lowercase();
+        [
+            "core.",
+            "alias.",
+            "filter.",
+            "include.",
+            "includeif.",
+            "url.",
+            "credential.",
+            "diff.",
+            "merge.",
+            "gpg.",
+            "http.",
+            "protocol.",
+            "sendemail.",
+            "pager.",
+            "sequence.",
+            "uploadpack.",
+            "receive.",
+            "safe.",
+            "init.",
+            "gc.",
+            "fetch.",
+            "push.",
+            "pull.",
+        ]
+        .iter()
+        .any(|p| k.starts_with(p))
+    };
+    let before_sub = &w[1..i];
+    if before_sub
+        .windows(2)
+        .any(|p| p[0] == "-c" && bad_key(&p[1]))
+        || before_sub.iter().any(|x| {
+            x.strip_prefix("--config-env=").is_some_and(bad_key)
+                || (x.len() > 2 && x.starts_with("-c") && !x.starts_with("--") && bad_key(&x[2..]))
+        })
+        || before_sub
+            .windows(2)
+            .any(|p| p[0] == "--config-env" && bad_key(&p[1]))
+    {
         return why(
             "git config given on the command line can run programs or change what git sees",
         );
+    }
+    let session_wc = matches!(zone_of(table, dir).kind, "unit" | "checkpoint");
+    if session_wc {
+        if let Some(m) = wc_git_gate(dir, w, i, sub, &rest) {
+            return why(&m);
+        }
     }
     // An unknown subcommand is usually the user's own alias; setting one up is refused below
     // (`git config alias.*`, `git -c alias.*`), and moving a ref is refused by name.
@@ -4063,25 +4419,6 @@ fn judge_git(table: &Value, dir: &str, w: &[String]) -> Decision {
         // branch, or a hard reset onto a revision.
         "switch" | "read-tree" if in_unit => {
             return why("switching branches or reading another tree into the working copy brings in files outside the unit's scope; the engine joins the branches (`bf unit land`)");
-        }
-        // In a working copy a checkout is allowed in one form only: `git checkout [safe flags] [HEAD] --
-        // <paths>`. Without `--` git reads a word as a revision before a path, whatever is on disk, and a
-        // checkout of a revision moves the whole working tree, the protected files with it. A flag that
-        // makes a branch, detaches, reads paths from a file or merges is refused.
-        "checkout" if in_wc => {
-            const SAFE: [&str; 11] = [
-                "-f", "--force", "-q", "--quiet", "--ours", "--theirs", "--overlay", "--no-overlay",
-                "--progress", "--no-progress", "--ignore-skip-worktree-bits",
-            ];
-            let dashdash = rest.iter().position(|a| *a == "--");
-            let ok = dashdash.is_some_and(|k| {
-                rest[..k]
-                    .iter()
-                    .all(|a| SAFE.contains(a) || *a == "HEAD")
-            });
-            if !ok {
-                return why(&crate::strings::t("guard_recommended.checkout.because", &[]));
-            }
         }
         "reset" if in_unit => {
             let before_paths: Vec<&str> = rest.iter().copied().take_while(|a| *a != "--").collect();
@@ -4640,6 +4977,19 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             );
                         }
                     }
+                    if !(in_worker || in_cp) {
+                        // A session outside every working copy does not step into one: it would stand
+                        // where a builder stands and be taken for it.
+                        let abs = resolve(target, &dir_str);
+                        if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
+                            return deny(
+                                "enter a working copy",
+                                &crate::strings::t("guard_recommended.cd.because", &[]),
+                                &[&crate::strings::t("guard_recommended.cd.step", &[])],
+                                &crate::strings::t("guard_recommended.cd.worked", &[]),
+                            );
+                        }
+                    }
                     after = if target == "-" || prog == "popd" {
                         None
                     } else {
@@ -4939,7 +5289,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         // command that is judged by itself.
                         "find" if args.iter().any(|a| a == "-delete") => all.iter().collect(),
                         // Every source of a move goes, with or without `-t`.
-                        "mv" => tp.sources.iter().collect(),
+                        "mv" => tp
+                            .sources
+                            .iter()
+                            .chain(tp.dest.iter().filter(|d| !goes_into_folder(&tp, d, &start)))
+                            .collect(),
                         // A link that replaces a folder (`ln -sfn x .claude`) takes it with it; a link
                         // made inside a folder does not.
                         "ln" => tp
@@ -5088,6 +5442,20 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                         let inside_root =
                             under(&abs, root).is_some() || repo_containing(table, &abs).is_some();
                         let own = under(&abs, &here.base).is_some();
+                        if (in_cp || in_worker) && !inside_root && !own && !is_scratch(&abs) {
+                            return deny(
+                                &format!("write {abs}"),
+                                &crate::strings::t(
+                                    "guard_recommended.outside_project.because",
+                                    &[("base", here.base.as_str())],
+                                ),
+                                &[&crate::strings::t(
+                                    "guard_recommended.outside_project.step",
+                                    &[],
+                                )],
+                                &crate::strings::t("guard_recommended.outside_project.worked", &[]),
+                            );
+                        }
                         if (in_cp || in_worker) && inside_root && !own {
                             return deny(
                             "write outside your working copy",
@@ -5190,6 +5558,13 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     } else {
         resolve(cwd_raw, "/")
     };
+    ROLE.with(|r| {
+        r.set(match agent_type(input) {
+            "" => 0,
+            "builder" => 1,
+            _ => 2,
+        })
+    });
     if agent_type(input) == crate::judge::AGENT_TYPE {
         if let Some(d) = judge_role_denial(tool, ti["command"].as_str().unwrap_or("")) {
             return d;
