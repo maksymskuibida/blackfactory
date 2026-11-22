@@ -487,8 +487,14 @@ impl Fx {
         fs::write(k.join("src/a.txt"), text).unwrap();
         git(&k, &["add", "-A"]);
         git(&k, &["commit", "-q", "-m", "fix"]);
-        self.must_in(&k, &["report", "K-1", "--role", "builder", "--result", "built"]);
-        self.must_in(&k, &["report", "K-1", "--role", "reviewer", "--result", "built"]);
+        self.must_in(
+            &k,
+            &["report", "K-1", "--role", "builder", "--result", "built"],
+        );
+        self.must_in(
+            &k,
+            &["report", "K-1", "--role", "reviewer", "--result", "built"],
+        );
     }
 
     /// The tiny project used by the end-to-end and attack tests.
