@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 mod brief;
 mod checkpoint;
-mod land;
+pub mod expert;
+pub(crate) mod land;
 mod next;
 pub(crate) mod pause;
 mod report;
@@ -210,8 +211,12 @@ pub fn observe_holds(p: &Project) -> R<()> {
 }
 
 pub fn stuck(p: &Project, dry: bool) -> R<Value> {
+    stuck_at(p, dry, util::now_secs())
+}
+
+/// `stuck` judged at the clock `now` (seconds), so a test can move time without waiting.
+pub fn stuck_at(p: &Project, dry: bool, now: u64) -> R<Value> {
     let st = events::require_chain(p)?;
-    let now = util::now_secs();
     let limit = p.policy.limits.idle_minutes * 60;
     let mut parked = Vec::new();
     let mut listed = Vec::new();
@@ -222,7 +227,8 @@ pub fn stuck(p: &Project, dry: bool) -> R<Value> {
             && !pause::idle_exempt(p, &st, id)
         {
             let idle = now.saturating_sub(util::parse_rfc3339(&u.last_at));
-            if idle > limit {
+            let asked = u.state == "review" && expert::asked(p, &st, id)?.is_some();
+            if idle > expert::park_limit(limit, asked) {
                 parked
                     .push(json!({"unit": id, "reason": format!("idle for {} minutes", idle / 60)}));
             }

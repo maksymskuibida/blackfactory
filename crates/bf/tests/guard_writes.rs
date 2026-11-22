@@ -90,7 +90,7 @@ fn a_file_written_by_heredoc_into_the_units_own_files_passes() {
 }
 
 #[test]
-fn a_shell_write_in_the_units_copy_outside_its_file_scope_is_refused() {
+fn a_shell_write_in_the_units_copy_outside_its_list_passes_and_a_protected_one_is_refused() {
     let (fx, wc) = setup();
     for cmd in [
         "cat > src/other.txt <<'EOF'\nx\nEOF",
@@ -99,8 +99,13 @@ fn a_shell_write_in_the_units_copy_outside_its_file_scope_is_refused() {
         "cd src && echo x > b.txt",
         "touch README.md",
     ] {
-        let why = refused(&fx, &wc, cmd);
-        assert!(why.contains("file scope"), "{cmd}: {why}");
+        passes(&fx, &wc, cmd);
+    }
+    for cmd in [
+        "echo x > factory/records/R-1.toml",
+        "touch factory/policy.toml",
+    ] {
+        refused(&fx, &wc, cmd);
     }
 }
 
@@ -415,15 +420,19 @@ fn making_the_folder_of_the_units_own_file_passes_and_other_folder_forms_stay_re
         "mkdir -p src && echo hello > src/hello.txt",
         "install -d src",
         "python3 -c \"import os; os.makedirs('src', exist_ok=True); open('src/hello.txt','w').write('x')\"",
+        // A folder the list does not name is a folder of the copy too.
+        "mkdir -p lib",
+        "install -d lib",
+        "python3 -c \"import os; os.makedirs('lib')\"",
     ] {
         passes(&fx, &wc, cmd);
     }
+    // A folder of the copy that the list names passes too.
+    passes(&fx, &wc, "rmdir src");
+    passes(&fx, &wc, "rm -rf src");
     for cmd in [
-        "mkdir -p lib",
-        "rmdir src",
-        "rm -rf src",
-        "install -d lib",
-        "python3 -c \"import os; os.makedirs('lib')\"",
+        "rmdir factory",
+        "rm -rf factory",
         "mkdir -p factory",
     ] {
         refused(&fx, &wc, cmd);
@@ -450,8 +459,8 @@ fn moves_copies_and_links_in_interpreter_code_are_judged_by_their_destination() 
     ] {
         passes(&fx, &fx.root, cmd);
     }
-    // In a unit's copy, outside its list.
-    refused(
+    // In a unit's copy, outside its list: the list is a recommendation, so it passes.
+    passes(
         &fx,
         &wc,
         "python3 -c \"import os; os.replace('/tmp/x','other.txt')\"",
@@ -466,10 +475,15 @@ fn a_path_object_makes_the_folder_of_the_units_own_file() {
         &wc,
         "python3 -c \"from pathlib import Path; Path('src').mkdir(parents=True, exist_ok=True)\"",
     );
-    refused(
+    passes(
         &fx,
         &wc,
         "python3 -c \"from pathlib import Path; Path('lib').mkdir(parents=True)\"",
+    );
+    refused(
+        &fx,
+        &wc,
+        "python3 -c \"from pathlib import Path; Path('factory').mkdir(parents=True)\"",
     );
 }
 

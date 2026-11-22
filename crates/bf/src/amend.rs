@@ -169,8 +169,23 @@ pub fn refuse_if_changed_since_narrowing(p: &Project, a: &Amend, narrowed: &Valu
 /// refusal of the command that asks.
 pub fn refuse_if_names_missing(p: &Project, a: &Amend, stem: &str) -> R<()> {
     let mut missing: Vec<String> = Vec::new();
+    let mut st: Option<State> = None;
     for id in &a.ids {
         if p.get_record(id)?.is_none() {
+            // A unit that was in force and is gone is a removal (`bf record remove`): the narrowing
+            // lists it as removed with its old content, and the approval records it as gone (R-73).
+            if schema::kind_of_id(id).is_some_and(|k| k.name == "unit") {
+                if st.is_none() {
+                    st = Some(crate::events::replay(p)?);
+                }
+                let in_force = st
+                    .as_ref()
+                    .and_then(|st| crate::gates::approved_entry(st, "plan", id))
+                    .is_some_and(|(h, _)| h != "missing");
+                if in_force {
+                    continue;
+                }
+            }
             missing.push(id.clone());
         }
     }
@@ -1019,14 +1034,18 @@ pub fn edit_of(p: &Project, st: &State, ops: &[Value]) -> R<Edit> {
 }
 
 /// The plan problems the result has that the plan on disk does not.
-pub fn result_problems(p: &Project, e: &Edit) -> R<Vec<String>> {
+/// The units the approval of `a` would send back to work count as not landed on the result's side.
+pub fn result_problems(p: &Project, a: &Amend, e: &Edit) -> R<Vec<String>> {
     let base = crate::plan::load(p)?;
+    let st = crate::events::replay(p)?;
+    let reopened = crate::gates::reopen_units_of(&e.units, &st, a);
     let after = crate::plan::problems_of_edited(
         p,
         &base,
         e.units.clone(),
         e.cps.clone(),
         e.checks.clone(),
+        &reopened,
     )?;
     Ok(after
         .into_iter()
@@ -1036,7 +1055,7 @@ pub fn result_problems(p: &Project, e: &Edit) -> R<Vec<String>> {
 
 /// Refuse approval when the plan check finds a problem in what the operations would leave.
 pub fn refuse_if_result_breaks_plan(p: &Project, a: &Amend, e: &Edit) -> R<()> {
-    let problems = result_problems(p, e)?;
+    let problems = result_problems(p, a, e)?;
     if problems.is_empty() {
         return Ok(());
     }

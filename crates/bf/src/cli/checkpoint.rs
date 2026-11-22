@@ -8,6 +8,26 @@ use serde_json::Value;
 
 pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
     let p = project(args)?;
+    // A landing turn holds the checkpoint's working copy and the content its suite runs on: one test of
+    // its lock keeps a sync, a fix and a close out until it ends.
+    // The command takes the turn lock itself and keeps it to its end, so a turn cannot start between
+    // the test and the work.
+    let mut _turn = None;
+    if let (Some(sub @ ("sync" | "fix" | "close")), Some(k)) = (
+        args.pos.get(1).map(|x| x.as_str()),
+        args.pos.get(2).map(|x| x.as_str()),
+    ) {
+        match crate::lock::turn(&p, k)? {
+            Some(g) => _turn = Some(g),
+            None => {
+                return Err(crate::refusal::from_key(
+                    "land_merge.turn.refused",
+                    &[("sub", sub), ("k", k)],
+                ));
+            }
+        }
+        run::land::hold_point("checkpoint-command", k);
+    }
     if args.pos.get(1).map(|x| x.as_str()) == Some("sync") {
         let k = args.pos_at(2, "a checkpoint ID")?;
         let v = run::checkpoint_sync(

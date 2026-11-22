@@ -621,7 +621,7 @@ fn ordinary_reads_and_git_housekeeping_are_not_refused() {
         &["test", "-f", "src/hello.txt"],
     );
     assert_ne!(
-        guard_decision(&fx, &wc, "Bash", json!({"command": "git stash"})),
+        guard_decision(&fx, &wc, "Bash", json!({"command": "git reset --hard"})),
         "deny"
     );
     assert_eq!(

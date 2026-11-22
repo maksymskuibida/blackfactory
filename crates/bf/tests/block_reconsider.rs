@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -74,26 +74,6 @@ fn block(fx: &Fx, wc: &Path, note: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
-fn ask(fx: &Fx, wc: &Path) -> Out {
-    let t = fx.take_token("U-1", "builder");
-    let patch = "--- a\n+++ b\n@@ -1 +1 @@\n-a\n+b\n";
-    let l = json!([{"path": "src/other.rs", "why": "needed", "patch": patch}]).to_string();
-    fx.bf_stdin(
-        wc,
-        &[
-            "report",
-            "U-1",
-            "--result",
-            "blocked",
-            "--need-files",
-            "-",
-            "--token",
-            &t,
-        ],
-        &l,
-    )
-}
-
 #[test]
 fn a_plain_block_gives_a_reconsider_directive_with_the_note_in_its_brief() {
     let (fx, wc) = setup(None);
@@ -113,21 +93,8 @@ fn a_plain_block_gives_a_reconsider_directive_with_the_note_in_its_brief() {
         brief.contains("my change breaks a test elsewhere"),
         "{brief}"
     );
-    assert!(brief.contains("--need-files"));
-}
-
-#[test]
-fn a_request_from_it_opens_a_review_without_a_release() {
-    let (fx, wc) = setup(None);
-    block(&fx, &wc, "needs a file");
-    let before = state(&fx).1;
-    let o = ask(&fx, &wc);
-    assert_eq!(o.code, 0, "{}", o.all());
-    assert!(directive(&fx, "reviewer").is_some_and(|d| d["action"] == "review-scope"));
-    assert!(!log(&fx).contains("unit.release"));
-    let (s, a) = state(&fx);
-    assert_eq!(s, "running");
-    assert_eq!(a, before + 1, "the request counts as one attempt");
+    assert!(!brief.contains("--need-files"));
+    assert!(brief.contains("The list of files is a recommendation"));
 }
 
 #[test]
@@ -174,22 +141,15 @@ fn a_plain_block_from_it_goes_to_the_human() {
 }
 
 #[test]
-fn a_unit_that_keeps_blocking_is_parked_at_the_attempt_limit() {
-    let (fx, wc) = setup(Some(2));
-    block(&fx, &wc, "needs a file");
-    let o = ask(&fx, &wc);
-    assert_eq!(o.code, 0, "{}", o.all());
-    assert_eq!(state(&fx).0, "parked");
-}
-
-#[test]
 fn every_builder_brief_holds_the_three_lines() {
     let (fx, _wc) = setup(None);
     let o = fx.must(&["brief", "U-1", "--role", "builder"]);
     let _ = o;
     let path = fx.project().briefs_dir().join("U-1-builder.md");
     let brief = fs::read_to_string(path).unwrap();
-    assert!(brief.contains("is a request with `--need-files`, never a plain blocked report"));
+    assert!(brief.contains("The list of files is a recommendation"));
+    assert!(brief.contains("give the reason in your report"));
+    assert!(!brief.contains("--need-files"));
     assert!(brief.contains("bf unit restore U-1 <path> --token <token>"));
     assert!(brief.contains("format only"));
     assert!(brief.contains("for a gap in the design only"));

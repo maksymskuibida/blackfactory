@@ -11,6 +11,7 @@ pub(crate) fn cmd_record(args: &Args) -> R<()> {
     let p = project(args)?;
     match args.pos_at(1, "`put`, `get` or `list`")? {
         "put" => cmd_record_put(args, &p)?,
+        "remove" => cmd_record_remove(args, &p)?,
         "get" => {
             let id = args.pos_at(2, "a record ID")?;
             let rec = p.require_record(id)?;
@@ -56,6 +57,81 @@ fn lock_records(p: &Project) -> R<fs::File> {
     f.lock()
         .map_err(|e| err(format!("cannot lock the records: {e}")))?;
     Ok(f)
+}
+
+/// The records on disk that still name the unit `id`: in `depends_on`, `after`, `unit`, `from` or `to`.
+fn records_naming(p: &Project, id: &str) -> R<Vec<String>> {
+    let mut named: Vec<String> = vec![];
+    for r in p.list_records(None)? {
+        let rid = s(&r, "id");
+        if rid == id {
+            continue;
+        }
+        let hit = str_list(&r, "depends_on").iter().any(|x| x == id)
+            || str_list(&r, "after").iter().any(|x| x == id)
+            || ["unit", "from", "to"].iter().any(|k| s(&r, k) == id);
+        if hit {
+            named.push(rid.to_string());
+        }
+    }
+    named.sort();
+    Ok(named)
+}
+
+/// `bf record remove <U-n>`: the one way a unit record leaves the plan (R-73, finding F-226). Only a unit,
+/// only while an open plan repair names it (the rule that lets a put change a named record), never one
+/// that has started, and never while a record on disk still names it. The record's file goes through the
+/// store, as a put writes one; the narrowing lists the unit as removed, and a withdrawal puts it back.
+fn cmd_record_remove(args: &Args, p: &Project) -> R<()> {
+    let id = args.pos_at(2, "a unit ID")?.to_string();
+    let _lock = lock_records(p)?;
+    let st = events::require_chain(p)?;
+    let refused = |stem: &str, vals: &[(&str, &str)]| -> crate::refusal::Fail {
+        crate::refusal::from_key(stem, vals)
+    };
+    let is_unit = schema::kind_of_id(&id).is_some_and(|k| k.name == "unit");
+    if !is_unit {
+        return Err(crate::refusal::from_key(
+            "cli.record.remove.not_unit",
+            &[("id", &id)],
+        ));
+    }
+    if p.get_record(&id)?.is_none() {
+        return Err(crate::refusal::from_key(
+            "cli.record.remove.no_record",
+            &[("id", &id)],
+        ));
+    }
+    let Some(amend) = gates::waiting_repair_naming(&st, &id) else {
+        return Err(crate::refusal::from_key(
+            "cli.record.remove.no_repair",
+            &[("id", &id)],
+        ));
+    };
+    let state = st.unit_state(&id);
+    if !state.is_empty() {
+        return Err(refused(
+            "cli.record.remove.started",
+            &[("id", &id), ("state", state)],
+        ));
+    }
+    let named = records_naming(p, &id)?;
+    if !named.is_empty() {
+        return Err(crate::refusal::from_key(
+            "cli.record.remove.named",
+            &[("id", &id), ("records", &named.join(", "))],
+        ));
+    }
+    let amend_id = amend.id.clone();
+    fs::remove_file(p.record_path(&id)?)?;
+    p.write_guard()?;
+    out(args, &json!({"removed": id, "amend": amend_id}), || {
+        crate::strings::t(
+            "cli.record.remove.done",
+            &[("id", &id), ("amend", &amend_id)],
+        )
+    });
+    Ok(())
 }
 
 fn cmd_record_put(args: &Args, p: &Project) -> R<()> {

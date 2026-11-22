@@ -45,6 +45,7 @@ fn directive_kind(d: &Value) -> &'static str {
         "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
         "reviewer" => "reviewer",
         "verifier" => "verifier",
+        "security-auditor" => "reviewer",
         _ => "conductor",
     }
 }
@@ -343,10 +344,33 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 super::unit_sync::decorate(p, &id, &mut d);
                 directives.push(d);
             }
+            "review" if super::expert::asked(p, &st, &id)?.is_some() => {
+                let ask = super::expert::asked(p, &st, &id)?.unwrap_or_default();
+                directives.push(super::expert::directive(&id, &ask, &wc, &brief(super::expert::ROLE),
+                    limits(rounds), &p.policy.tiers.reviewer));
+            }
             "review" => directives.push(json!({"role": "reviewer", "action": "review", "unit": id, "tier": tier_for(p, u, "reviewer"),
                 "working_copy": wc, "brief": brief("reviewer"), "limits": limits(rounds),
                 "commands": [format!("bf brief {id} --role reviewer")]})),
-            "reviewed" => directives.push(json!({"role": "engine", "action": "land", "unit": id, "command": format!("bf unit land {id}")})),
+            "reviewed" => {
+                // No land is offered while no turn of its checkpoint can open: a sync, a fix or a review
+                // round of the checkpoint is open, or another process holds the turn.
+                let k = s(u, "checkpoint");
+                if let Some(why) = super::land::open_reason(p, &st, k) {
+                    let w = crate::strings::t(&format!("land_merge.waits.why.{why}"), &[]);
+                    waiting.push(format!(
+                        "{id}: {}",
+                        crate::strings::t("land_merge.waits.open", &[("unit", &id), ("why", &w), ("checkpoint", k)])
+                    ));
+                } else if crate::lock::turn_open(p, k) {
+                    waiting.push(format!(
+                        "{id}: {}",
+                        crate::strings::t("land_merge.waits.turn", &[("unit", &id), ("checkpoint", k)])
+                    ));
+                } else {
+                    directives.push(json!({"role": "engine", "action": "land", "unit": id, "command": format!("bf unit land {id}")}))
+                }
+            }
             "blocked" | "parked" => {
                 use crate::scope::NextEntry;
                 let entry = if state == "blocked" {

@@ -1,0 +1,2 @@
+# Strings of the group `plan_waves`: keys are quoted and flat, `"cli.plan_waves.some.key" = "text"`.
+"cli.plan_waves.clash" = "{checkpoint}: {a} and {b} can run together and both touch `{fa}` / `{fb}`"

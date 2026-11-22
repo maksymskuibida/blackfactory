@@ -556,6 +556,33 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<std::path::PathBuf> {
             }
         }
     }
+    if what == "unit" && role == crate::run::expert::ROLE {
+        let asks = crate::run::expert::open_asks(p, unit)?;
+        if !asks.is_empty() && crate::events::replay(p)?.unit_state(unit) == "review" {
+            md.push_str(&format!(
+                "\n## {}\n\n",
+                crate::strings::t("run.expert.brief_heading", &[])
+            ));
+            for a in &asks {
+                md.push_str(&format!(
+                    "{}\n\n",
+                    crate::strings::t(
+                        "run.expert.brief_item",
+                        &[("id", s(a, "id")), ("title", s(a, "title"))]
+                    )
+                ));
+                if !s(a, "text").is_empty() {
+                    md.push_str(&format!("{}\n\n", s(a, "text")));
+                }
+                if !s(a, "where").is_empty() {
+                    md.push_str(&format!(
+                        "{}\n\n",
+                        crate::strings::t("run.expert.brief_where", &[("where", s(a, "where"))])
+                    ));
+                }
+            }
+        }
+    }
     md.push_str("\n## You may\n\nRead:\n");
     for x in r.reads {
         md.push_str(&format!("- {x}\n"));

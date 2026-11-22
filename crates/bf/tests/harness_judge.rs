@@ -70,13 +70,15 @@ fn the_skill_says_what_to_run_on_a_checkpoint_fix() {
 }
 
 #[test]
-fn the_builder_asks_for_files_of_a_checkpoint_fix() {
+fn the_builder_changes_files_of_a_checkpoint_fix_and_says_why() {
     has(
         &read("harness/claude/agents/builder.md"),
         "builder.md",
         &[
-            "--role builder --result blocked --token <token> --need-files -",
-            "reports a gap only for files the plan never gave",
+            "The brief's list of files is a recommendation",
+            "say why in your report",
+            "A checkpoint fix's builder does the same",
+            "`--result gap`",
         ],
     );
 }

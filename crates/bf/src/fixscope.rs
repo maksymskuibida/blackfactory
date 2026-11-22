@@ -1,24 +1,17 @@
-//! A checkpoint fix's file requests (D-91, H-22, R-70). The builder of a fix asks for files beyond its
-//! list (`request`), the scope reviewer grants them for that fix only (`verdict`), and a file whose
-//! rounds are spent or whose request is a hard refusal goes to the human as a plan gap. The events and
-//! their replay live in `events.rs`. The work of an aborted fix is saved and applied again here.
+//! A checkpoint fix's files (D-115, D-116). A fix's file list is a recommendation: its builder's request for
+//! files and the scope review of it are gone, and both entry points refuse. The events of the old requests
+//! replay in `events.rs`. The work of an aborted fix is saved and applied again here.
 
 use crate::ckfix::{self, Live};
 use crate::events::{self, CkFixOpen, State};
 use crate::gitx;
-use crate::plan::{self, Plan};
-use crate::refusal::{refuse_owned, Fail, R};
-use crate::run;
-use crate::scope::retry;
+use crate::plan::Plan;
+use crate::refusal::{refuse_owned, R};
 use crate::store::{s, Project};
 use crate::strings::t;
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
-
-fn paths(files: &[Value]) -> Vec<String> {
-    files.iter().map(|f| s(f, "path").to_string()).collect()
-}
 
 /// The files granted to the open fix of `checkpoint`, in order.
 pub fn granted(st: &State, checkpoint: &str) -> Vec<String> {
@@ -86,151 +79,8 @@ pub fn named_files(note: &str) -> Vec<String> {
     out
 }
 
-fn bad(k: &str, file: &str, rule: &str) -> Fail {
-    refuse_owned(
-        t("fix.scope.request.what", &[("k", k)]),
-        t("fix.scope.request.bad", &[("file", file), ("rule", rule)]),
-        vec![
-            t("fix.scope.request.bad_step_list", &[]),
-            t("fix.scope.request.bad_step_why", &[]),
-            t("fix.scope.request.bad_step_again", &[("k", k)]),
-        ],
-        t("fix.scope.request.done_when", &[]),
-    )
-}
-
-fn parse(p: &Project, k: &str, list: &Value) -> R<Vec<Value>> {
-    let arr = list
-        .as_array()
-        .cloned()
-        .or_else(|| list.get("files").and_then(|f| f.as_array().cloned()))
-        .ok_or_else(|| {
-            bad(
-                k,
-                &t("fix.scope.label.request", &[]),
-                &t("fix.scope.request.not_list", &[]),
-            )
-        })?;
-    if arr.is_empty() {
-        return Err(bad(
-            k,
-            &t("fix.scope.label.request", &[]),
-            &t("fix.scope.request.empty", &[]),
-        ));
-    }
-    let top = p.work_dir().join(k);
-    let mut out: Vec<Value> = Vec::new();
-    for f in &arr {
-        let given = s(f, "path").trim().to_string();
-        if given.is_empty() {
-            return Err(bad(
-                k,
-                &t("fix.scope.label.entry", &[]),
-                &t("fix.scope.request.no_path", &[]),
-            ));
-        }
-        let path = if given.starts_with('/')
-            || given.contains('\\')
-            || given.chars().any(|c| c.is_control())
-        {
-            given.clone()
-        } else {
-            match crate::scope::normalize_path(&given) {
-                Some(n) => n,
-                None if given.split('/').any(|c| c == "..") => given.clone(),
-                None => return Err(bad(k, &given, &t("fix.scope.request.folder", &[]))),
-            }
-        };
-        if path.contains(['*', '?', '[', ']', '{', '}']) {
-            return Err(bad(k, &given, &t("fix.scope.request.pattern", &[])));
-        }
-        if given.ends_with('/') || path == "." || top.join(&path).is_dir() {
-            return Err(bad(k, &given, &t("fix.scope.request.folder", &[])));
-        }
-        if out.iter().any(|x| s(x, "path") == path) {
-            return Err(bad(k, &path, &t("fix.scope.request.twice", &[])));
-        }
-        if s(f, "why").trim().is_empty() {
-            return Err(bad(k, &path, &t("fix.scope.request.no_why", &[])));
-        }
-        let exists = top.join(&path).is_file();
-        if s(f, "patch").trim().is_empty() {
-            let key = if exists {
-                "fix.scope.request.no_patch_exists"
-            } else {
-                "fix.scope.request.no_patch_new"
-            };
-            return Err(bad(k, &path, &t(key, &[])));
-        }
-        out.push(json!({"path": path, "why": s(f, "why").trim(), "patch": s(f, "patch"), "new": !exists}));
-    }
-    Ok(out)
-}
-
-/// A request for a file whose rounds are spent, or whose patch is the one already judged, is refused
-/// naming the file. `patch` is None when only the rounds are looked at.
-fn retry_refusal(
-    p: &Project,
-    k: &str,
-    f: &CkFixOpen,
-    path: &str,
-    patch: Option<&str>,
-) -> Option<Fail> {
-    let lim = retry::limit(p);
-    let extended = f.refused.iter().any(|r| {
-        r["files"].as_array().is_some_and(|fs| {
-            fs.iter()
-                .any(|x| s(x, "path") == path && s(x, "verdict") == "extension")
-        })
-    });
-    let (because, step) = if extended {
-        (
-            t("fix.retry.request.extension", &[]),
-            t("fix.retry.request.extension_step", &[("k", k)]),
-        )
-    } else if retry::spent(&f.refused, path, lim) {
-        (
-            t(
-                "fix.scope.request.spent",
-                &[("rounds", &retry::rounds_used(&f.refused, path).to_string())],
-            ),
-            t("fix.retry.request.spent_step", &[("k", k)]),
-        )
-    } else if patch.is_some_and(|pt| {
-        retry::latest_is_retry(&f.refused, path)
-            && retry::last_patch(&f.refused, path).is_some_and(|l| l.trim() == pt.trim())
-    }) {
-        (
-            t("fix.scope.request.same_patch", &[]),
-            t("fix.scope.request.same_patch_step", &[]),
-        )
-    } else {
-        return None;
-    };
-    Some(refuse_owned(
-        t("fix.scope.request.what", &[("k", k)]),
-        t(
-            "fix.scope.request.bad",
-            &[("file", path), ("rule", &because)],
-        ),
-        vec![step],
-        t("fix.scope.request.done_when", &[]),
-    ))
-}
-
-fn gap(p: &Project, k: &str, missing: &[String], reason: &str) -> R<()> {
-    events::append(
-        p,
-        "checkpoint.fix.gap",
-        json!({"checkpoint": k, "missing": missing, "reason": reason}),
-    )?;
-    ckfix::write_overlay(p)?;
-    p.write_guard()?;
-    Ok(())
-}
-
-/// The builder's request for files beyond the fix's list
-/// (`bf report <K> --role builder --result blocked --need-files -`).
+/// A fix builder's `--need-files` (`bf report <K> --role builder --result blocked --need-files -`) is
+/// refused: a fix's file list is a recommendation, so the builder changes the file and says why in its report.
 pub fn request(
     p: &Project,
     k: &str,
@@ -239,303 +89,27 @@ pub fn request(
     note: &str,
     list: &Value,
 ) -> R<Value> {
-    let what = t("fix.scope.request.what", &[("k", k)]);
-    let _lock = crate::lock::engine(p, &what)?;
-    let st = events::require_chain(p)?;
-    run::need_run(&st)?;
-    let pl = plan::load(p)?;
-    let done = t("fix.scope.request.done_when", &[]);
-    let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
-        return Err(refuse_owned(
-            what,
-            t("fix.scope.request.none_open", &[("k", k)]),
-            vec![t("fix.scope.request.none_step", &[])],
-            done,
-        ));
-    };
-    if role.is_some_and(|r| r != "builder") {
-        return Err(refuse_owned(
-            what,
-            t("fix.scope.request.role", &[]),
-            vec![t("fix.scope.request.role_step", &[("k", k)])],
-            done,
-        ));
-    }
-    if f.phase != "fix" {
-        let asked = list
-            .as_array()
-            .or_else(|| list.get("files").and_then(|x| x.as_array()))
-            .cloned()
-            .unwrap_or_default();
-        for a in &asked {
-            let path = crate::scope::normalize_path(s(a, "path")).unwrap_or_default();
-            if let Some(e) = retry_refusal(p, k, &f, &path, None) {
-                return Err(e);
-            }
-        }
-        let because = if f.phase == "scope" {
-            t("fix.scope.request.with_reviewer", &[])
-        } else {
-            t("fix.scope.request.not_at_work", &[("phase", &f.phase)])
-        };
-        let step = if f.phase == "scope" {
-            t("fix.scope.request.with_reviewer_step", &[])
-        } else {
-            t("fix.scope.request.not_at_work_step", &[])
-        };
-        return Err(refuse_owned(what, because, vec![step], done));
-    }
-    if p.policy.roles.tokens && !run::holds_token(p, &format!("{k}:builder"), token) {
-        return Err(refuse_owned(
-            what,
-            t("fix.scope.request.token", &[("k", k)]),
-            vec![t("fix.scope.request.token_step", &[])],
-            t("fix.scope.request.token_check", &[]),
-        ));
-    }
-    let live = ckfix::live(p, &pl, &st, &f);
-    let files = parse(p, k, list)?;
-    for x in &files {
-        let path = s(x, "path");
-        if in_list(p, k, &live, path) {
-            return Err(bad(k, path, &t("fix.scope.request.in_list", &[])));
-        }
-    }
-    for x in &files {
-        if let Some(e) = retry_refusal(p, k, &f, s(x, "path"), Some(s(x, "patch"))) {
-            return Err(e);
-        }
-    }
-    let tok = format!("{k}:builder");
-    if !p.policy.review.scope_review {
-        let missing: Vec<String> = files
-            .iter()
-            .map(|x| {
-                t(
-                    "fix.scope.gap.line",
-                    &[("path", s(x, "path")), ("why", s(x, "why"))],
-                )
-            })
-            .collect();
-        run::spend_token(p, &tok)?;
-        gap(p, k, &missing, &t("fix.scope.gap.reason_off", &[]))?;
-        return Ok(json!({"checkpoint": k, "phase": "gap", "scope_request": paths(&files)}));
-    }
-    let hard: Vec<Value> = files
-        .iter()
-        .filter_map(|x| {
-            crate::scope::hard_rule(p, &pl, &st, k, s(x, "path"))
-                .map(|r| json!({"path": s(x, "path"), "rule": r}))
-        })
-        .collect();
-    if p.policy.roles.tokens {
-        run::spend_token(p, &tok)?;
-    }
-    events::append(
-        p,
-        "checkpoint.fix.scope.request",
-        json!({"checkpoint": k, "files": files, "note": note}),
-    )?;
-    if !hard.is_empty() {
-        events::append(
-            p,
-            "checkpoint.fix.scope.refuse",
-            json!({"checkpoint": k, "refusal": "hard", "files": hard}),
-        )?;
-        let missing: Vec<String> = hard
-            .iter()
-            .map(|h| {
-                t(
-                    "fix.scope.gap.line",
-                    &[("path", s(h, "path")), ("why", s(h, "rule"))],
-                )
-            })
-            .collect();
-        gap(p, k, &missing, &t("fix.scope.gap.reason_hard", &[]))?;
-        return Ok(json!({"checkpoint": k, "phase": "gap", "refused": hard, "plan_repair": true}));
-    }
-    ckfix::write_overlay(p)?;
-    p.write_guard()?;
-    Ok(json!({"checkpoint": k, "phase": "scope", "scope_request": paths(&files)}))
+    let _ = (p, role, token, note, list);
+    Err(refuse_owned(
+        t("ckfix_recommended.request.what", &[("k", k)]),
+        t("ckfix_recommended.request.because", &[]),
+        vec![
+            t("ckfix_recommended.request.step_change", &[]),
+            t("ckfix_recommended.request.step_report", &[("k", k)]),
+        ],
+        t("ckfix_recommended.request.check", &[]),
+    ))
 }
 
-/// The scope reviewer's verdict (`bf checkpoint scope <K> --verdict -`).
+/// A scope verdict (`bf checkpoint scope <K> --verdict -`) is refused: no fix has a request to judge.
 pub fn verdict(p: &Project, k: &str, verdict: &Value, token: Option<&str>) -> R<Value> {
-    let what = t("fix.scope.verdict.what", &[("k", k)]);
-    let _lock = crate::lock::engine(p, &what)?;
-    let st = events::require_chain(p)?;
-    run::need_run(&st)?;
-    let pl = plan::load(p)?;
-    let done = t("fix.scope.verdict.done_when", &[]);
-    let Some(f) = st
-        .ck_fix
-        .clone()
-        .filter(|f| f.checkpoint == k && f.phase == "scope")
-    else {
-        return Err(refuse_owned(
-            what,
-            t("fix.scope.verdict.none_open", &[]),
-            vec![t("fix.scope.verdict.none_step", &[])],
-            done,
-        ));
-    };
-    if p.policy.roles.tokens && !run::holds_token(p, &format!("{k}:reviewer"), token) {
-        return Err(refuse_owned(
-            what,
-            t("fix.scope.verdict.token", &[("k", k)]),
-            vec![t("fix.scope.verdict.token_step", &[])],
-            done,
-        ));
-    }
-    let hint = |why: String| {
-        refuse_owned(
-            what.clone(),
-            why,
-            vec![
-                t("fix.scope.verdict.hint", &[]),
-                t("fix.scope.verdict.bad_step_all", &[]),
-            ],
-            done.clone(),
-        )
-    };
-    let arr = verdict
-        .as_array()
-        .cloned()
-        .or_else(|| verdict.get("verdicts").and_then(|v| v.as_array().cloned()))
-        .ok_or_else(|| hint(t("fix.scope.verdict.not_list", &[])))?;
-    let wanted = paths(&f.request);
-    let mut seen: Vec<String> = Vec::new();
-    for v in &arr {
-        let path = s(v, "path");
-        if !wanted.iter().any(|w| w == path) {
-            return Err(hint(t("fix.scope.verdict.not_asked", &[("path", path)])));
-        }
-        if seen.iter().any(|x| x == path) {
-            return Err(hint(t("fix.scope.verdict.twice", &[("path", path)])));
-        }
-        if let Err(why) = retry::check_verdict_item(v) {
-            return Err(hint(format!("{path}: {why}")));
-        }
-        if s(v, "why").trim().is_empty() {
-            return Err(hint(t("fix.scope.verdict.no_why", &[("path", path)])));
-        }
-        seen.push(path.to_string());
-    }
-    if let Some(m) = wanted.iter().find(|w| !seen.contains(w)) {
-        return Err(hint(t("fix.scope.verdict.missing", &[("path", m)])));
-    }
-    if p.policy.roles.tokens {
-        run::spend_token(p, &format!("{k}:reviewer"))?;
-    }
-    let lim = retry::limit(p);
-    let mut granted: Vec<Value> = Vec::new();
-    let mut refused: Vec<Value> = Vec::new();
-    let mut retries: Vec<Value> = Vec::new();
-    let mut all: Vec<Value> = Vec::new();
-    let mut late = false;
-    for v in &arr {
-        let path = s(v, "path");
-        let asked = f
-            .request
-            .iter()
-            .find(|x| s(x, "path") == path)
-            .cloned()
-            .unwrap_or_default();
-        let round = retry::rounds_used(&f.refused, path) + 1;
-        let mut entry =
-            json!({"path": path, "why": s(v, "why"), "patch": s(&asked, "patch"), "round": round});
-        match s(v, "verdict") {
-            "extension" => {
-                entry["verdict"] = json!("extension");
-                refused.push(entry.clone());
-            }
-            "retry" => {
-                entry["verdict"] = json!(retry::verdict_word(&f.refused, path, lim));
-                entry["must"] = json!(s(v, "must").trim());
-                retries.push(entry.clone());
-            }
-            _ => {
-                entry["verdict"] = json!("needed");
-                if let Some(r) = crate::scope::hard_rule(p, &pl, &st, k, path) {
-                    late = true;
-                    entry["rule"] = json!(r);
-                    refused.push(entry.clone());
-                } else {
-                    granted.push(json!({"path": path, "why": s(&asked, "why"), "reviewer": s(v, "why"),
-                        "patch": s(&asked, "patch"), "new": asked["new"].as_bool().unwrap_or(false)}));
-                }
-            }
-        }
-        all.push(entry);
-    }
-    let extension = refused.iter().any(|x| s(x, "verdict") == "extension");
-    let held = late || extension || !retries.is_empty();
-    let mut phase = "fix";
-    let mut refusal = "";
-    if held {
-        // One answer, one event: nothing is granted, not even a needed file, and the builder asks again
-        // for what was needed (F-252). Only a late hard rule goes to the human at once.
-        refusal = if late {
-            "hard_late"
-        } else if extension {
-            "extension"
-        } else if retries.iter().any(|x| s(x, "verdict") == "retry_spent") {
-            "retry_spent"
-        } else {
-            "retry"
-        };
-        let counted = matches!(refusal, "retry" | "retry_spent");
-        let files: Vec<Value> = all
-            .iter()
-            .map(|e| {
-                let mut e = e.clone();
-                if !counted && s(&e, "verdict") == "retry_spent" {
-                    e["verdict"] = json!("retry");
-                }
-                e
-            })
-            .collect();
-        events::append(
-            p,
-            "checkpoint.fix.scope.refuse",
-            json!({"checkpoint": k, "refusal": refusal, "files": files}),
-        )?;
-        if late {
-            let missing: Vec<String> = refused
-                .iter()
-                .map(|r| {
-                    let why = if s(r, "rule").is_empty() {
-                        s(r, "why")
-                    } else {
-                        s(r, "rule")
-                    };
-                    t(
-                        "fix.scope.gap.line",
-                        &[("path", s(r, "path")), ("why", why)],
-                    )
-                })
-                .collect();
-            gap(p, k, &missing, &t("fix.scope.gap.reason_hard", &[]))?;
-            phase = "gap";
-        }
-    } else {
-        events::append(
-            p,
-            "checkpoint.fix.scope.grant",
-            json!({"checkpoint": k, "files": granted, "verdicts": arr}),
-        )?;
-    }
-    ckfix::write_overlay(p)?;
-    p.write_guard()?;
-    let granted_paths = if refusal.is_empty() {
-        paths(&granted)
-    } else {
-        vec![]
-    };
-    let mut not_granted = refused;
-    not_granted.extend(retries);
-    Ok(json!({"checkpoint": k, "result": "scope", "phase": phase,
-        "granted": granted_paths, "refused": not_granted, "refusal": refusal}))
+    let _ = (p, verdict, token);
+    Err(refuse_owned(
+        t("ckfix_recommended.verdict.what", &[("k", k)]),
+        t("ckfix_recommended.verdict.because", &[]),
+        vec![t("ckfix_recommended.verdict.step", &[("k", k)])],
+        t("ckfix_recommended.verdict.check", &[]),
+    ))
 }
 
 /// A removed line of a granted existing test or configuration file that the grant's patch does not

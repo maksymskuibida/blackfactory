@@ -21,6 +21,12 @@ pub struct Data {
     pub programs: &'static [&'static str],
     /// The folder of the transcripts.
     pub transcript_dir: &'static str,
+    /// The forms of the command that sets the human-absent flag (R-72); the first is the one named.
+    pub absent_commands: &'static [&'static str],
+    /// The forms a started session's first message begins with (D-94).
+    pub nested_forms: &'static [&'static str],
+    /// The permission modes in which a tool asks before it runs.
+    pub ask_modes: &'static [&'static str],
 }
 
 include!(concat!(env!("OUT_DIR"), "/adapter_data.rs"));

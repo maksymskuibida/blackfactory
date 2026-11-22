@@ -3,7 +3,7 @@
 
 use crate::events::State;
 use crate::scope::NextEntry;
-use crate::store::{s, Project};
+use crate::store::Project;
 use serde_json::{json, Value};
 
 /// Replay step run after every event.
@@ -41,11 +41,11 @@ pub fn after_event(st: &mut State, kind: &str, ev: &Value, seq: u64, at: &str) {
                 u.reconsider = false;
             }
         }
-        // A reviewer's `retry` gives the builder a second look at the request; every other refusal,
-        // `retry_spent` included, goes to the human.
+        // No reviewer's `retry` gives a second look any more. A refusal of an old log leaves the unit
+        // blocked in the replay, and `open` gives its builder the directive back.
         "unit.scope.refused" => {
             if let Some(u) = st.units.get_mut(&unit) {
-                u.reconsider = ev["refusal"] == "retry";
+                u.reconsider = false;
             }
         }
         _ => {}
@@ -66,10 +66,18 @@ pub fn back_state(st: &State, unit: &str) -> String {
     }
 }
 
+/// A unit blocked by a plain report that asks for a second look, or by a refusal of an old log that
+/// no one has answered since: a request or a wait no longer holds a unit, so the builder goes on.
 fn open(st: &State, unit: &str) -> bool {
-    st.units
-        .get(unit)
-        .is_some_and(|u| u.reconsider && u.state == "blocked")
+    st.units.get(unit).is_some_and(|u| {
+        u.state == "blocked"
+            && (u.reconsider
+                || st
+                    .scope
+                    .get(unit)
+                    .and_then(|sc| sc.refused.last())
+                    .is_some_and(|r| r["seq"].as_u64() == Some(u.last_seq)))
+    })
 }
 
 /// What `bf next` gives for a blocked unit, before the waiting rule.
@@ -79,7 +87,7 @@ pub fn next_entry(p: &Project, st: &State, id: &str, limits: Value) -> Option<Ne
     }
     let pl = crate::plan::load(p).ok()?;
     let u = pl.unit(id)?;
-    let mut d = json!({
+    let d = json!({
         "role": "builder", "action": "reconsider", "unit": id,
         "tier": crate::run::tier_for(p, u, "builder"),
         "working_copy": p.work_dir().join(id).to_string_lossy(),
@@ -87,30 +95,12 @@ pub fn next_entry(p: &Project, st: &State, id: &str, limits: Value) -> Option<Ne
         "limits": limits,
         "commands": [format!("bf brief {id} --role builder")],
     });
-    if let Some(r) = open_retry(st, id) {
-        let list: Vec<Value> = r["files"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|f| s(f, "verdict") == "retry")
-            .map(|f| json!({"path": s(f, "path"), "why": s(f, "why"), "must": s(f, "must")}))
-            .collect();
-        d["retry"] = json!(list);
-    }
     Some(NextEntry::Directive(d))
 }
 
-/// The reviewer's `retry` refusal the second look is open for, if the look came from one.
-pub fn open_retry(st: &State, unit: &str) -> Option<Value> {
-    if !open(st, unit) {
-        return None;
-    }
-    let last = st.scope.get(unit)?.refused.last()?.clone();
-    let fresh = st
-        .units
-        .get(unit)
-        .is_some_and(|u| u.last_seq == last["seq"].as_u64().unwrap_or(0));
-    (s(&last, "refusal") == "retry" && fresh).then_some(last)
+/// The reviewer's `retry` refusal a second look is open for: none, since no reviewer judges a request.
+pub fn open_retry(_st: &State, _unit: &str) -> Option<Value> {
+    None
 }
 
 /// Whether a request for files is accepted from a blocked unit.

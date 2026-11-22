@@ -67,7 +67,8 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         } else {
             format!(" and said: {note}")
         };
-        md.push_str(&format!("## Look again\n\nYou reported this unit blocked{said}.\n\nLook again before the human is asked. Pick the way that fits:\n\n- A file outside your list that your work needs: ask for it with `bf report {unit} --result blocked --token <token> --need-files -`.\n- A file you changed by mistake outside your list: put it back with `bf unit restore {unit} <path> --token <token>`, then go on.\n- A file whose change is formatting only: name it in your report's note as format only, and report built; the engine proves it.\n- A gap in the design (a requirement, decision or contract that is missing or contradicts this brief): report blocked again. It then goes to the human.\n\n"));
+        let list = crate::strings::t("run.brief.rule.list_recommended", &[]);
+        md.push_str(&format!("## Look again\n\nYou reported this unit blocked{said}.\n\nLook again before the human is asked. Pick the way that fits:\n\n- {list}\n- A file you changed by mistake outside your list: put it back with `bf unit restore {unit} <path> --token <token>`, then go on.\n- A file whose change is formatting only: name it in your report's note as format only, and report built; the engine proves it.\n- A gap in the design (a requirement, decision or contract that is missing or contradicts this brief): report blocked again. It then goes to the human.\n\n"));
     }
     md.push_str(&format!("Unit: {}\n\n", s(u, "title")));
     if !s(u, "text").is_empty() {
@@ -154,6 +155,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     md.push('\n');
     if role != "verifier" {
         md.push_str("## Where you work\n\n");
+        if let Some(sec) = outside_md(p, &st, u, unit, role) {
+            md.push_str(&sec);
+        }
         md.push_str(&format!(
             "Working copy: `{}`\n\n",
             p.work_dir().join(unit).display()
@@ -167,7 +171,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                 ));
             }
         }
-        md.push_str("Files you may change:\n");
+        md.push_str(&format!(
+            "{}:\n",
+            crate::strings::t("run.brief.files_heading", &[])
+        ));
         for f in crate::scope::unit_files(&st, u) {
             md.push_str(&format!("- `{f}`\n"));
         }
@@ -245,6 +252,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         md.push('\n');
     }
     if role == "reviewer" {
+        md.push_str(&builder_claim_md(p, unit));
+    }
+    if role == "reviewer" {
         let wc = p.work_dir().join(unit);
         let prior: Vec<Value> = st
             .units
@@ -264,13 +274,34 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             Some(l) => {
                 md.push_str("This is a later round. The findings above are every earlier finding with its outcome: check that each open one is fixed, and start from the changes made since the content the round before judged. Do not review the whole scope again when nothing points there. You may file a new finding on what changed, on something a fix broke, or on anything you came across while following a change.\n\n");
                 let head = l["head"].as_str().unwrap_or("");
-                if !head.is_empty() {
+                if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
+                    let lines: Vec<&str> = d.lines().collect();
+                    let shown = if lines.len() > 400 {
+                        format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        )
+                    } else {
+                        d.clone()
+                    };
+                    md.push_str(&format!(
+                        "### {}\n\n{}\n\n```diff\n{}\n```\n\n",
+                        crate::strings::t("land_conflict.review.title", &[]),
+                        crate::strings::t("land_conflict.review.intro", &[("files", &files.join(", "))]),
+                        shown
+                    ));
+                } else if !head.is_empty() {
                     let d = gitx::must(&wc, &["diff", head]).unwrap_or_default();
                     let lines: Vec<&str> = d.lines().collect();
                     md.push_str(&format!(
                         "### Changes since round {}\n\n```diff\n{}\n```\n\n",
                         l["round"],
-                        if lines.len() > 400 { format!("{}\n... ({} more lines)", lines[..400].join("\n"), lines.len() - 400) } else { d.clone() }
+                        if lines.len() > 400 { format!(
+                            "{}\n{}",
+                            lines[..400].join("\n"),
+                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                        ) } else { d.clone() }
                     ));
                 }
             }
@@ -288,10 +319,15 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         st.units.get(unit).map(|x| x.rounds).unwrap_or(0),
         p.policy.limits.idle_minutes
     ));
+    let rule_list_line = format!(
+        "- {}\n",
+        crate::strings::t("run.brief.rule.list_recommended", &[])
+    );
     md.push_str(&format!(
-        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n- A file outside your list that your work needs, most often a test your own change breaks, is a request with `--need-files`, never a plain blocked report.\n- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
+        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n{rule_list}- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
         p.work_dir().join(unit).display(),
-        unit = unit
+        unit = unit,
+        rule_list = rule_list_line
     ));
     md.push_str(&format!(
         "- {}\n",
@@ -366,4 +402,47 @@ fn retry_md(p: &Project, unit: &str, r: &Value) -> String {
         t("scope.retry.brief.plain", &[])
     ));
     md
+}
+
+/// The files changed outside the unit's list, for the reviewer's and the builder's brief.
+fn outside_md(
+    p: &Project,
+    st: &events::State,
+    u: &Value,
+    unit: &str,
+    role: &str,
+) -> Option<String> {
+    if !["builder", "reviewer"].contains(&role) {
+        return None;
+    }
+    let wc = p.work_dir().join(unit);
+    if !wc.exists() {
+        return None;
+    }
+    let ck = p.checkpoint_branch(s(u, "checkpoint"));
+    let base = gitx::must(&wc, &["merge-base", &ck, "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .or_else(|| {
+            st.units
+                .get(unit)
+                .map(|x| x.base_commit.clone())
+                .filter(|b| !b.is_empty())
+        })?;
+    let items = crate::outside::changed(&wc, &base, "", &crate::scope::unit_files(st, u));
+    Some(crate::outside::section(&items, role))
+}
+
+/// The builder's latest report of the unit, as a claim to check.
+fn builder_claim_md(p: &Project, unit: &str) -> String {
+    let Ok(l) = events::load_log(p) else {
+        return String::new();
+    };
+    l.events
+        .iter()
+        .rev()
+        .find(|e| e["kind"] == "unit.report" && e["unit"] == unit && e["role"] == "builder")
+        .map(|e| crate::outside::claim(s(e, "result"), s(e, "note")))
+        .unwrap_or_default()
 }
