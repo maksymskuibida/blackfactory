@@ -7,7 +7,7 @@ use super::*;
 use crate::strings::t;
 
 pub(crate) mod disk;
-pub(crate) mod sweep;
+pub mod sweep;
 
 /// What `remove_unit_copy` did.
 pub enum Removal {
