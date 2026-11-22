@@ -696,11 +696,11 @@ fn suite_for(p: &Project, pl: &Plan, st: &State, units: &[&Ready]) -> Suite {
     // The runs are recorded under a unit of the turn, never another. The landing runs the full suite of the
     // list, not the tests a unit names in its place (R-62 is for a unit's own check).
     let exec = units.first().map(|r| r.unit.clone()).unwrap_or_default();
-    let full = crate::checks::suite_command(p, pl, st, &exec);
     let mut list = crate::checks::attached_for_unit(p, pl, st, &exec).0;
+    // Each suite entry runs its own listed command.
     for a in list.iter_mut().filter(|a| a.kind == "suite") {
-        if let Some(c) = &full {
-            a.command = c.clone();
+        if let Some(c) = evidence::listed_command(p, pl, st, &exec, &a.id()) {
+            a.command = c;
         }
     }
     Suite { exec, list }

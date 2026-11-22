@@ -22,6 +22,14 @@ fn plan(fx: &Fx) {
 
 /// With `named`, each of the three units names its tests (`true`) and a fourth unit names none.
 fn plan_with(fx: &Fx, named: bool) {
+    plan_full(fx, named, &["suite=sh suite.sh"], None);
+}
+
+/// The run's list as `name=command` entries, or, with `project`, the project's own list in the policy.
+fn plan_full(fx: &Fx, named: bool, list: &[&str], project: Option<&str>) {
+    if let Some(l) = project {
+        fx.set_policy("list = []", &format!("list = [{l}]"));
+    }
     let mut recs = vec![(
         "requirement",
         "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\nacceptance=[\"y\"]\n".to_string(),
@@ -35,7 +43,8 @@ fn plan_with(fx: &Fx, named: bool) {
         recs.push(("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-4\"\n".to_string()));
     }
     if named {
-        recs.push(("check", "id=\"X-8\"\nkind=\"check\"\ntitle=\"s\"\nhow=\"command\"\ncommand=\"sh suite.sh\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".to_string()));
+        let close = "sh suite.sh";
+        recs.push(("check", format!("id=\"X-8\"\nkind=\"check\"\ntitle=\"s\"\nhow=\"command\"\ncommand=\"{close}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n")));
     }
     recs.push(("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"k\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n".into()));
     recs.push(("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"k\"\nafter=[\"U-1\",\"U-2\",\"U-3\"{}]\nproves=[\"R-1\"]\nchecks=[\"X-9\"{}]\n", if named { ",\"U-4\"" } else { "" }, if named { ",\"X-8\"" } else { "" })));
@@ -50,6 +59,7 @@ fn plan_with(fx: &Fx, named: bool) {
         out = out.display()
     );
     fs::write(fx.root.join("suite.sh"), script).unwrap();
+    fs::write(fx.root.join("other.sh"), format!("echo \"$PWD\" >> {}/other.log\n", out.display())).unwrap();
     fx.commit_all("records");
     fx.human("yes, make this a test run with simulated approvals");
     fx.must(&["test-mode", "grant", "--quote", "yes, make this a test run with simulated approvals"]);
@@ -57,7 +67,13 @@ fn plan_with(fx: &Fx, named: bool) {
     fx.must(&["checks", "wave", "propose", "none"]);
     fx.human("No wave checks for this run.");
     fx.must(&["checks", "wave", "set", "--quote", "No wave checks"]);
-    fx.must(&["checks", "unit", "propose", "override", "suite=sh suite.sh"]);
+    if project.is_some() {
+        fx.must(&["checks", "unit", "propose", "project"]);
+    } else {
+        let mut a = vec!["checks", "unit", "propose", "override"];
+        a.extend_from_slice(list);
+        fx.must(&a);
+    }
     fx.human("Use the suite for every unit.");
     fx.must(&["checks", "unit", "set", "--quote", "Use the suite for every unit"]);
     fx.must(&["gate", "open", "plan"]);
@@ -569,4 +585,34 @@ fn land_merge_a_failing_suite_charges_no_unit_outside_the_turn_when_every_unit_n
     for e in log(&fx).iter().filter(|e| e["kind"] == "evidence.run" && e["exit"].as_i64() != Some(0)) {
         assert_eq!(e["unit"], "U-1", "{e}");
     }
+}
+
+fn other_runs(fx: &Fx) -> usize {
+    fs::read_to_string(out_dir(fx).join("other.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.ends_with("/K-1"))
+        .count()
+}
+
+#[test]
+fn land_merge_each_suite_entry_of_the_list_runs_its_own_command_at_landing() {
+    let fx = Fx::new();
+    plan_full(&fx, true, &["suite=sh suite.sh", "full-suite=sh other.sh"], None);
+    for (n, f) in files() {
+        let u = format!("U-{n}");
+        let wc = PathBuf::from(fx.must(&["unit", "start", &u, "--json"]).json()["working_copy"].as_str().unwrap());
+        fs::create_dir_all(wc.join("src")).unwrap();
+        fs::write(wc.join(format!("src/{f}.txt")), "x\n").unwrap();
+        fx.must_in(&wc, &["evidence", "run", &format!("X-{n}"), "--unit", &u, "--", "true"]);
+        for id in ["attached:suite", "attached:full-suite"] {
+            fx.must_in(&wc, &["evidence", "run", id, "--unit", &u, "--", "true"]);
+        }
+        fx.must(&["report", &u, "--result", "built"]);
+        fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
+    }
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(state(&fx, "U-3").state, "landed");
+    assert_eq!(k_runs(&fx), 1, "the first entry's command ran once");
+    assert_eq!(other_runs(&fx), 1, "the second entry's own command ran once");
 }

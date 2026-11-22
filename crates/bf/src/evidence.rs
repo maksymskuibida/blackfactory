@@ -396,6 +396,50 @@ pub fn operator_message(check: &str, word: &str) -> String {
     )
 }
 
+/// The command the list gives for the attached check `check_id` of `unit`, before the unit's named tests take
+/// the suite's place: the unit's own list, then its checkpoint's, the run's, the project's (the order of
+/// `checks::attached_for_unit`).
+pub(crate) fn listed_command(
+    p: &Project,
+    pl: &crate::plan::Plan,
+    st: &crate::events::State,
+    unit: &str,
+    check_id: &str,
+) -> Option<Vec<String>> {
+    let name = check_id.strip_prefix(crate::checks::ATTACHED_PREFIX)?;
+    let u = pl.unit(unit)?;
+    let from_value = |v: &Value| -> Vec<(String, String)> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| (s(x, "name").trim().to_string(), s(x, "command").to_string()))
+            .collect()
+    };
+    let list: Vec<(String, String)> = if let Some(v) = u.get("own_checks") {
+        from_value(v)
+    } else if let Some(v) = pl
+        .checkpoint(s(u, "checkpoint"))
+        .and_then(|k| k.get("unit_checks"))
+    {
+        from_value(v)
+    } else {
+        match st.runs.last().and_then(|r| r.unit_checks.as_ref()) {
+            Some(c) if c["mode"] == "override" => from_value(&c["checks"]),
+            Some(c) if c["mode"] == "none" => vec![],
+            _ => p
+                .policy
+                .unit_checks
+                .list
+                .iter()
+                .map(|d| (d.name.trim().to_string(), d.command.clone()))
+                .collect(),
+        }
+    };
+    list.into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, c)| crate::checks::shell_words(&c))
+}
+
 /// Set while a landing turn runs the run's checks in this process: only then is the list's own suite command
 /// accepted for the attached suite check of a unit that names its tests (R-62 holds for a unit's own runs).
 static LANDING_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -588,7 +632,26 @@ pub fn run_with(
             "`bf evidence verify` lists the receipt.",
         ));
     }
-    if let Some(w) = record_operator_word(&chk) {
+    let want = command_words(&chk);
+    // R-62: a unit that names its tests has them in the suite's place. The landing runs the list's own suite
+    // command for a unit of its turn, so that command is accepted for that unit's attached suite check too.
+    let full_suite = LANDING_RUN.load(std::sync::atomic::Ordering::SeqCst)
+        && check_id.starts_with(crate::checks::ATTACHED_PREFIX)
+        && unit.is_some_and(|u| {
+            let (Ok(st), Ok(pl)) = (events::replay(p), crate::plan::load(p)) else {
+                return false;
+            };
+            crate::checks::attached_by_id(p, &pl, &st, u, check_id)
+                .is_some_and(|a| a.kind == "suite")
+                && listed_command(p, &pl, &st, u, check_id).as_deref() == Some(argv)
+        });
+    // Under the landing acceptance the command that runs is the list's, so that is the one tested.
+    let operator = if full_suite {
+        shell_operator_word(argv, false)
+    } else {
+        record_operator_word(&chk)
+    };
+    if let Some(w) = operator {
         return Err(refuse(
             format!("run evidence for {check_id}"),
             operator_message(check_id, &w),
@@ -616,19 +679,6 @@ pub fn run_with(
             }
         }
     }
-    let want = command_words(&chk);
-    // R-62: a unit that names its tests has them in the suite's place. The landing runs the list's own suite
-    // command for a unit of its turn, so that command is accepted for that unit's attached suite check too.
-    let full_suite = LANDING_RUN.load(std::sync::atomic::Ordering::SeqCst)
-        && check_id.starts_with(crate::checks::ATTACHED_PREFIX)
-        && unit.is_some_and(|u| {
-            let (Ok(st), Ok(pl)) = (events::replay(p), crate::plan::load(p)) else {
-                return false;
-            };
-            crate::checks::attached_by_id(p, &pl, &st, u, check_id)
-                .is_some_and(|a| a.kind == "suite")
-                && crate::checks::suite_command(p, &pl, &st, u).as_deref() == Some(argv)
-        });
     if want != argv && !full_suite {
         return Err(refuse(
             format!("run `{}` as evidence for {check_id}", argv.join(" ")),
@@ -898,8 +948,28 @@ fn refuse_out_of_order(
             Some(u) => {
                 let st = events::replay(p)?;
                 let pl = crate::plan::load(p)?;
-                crate::checks::earlier_unpassed(p, &pl, &st, &receipts, u, check_id, content)
+                if LANDING_RUN.load(std::sync::atomic::Ordering::SeqCst) {
+                    // A landing run puts the list's own suite command where a unit's named tests stand.
+                    let list = crate::checks::attached_for_unit(p, &pl, &st, u).0;
+                    let at = list.iter().position(|a| a.id() == check_id);
+                    at.and_then(|at| {
+                        list.iter().take(at).find(|a| {
+                            let want = listed_command(p, &pl, &st, u, &a.id())
+                                .unwrap_or_else(|| a.command.clone())
+                                .join(" ");
+                            !receipts.iter().any(|r| {
+                                r.check() == a.id()
+                                    && r.content() == content
+                                    && r.passes()
+                                    && s(&r.v, "command") == want
+                            })
+                        })
+                    })
                     .map(|a| a.id())
+                } else {
+                    crate::checks::earlier_unpassed(p, &pl, &st, &receipts, u, check_id, content)
+                        .map(|a| a.id())
+                }
             }
             None => None,
         }
