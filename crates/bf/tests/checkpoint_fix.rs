@@ -417,7 +417,7 @@ fn a_fix_goes_through_review_rounds_then_the_checks_run_again_and_units_are_attr
 }
 
 #[test]
-fn a_change_outside_the_files_is_refused_as_a_plan_gap_for_the_human() {
+fn a_change_outside_the_files_reports_built_and_the_reviewer_is_shown_it() {
     let fx = Fx::new();
     plan(&fx);
     land_unit(&fx);
@@ -425,26 +425,21 @@ fn a_change_outside_the_files_is_refused_as_a_plan_gap_for_the_human() {
     one_directive(&fx, "fix-checkpoint");
     fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
     fs::write(k.join("src/other.txt"), "not this checkpoint's\n").unwrap();
-    // An existing file of another folder is not a new test file either.
-    commit(&k, "more than allowed");
+    commit(&k, "more than listed");
     let o = builder_report(&fx, &k, "built");
-    assert_eq!(o.code, 2, "{}", o.all());
-    assert_four_parts(&o.stderr);
-    assert!(
-        o.stderr.contains("plan gap") && o.stderr.contains("src/other.txt"),
-        "{}",
-        o.stderr
-    );
-    let d = one_directive(&fx, "plan-gap");
-    assert_eq!(d["role"], "human", "{d}");
-    assert!(d["missing"].to_string().contains("src/other.txt"), "{d}");
-    assert!(d["note"].as_str().unwrap().contains("amendment"), "{d}");
-    // The abort turns this attempt down; the failing check still has a fix open, so it opens again.
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
-    assert!(!k.join("src/other.txt").exists());
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
-    assert!(!fx.must(&["status", "--json"]).json()["checkpoint_fix"]["open"].is_null());
+    assert_eq!(o.code, 0, "{}", o.all());
+    let d = one_directive(&fx, "review-checkpoint-fix");
+    assert_eq!(d["role"], "reviewer", "{d}");
+    let brief = fs::read_to_string(d["brief"].as_str().unwrap()).unwrap_or_else(|_| {
+        fs::read_to_string(
+            fx.must(&["brief", "K-1", "--role", "reviewer"])
+                .stdout
+                .trim(),
+        )
+        .unwrap()
+    });
+    assert!(brief.contains("src/other.txt"), "{brief}");
+    assert!(brief.contains("outside the lists"), "{brief}");
 }
 
 #[test]

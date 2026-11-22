@@ -93,7 +93,8 @@ fn a_plain_block_gives_a_reconsider_directive_with_the_note_in_its_brief() {
         brief.contains("my change breaks a test elsewhere"),
         "{brief}"
     );
-    assert!(brief.contains("--need-files"));
+    assert!(!brief.contains("--need-files"));
+    assert!(brief.contains("The list of files is a recommendation"));
 }
 
 #[test]
@@ -146,7 +147,9 @@ fn every_builder_brief_holds_the_three_lines() {
     let _ = o;
     let path = fx.project().briefs_dir().join("U-1-builder.md");
     let brief = fs::read_to_string(path).unwrap();
-    assert!(brief.contains("is a request with `--need-files`, never a plain blocked report"));
+    assert!(brief.contains("The list of files is a recommendation"));
+    assert!(brief.contains("give the reason in your report"));
+    assert!(!brief.contains("--need-files"));
     assert!(brief.contains("bf unit restore U-1 <path> --token <token>"));
     assert!(brief.contains("format only"));
     assert!(brief.contains("for a gap in the design only"));

@@ -468,7 +468,7 @@ fn ckfix_reopen_a_file_only_the_formatter_changed_is_accepted_with_its_mark_and_
 }
 
 #[test]
-fn ckfix_reopen_a_file_with_another_change_than_formatting_is_a_gap_naming_the_reason() {
+fn ckfix_reopen_a_file_with_another_change_than_formatting_reports_built_and_is_named_to_the_reviewer() {
     let fx = Fx::new();
     plan_checks(&fx, &[("X-2", "grep -q fixed src/a.txt")]);
     base_files(
@@ -502,11 +502,17 @@ fn ckfix_reopen_a_file_with_another_change_than_formatting_is_a_gap_naming_the_r
     .unwrap();
     commit(&k);
     let o = built(&fx, &k);
-    assert_ne!(o.code, 0, "{}", o.all());
+    assert_eq!(o.code, 0, "{}", o.all());
+    // The file is outside the lists and no format-only change: the reviewer's brief names it.
+    let brief = fs::read_to_string(
+        fx.must(&["brief", "K-1", "--role", "reviewer"])
+            .stdout
+            .trim(),
+    )
+    .unwrap();
     assert!(
-        o.all().contains("src/misc.rs") && o.all().contains("more than formatting"),
-        "{}",
-        o.all()
+        brief.contains("`src/misc.rs` lies outside the lists of the checkpoint's units"),
+        "{brief}"
     );
 }
 

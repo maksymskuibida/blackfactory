@@ -240,47 +240,47 @@ fn a_long_note_is_cut_and_a_missing_note_leaves_the_result_alone() {
     );
 }
 
+/// Append one `unit.scope.grant` event of the old mechanism, hash-chained, and move the head.
+fn append_grant(fx: &Fx, unit: &str, path: &str) {
+    let p = fx.project();
+    let key = p.read_key().unwrap();
+    let log = p.log_path();
+    let text = fs::read_to_string(&log).unwrap();
+    let count = text.lines().count() + 1;
+    let last = serde_json::from_str::<serde_json::Value>(text.lines().last().unwrap()).unwrap();
+    let prev = last["h"].as_str().unwrap().to_string();
+    let mut m = serde_json::Map::new();
+    m.insert("seq".into(), serde_json::json!(count));
+    m.insert("at".into(), last["at"].clone());
+    m.insert("kind".into(), serde_json::json!("unit.scope.grant"));
+    m.insert("prev".into(), serde_json::json!(prev));
+    m.insert("unit".into(), serde_json::json!(unit));
+    m.insert("n".into(), serde_json::json!(1));
+    m.insert("files".into(), serde_json::json!([{"path": path, "why": "needed", "patch": "+x\n", "new": false}]));
+    m.insert("marks".into(), serde_json::json!([]));
+    m.insert("request".into(), serde_json::json!(0));
+    m.insert("note".into(), serde_json::json!(""));
+    m.insert("cost".into(), serde_json::json!(0.0));
+    let h = bf::events::event_hash(&key, &prev, &m);
+    m.insert("h".into(), serde_json::json!(h.clone()));
+    let mut out = text;
+    out.push_str(&serde_json::to_string(&serde_json::Value::Object(m)).unwrap());
+    out.push('\n');
+    fs::write(&log, out).unwrap();
+    let mut head = bf::events::read_head(&p).unwrap_or_default();
+    head.count = count as u64;
+    head.last_hash = h;
+    bf::events::write_head(&p, &head).unwrap();
+}
+
 #[test]
 fn a_file_an_old_grant_covered_is_not_listed() {
     let fx = Fx::new();
     plan(&fx, "");
     base(&fx);
     real_run(&fx);
-    let wc = fx.work("U-1");
     fx.must(&["unit", "start", "U-1", "--json"]);
-    let patch = "--- a/docs/c.txt\n+++ b/docs/c.txt\n@@ -3,3 +3,3 @@\n-line 3\n-line 4\n-line 5\n+changed 3\n+changed 4\n+changed 5\n";
-    let ask = serde_json::json!([{"path": "docs/c.txt", "why": "the unit's change needs it", "patch": patch}]);
-    let o = fx.bf_stdin(
-        &wc,
-        &[
-            "report",
-            "U-1",
-            "--result",
-            "blocked",
-            "--need-files",
-            "-",
-            "--json",
-        ],
-        &ask.to_string(),
-    );
-    assert_eq!(o.code, 0, "{}", o.all());
-    let v = serde_json::json!([{"path": "docs/c.txt", "verdict": "needed", "why": "the unit's change needs it"}]);
-    let o = fx.bf_stdin(
-        &wc,
-        &[
-            "report",
-            "U-1",
-            "--role",
-            "reviewer",
-            "--result",
-            "scope",
-            "--verdict",
-            "-",
-            "--json",
-        ],
-        &v.to_string(),
-    );
-    assert_eq!(o.code, 0, "{}", o.all());
+    append_grant(&fx, "U-1", "docs/c.txt");
     built(&fx, true, "");
     let review = brief_of(&fx, "U-1", "reviewer");
     assert!(!review.contains("`docs/c.txt`: lines"), "{review}");
