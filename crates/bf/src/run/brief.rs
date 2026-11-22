@@ -279,39 +279,79 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             })
             .unwrap_or_default();
         md.push_str(&format!("## Review round {}\n\n", prior.len() + 1));
+        let taken = unit_sync::taken_in(p, unit);
+        if !taken.is_empty() {
+            md.push_str(&format!(
+                "### {}\n\n{}\n\n",
+                crate::strings::t("unit_sync.review.taken.title", &[]),
+                crate::strings::t("unit_sync.review.taken.body", &[])
+            ));
+            for f in &taken {
+                md.push_str(&format!("{}\n", crate::strings::t("autosync.brief.file", &[("path", f)])));
+            }
+            md.push('\n');
+        }
+        let capped = |d: &str| -> String {
+            let lines: Vec<&str> = d.lines().collect();
+            if lines.len() > 400 {
+                format!(
+                    "{}\n{}",
+                    lines[..400].join("\n"),
+                    crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                )
+            } else {
+                d.to_string()
+            }
+        };
+        let resolution = |files: &[String], d: &str| -> String {
+            format!(
+                "### {}\n\n{}\n\n```diff\n{}\n```\n\n",
+                crate::strings::t("land_conflict.review.title", &[]),
+                crate::strings::t("land_conflict.review.intro", &[("files", &files.join(", "))]),
+                capped(d)
+            )
+        };
         match prior.last() {
-            None => md.push_str("This is the first round and it is cold: no earlier report is given. Read everything in the unit's scope.\n\n"),
+            None => {
+                md.push_str(&format!("{}\n\n", crate::strings::t("unit_sync.review.first", &[])));
+                if !taken.is_empty() {
+                    if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
+                        md.push_str(&resolution(&files, &d));
+                    }
+                }
+            }
             Some(l) => {
                 md.push_str("This is a later round. The findings above are every earlier finding with its outcome: check that each open one is fixed, and start from the changes made since the content the round before judged. Do not review the whole scope again when nothing points there. You may file a new finding on what changed, on something a fix broke, or on anything you came across while following a change.\n\n");
                 let head = l["head"].as_str().unwrap_or("");
-                if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
-                    let lines: Vec<&str> = d.lines().collect();
-                    let shown = if lines.len() > 400 {
-                        format!(
-                            "{}\n{}",
-                            lines[..400].join("\n"),
-                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
-                        )
-                    } else {
-                        d.clone()
-                    };
-                    md.push_str(&format!(
-                        "### {}\n\n{}\n\n```diff\n{}\n```\n\n",
-                        crate::strings::t("land_conflict.review.title", &[]),
-                        crate::strings::t("land_conflict.review.intro", &[("files", &files.join(", "))]),
-                        shown
-                    ));
+                let round = l["round"].to_string();
+                let res = unit_sync::resolution_diff(p, unit);
+                if !taken.is_empty() {
+                    if let Some((files, d)) = &res {
+                        md.push_str(&resolution(files, d));
+                    }
+                    if !head.is_empty() {
+                        let own = unit_sync::own_files(p, unit);
+                        let d = if own.is_empty() {
+                            String::new()
+                        } else {
+                            let mut args = vec!["diff", head, "--"];
+                            args.extend(own.iter().map(|f| f.as_str()));
+                            gitx::must(&wc, &args).unwrap_or_default()
+                        };
+                        md.push_str(&format!(
+                            "### {}\n\n```diff\n{}\n```\n\n",
+                            crate::strings::t("unit_sync.review.since_own", &[("round", &round)]),
+                            capped(&d)
+                        ));
+                    }
+                } else if let Some((files, d)) = &res {
+                    md.push_str(&resolution(files, d));
                 } else if !head.is_empty() {
                     let d = gitx::must(&wc, &["diff", head]).unwrap_or_default();
-                    let lines: Vec<&str> = d.lines().collect();
                     md.push_str(&format!(
-                        "### Changes since round {}\n\n```diff\n{}\n```\n\n",
-                        l["round"],
-                        if lines.len() > 400 { format!(
-                            "{}\n{}",
-                            lines[..400].join("\n"),
-                            crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
-                        ) } else { d.clone() }
+                        "### {}\n\n```diff\n{}\n```\n\n",
+                        crate::strings::t("unit_sync.review.since", &[("round", &round)]),
+                        capped(&d)
                     ));
                 }
             }
