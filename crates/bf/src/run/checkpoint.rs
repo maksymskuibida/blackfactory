@@ -388,7 +388,14 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     // units change several.
     let cpwt = p.work_dir().join(k);
     let cp_repos: Vec<Repo> = checkpoint_repos(p, &pl, k)?.into_iter().cloned().collect();
-    for r in &cp_repos {
+    // A checkpoint that closed has its working copies removed: a later merge takes the content hash from
+    // the close event and merges the branch.
+    let closed_hash = st.closed.get(k).map(|c| c.hash.clone());
+    let copies_gone = closed_hash.is_some()
+        && cp_repos
+            .iter()
+            .any(|r| !checkpoint_wt(p, &pl, k, r).is_ok_and(|w| w.join(".git").exists()));
+    for r in cp_repos.iter().filter(|_| !copies_gone) {
         let wt = checkpoint_wt(p, &pl, k, r)?;
         if !wt.join(".git").exists() {
             return Err(refuse(
@@ -410,7 +417,10 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             ));
         }
     }
-    let content = p.content_hash(&cpwt)?;
+    let content = match closed_hash.filter(|_| copies_gone) {
+        Some(h) => h,
+        None => p.content_hash(&cpwt)?,
+    };
     let receipts = evidence::load_receipts(p)?;
     let waived = gates::waived_ids(&st);
     let mut gaps: Vec<String> = Vec::new();
@@ -655,6 +665,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
             json!({"checkpoint": k, "merged": merged, "hash": content, "unproven_off": unproven_off, "off_names": off_names, "run": crate::enforce::latest_run_id(&st)}),
         )?;
         p.write_guard()?;
+        cleanup::remove_checkpoint_copies(p, &pl, k)?;
     }
     Ok(
         json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st),

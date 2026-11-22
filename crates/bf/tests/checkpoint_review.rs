@@ -603,6 +603,8 @@ fn a_unit_copy_or_the_checkpoint_copy_cannot_write_into_the_reviewers_copy() {
     let copy = fx.work("K-1-review");
     let target = copy.join("src/a.txt");
     for from in [fx.work("U-1"), fx.work("K-1")] {
+        // A landed unit's copy is removed after its landing: the folder only stands in for where the writer is.
+        std::fs::create_dir_all(&from).unwrap();
         let (d, why) = write_decision(&fx, &from, &target);
         assert_eq!(d, "deny", "from {}: {why}", from.display());
         assert!(why.contains("reviewer's own copy"), "{why}");

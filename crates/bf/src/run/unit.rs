@@ -83,27 +83,18 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
     let ub = p.unit_branch(unit);
     let path = p.work_dir().join(unit);
     let existed = gitx::branch_exists(&repo.path, &ub);
-    if !path.join(".git").exists() {
-        if existed {
-            gitx::must(
-                &repo.path,
-                &["worktree", "add", &path.to_string_lossy(), &ub],
-            )?;
-        } else {
+    let mut behind = 0;
+    if existed {
+        behind = cleanup::ensure_unit_copy(p, unit)?;
+    } else {
+        if !path.join(".git").exists() {
             gitx::must(
                 &repo.path,
                 &["worktree", "add", "-b", &ub, &path.to_string_lossy(), &cpb],
             )?;
         }
+        crash_point("unit-start-after-git");
     }
-    crash_point("unit-start-after-git");
-    // A unit whose branch already exists may have fallen behind: a clean one with no commits of its own
-    // is brought up to the checkpoint branch (cause start); anything else is left as it is.
-    let behind = if existed {
-        unit_sync::auto_ff(p, &st, unit, "start")
-    } else {
-        0
-    };
     if cur.is_empty() {
         let base_commit = gitx::must(&repo.path, &["rev-parse", &ub])?;
         events::append(
