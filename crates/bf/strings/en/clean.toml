@@ -16,3 +16,5 @@
 "clean.left.open" = "the checkpoint {owner} is not closed"
 "clean.left.unknown" = "it is not the working copy of a unit or a checkpoint"
 "clean.left.stays" = "the folder could not be removed"
+
+"clean.line.note_dry" = "This list is partial: a real run also removes the build output of working copies nobody uses, folders the plan does not hold and the briefs of work that is over, and `--dry-run` does not list those."

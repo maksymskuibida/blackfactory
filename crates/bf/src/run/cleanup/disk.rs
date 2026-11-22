@@ -116,6 +116,7 @@ impl Clean {
             "removed": self.removed.iter().map(|(p, b)| json!({"path": p, "bytes": b})).collect::<Vec<_>>(),
             "left": self.left.iter().map(|(p, r)| json!({"path": p, "reason": r})).collect::<Vec<_>>(),
             "freed_bytes": self.freed(),
+            "note": if self.dry_run { Some(t("clean.line.note_dry", &[])) } else { None },
         })
     }
 
@@ -132,15 +133,18 @@ impl Clean {
         for (path, reason) in &self.left {
             lines.push(t("clean.line.left", &[("path", path), ("reason", reason)]));
         }
-        if self.removed.is_empty() {
+        if self.removed.is_empty() && !self.dry_run {
             lines.push(t("clean.line.nothing", &[]));
-        } else {
+        } else if !self.removed.is_empty() {
             let key = if self.dry_run {
                 "clean.line.total_dry"
             } else {
                 "clean.line.total"
             };
             lines.push(t(key, &[("bytes", &self.freed().to_string())]));
+        }
+        if self.dry_run {
+            lines.push(t("clean.line.note_dry", &[]));
         }
         lines.join("\n")
     }
@@ -205,6 +209,7 @@ pub(crate) fn clean(p: &Project, dry_run: bool) -> R<Clean> {
         left: Vec::new(),
     };
     let mut done: HashSet<String> = HashSet::new();
+    let mut deferred: Vec<(String, String)> = Vec::new();
     for name in names {
         let path = p.work_dir().join(&name);
         let Some(owner) = owner_of(&name) else {
@@ -229,8 +234,14 @@ pub(crate) fn clean(p: &Project, dry_run: bool) -> R<Clean> {
             continue;
         }
         if !st.closed.contains_key(&owner) {
-            out.left
-                .push((rel(p, &path), t("clean.left.open", &[("owner", &owner)])));
+            let why = t("clean.left.open", &[("owner", &owner)]);
+            // The review and wave copies of an open checkpoint may still be removed by the sweep below
+            // (a review round that is over): the verdict is given after it.
+            if name == owner {
+                out.left.push((rel(p, &path), why));
+            } else {
+                deferred.push((rel(p, &path), why));
+            }
             continue;
         }
         if !done.insert(owner.clone()) {
@@ -258,10 +269,28 @@ pub(crate) fn clean(p: &Project, dry_run: bool) -> R<Clean> {
         q.policy.limits.idle_minutes = 0;
         let st = events::replay(p)?;
         for r in sweep::sweep(&q, &st) {
+            let path = rel(p, &r.path);
             match r.kept {
-                Some(why) => out.left.push((rel(p, &r.path), why)),
-                None => out.removed.push((rel(p, &r.path), r.bytes)),
+                // One verdict for each path: the one `bf clean` gave first stands.
+                Some(why) => {
+                    if !out.left.iter().any(|(l, _)| *l == path) {
+                        out.left.push((path, why));
+                    }
+                }
+                None => {
+                    if !out.removed.iter().any(|(l, _)| *l == path) {
+                        out.removed.push((path, r.bytes));
+                    }
+                }
             }
+        }
+        let gone: HashSet<String> = out.removed.iter().map(|(p, _)| p.clone()).collect();
+        out.left.retain(|(l, _)| !gone.contains(l));
+        deferred.retain(|(l, _)| p.root.join(l).exists());
+    }
+    for (path, why) in deferred {
+        if !out.left.iter().any(|(l, _)| *l == path) {
+            out.left.push((path, why));
         }
     }
     Ok(out)

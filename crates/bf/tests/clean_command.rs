@@ -235,3 +235,77 @@ fn clean_also_runs_the_sweep_for_the_briefs_of_landed_units() {
     assert!(!brief.exists());
     assert!(running.exists());
 }
+
+fn left_paths(v: &serde_json::Value) -> Vec<String> {
+    paths(v, "left")
+}
+
+#[test]
+fn a_review_copy_of_an_open_checkpoint_has_one_verdict() {
+    let fx = fixture();
+    left_over(&fx);
+    let review = fx.work("K-2-review");
+    fs::create_dir_all(&review).unwrap();
+    fs::write(review.join("x.bin"), vec![b'x'; 50]).unwrap();
+    let dry = fx.must(&["clean", "--dry-run", "--json"]).json();
+    assert!(
+        left_paths(&dry).contains(&".bf/work/K-2-review".to_string()),
+        "{dry}"
+    );
+    assert!(
+        !paths(&dry, "removed").contains(&".bf/work/K-2-review".to_string()),
+        "{dry}"
+    );
+    assert!(dry["note"].as_str().unwrap().contains("partial"), "{dry}");
+    let v = fx.must(&["clean", "--json"]).json();
+    assert!(
+        paths(&v, "removed").contains(&".bf/work/K-2-review".to_string()),
+        "{v}"
+    );
+    assert!(
+        !left_paths(&v).contains(&".bf/work/K-2-review".to_string()),
+        "{v}"
+    );
+    assert!(!review.exists());
+    assert!(v["note"].is_null());
+}
+
+#[test]
+fn a_landed_copy_with_a_live_token_stays_in_a_real_run() {
+    let fx = fixture();
+    left_over(&fx);
+    fs::write(
+        fx.state_dir().join("tokens.json"),
+        r#"{"U-3:builder": "t", "U-1:reviewer": "t"}"#,
+    )
+    .unwrap();
+    let v = fx.must(&["clean", "--json"]).json();
+    assert!(left_paths(&v).contains(&".bf/work/U-1".to_string()), "{v}");
+    assert!(
+        !paths(&v, "removed").contains(&".bf/work/U-1".to_string()),
+        "{v}"
+    );
+    assert!(fx.work("U-1").exists());
+    assert!(!fx.work("U-2").exists());
+}
+
+#[test]
+fn a_landed_copy_with_uncommitted_work_is_listed_once() {
+    let fx = fixture();
+    left_over(&fx);
+    let wc = fx.work("U-1");
+    fs::remove_dir_all(&wc).unwrap();
+    let branch = fx.project().unit_branch("U-1");
+    git(
+        &fx.root,
+        &["worktree", "add", &wc.to_string_lossy(), &branch],
+    );
+    fs::write(wc.join("stray.txt"), "mine\n").unwrap();
+    let v = fx.must(&["clean", "--json"]).json();
+    let n = left_paths(&v)
+        .iter()
+        .filter(|p| *p == ".bf/work/U-1")
+        .count();
+    assert_eq!(n, 1, "{v}");
+    assert!(wc.join("stray.txt").exists());
+}
