@@ -488,7 +488,8 @@ fn files_git_quotes_in_the_diff_header_are_still_listed_with_their_lines() {
     }
     fs::write(r.join("fresh \"q\".txt"), "x\ny\n").unwrap();
     let got = bf::outside::changed(r, &base, "", &["a-listed.txt".to_string()]);
-    let mut seen: Vec<(String, bool, Vec<(u32, u32)>)> = got
+    type Seen = (String, bool, Vec<(u32, u32)>);
+    let mut seen: Vec<Seen> = got
         .iter()
         .map(|o| (o.path.clone(), o.new, o.ranges.clone()))
         .collect();

@@ -45,6 +45,7 @@ Do not retell a worker's report in the line. Read every state from the engine (`
 
 - Land: a refusal about receipts means the work changed after the checks ran. Follow the steps; `bf next` names the re-run.
 - While a checkpoint fix or sync runs the checkpoint's checks, other engine commands wait; one refused after its wait is run again when the checks end.
+- A reviewed unit whose checkpoint has a sync, a fix or a review round open, or another landing turn running, gets no `land` directive: `bf next` lists it under `waiting` with the reason, and offers `land` again when that ends. Nothing is asked of the human.
 - Close: `bf checkpoint close <K>`. It refuses while an ID has no proof at this content, or a check carries a failed or unreachable mark. Never pass `--merge` on your own.
 
 ## Human directives

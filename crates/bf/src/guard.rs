@@ -5397,7 +5397,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             .dest
                             .iter()
                             .filter(|d| {
-                                target_abs(d, &start).map_or(true, |a| !Path::new(&a).is_dir())
+                                target_abs(d, &start).is_none_or(|a| !Path::new(&a).is_dir())
                             })
                             .collect(),
                         // A link that replaces a folder (`ln -sfn x .claude`) takes it with it; a link

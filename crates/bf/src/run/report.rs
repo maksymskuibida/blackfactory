@@ -79,6 +79,15 @@ pub fn report(
             "`bf status` shows the unit in its new state.",
         ));
     }
+    // The audit of an open ask runs first: only it closes the asking finding, never a fixing round.
+    if cur == "review" {
+        if let Some(ask) = expert::asked(p, &st, unit)? {
+            return Err(crate::refusal::from_key(
+                "run.expert.review_waits",
+                &[("unit", unit), ("finding", s(&ask, "id"))],
+            ));
+        }
+    }
     if cur == "review"
         && ["findings", "built"].contains(&result)
         && !p.briefs_dir().join(format!("{unit}-reviewer.md")).exists()

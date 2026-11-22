@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 mod brief;
 mod checkpoint;
 pub mod expert;
-mod land;
+pub(crate) mod land;
 mod next;
 pub(crate) mod pause;
 mod report;

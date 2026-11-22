@@ -129,7 +129,7 @@ pub fn open_reason(p: &Project, st: &State, k: &str) -> Option<&'static str> {
 }
 
 /// Test seam: hold the turn open at a named point until the process's input ends.
-fn hold_point(name: &str, k: &str) {
+pub(crate) fn hold_point(name: &str, k: &str) {
     if std::env::var("BF_HOLD_AT").is_ok_and(|v| v == name) {
         eprintln!("{}", t("land_merge.hold.line", &[("checkpoint", k)]));
         let mut sink = Vec::new();
@@ -151,8 +151,10 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     ready(p, &st, &pl, &evidence::load_receipts(p)?, unit, true)?;
     if let Some(why) = open_reason(p, &st, k) {
         let w = t(&format!("land_merge.waits.why.{why}"), &[]);
-        return Ok(json!({"unit": unit, "landed": false, "waiting": true, "checkpoint": k,
-            "line": t("land_merge.waits.open", &[("unit", unit), ("why", &w), ("checkpoint", k)])}));
+        return Ok(
+            json!({"unit": unit, "landed": false, "waiting": true, "checkpoint": k,
+            "line": t("land_merge.waits.open", &[("unit", unit), ("why", &w), ("checkpoint", k)])}),
+        );
     }
     recover(p, &st, &pl, k, unit)?;
 
@@ -260,10 +262,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
                 let m = merged.into_iter().next().unwrap();
                 {
                     let _g = lock::engine(p, &format!("land {unit}"))?;
-                    gitx::must(
-                        &cpwt_of(&m.r.repo.name),
-                        &["reset", "--hard", &m.before],
-                    )?;
+                    gitx::must(&cpwt_of(&m.r.repo.name), &["reset", "--hard", &m.before])?;
                 }
                 blamed.push((m.r, check, tests));
             }
@@ -283,13 +282,22 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
                     };
                     match step {
                         Merge::Conflict => conflicted.push(r),
-                        Merge::Failed(why) => left.push((
-                            r.unit.clone(),
-                            t(
+                        Merge::Failed(why) => {
+                            let why = t(
                                 "land_merge.left.merge_failed",
                                 &[("checkpoint", &cpb), ("why", &why)],
-                            ),
-                        )),
+                            );
+                            if r.unit == unit {
+                                // The requested unit neither lands nor waits: it is refused, as at the first merge.
+                                return Err(refuse_owned(
+                                    t("land_merge.fail.what", &[("unit", unit)]),
+                                    why,
+                                    vec![t("land_merge.left.step", &[("unit", unit)])],
+                                    t("land_merge.left.worked", &[]),
+                                ));
+                            }
+                            left.push((r.unit.clone(), why));
+                        }
                         Merge::Done { before, tip } => {
                             let (content, v) = {
                                 let suite = suite_for(p, &pl, &st, &[&r]);
@@ -323,7 +331,10 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
             *marked = false;
             return Err(refuse_owned(
                 t("land_merge.recheck.what", &[("unit", unit)]),
-                t("land_merge.recheck.because", &[("unit", &r.unit), ("why", &why)]),
+                t(
+                    "land_merge.recheck.because",
+                    &[("unit", &r.unit), ("why", &why)],
+                ),
                 vec![t("land_merge.recheck.step", &[("unit", unit)])],
                 t("land_merge.recheck.worked", &[]),
             ));
@@ -427,15 +438,24 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
         .filter(|l| l.0.unit != unit)
         .map(|l| l.0.unit.as_str())
         .collect();
-    let mut lines = vec![t("land_merge.line.landed", &[("unit", unit), ("branch", &cpb)])];
+    let mut lines = vec![t(
+        "land_merge.line.landed",
+        &[("unit", unit), ("branch", &cpb)],
+    )];
     if !others.is_empty() {
-        lines.push(t("land_merge.line.same_turn", &[("units", &others.join(", "))]));
+        lines.push(t(
+            "land_merge.line.same_turn",
+            &[("units", &others.join(", "))],
+        ));
     }
     for (u, why) in &left {
         lines.push(t("land_merge.line.left", &[("unit", u), ("reason", why)]));
     }
     for (u, why) in &sent_back {
-        lines.push(t("land_merge.line.sent_back", &[("unit", u), ("reason", why)]));
+        lines.push(t(
+            "land_merge.line.sent_back",
+            &[("unit", u), ("reason", why)],
+        ));
     }
     Ok(json!({
         "unit": unit, "landed": true, "checkpoint": k, "branch": cpb, "merge": tip,
@@ -609,7 +629,11 @@ pub fn clean_engine_merge(p: &Project, unit: &str, wt: &Path, judged_head: &str)
         .collect();
     let Ok(chain) = gitx::must(
         wt,
-        &["rev-list", "--first-parent", &format!("{judged_head}..HEAD")],
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("{judged_head}..HEAD"),
+        ],
     ) else {
         return false;
     };
@@ -761,7 +785,11 @@ fn run_checks(
         let (id, argv) = (a.id(), a.command.clone());
         let receipts = evidence::load_receipts(p)?;
         let mut keys = vec![evidence::run_key(p, &argv, &content, top)];
-        keys.extend(units.iter().map(|r| evidence::run_key(p, &argv, &content, &r.wt)));
+        keys.extend(
+            units
+                .iter()
+                .map(|r| evidence::run_key(p, &argv, &content, &r.wt)),
+        );
         if reusable_run(&receipts, &keys) {
             continue;
         }
@@ -960,7 +988,7 @@ fn back_to_builder(p: &Project, unit: &str, k: &str, cpb: &str, files: Vec<Strin
                 &[("checkpoint", cpb), ("files", &named)],
             ),
             vec![t("land_conflict.aborted.step", &[("unit", unit)])],
-            &t("land_conflict.worked_aborted", &[]),
+            t("land_conflict.worked_aborted", &[]),
         ));
     }
     events::append(
@@ -987,6 +1015,6 @@ fn back_to_builder(p: &Project, unit: &str, k: &str, cpb: &str, files: Vec<Strin
             &[("checkpoint", cpb), ("files", &named)],
         ),
         steps,
-        &t("land_conflict.worked", &[]),
+        t("land_conflict.worked", &[]),
     ))
 }

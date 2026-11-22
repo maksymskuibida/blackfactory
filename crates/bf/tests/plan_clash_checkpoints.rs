@@ -169,8 +169,6 @@ fn amend_and_approve(fx: &Fx, ids: &[&str], edit: impl Fn(&Fx)) -> common::Out {
     fx.bf(&["amend", "approve", "A-1", "--quote", "approve the change"])
 }
 
-const X1: &str = "id=\"X-1\"\nkind=\"check\"\ntitle=\"Greeting file\"\nhow=\"command\"\ncommand=\"test -s src/hello.txt\"\nproves=[\"R-1\",\"C-1\",\"H-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n";
-
 fn u3(file: &str) -> String {
     unit("U-3", file, &[], "K-1") + "full_suite=\"fixture\"\n"
 }

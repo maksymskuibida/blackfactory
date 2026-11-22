@@ -10,7 +10,10 @@ use serde_json::{json, Value};
 
 /// Replay: a unit still blocked goes to the listed state; rounds and attempts stay.
 pub fn replay(st: &mut State, ev: &Value, seq: u64, at: &str) {
-    let (id, to) = (ev["unit"].as_str().unwrap_or(""), ev["to"].as_str().unwrap_or(""));
+    let (id, to) = (
+        ev["unit"].as_str().unwrap_or(""),
+        ev["to"].as_str().unwrap_or(""),
+    );
     let Some(u) = st.units.get_mut(id) else {
         return;
     };
@@ -45,7 +48,13 @@ pub fn next_entry(_p: &Project, _pl: &Plan, _st: &State, _id: &str) -> Option<Ne
 }
 
 /// A refusal carries no list of holders any more.
-pub fn refusal_fields(_p: &Project, _pl: &Plan, _st: &State, _unit: &str, _files: &[Value]) -> Value {
+pub fn refusal_fields(
+    _p: &Project,
+    _pl: &Plan,
+    _st: &State,
+    _unit: &str,
+    _files: &[Value],
+) -> Value {
     json!({})
 }
 

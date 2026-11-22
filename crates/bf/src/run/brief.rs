@@ -319,11 +319,15 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         st.units.get(unit).map(|x| x.rounds).unwrap_or(0),
         p.policy.limits.idle_minutes
     ));
+    let rule_list_line = format!(
+        "- {}\n",
+        crate::strings::t("run.brief.rule.list_recommended", &[])
+    );
     md.push_str(&format!(
         "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n{rule_list}- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
         p.work_dir().join(unit).display(),
         unit = unit,
-        rule_list = format!("- {}\n", crate::strings::t("run.brief.rule.list_recommended", &[]))
+        rule_list = rule_list_line
     ));
     md.push_str(&format!(
         "- {}\n",

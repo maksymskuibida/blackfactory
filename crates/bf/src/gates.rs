@@ -1627,7 +1627,7 @@ pub fn amend_checkpoint(p: &Project, pos: &[String], title: Option<&str>) -> R<V
     ops.push(op.clone());
     let edit = crate::amend::edit_of(p, &st, &ops)?;
     let touched = edit.touched();
-    let problems = crate::amend::result_problems(p, &open, &edit)?;
+    let problems = crate::amend::result_problems(p, open, &edit)?;
     events::append(
         p,
         "amend.checkpoint",

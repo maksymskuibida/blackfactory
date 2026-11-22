@@ -662,7 +662,13 @@ fn analyse(p: &Project, pl: &mut Plan, ids: &HashSet<String>, landed: &HashSet<S
                     if util::norm_overlap(na, nb) {
                         bad.push(crate::strings::t(
                             "cli.plan_waves.clash",
-                            &[("checkpoint", &cp), ("a", a), ("b", b), ("fa", fa), ("fb", fb)],
+                            &[
+                                ("checkpoint", &cp),
+                                ("a", a),
+                                ("b", b),
+                                ("fa", fa),
+                                ("fb", fb),
+                            ],
                         ));
                     }
                 }

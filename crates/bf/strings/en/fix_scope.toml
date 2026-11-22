@@ -59,11 +59,11 @@
 "fix.scope.gapfiles.what" = "report a gap on the fix of {k}"
 "fix.scope.gapfiles.none" = "a gap lists each file the fix needs, and this note names none"
 "fix.scope.gapfiles.none_step" = "Name each file in the note, one for each line, with the reason after it: `--note \"tests/a.rs: why it is needed\"`."
-"fix.scope.gapfiles.none_ask" = "To ask for a file of the checkpoint's own repository, report `bf report {k} --role builder --result blocked --token <token> --need-files -`: the scope reviewer judges it, not the human."
+"fix.scope.gapfiles.none_ask" = "A file of the checkpoint's own repository needs no request: change it and give the reason in the report's note. A gap is only for behaviour no record describes."
 "fix.scope.gapfiles.none_check" = "`bf next` shows the plan gap for the human."
 "fix.scope.gapfiles.listed" = "{path} is already in the files of this fix"
 "fix.scope.gapfiles.listed_step" = "Change {path} inside the fix; a gap names only files that are not in its list."
-"fix.scope.gapfiles.listed_ask" = "A file outside the list is asked for with `bf report {k} --role builder --result blocked --token <token> --need-files -`; the scope reviewer judges it, not the human."
+"fix.scope.gapfiles.listed_ask" = "A file outside the list needs no request: change it and give the reason in the report's note. A gap is only for behaviour no record describes."
 
 "fix.scope.landing.what" = "report the fix of {k}"
 "fix.scope.landing.because" = "the fix removes a line of {path}, a granted file, that the grant's patch does not remove: `{line}`"
@@ -134,7 +134,7 @@
 "cli.ckscope.need.because" = "it needs --verdict with the list of answers"
 "cli.ckscope.need.step" = "Run `bf checkpoint scope <K> --verdict - --token <token>` with the list on stdin."
 
-"fix.scope.brief.no_change_gap" = "If the fix needs a file outside the checkpoint's files, ask for it: `bf report {k} --role builder --result blocked --token <token> --need-files -`; for behaviour no record describes, report `--result gap --note \"<each file it needs, with the reason>\"`."
+"fix.scope.brief.no_change_gap" = "If the fix needs a file outside the checkpoint's files, change it and give the reason in the report's note; for behaviour no record describes, report `--result gap --note \"<each file it needs, with the reason>\"`."
 "fix.scope.brief.rules_title" = "Rules"
 "fix.scope.brief.rule_weaken" = "Make the failing checks pass by fixing the code, never by weakening a test: do not delete, skip or loosen a test or an assertion to get a pass. A reviewer looks for it."
 "fix.scope.brief.rule_commit" = "Commit the fix in the working copy (`git add` the files, `git commit`). Do not reset, check out, merge or rebase anything."

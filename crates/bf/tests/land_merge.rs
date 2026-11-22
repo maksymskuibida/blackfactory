@@ -55,7 +55,7 @@ fn plan_full(fx: &Fx, named: bool, list: &[&str], project: Option<&str>) {
     let out = out_dir(fx);
     fs::create_dir_all(&out).unwrap();
     let script = format!(
-        "echo \"$PWD\" >> {out}/suite.log\ncase \"$PWD\" in */K-1) ;; *) exit 0 ;; esac\nif [ -f src/bad.txt ]; then echo \"test land_merge::bad ... FAILED\"; exit 1; fi\nif [ -f {out}/flaky ] && [ ! -f {out}/flaky.done ]; then touch {out}/flaky.done; echo \"test land_merge::flaky ... FAILED\"; exit 1; fi\nexit 0\n",
+        "echo \"$PWD\" >> {out}/suite.log\ncase \"$PWD\" in */K-1) ;; *) exit 0 ;; esac\nif [ -f {out}/untrack ] && [ -f src/bad.txt ]; then git rm -q --cached src/a.txt; fi\nif [ -f src/bad.txt ]; then echo \"test land_merge::bad ... FAILED\"; exit 1; fi\nif [ -f {out}/flaky ] && [ ! -f {out}/flaky.done ]; then touch {out}/flaky.done; echo \"test land_merge::flaky ... FAILED\"; exit 1; fi\nexit 0\n",
         out = out.display()
     );
     fs::write(fx.root.join("suite.sh"), script).unwrap();
@@ -248,6 +248,13 @@ fn land_merge_a_land_during_a_turn_waits_and_the_turn_keeps_sync_and_fix_out() {
     }
     // A third unit reviewed meanwhile lands afterwards.
     built(&fx, "3", "src/c.txt", "three\n");
+    // While the turn runs, `bf next` offers no land for U-3: it lists the unit as waiting.
+    let n = fx.must(&["next", "--json"]).json();
+    assert!(
+        n["directives"].as_array().unwrap().iter().all(|d| d["action"] != "land"),
+        "{n}"
+    );
+    assert!(n["waiting"].to_string().contains("U-3"), "{n}");
     drop(child.stdin.take());
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -258,6 +265,54 @@ fn land_merge_a_land_during_a_turn_waits_and_the_turn_keeps_sync_and_fix_out() {
     assert_eq!(state(&fx, "U-3").state, "landed");
     // No turn is open now.
     assert!(!fx.bf(&["checkpoint", "fix", "K-1", "--abort"]).all().contains("landing turn"));
+}
+
+#[test]
+fn land_merge_the_requested_unit_whose_second_merge_fails_is_refused_not_reported_landed() {
+    let fx = Fx::new();
+    // On a failing suite in the checkpoint's copy the suite leaves U-1's file behind untracked: the three
+    // units fail together, the branch goes back, and U-1's second merge stops on that file with no conflict.
+    plan(&fx);
+    fs::write(out_dir(&fx).join("untrack"), "").unwrap();
+    built(&fx, "1", "src/a.txt", "one\n");
+    built(&fx, "2", "src/bad.txt", "bad\n");
+    built(&fx, "3", "src/c.txt", "three\n");
+    let o = fx.bf(&["unit", "land", "U-1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(!o.all().contains("landed on its checkpoint branch"), "{}", o.all());
+    assert!(o.all().contains("could not merge"), "{}", o.all());
+    assert_eq!(state(&fx, "U-1").state, "reviewed");
+}
+
+#[test]
+fn land_merge_a_sync_holds_the_turn_lock_so_a_land_waits_behind_it() {
+    let fx = Fx::new();
+    plan(&fx);
+    built(&fx, "1", "src/a.txt", "one\n");
+    let mut child = Command::new(bin())
+        .args(["checkpoint", "sync", "K-1", "--local", "--quote", "x"])
+        .current_dir(&fx.root)
+        .env("BF_STATE_HOME", &fx.state_base)
+        .env("BF_HOLD_AT", "checkpoint-command")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut held = String::new();
+    BufReader::new(child.stderr.as_mut().unwrap()).read_line(&mut held).unwrap();
+    assert!(held.contains("K-1"), "{held}");
+    // The sync holds the turn lock before it works: a land cannot open a turn in that gap.
+    let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
+    assert_eq!(o["waiting"], true, "{o}");
+    assert_eq!(state(&fx, "U-1").state, "reviewed");
+    // A second sync is refused for the open turn.
+    let o = fx.bf(&["checkpoint", "sync", "K-1", "--local", "--quote", "x"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    drop(child.stdin.take());
+    let _ = child.wait_with_output().unwrap();
+    fx.must(&["unit", "land", "U-1"]);
+    assert_eq!(state(&fx, "U-1").state, "landed");
 }
 
 #[test]

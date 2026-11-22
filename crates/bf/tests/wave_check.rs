@@ -319,6 +319,26 @@ fn a_failed_wave_check_opens_a_fix_held_to_the_units_landed_since_the_last_pass(
 }
 
 #[test]
+fn no_land_is_offered_while_a_wave_fix_of_its_checkpoint_is_open() {
+    let fx = Fx::new();
+    plan(&fx, true);
+    start(&fx);
+    land_first(&fx, "bad\n");
+    fx.must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"]);
+    review_second(&fx);
+    // U-2 is reviewed, and its checkpoint's wave fix is open: no land is offered, and the unit waits.
+    let n = fx.must(&["next", "--json"]).json();
+    let ds = n["directives"].as_array().unwrap();
+    assert!(
+        ds.iter().all(|d| d["action"] != "land"),
+        "a land directive while a wave fix is open: {n}"
+    );
+    let waiting = n["waiting"].to_string();
+    assert!(waiting.contains("U-2"), "{n}");
+    assert!(!waiting.is_empty() && waiting.contains("K-1"), "{n}");
+}
+
+#[test]
 fn a_wave_fix_that_changes_a_file_outside_its_set_reports_built() {
     let fx = Fx::new();
     plan(&fx, true);

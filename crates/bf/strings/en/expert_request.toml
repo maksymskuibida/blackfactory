@@ -9,3 +9,9 @@
 "run.expert.brief_where" = "Where: {where}"
 "run.expert.note" = "The reviewer of {unit} asked for a security audit ({finding}); report built when the audit is done, blocked when it cannot be."
 "cli.schema.finding.asks_security_unit" = "a finding that asks for a security audit names the `unit` it is about"
+
+"run.expert.review_waits.refused" = "report on {unit}"
+"run.expert.review_waits.because" = "{unit} has an open ask for a security audit ({finding}); the audit runs before the review is reported"
+"run.expert.review_waits.do_this.1" = "Have the security auditor audit {unit}: `bf next` offers it."
+"run.expert.review_waits.do_this.2" = "Then the reviewer reports again."
+"run.expert.review_waits.worked_when" = "The audit report closes the ask and the review report is accepted."

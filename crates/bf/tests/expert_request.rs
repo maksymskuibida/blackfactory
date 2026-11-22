@@ -218,3 +218,17 @@ fn a_unit_with_no_ask_is_reviewed_and_lands_as_before() {
     fx.must(&["unit", "land", "U-1"]);
     assert_eq!(state(&fx, "U-1"), "landed");
 }
+
+#[test]
+fn a_reviewer_report_while_an_ask_is_open_is_refused_and_the_ask_stays_open() {
+    let fx = Fx::new();
+    let wc = in_review(&fx);
+    assert_eq!(put_in(&fx, &wc, ASK, None).code, 0);
+    // No reviewer directive is offered while the ask is open, so the report carries no real token.
+    let o = fx.bf(&["report", "U-1", "--result", "findings", "--role", "reviewer", "--token", "none"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("security audit"), "{}", o.stderr);
+    assert_eq!(state(&fx, "U-1"), "review");
+    let o = finding(&fx, "F-1");
+    assert!(o["outcome"].is_null() || o["outcome"] == "open", "{o}");
+}
