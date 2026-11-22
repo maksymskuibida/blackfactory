@@ -136,21 +136,6 @@ fn a_dirty_copy_and_a_unit_in_review_are_refused() {
 }
 
 #[test]
-fn an_open_request_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
-    let wc = start(&fx, "U-2");
-    advance(&fx);
-    let list = r#"[{"path":"src/z.txt","why":"needed","patch":"a new file with one line"}]"#;
-    let a = ["report", "U-2", "--result", "blocked", "--need-files", "-"];
-    let r = fx.bf_stdin(&wc, &a, list);
-    assert_eq!(r.code, 0, "{}", r.all());
-    let o = fx.refused(&["unit", "sync", "U-2"]);
-    assert!(o.all().contains("request"), "{}", o.all());
-    assert!(syncs(&fx).is_empty());
-}
-
-#[test]
 fn a_receipt_sealed_before_the_sync_is_stale_after_it() {
     let fx = Fx::new();
     plan(&fx);

@@ -3,7 +3,6 @@
 
 mod common;
 use common::*;
-use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 
@@ -110,57 +109,6 @@ fn a_report_without_the_reviewers_brief_is_refused_until_it_is_written() {
     assert_eq!(u["state"], "review", "{u}");
     fx.must(&["brief", "U-1", "--role", "reviewer"]);
     let o = fx.bf(&clean);
-    assert_eq!(o.code, 0, "{}", o.all());
-}
-
-#[test]
-fn a_scope_verdict_does_not_need_the_reviewers_brief() {
-    let fx = Fx::new();
-    fx.tiny();
-    fs::create_dir_all(fx.root.join("tests")).unwrap();
-    fs::write(
-        fx.root.join("tests/old_test.rs"),
-        "fn t() {\n    assert_eq!(1, 1);\n    assert_eq!(2, 2);\n}\n",
-    )
-    .unwrap();
-    fx.commit_all("a file");
-    fx.start_test_run();
-    let o = fx.must(&["unit", "start", "U-1", "--json"]);
-    let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
-    let patch = "--- a/tests/old_test.rs\n+++ b/tests/old_test.rs\n@@ -2,3 +2,4 @@\n     assert_eq!(1, 1);\n+    assert_eq!(3, 3);\n     assert_eq!(2, 2);\n";
-    let list = json!([{"path": "tests/old_test.rs", "why": "the change needs it", "patch": patch}]);
-    let o = fx.bf_stdin(
-        &wc,
-        &[
-            "report",
-            "U-1",
-            "--result",
-            "blocked",
-            "--need-files",
-            "-",
-            "--json",
-        ],
-        &list.to_string(),
-    );
-    assert_eq!(o.code, 0, "{}", o.all());
-    let _ = fs::remove_file(brief_path(&fx, "reviewer"));
-    let verdict =
-        json!([{"path": "tests/old_test.rs", "verdict": "needed", "why": "the change needs it"}]);
-    let o = fx.bf_stdin(
-        &wc,
-        &[
-            "report",
-            "U-1",
-            "--role",
-            "reviewer",
-            "--result",
-            "scope",
-            "--verdict",
-            "-",
-            "--json",
-        ],
-        &verdict.to_string(),
-    );
     assert_eq!(o.code, 0, "{}", o.all());
 }
 

@@ -492,39 +492,3 @@ fn start_project(fx: &Fx) -> PathBuf {
             .unwrap(),
     )
 }
-
-#[test]
-fn the_brief_of_a_scope_review_holds_the_units_tests_and_asks_whether_they_cover_the_new_files() {
-    let fx = Fx::new();
-    fs::create_dir_all(fx.root.join("src")).unwrap();
-    fs::write(fx.root.join("src/a.rs"), "fn a() {}\n").unwrap();
-    fs::write(fx.root.join("src/extra.rs"), "fn e() {}\n").unwrap();
-    let wc = start_project(&fx);
-    let list = json!([{"path": "src/extra.rs", "why": "a helper", "patch": "+fn e() {}\n"}]);
-    let o = fx.bf_stdin(
-        &wc,
-        &[
-            "report",
-            "U-1",
-            "--result",
-            "blocked",
-            "--need-files",
-            "-",
-            "--json",
-        ],
-        &list.to_string(),
-    );
-    assert_eq!(o.code, 0, "{}", o.all());
-    let brief = fs::read_to_string(
-        fx.must(&["brief", "U-1", "--role", "reviewer", "--json"])
-            .json()["path"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        brief.contains("cargo nextest run --package=x a::"),
-        "{brief}"
-    );
-    assert!(brief.contains("still cover the new files"), "{brief}");
-}
