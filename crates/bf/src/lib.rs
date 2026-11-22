@@ -25,6 +25,7 @@ pub mod knowledge;
 pub mod ledger;
 pub mod legal;
 pub mod lock;
+pub mod outside;
 pub mod plan;
 pub mod policy;
 pub mod preset;

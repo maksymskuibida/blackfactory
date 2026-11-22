@@ -154,6 +154,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     md.push('\n');
     if role != "verifier" {
         md.push_str("## Where you work\n\n");
+        if let Some(sec) = outside_md(p, &st, u, unit, role) {
+            md.push_str(&sec);
+        }
         md.push_str(&format!(
             "Working copy: `{}`\n\n",
             p.work_dir().join(unit).display()
@@ -243,6 +246,9 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             }
         }
         md.push('\n');
+    }
+    if role == "reviewer" {
+        md.push_str(&builder_claim_md(p, unit));
     }
     if role == "reviewer" {
         let wc = p.work_dir().join(unit);
@@ -387,4 +393,47 @@ fn retry_md(p: &Project, unit: &str, r: &Value) -> String {
         t("scope.retry.brief.plain", &[])
     ));
     md
+}
+
+/// The files changed outside the unit's list, for the reviewer's and the builder's brief.
+fn outside_md(
+    p: &Project,
+    st: &events::State,
+    u: &Value,
+    unit: &str,
+    role: &str,
+) -> Option<String> {
+    if !["builder", "reviewer"].contains(&role) {
+        return None;
+    }
+    let wc = p.work_dir().join(unit);
+    if !wc.exists() {
+        return None;
+    }
+    let ck = p.checkpoint_branch(s(u, "checkpoint"));
+    let base = gitx::must(&wc, &["merge-base", &ck, "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .or_else(|| {
+            st.units
+                .get(unit)
+                .map(|x| x.base_commit.clone())
+                .filter(|b| !b.is_empty())
+        })?;
+    let items = crate::outside::changed(&wc, &base, "", &crate::scope::unit_files(st, u));
+    Some(crate::outside::section(&items, role))
+}
+
+/// The builder's latest report of the unit, as a claim to check.
+fn builder_claim_md(p: &Project, unit: &str) -> String {
+    let Ok(l) = events::load_log(p) else {
+        return String::new();
+    };
+    l.events
+        .iter()
+        .rev()
+        .find(|e| e["kind"] == "unit.report" && e["unit"] == unit && e["role"] == "builder")
+        .map(|e| crate::outside::claim(s(e, "result"), s(e, "note")))
+        .unwrap_or_default()
 }
