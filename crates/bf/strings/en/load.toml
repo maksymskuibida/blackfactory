@@ -1,0 +1,8 @@
+# Strings of the machine's load in a receipt (D-110, D-113): a warning only, never a refusal.
+
+"cli.evidence.load_warning" = "Warning: the machine is busy (load {load} on {cores} cores). {check} runs all the same; the run may be slow."
+"cli.evidence.load_line" = "load {load} on {cores} cores"
+"cli.evidence.unreachable_not_load" = "A mark for load is not wanted: a busy machine is a warning only. If the only reason is load, run {check} with `bf evidence run`."
+
+"load.brief.blocked_title" = "Earlier blocked reports"
+"load.brief.blocked_rule" = "These checks are marked unreachable, and each blocked report counts as an attempt. Run the marked checks with `bf evidence run`: a busy machine is no reason to stop. Report blocked again only when a check truly cannot run."

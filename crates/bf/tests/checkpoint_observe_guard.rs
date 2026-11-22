@@ -118,7 +118,7 @@ fn head(dir: &std::path::Path) -> String {
 fn hold_with_no_event(fx: &Fx, words: &str) {
     let k = fx.work("K-1");
     let marked = head(&k);
-    let o = fx.bf_stdin(&k, &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    let o = fx.bf_stdin(&k, &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
     let holds = count(fx, "checkpoint.hold");
     assert!(holds >= 1, "the mark's start is logged");
