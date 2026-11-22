@@ -69,3 +69,23 @@ fn the_skill_files_hold_the_rule() {
     assert!(read("harness/claude/skills/factory/amendments.md")
         .contains("Never ask a designer to measure, build or test"));
 }
+
+#[test]
+fn the_uiux_verifier_holds_the_rule() {
+    let f = "harness/claude/agents/uiux-verifier.md";
+    let t = read(f);
+    assert!(!t.contains("do not run it"), "{f} says do not run it");
+    for l in t.lines().filter(|l| l.contains("busy machine")) {
+        assert!(
+            !l.contains("bf evidence unreachable"),
+            "{f} marks a check unreachable for load"
+        );
+    }
+    for s in [
+        "On a busy machine the load is a warning only",
+        "with the human-absent flag on, end your turn without running it",
+        "No sleep, poll or retry loop in either case",
+    ] {
+        assert!(t.contains(s), "{f} lacks: {s}");
+    }
+}
