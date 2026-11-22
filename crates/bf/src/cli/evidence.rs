@@ -56,13 +56,18 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
             )?;
             let ok = v["exit"].as_i64() == Some(0);
             out(args, &v, || {
-                format!(
+                let mut line = format!(
                     "{} {}: exit {}, content {}",
                     s(&v, "id"),
                     check,
                     v["exit"],
                     &s(&v, "content_hash")[..12.min(s(&v, "content_hash").len())]
-                )
+                );
+                let load = evidence::load_line(&v);
+                if !load.is_empty() {
+                    line.push_str(&format!("\n{load}"));
+                }
+                line
             });
             if !ok {
                 std::process::exit(1);
@@ -93,7 +98,15 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
             let reason = args.flag("reason").unwrap_or("");
             let v = evidence::outcome(&p, check, kind, reason, args.flag("unit"))?;
             out(args, &v, || {
-                format!("{} recorded: {check} is {kind} ({reason})", s(&v, "id"))
+                let mut line = format!("{} recorded: {check} is {kind} ({reason})", s(&v, "id"));
+                if kind == "unreachable" {
+                    line.push('\n');
+                    line.push_str(&crate::strings::t(
+                        "cli.evidence.unreachable_not_load",
+                        &[("check", check)],
+                    ));
+                }
+                line
             });
         }
         "verify" => {
@@ -104,7 +117,7 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
                 .iter()
                 .map(|m| json!({"check": m.check, "failing": m.failing, "passing": m.passing}))
                 .collect();
-            let mut j = json!({"ok": ok, "receipts": rows.iter().map(|r| json!({"receipt": r.receipt, "check": r.check, "seal_ok": r.seal_ok, "content_ok": r.content_ok, "exit": r.exit})).collect::<Vec<_>>()});
+            let mut j = json!({"ok": ok, "receipts": rows.iter().map(|r| json!({"receipt": r.receipt, "load": r.load, "check": r.check, "seal_ok": r.seal_ok, "content_ok": r.content_ok, "exit": r.exit})).collect::<Vec<_>>()});
             if args.flag("unit").is_some() && args.flag("checkpoint").is_none() {
                 j["pass_after_failure"] = json!(marks);
                 j["unmet"] = json!(v
@@ -117,6 +130,9 @@ pub(crate) fn cmd_evidence(args: &Args) -> R<()> {
                 println!("{}", pretty(&j));
             } else {
                 for r in rows {
+                    if !r.load.is_empty() {
+                        println!("{}", r.load);
+                    }
                     println!(
                         "{} {} seal={} content={} exit={}",
                         r.receipt,

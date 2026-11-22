@@ -1293,6 +1293,30 @@ fn report_inner(
         ));
     }
     match (f.phase.as_str(), result) {
+        // The attempts limit bounds it: the report that reaches the limit parks the fix as any blocked report does.
+        ("fix", "blocked") if !f.origin_failed.is_empty() && f.attempts + 1 < p.policy.limits.max_attempts && {
+            // D-110: a block over checks that are all marked `unreachable` parks nothing.
+            let receipts = evidence::load_receipts(p)?;
+            let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+            f.origin_failed.iter().all(|o| {
+                evidence::standing_outcome(&receipts, s(o, "check"), &content)
+                    .and_then(|r| r.outcome())
+                    == Some("unreachable")
+            })
+        } =>
+        {
+            let checks: Vec<String> = f
+                .origin_failed
+                .iter()
+                .map(|o| s(o, "check").to_string())
+                .collect();
+            events::append(
+                p,
+                "checkpoint.fix.blocked",
+                json!({"checkpoint": k, "note": note, "checks": checks}),
+            )?;
+            Ok(json!({"checkpoint": k, "phase": f.phase, "parked": false, "due_again": checks}))
+        }
         ("fix", "blocked") => {
             let n = f.attempts + 1;
             let reason = if note.is_empty() {
@@ -2083,6 +2107,19 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                 limited(x["tail"].as_str().unwrap_or("").to_string(), 60)
             ));
         }
+    }
+    if role == "builder" && !f.blocked_notes.is_empty() {
+        md.push_str(&format!(
+            "## {}\n\n",
+            crate::strings::t("load.brief.blocked_title", &[])
+        ));
+        for n in &f.blocked_notes {
+            md.push_str(&format!("- {n}\n"));
+        }
+        md.push_str(&format!(
+            "\n{}\n\n",
+            crate::strings::t("load.brief.blocked_rule", &[])
+        ));
     }
     if !f.findings.is_empty() {
         md.push_str("## Findings to fix\n\n");

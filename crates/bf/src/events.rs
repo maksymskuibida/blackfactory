@@ -645,6 +645,9 @@ pub struct CkFixOpen {
     /// Failing check runs and blocked reports since the fix opened or was released.
     pub attempts: u32,
     pub reason: String,
+    /// The notes of the builder's blocked reports over checks marked `unreachable` (D-110): the fix stayed
+    /// in its phase, and each report counted as an attempt.
+    pub blocked_notes: Vec<String>,
     /// What is missing, when the fix is a plan gap.
     pub missing: Vec<String>,
     /// The findings the builder has to fix now.
@@ -704,6 +707,8 @@ pub struct CkHold {
     pub cause: String,
     pub detail: String,
     pub seq: u64,
+    /// A `marked` hold whose marks are all `unreachable` (D-110): the human's words still count.
+    pub unreachable_only: bool,
 }
 
 /// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
@@ -1189,6 +1194,9 @@ pub fn put_to_human_seq(st: &State, k: &str, ids: &[(u32, u32)]) -> u64 {
 /// passes the seq of the event it judges. One rule for the command and for the replay.
 pub fn decision_bound(st: &State, k: &str, base: u64, opened_before: u64) -> Result<u64, Hold> {
     match hold(st, k, opened_before) {
+        Some(Hold::Marked { .. }) if st.ck_holds.get(k).is_some_and(|h| h.unreachable_only) => {
+            Ok(base.max(st.ck_end_seq))
+        }
         Some(h) => Err(h),
         None => Ok(base.max(st.ck_end_seq)),
     }
@@ -2053,17 +2061,25 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let k = sv("checkpoint");
                 let cause = sv("cause");
                 if cause.is_empty() {
-                    if st.ck_holds.remove(&k).is_some() {
+                    // The end of a hold made only by `unreachable` marks moves no cut-off (D-110).
+                    if st.ck_holds.remove(&k).is_some_and(|h| !h.unreachable_only) {
                         st.ck_end_seq = seq;
                     }
                 } else {
                     let started = st.ck_holds.get(&k).map(|h| h.seq).unwrap_or(seq);
+                    // A hold that was more than `unreachable` marks and now is only those ends the part that
+                    // decided nothing: the cut-off moves to this moment (D-110).
+                    let now_only = ev["unreachable_only"].as_bool().unwrap_or(false);
+                    if now_only && st.ck_holds.get(&k).is_some_and(|h| !h.unreachable_only) {
+                        st.ck_end_seq = seq;
+                    }
                     st.ck_holds.insert(
                         k,
                         CkHold {
                             cause,
                             detail: sv("detail"),
                             seq: started,
+                            unreachable_only: ev["unreachable_only"].as_bool().unwrap_or(false),
                         },
                     );
                 }
@@ -2444,6 +2460,16 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         o.history
                             .push(json!({"round": ev["round"], "findings": o.findings}));
                     }
+                }
+            }
+            "checkpoint.fix.blocked" => {
+                if let Some(o) = st
+                    .ck_fix
+                    .as_mut()
+                    .filter(|o| o.checkpoint == sv("checkpoint"))
+                {
+                    o.attempts += 1;
+                    o.blocked_notes.push(sv("note"));
                 }
             }
             "checkpoint.fix.park" => {
