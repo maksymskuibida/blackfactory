@@ -248,7 +248,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
         let (content, verdict) = {
             let refs: Vec<&Ready> = merged.iter().map(|m| &m.r).collect();
             let suite = suite_for(p, &pl, &st, &refs);
-            run_checks(p, &suite, &top, &refs, !several)?
+            run_landing(p, &suite, &top, &refs, !several)?
         };
         match verdict {
             Verdict::Pass => {
@@ -293,7 +293,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
                         Merge::Done { before, tip } => {
                             let (content, v) = {
                                 let suite = suite_for(p, &pl, &st, &[&r]);
-                                run_checks(p, &suite, &top, &[&r], true)?
+                                run_landing(p, &suite, &top, &[&r], true)?
                             };
                             match v {
                                 Verdict::Pass => landed.push((r, tip, content)),
@@ -728,6 +728,20 @@ pub fn reusable_run(receipts: &[Receipt], keys: &[evidence::RunKey]) -> bool {
     keys.iter()
         .filter_map(|k| evidence::find_run(receipts, k))
         .any(|r| r.passes() && !s(&r.v, "sandbox").contains("compile-cache"))
+}
+
+/// `run_checks` with the runner told that this is a landing run.
+fn run_landing(
+    p: &Project,
+    suite: &Suite,
+    top: &Path,
+    units: &[&Ready],
+    retry: bool,
+) -> R<(String, Verdict)> {
+    evidence::landing_run(true);
+    let r = run_checks(p, suite, top, units, retry);
+    evidence::landing_run(false);
+    r
 }
 
 /// Each check of the suite on the content now in `top`, through the evidence runner. A passing receipt of the

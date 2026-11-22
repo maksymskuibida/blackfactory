@@ -396,6 +396,14 @@ pub fn operator_message(check: &str, word: &str) -> String {
     )
 }
 
+/// Set while a landing turn runs the run's checks in this process: only then is the list's own suite command
+/// accepted for the attached suite check of a unit that names its tests (R-62 holds for a unit's own runs).
+static LANDING_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn landing_run(on: bool) {
+    LANDING_RUN.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// `bf evidence run <check> [--unit U] -- <command...>`
 pub fn run(p: &Project, check_id: &str, unit: Option<&str>, argv: &[String]) -> R<Value> {
     run_at(p, check_id, unit, argv, &p.top.clone())
@@ -611,7 +619,8 @@ pub fn run_with(
     let want = command_words(&chk);
     // R-62: a unit that names its tests has them in the suite's place. The landing runs the list's own suite
     // command for a unit of its turn, so that command is accepted for that unit's attached suite check too.
-    let full_suite = check_id.starts_with(crate::checks::ATTACHED_PREFIX)
+    let full_suite = LANDING_RUN.load(std::sync::atomic::Ordering::SeqCst)
+        && check_id.starts_with(crate::checks::ATTACHED_PREFIX)
         && unit.is_some_and(|u| {
             let (Ok(st), Ok(pl)) = (events::replay(p), crate::plan::load(p)) else {
                 return false;
