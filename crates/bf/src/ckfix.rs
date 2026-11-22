@@ -776,12 +776,21 @@ fn changed(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<(String, char)>> {
         }
         let d = gitx::must(
             &wt,
-            &["diff", "--name-status", "--no-renames", &before, "HEAD"],
+            &[
+                "diff",
+                "-z",
+                "--name-status",
+                "--no-renames",
+                &before,
+                "HEAD",
+            ],
         )?;
-        for l in d.lines() {
-            let Some((st, path)) = l.split_once('\t') else {
+        // NUL-separated pairs of a status and an unquoted path, whatever characters the name holds.
+        let mut parts = d.split('\0');
+        while let (Some(st), Some(path)) = (parts.next(), parts.next()) {
+            if st.is_empty() {
                 continue;
-            };
+            }
             let path = if several {
                 format!("{name}/{path}")
             } else {
@@ -1023,7 +1032,18 @@ fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Ve
         let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
             continue;
         };
-        let d = gitx::must(&wt, &["diff", "-U0", "--no-renames", before, "HEAD"])?;
+        let d = gitx::must(
+            &wt,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "-U0",
+                "--no-renames",
+                before,
+                "HEAD",
+            ],
+        )?;
         let mut cur = String::new();
         for l in d.lines() {
             if let Some(rest) = l.strip_prefix("diff --git a/") {
@@ -1036,6 +1056,9 @@ fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Ve
                     x.to_string()
                 };
                 out.entry(cur.clone()).or_default();
+            } else if l.starts_with("diff --git ") {
+                // A name git still quotes (a quote, a backslash, a newline): no hunk is credited to another file.
+                cur = String::new();
             } else if l.starts_with("old mode ")
                 || l.starts_with("new mode ")
                 || l.starts_with("new file mode ")
@@ -1398,11 +1421,11 @@ fn report_inner(
                         crate::strings::t("ckfix_recommended.never.what", &[("k", k)]),
                         crate::strings::t(
                             "ckfix_recommended.never.because",
-                            &[("path", path), ("rule", &rule)],
+                            &[("path", &shown(path)), ("rule", &rule)],
                         ),
                         vec![crate::strings::t(
                             "ckfix_recommended.never.step",
-                            &[("path", path)],
+                            &[("path", &shown(path))],
                         )],
                         crate::strings::t("ckfix_recommended.never.check", &[]),
                     ));
@@ -2260,6 +2283,20 @@ fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
     md
 }
 
+/// A path as the brief prints it inside a code span: a backtick, a backslash and a control character are
+/// written as escapes, so no name can close the span or start a line of its own.
+fn shown(path: &str) -> String {
+    let mut o = String::new();
+    for c in path.chars() {
+        if c == '`' || c == '\\' || c.is_control() {
+            o.extend(c.escape_default());
+        } else {
+            o.push(c);
+        }
+    }
+    o
+}
+
 /// The rule that forbids a change to `path` whatever the lists say: a protected place, a link, a look-alike
 /// name, a file outside the repository. A file held by a unit that may run beside is named, not refused.
 fn never_allowed(p: &Project, pl: &Plan, st: &State, k: &str, path: &str) -> Option<String> {
@@ -2297,12 +2334,14 @@ fn outside_section(p: &Project, pl: &Plan, f: &CkFixOpen, role: &str) -> R<Strin
         )
     );
     for path in &out {
-        let line = match crate::scope::hard_rule(p, pl, &st, &f.checkpoint, path) {
+        let rule = crate::scope::hard_rule(p, pl, &st, &f.checkpoint, path);
+        let path = shown(path);
+        let line = match rule {
             Some(rule) => t(
                 "ckfix_recommended.brief.outside_file_rule",
-                &[("path", path), ("rule", &rule)],
+                &[("path", &path), ("rule", &rule)],
             ),
-            None => t("ckfix_recommended.brief.outside_file", &[("path", path)]),
+            None => t("ckfix_recommended.brief.outside_file", &[("path", &path)]),
         };
         md.push_str(&format!("{line}\n"));
     }

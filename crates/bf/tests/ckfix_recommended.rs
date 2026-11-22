@@ -343,8 +343,12 @@ fn ckfix_recommended_a_look_alike_name_is_refused_with_its_rule() {
     fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
     fs::write(k.join("src/\u{17f}rc.txt"), "x\n").unwrap();
     commit(&k);
-    // Git quotes the odd name, so the engine reads it as a path outside the repository: refused either way.
-    refused_with_rule(&fx, &k, "rc.txt", "is never granted");
+    refused_with_rule(
+        &fx,
+        &k,
+        "src/\u{17f}rc.txt",
+        "case-folds to an ASCII letter",
+    );
 }
 
 #[test]
@@ -389,4 +393,48 @@ fn ckfix_recommended_a_plain_outside_file_is_named_to_the_reviewer_and_to_the_bu
         "{b}"
     );
     assert!(b.contains("recommendation"), "{b}");
+}
+
+#[test]
+fn ckfix_recommended_a_plain_non_ascii_name_outside_the_lists_reports_built_and_is_named() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::write(k.join("src/caf\u{e9}.txt"), "x\n").unwrap();
+    commit(&k);
+    let o = built(&fx, &k, "why");
+    assert_eq!(o.code, 0, "{}", o.all());
+    let b = reviewer_brief(&fx);
+    assert!(
+        b.contains("`src/caf\u{e9}.txt` lies outside the lists of the checkpoint's units"),
+        "{b}"
+    );
+}
+
+#[test]
+fn ckfix_recommended_a_non_ascii_new_test_file_inside_the_test_folder_is_not_outside() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::write(k.join("tests/caf\u{e9}.txt"), "x\n").unwrap();
+    commit(&k);
+    assert_eq!(built(&fx, &k, "why").code, 0);
+    let b = reviewer_brief(&fx);
+    assert!(!b.contains("lies outside"), "{b}");
+}
+
+#[test]
+fn ckfix_recommended_a_name_with_a_newline_is_refused_and_printed_as_an_escape() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::write(k.join("src/odd\nname`.txt"), "x\n").unwrap();
+    commit(&k);
+    let o = built(&fx, &k, "why");
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(
+        o.stderr.contains("src/odd\\nname\\`.txt cannot be changed"),
+        "{}",
+        o.stderr
+    );
 }
