@@ -2288,7 +2288,9 @@ fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
 fn shown(path: &str) -> String {
     let mut o = String::new();
     for c in path.chars() {
-        if c == '`' || c == '\\' || c.is_control() {
+        if c == '`' {
+            o.push_str("\\`");
+        } else if c == '\\' || c.is_control() {
             o.extend(c.escape_default());
         } else {
             o.push(c);
