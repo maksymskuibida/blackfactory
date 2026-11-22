@@ -781,17 +781,19 @@ fn every_writer_is_held_to_the_cover_check_of_a_protected_folder() {
 }
 
 #[test]
-fn only_a_builder_agent_may_enter_a_working_copy() {
+fn only_a_worker_agent_with_a_copy_may_enter_a_working_copy() {
     let (fx, wc) = unit_place();
     let cd = "cd .bf/work/U-1";
-    // A builder agent starts at the root and enters its copy.
-    assert_ne!(says_as(&fx, &fx.root, "builder", "Bash", json!({"command": cd})), "deny");
-    // The main session and other agents do not.
+    // A worker agent that is given a copy starts at the root and enters it.
+    for agent in ["builder", "reviewer", "verifier", "security-auditor", "legal-auditor", "uiux-verifier", "knowledge-writer"] {
+        assert_ne!(says_as(&fx, &fx.root, agent, "Bash", json!({"command": cd})), "deny", "{agent}");
+        // Inside the copy it does not leave it.
+        assert_eq!(says_as(&fx, &wc, agent, "Bash", json!({"command": "cd .."})), "deny", "{agent} leaves");
+        assert_eq!(says_as(&fx, &wc, agent, "Bash", json!({"command": "cd /"})), "deny", "{agent} leaves");
+    }
+    // The main session and any other agent do not enter.
     assert_eq!(says_as(&fx, &fx.root, "", "Bash", json!({"command": cd})), "deny");
-    for agent in ["reviewer", "verifier", "security-auditor"] {
+    for agent in ["designer", "repair-judge", "lawyer"] {
         assert_eq!(says_as(&fx, &fx.root, agent, "Bash", json!({"command": cd})), "deny", "{agent}");
     }
-    // A builder inside its copy still does not leave it.
-    assert_eq!(says_as(&fx, &wc, "builder", "Bash", json!({"command": "cd .."})), "deny");
-    assert_eq!(says_as(&fx, &wc, "builder", "Bash", json!({"command": "cd /"})), "deny");
 }

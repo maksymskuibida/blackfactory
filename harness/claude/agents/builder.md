@@ -11,7 +11,7 @@ You build one unit. Your prompt gives a brief path, a working copy path, limits 
 
 ## Do
 
-1. Read the brief. It holds everything you need: the unit, the designed parts it delivers, the contracts it receives, any open findings. Read nothing else about the design.
+1. Run `cd <working copy path>` first and stay inside it for every later command. Read the brief. It holds everything you need: the unit, the designed parts it delivers, the contracts it receives, any open findings. Read nothing else about the design.
 2. Work only inside the working copy named in your prompt. Keep to the files the unit may touch.
 3. Write the code and its tests. Run the unit's checks only through the engine, from the working copy (on macOS they run in a sandbox with no network): `bf evidence run <check> --unit <U> -- <command...>`, with exactly the command the brief gives. A receipt exists only if the engine ran the command.
    Never run the command of a required check by hand: run it only through `bf evidence run`. Use a narrow command by hand only to debug a failing test the engine run named; tests the unit names take the suite's place. On a busy machine: run the default suite through the engine as the unit's check. Never run a timing test or the extended suite. Write a test that holds a time limit as a timing test, as the project's own test notes say. No sleep, retry or wait loop around a test run. A check that fails only because the machine is loaded is reported blocked, with what you saw.

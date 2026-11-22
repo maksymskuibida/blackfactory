@@ -365,6 +365,8 @@ thread_local! {
     /// The kind of session judged now: 0 a session with no agent type (the top-level one), 1 a builder
     /// agent, 2 any other agent (reviewer, verifier, auditor, judge, conductor's helpers).
     static ROLE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Is the session judged now an agent of a type in `COPY_ROLES`?
+    static GETS_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A name part that is not ASCII but folds to an ASCII letter (`ſ`, the Kelvin sign, `ß`, a ligature)
@@ -4766,6 +4768,18 @@ fn bf_rest(w: &[String]) -> &[String] {
 }
 
 /// The agent type the harness put in the hook payload, if any.
+/// The agent types the conductor starts with a working copy path in the prompt. They enter it from
+/// outside as their first step; the main session (no agent type) and every other agent do not.
+const COPY_ROLES: &[&str] = &[
+    "builder",
+    "reviewer",
+    "verifier",
+    "security-auditor",
+    "legal-auditor",
+    "uiux-verifier",
+    "knowledge-writer",
+];
+
 fn agent_type(input: &Value) -> &str {
     input["agent_type"].as_str().unwrap_or("")
 }
@@ -5074,11 +5088,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             );
                         }
                     }
-                    if !(in_worker || in_cp) && ROLE.with(|r| r.get()) != 1 {
+                    if !(in_worker || in_cp) && !GETS_COPY.with(|g| g.get()) {
                         // A session outside every working copy does not step into one: it would stand
-                        // where a builder stands and be taken for it. A builder agent starts at the
-                        // root and is told to work in its copy, so it may enter one. The guard cannot
-                        // tell which unit the caller builds, so a builder may enter any copy.
+                        // where a builder stands and be taken for it. A worker agent that is given a copy
+                        // starts at the root and enters it as its first step, so it may. The guard
+                        // cannot tell which copy the caller was given, so such a worker may enter any.
                         let abs = resolve(target, &dir_str);
                         if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
                             return deny(
@@ -5686,6 +5700,7 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     } else {
         resolve(cwd_raw, "/")
     };
+    GETS_COPY.with(|g| g.set(COPY_ROLES.contains(&agent_type(input))));
     ROLE.with(|r| {
         r.set(match agent_type(input) {
             "" => 0,
