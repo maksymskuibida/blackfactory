@@ -24,9 +24,13 @@ Keep private notes out of the repository. Write as if the reader knows nothing a
 
 ```bash
 CARGO_BUILD_JOBS=4 cargo build --release   # binary: target/release/bf
-CARGO_BUILD_JOBS=4 cargo test              # all tests, including attack and timing tests
+CARGO_BUILD_JOBS=4 cargo nextest run       # default suite, about 90 s: everything except timing and documentation tests
+CARGO_BUILD_JOBS=4 cargo test --doc        # documentation tests
+CARGO_BUILD_JOBS=4 cargo nextest run --profile extended   # timing tests too, only on a quiet machine
 cargo fmt --check && cargo clippy          # style
 ```
+
+Use nextest for the suite, as CI does. Plain `cargo test` also runs every timing test in one process and takes several minutes. See `crates/bf/tests/README.md`.
 
 Do not install anything globally. The engine makes no network call except `cargo` fetching crates. Rust crates must be permissively licensed (MIT, Apache-2.0, BSD or similar) and listed in `NOTICE.md`.
 

@@ -8,7 +8,8 @@ This page lists every command with one example and the refusals you can meet. Fo
 
 ```bash
 cargo build --release          # binary at target/release/bf
-cargo test                     # unit, attack, resume, timing and end-to-end tests
+cargo nextest run              # unit, attack, resume and end-to-end tests
+cargo nextest run --profile extended   # the same plus the timing tests, on a quiet machine
 ```
 
 ```bash
