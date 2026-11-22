@@ -195,6 +195,10 @@ impl OpenWork {
         let Some(cp) = self.pl.checkpoints.iter().find(|c| s(c, "id") == k) else {
             return false;
         };
+        // While a fix of the checkpoint is open, the verifier waits for it and gets a new token after.
+        if self.st.ck_fix.as_ref().is_some_and(|f| f.checkpoint == k) {
+            return false;
+        }
         if matches!(
             events::hold(&self.st, k, u64::MAX),
             Some(events::Hold::Marked { .. })
