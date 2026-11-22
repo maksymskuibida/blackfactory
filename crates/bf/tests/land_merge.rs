@@ -616,3 +616,35 @@ fn land_merge_each_suite_entry_of_the_list_runs_its_own_command_at_landing() {
     assert_eq!(k_runs(&fx), 1, "the first entry's command ran once");
     assert_eq!(other_runs(&fx), 1, "the second entry's own command ran once");
 }
+
+#[test]
+fn land_merge_a_listed_suite_command_with_an_operator_is_refused_for_a_unit_that_names_tests() {
+    let fx = Fx::new();
+    // The project's own list is not screened for operators: its second suite entry holds one.
+    plan_full(
+        &fx,
+        true,
+        &[],
+        Some("{ name = \"suite\", command = \"sh suite.sh\" }, { name = \"suite2\", command = \"sh other.sh && true\" }"),
+    );
+    let named = |n: &str, wc: &Path, file: &str| {
+        let u = format!("U-{n}");
+        fs::create_dir_all(wc.join("src")).unwrap();
+        fs::write(wc.join(file), "x\n").unwrap();
+        fx.must_in(wc, &["evidence", "run", &format!("X-{n}"), "--unit", &u, "--", "true"]);
+        for id in ["attached:suite", "attached:suite2"] {
+            fx.must_in(wc, &["evidence", "run", id, "--unit", &u, "--", "true"]);
+        }
+        fx.must(&["report", &u, "--result", "built"]);
+        fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
+    };
+    // The unit's receipts are for its named tests, so the landing runs each listed suite entry itself.
+    let w1 = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    named("1", &w1, "src/a.txt");
+    let o = fx.bf(&["unit", "land", "U-1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("which a check cannot use"), "{}", o.stderr);
+    assert_eq!(other_runs(&fx), 0, "the entry with the operator never ran");
+    assert_eq!(state(&fx, "U-1").state, "reviewed");
+    assert!(lands(&fx).is_empty());
+}
