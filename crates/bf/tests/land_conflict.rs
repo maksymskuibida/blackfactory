@@ -92,11 +92,12 @@ fn land_conflict_goes_to_the_builder_then_one_review_round_then_lands() {
         fx.must(&["report", &u, "--result", "built"]);
         fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
     }
-    fx.must(&["unit", "land", "U-1"]);
-    // The second landing conflicts: the unit goes back to its builder.
-    let o = fx.bf(&["unit", "land", "U-2"]);
-    assert_ne!(o.code, 0, "{}", o.all());
-    assert!(o.all().contains("src/shared.txt") && o.all().contains("builder"), "{}", o.all());
+    // U-1's landing turn takes U-2 in too; U-2's merge conflicts and the unit goes back to its builder.
+    let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
+    let sent_back = o["sent_back"].to_string();
+    assert!(sent_back.contains("U-2") && sent_back.contains("src/shared.txt"), "{o}");
+    let line = o["line"].as_str().unwrap();
+    assert!(line.contains("U-2") && line.contains("src/shared.txt") && line.contains("builder"), "{o}");
     let u2 = state(&fx, "U-2");
     assert_eq!(u2.state, "fixing");
     assert_eq!(u2.attempts, 0);

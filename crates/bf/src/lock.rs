@@ -65,3 +65,52 @@ pub fn tokens(p: &Project) -> R<EngineLock> {
         wait_ms().max(10_000),
     )
 }
+
+/// The file name of a checkpoint's turn lock and mark: the checkpoint's ID with every character that is
+/// no letter, digit, `-` or `_` made a `_`.
+fn turn_stem(k: &str) -> String {
+    k.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Open the lock of a checkpoint's landing turn for a test or a take, creating the file.
+fn turn_file(p: &Project, k: &str) -> R<fs::File> {
+    fs::create_dir_all(p.dot_bf())?;
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(p.dot_bf().join(format!("land-{}.lock", turn_stem(k))))?)
+}
+
+/// Take the lock that holds a checkpoint's landing turn, without waiting: `None` when a turn of that
+/// checkpoint is running. The operating system frees it if the process dies.
+pub fn turn(p: &Project, k: &str) -> R<Option<EngineLock>> {
+    let file = turn_file(p, k)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(EngineLock { _file: file })),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(err(crate::strings::t("land_merge.lock.error", &[("e", &e.to_string())]))),
+    }
+}
+
+/// Whether a landing turn of the checkpoint is running now: one test of its lock.
+pub fn turn_open(p: &Project, k: &str) -> bool {
+    match turn_file(p, k) {
+        Ok(file) => matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
+}
+
+/// The mark a turn writes beside its lock file before its first merge: the commit each repository's
+/// checkpoint branch stands on and the units of the turn.
+pub fn turn_mark(p: &Project, k: &str) -> std::path::PathBuf {
+    p.dot_bf().join(format!("land-{}.mark", turn_stem(k)))
+}

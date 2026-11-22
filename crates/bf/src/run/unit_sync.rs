@@ -309,7 +309,11 @@ pub(crate) fn brief_md(p: &Project, unit: &str) -> String {
             "## {}\n\n{}\n\n{}\n\n",
             t("land_conflict.brief.title", &[]),
             t("land_conflict.brief.reason", &[("note", s(&e, "note"))]),
-            t("land_conflict.brief.after", &[])
+            if s(&e, "result") == "suite" {
+                t("land_merge.brief.after", &[])
+            } else {
+                t("land_conflict.brief.after", &[])
+            }
         ));
     }
     let aborted = aborted_files(p, unit);
