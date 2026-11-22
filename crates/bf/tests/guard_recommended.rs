@@ -779,3 +779,19 @@ fn every_writer_is_held_to_the_cover_check_of_a_protected_folder() {
     assert_ne!(bash(&fx, &wc, "python3 -c \"import shutil; shutil.copytree('evil','build')\""), "deny");
     assert_ne!(bash(&fx, &wc, "ditto evil build"), "deny");
 }
+
+#[test]
+fn only_a_builder_agent_may_enter_a_working_copy() {
+    let (fx, wc) = unit_place();
+    let cd = "cd .bf/work/U-1";
+    // A builder agent starts at the root and enters its copy.
+    assert_ne!(says_as(&fx, &fx.root, "builder", "Bash", json!({"command": cd})), "deny");
+    // The main session and other agents do not.
+    assert_eq!(says_as(&fx, &fx.root, "", "Bash", json!({"command": cd})), "deny");
+    for agent in ["reviewer", "verifier", "security-auditor"] {
+        assert_eq!(says_as(&fx, &fx.root, agent, "Bash", json!({"command": cd})), "deny", "{agent}");
+    }
+    // A builder inside its copy still does not leave it.
+    assert_eq!(says_as(&fx, &wc, "builder", "Bash", json!({"command": "cd .."})), "deny");
+    assert_eq!(says_as(&fx, &wc, "builder", "Bash", json!({"command": "cd /"})), "deny");
+}

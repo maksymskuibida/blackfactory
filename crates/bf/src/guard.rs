@@ -5074,9 +5074,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             );
                         }
                     }
-                    if !(in_worker || in_cp) {
+                    if !(in_worker || in_cp) && ROLE.with(|r| r.get()) != 1 {
                         // A session outside every working copy does not step into one: it would stand
-                        // where a builder stands and be taken for it.
+                        // where a builder stands and be taken for it. A builder agent starts at the
+                        // root and is told to work in its copy, so it may enter one. The guard cannot
+                        // tell which unit the caller builds, so a builder may enter any copy.
                         let abs = resolve(target, &dir_str);
                         if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
                             return deny(

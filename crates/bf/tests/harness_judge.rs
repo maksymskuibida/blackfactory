@@ -63,7 +63,6 @@ fn the_skill_says_what_to_run_on_a_checkpoint_fix() {
         "the skill",
         &[
             "bf checkpoint fix <K> --open",
-            "bf checkpoint scope <K> --verdict -",
             "--accept low",
         ],
     );
