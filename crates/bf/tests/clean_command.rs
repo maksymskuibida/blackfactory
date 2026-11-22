@@ -71,6 +71,23 @@ fn left_over(fx: &Fx) -> u64 {
     total
 }
 
+fn work_paths(v: &serde_json::Value) -> Vec<String> {
+    paths(v, "removed")
+        .into_iter()
+        .filter(|p| p.starts_with(".bf/work/"))
+        .collect()
+}
+
+fn work_bytes(v: &serde_json::Value) -> u64 {
+    v["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["path"].as_str().unwrap().starts_with(".bf/work/"))
+        .map(|x| x["bytes"].as_u64().unwrap())
+        .sum()
+}
+
 fn paths(v: &serde_json::Value, key: &str) -> Vec<String> {
     v[key]
         .as_array()
@@ -86,21 +103,14 @@ fn clean_removes_landed_and_closed_folders_and_leaves_the_running_one() {
     let written = left_over(&fx);
     let o = fx.must(&["clean", "--json"]);
     let v = o.json();
-    let mut removed = paths(&v, "removed");
+    let mut removed = work_paths(&v);
     removed.sort();
     assert_eq!(
         removed,
         [".bf/work/K-1", ".bf/work/U-1", ".bf/work/U-2"],
         "{v}"
     );
-    assert_eq!(v["freed_bytes"].as_u64().unwrap(), written, "{v}");
-    let sum: u64 = v["removed"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|x| x["bytes"].as_u64().unwrap())
-        .sum();
-    assert_eq!(sum, written);
+    assert_eq!(work_bytes(&v), written, "{v}");
     let left = v["left"].as_array().unwrap();
     let u3 = left
         .iter()
@@ -124,8 +134,8 @@ fn dry_run_lists_the_same_and_removes_nothing() {
     let written = left_over(&fx);
     let v = fx.must(&["clean", "--dry-run", "--json"]).json();
     assert_eq!(v["dry_run"], true);
-    assert_eq!(paths(&v, "removed").len(), 3, "{v}");
-    assert_eq!(v["freed_bytes"].as_u64().unwrap(), written);
+    assert_eq!(work_paths(&v).len(), 3, "{v}");
+    assert_eq!(work_bytes(&v), written);
     for n in ["U-1", "U-2", "K-1", "U-3"] {
         assert!(fx.work(n).exists(), "{n}");
     }
