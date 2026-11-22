@@ -201,3 +201,27 @@ fn clean_is_refused_from_a_working_copy() {
     assert_eq!(r.code, 2, "{}", r.all());
     assert_four_parts(&r.stderr);
 }
+
+#[test]
+fn clean_also_runs_the_sweep_for_the_briefs_of_landed_units() {
+    let fx = fixture();
+    left_over(&fx);
+    let brief = fx.root.join(".bf/briefs/U-1-builder.md");
+    let running = fx.root.join(".bf/briefs/U-3-builder.md");
+    fs::create_dir_all(brief.parent().unwrap()).unwrap();
+    fs::write(&brief, "old brief\n").unwrap();
+    fs::write(&running, "live brief\n").unwrap();
+    let dry = fx.must(&["clean", "--dry-run", "--json"]).json();
+    assert!(
+        !paths(&dry, "removed").iter().any(|p| p.contains("briefs")),
+        "{dry}"
+    );
+    assert!(brief.exists());
+    let v = fx.must(&["clean", "--json"]).json();
+    assert!(
+        paths(&v, "removed").contains(&".bf/briefs/U-1-builder.md".to_string()),
+        "{v}"
+    );
+    assert!(!brief.exists());
+    assert!(running.exists());
+}

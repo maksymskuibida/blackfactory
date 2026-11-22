@@ -249,5 +249,20 @@ pub(crate) fn clean(p: &Project, dry_run: bool) -> R<Clean> {
             }
         }
     }
+    // U-89's sweep: the build output of a working copy nobody uses, the left-over folders it names and the
+    // briefs of work that is over. The idle limit is taken as passed; a live token, a running check and an
+    // open fix, sync, review round or wave check still keep a copy. The sweep has no dry-run mode, so
+    // `--dry-run` lists only the removals above.
+    if !dry_run {
+        let mut q = p.clone();
+        q.policy.limits.idle_minutes = 0;
+        let st = events::replay(p)?;
+        for r in sweep::sweep(&q, &st) {
+            match r.kept {
+                Some(why) => out.left.push((rel(p, &r.path), why)),
+                None => out.removed.push((rel(p, &r.path), r.bytes)),
+            }
+        }
+    }
     Ok(out)
 }
