@@ -1,0 +1,20 @@
+# Strings of the disk a run holds and of `bf clean` (D-109, D-114).
+
+"clean.disk.line" = "The run holds {held} GB in its working copies; {free} GB are free on the disk."
+"clean.disk.warn" = "The working copies hold more than {limit} GB. `bf clean` removes what the engine no longer needs."
+"clean.disk.low" = "Less than {limit} GB are free on the disk. `bf clean` removes what the engine no longer needs."
+"clean.start.low" = "Less than {limit} GB were free on the disk ({free} GB), so the clean-up ran before this start and removed {count} folder(s), {bytes} bytes. `bf clean --dry-run` lists what stays."
+
+"clean.line.removed" = "Removed: {path} ({bytes} bytes)"
+"clean.line.would" = "Would remove: {path} ({bytes} bytes)"
+"clean.line.left" = "Left: {path}: {reason}"
+"clean.line.total" = "Freed {bytes} bytes."
+"clean.line.total_dry" = "Would free {bytes} bytes."
+"clean.line.nothing" = "There is nothing to remove."
+
+"clean.left.token" = "{owner} has a live token: someone is working there"
+"clean.left.open" = "the checkpoint {owner} is not closed"
+"clean.left.unknown" = "it is not the working copy of a unit or a checkpoint"
+"clean.left.stays" = "the folder could not be removed"
+
+"clean.line.note_dry" = "This list is partial: a real run also removes the build output of working copies nobody uses, folders the plan does not hold and the briefs of work that is over, and `--dry-run` does not list those."

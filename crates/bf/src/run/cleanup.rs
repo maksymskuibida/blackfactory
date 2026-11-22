@@ -31,53 +31,66 @@ fn remove_copy(repo: &Path, path: &Path) {
     }
 }
 
-/// Remove a landed unit's working copy when its branch is merged into the checkpoint branch and the copy
-/// holds nothing uncommitted. The unit's branch stays.
-pub fn remove_unit_copy(p: &Project, unit: &str) -> R<Removal> {
+/// Why a landed unit's working copy must stay, or `None` when it may go: the unit is landed, its branch is
+/// merged into the checkpoint branch and the copy holds nothing uncommitted.
+pub fn unit_copy_kept(p: &Project, unit: &str) -> R<Option<String>> {
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
     let state = st.unit_state(unit).to_string();
     let path = p.work_dir().join(unit);
     if state != "landed" {
-        return Ok(Removal::Kept(t(
+        return Ok(Some(t(
             "cleanup.kept.state",
             &[("unit", unit), ("state", &state)],
         )));
     }
     let Some(u) = pl.unit(unit) else {
-        return Ok(Removal::Kept(t("cleanup.kept.plan", &[("unit", unit)])));
+        return Ok(Some(t("cleanup.kept.plan", &[("unit", unit)])));
     };
     let repo = p.repo_of_unit(u)?.clone();
     let ub = p.unit_branch(unit);
     let cpb = p.checkpoint_branch(s(u, "checkpoint"));
     if !path.exists() {
-        let _ = gitx::run(&repo.path, &["worktree", "prune"], &[]);
-        return Ok(Removal::Removed(path));
+        return Ok(None);
     }
     if !gitx::branch_exists(&repo.path, &ub) || !gitx::is_ancestor(&repo.path, &ub, &cpb) {
-        return Ok(Removal::Kept(t(
+        return Ok(Some(t(
             "cleanup.kept.unmerged",
             &[("unit", unit), ("branch", &ub), ("checkpoint", &cpb)],
         )));
     }
     if path.join(".git").exists() && gitx::uncommitted_or_unreadable(&path) {
-        return Ok(Removal::Kept(t(
+        return Ok(Some(t(
             "cleanup.kept.uncommitted",
             &[("unit", unit), ("path", &path.to_string_lossy())],
         )));
+    }
+    Ok(None)
+}
+
+/// Remove a landed unit's working copy when its branch is merged into the checkpoint branch and the copy
+/// holds nothing uncommitted. The unit's branch stays.
+pub fn remove_unit_copy(p: &Project, unit: &str) -> R<Removal> {
+    if let Some(why) = unit_copy_kept(p, unit)? {
+        return Ok(Removal::Kept(why));
+    }
+    let pl = plan::load(p)?;
+    let Some(u) = pl.unit(unit) else {
+        return Ok(Removal::Kept(t("cleanup.kept.plan", &[("unit", unit)])));
+    };
+    let repo = p.repo_of_unit(u)?.clone();
+    let path = p.work_dir().join(unit);
+    if !path.exists() {
+        let _ = gitx::run(&repo.path, &["worktree", "prune"], &[]);
+        return Ok(Removal::Removed(path));
     }
     remove_copy(&repo.path, &path);
     Ok(Removal::Removed(path))
 }
 
-/// Remove the working copies of a closed checkpoint: its own (one for each repository), its review copy
-/// and every wave copy.
-pub fn remove_checkpoint_copies(p: &Project, pl: &Plan, k: &str) -> R<()> {
-    let st = events::replay(p)?;
-    if !st.closed.contains_key(k) {
-        return Ok(());
-    }
-    let repos: Vec<Repo> = checkpoint_repos(p, pl, k)?.into_iter().cloned().collect();
+/// The folders a checkpoint owns under `.bf/work`: its own, its review copy and every wave copy, as far
+/// as they exist.
+pub fn checkpoint_roots(p: &Project, k: &str) -> Vec<PathBuf> {
     let work = p.work_dir();
     let mut roots = vec![work.join(k), work.join(format!("{k}-review"))];
     let wave = format!("{k}-wave-");
@@ -95,6 +108,19 @@ pub fn remove_checkpoint_copies(p: &Project, pl: &Plan, k: &str) -> R<()> {
         waves.sort();
         roots.extend(waves);
     }
+    roots.retain(|r| r.exists());
+    roots
+}
+
+/// Remove the working copies of a closed checkpoint: its own (one for each repository), its review copy
+/// and every wave copy.
+pub fn remove_checkpoint_copies(p: &Project, pl: &Plan, k: &str) -> R<()> {
+    let st = events::replay(p)?;
+    if !st.closed.contains_key(k) {
+        return Ok(());
+    }
+    let repos: Vec<Repo> = checkpoint_repos(p, pl, k)?.into_iter().cloned().collect();
+    let roots = checkpoint_roots(p, k);
     for root in roots {
         if !root.exists() {
             continue;
