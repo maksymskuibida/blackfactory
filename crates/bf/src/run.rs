@@ -144,6 +144,7 @@ pub fn observe_holds(p: &Project) -> R<()> {
     }
     let pl = plan::load(p)?;
     let mut want: BTreeMap<String, (&'static str, String)> = BTreeMap::new();
+    let mut only_unreachable: std::collections::BTreeSet<String> = Default::default();
     let open_questions: Vec<Value> = p
         .list_records(schema::kind_by_name("question"))?
         .into_iter()
@@ -183,6 +184,13 @@ pub fn observe_holds(p: &Project) -> R<()> {
             .filter(|c| evidence::standing_outcome(rs, c, &content).is_some())
             .collect();
         if !marked.is_empty() {
+            // D-110: a hold made only by `unreachable` marks (no `failed` mark) decides nothing.
+            if marked.iter().all(|c| {
+                evidence::standing_outcome(rs, c, &content).and_then(|r| r.outcome())
+                    == Some("unreachable")
+            }) {
+                only_unreachable.insert(kid.to_string());
+            }
             want.insert(kid.to_string(), ("marked", marked.join(",")));
         }
     }
@@ -196,17 +204,19 @@ pub fn observe_holds(p: &Project) -> R<()> {
         let logged = st
             .ck_holds
             .get(&kid)
-            .map(|h| (h.cause.clone(), h.detail.clone()));
-        let now = want.get(&kid).map(|(c, d)| (c.to_string(), d.clone()));
+            .map(|h| (h.cause.clone(), h.detail.clone(), h.unreachable_only));
+        let now = want
+            .get(&kid)
+            .map(|(c, d)| (c.to_string(), d.clone(), only_unreachable.contains(&kid)));
         if logged == now {
             continue;
         }
-        let (cause, detail) = now.unwrap_or_default();
-        events::append(
-            p,
-            "checkpoint.hold",
-            json!({"checkpoint": kid, "cause": cause, "detail": detail}),
-        )?;
+        let (cause, detail, unreachable_only) = now.unwrap_or_default();
+        let mut ev = json!({"checkpoint": kid, "cause": cause, "detail": detail});
+        if unreachable_only {
+            ev["unreachable_only"] = json!(true);
+        }
+        events::append(p, "checkpoint.hold", ev)?;
     }
     Ok(())
 }
