@@ -67,7 +67,8 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         } else {
             format!(" and said: {note}")
         };
-        md.push_str(&format!("## Look again\n\nYou reported this unit blocked{said}.\n\nLook again before the human is asked. Pick the way that fits:\n\n- A file outside your list that your work needs: ask for it with `bf report {unit} --result blocked --token <token> --need-files -`.\n- A file you changed by mistake outside your list: put it back with `bf unit restore {unit} <path> --token <token>`, then go on.\n- A file whose change is formatting only: name it in your report's note as format only, and report built; the engine proves it.\n- A gap in the design (a requirement, decision or contract that is missing or contradicts this brief): report blocked again. It then goes to the human.\n\n"));
+        let list = crate::strings::t("run.brief.rule.list_recommended", &[]);
+        md.push_str(&format!("## Look again\n\nYou reported this unit blocked{said}.\n\nLook again before the human is asked. Pick the way that fits:\n\n- {list}\n- A file you changed by mistake outside your list: put it back with `bf unit restore {unit} <path> --token <token>`, then go on.\n- A file whose change is formatting only: name it in your report's note as format only, and report built; the engine proves it.\n- A gap in the design (a requirement, decision or contract that is missing or contradicts this brief): report blocked again. It then goes to the human.\n\n"));
     }
     md.push_str(&format!("Unit: {}\n\n", s(u, "title")));
     if !s(u, "text").is_empty() {
@@ -170,7 +171,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                 ));
             }
         }
-        md.push_str("Files you may change:\n");
+        md.push_str(&format!(
+            "{}:\n",
+            crate::strings::t("run.brief.files_heading", &[])
+        ));
         for f in crate::scope::unit_files(&st, u) {
             md.push_str(&format!("- `{f}`\n"));
         }
@@ -316,9 +320,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         p.policy.limits.idle_minutes
     ));
     md.push_str(&format!(
-        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n- A file outside your list that your work needs, most often a test your own change breaks, is a request with `--need-files`, never a plain blocked report.\n- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
+        "\n## Rules\n\n- Report with `bf report`.\n- Work only inside your working copy, `{}`. It lives under the engine's `.bf/work/` folder on purpose; do not touch anything else under `.bf/`, and leave the `factory/` folder inside your working copy alone: records change through the engine only.\n- Never run `bf gate`, `bf human-turn`, `git push` or `git merge`.\n- If you cannot go on without the human's decision, ask: `bf ask --title \"<the question>\" --context \"<why>\" [--options \"A=first;B=second\"]`. Your unit then waits for the answer and the others go on; the answer is in your next brief.\n{rule_list}- A file you changed by mistake outside your list goes back with `bf unit restore {unit} <path> --token <token>`; if its change is formatting only, name it in your report's note as format only and the engine proves it.\n- A plain blocked report is for a gap in the design only: a requirement, decision or contract that is missing or contradicts the brief.\n- A check counts only when `bf evidence run` ran it.\n",
         p.work_dir().join(unit).display(),
-        unit = unit
+        unit = unit,
+        rule_list = format!("- {}\n", crate::strings::t("run.brief.rule.list_recommended", &[]))
     ));
     md.push_str(&format!(
         "- {}\n",

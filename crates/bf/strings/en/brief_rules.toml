@@ -1,0 +1,4 @@
+# Strings of the brief's file list and its rule on that list (D-115, D-62).
+
+"run.brief.files_heading" = "Files recommended for this unit"
+"run.brief.rule.list_recommended" = "The list of files is a recommendation. When your job needs another file, most often a test your own change breaks, change it and give the reason in your report. There is no request for files."
