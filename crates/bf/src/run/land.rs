@@ -693,28 +693,16 @@ struct Suite {
 }
 
 fn suite_for(p: &Project, pl: &Plan, st: &State, units: &[&Ready]) -> Suite {
-    // The landing runs the run's full suite, never a unit's named tests (R-62 is for a unit's own check): the
-    // list of a unit that names none gives the full command, so the runs are written for such a unit.
-    let plain = |u: &Value| s(u, "tests").trim().is_empty();
-    let k = units
-        .first()
-        .and_then(|r| pl.unit(&r.unit))
-        .map(|u| s(u, "checkpoint").to_string())
-        .unwrap_or_default();
-    let exec = units
-        .iter()
-        .find(|r| pl.unit(&r.unit).is_some_and(plain))
-        .map(|r| r.unit.clone())
-        .or_else(|| {
-            pl.units
-                .iter()
-                .find(|u| s(u, "checkpoint") == k && plain(u))
-                .or_else(|| pl.units.iter().find(|u| plain(u)))
-                .map(|u| s(u, "id").to_string())
-        })
-        .or_else(|| units.first().map(|r| r.unit.clone()))
-        .unwrap_or_default();
-    let list = crate::checks::attached_for_unit(p, pl, st, &exec).0;
+    // The runs are recorded under a unit of the turn, never another. The landing runs the full suite of the
+    // list, not the tests a unit names in its place (R-62 is for a unit's own check).
+    let exec = units.first().map(|r| r.unit.clone()).unwrap_or_default();
+    let full = crate::checks::suite_command(p, pl, st, &exec);
+    let mut list = crate::checks::attached_for_unit(p, pl, st, &exec).0;
+    for a in list.iter_mut().filter(|a| a.kind == "suite") {
+        if let Some(c) = &full {
+            a.command = c.clone();
+        }
+    }
     Suite { exec, list }
 }
 

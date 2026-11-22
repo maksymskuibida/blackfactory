@@ -540,3 +540,33 @@ fn land_merge_the_engines_clean_merge_of_the_judged_content_is_not_a_change() {
     commit_in(&w2, "mine.txt");
     assert!(!bf::run::clean_engine_merge(&fx.project(), "U-2", &w2, &judged));
 }
+
+#[test]
+fn land_merge_a_failing_suite_charges_no_unit_outside_the_turn_when_every_unit_names_its_tests() {
+    let fx = Fx::new();
+    plan_with(&fx, true);
+    // U-4 names no tests and is at work; it has nothing to do with the turn.
+    fx.must(&["unit", "start", "U-4"]);
+    let w1 = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
+    let named = |n: &str, wc: &Path, file: &str| {
+        let u = format!("U-{n}");
+        fs::create_dir_all(wc.join("src")).unwrap();
+        fs::write(wc.join(file), "x\n").unwrap();
+        fx.must_in(wc, &["evidence", "run", &format!("X-{n}"), "--unit", &u, "--", "true"]);
+        fx.must_in(wc, &["evidence", "run", "attached:suite", "--unit", &u, "--", "true"]);
+        fx.must(&["report", &u, "--result", "built"]);
+        fx.must(&["report", &u, "--result", "built", "--role", "reviewer"]);
+    };
+    let w2 = PathBuf::from(fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"].as_str().unwrap());
+    named("2", &w2, "src/b.txt");
+    fx.must(&["unit", "land", "U-2"]);
+    named("1", &w1, "src/bad.txt");
+    let o = fx.bf(&["unit", "land", "U-1"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert_eq!(state(&fx, "U-1").state, "fixing");
+    let u4 = state(&fx, "U-4");
+    assert_eq!((u4.state.as_str(), u4.attempts), ("running", 0));
+    for e in log(&fx).iter().filter(|e| e["kind"] == "evidence.run" && e["exit"].as_i64() != Some(0)) {
+        assert_eq!(e["unit"], "U-1", "{e}");
+    }
+}

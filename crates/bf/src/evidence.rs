@@ -609,7 +609,18 @@ pub fn run_with(
         }
     }
     let want = command_words(&chk);
-    if want != argv {
+    // R-62: a unit that names its tests has them in the suite's place. The landing runs the list's own suite
+    // command for a unit of its turn, so that command is accepted for that unit's attached suite check too.
+    let full_suite = check_id.starts_with(crate::checks::ATTACHED_PREFIX)
+        && unit.is_some_and(|u| {
+            let (Ok(st), Ok(pl)) = (events::replay(p), crate::plan::load(p)) else {
+                return false;
+            };
+            crate::checks::attached_by_id(p, &pl, &st, u, check_id)
+                .is_some_and(|a| a.kind == "suite")
+                && crate::checks::suite_command(p, &pl, &st, u).as_deref() == Some(argv)
+        });
+    if want != argv && !full_suite {
         return Err(refuse(
             format!("run `{}` as evidence for {check_id}", argv.join(" ")),
             format!(
