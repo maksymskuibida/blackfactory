@@ -1368,7 +1368,6 @@ fn report_inner(
             let outside_any = files.iter().any(|(path, st)| !within(&live, path, *st));
             let skip_wanted = f.source == "check" && format_lint_only(&f.origin_failed);
             let mut proven: BTreeMap<String, Value> = BTreeMap::new();
-            let mut why_not: BTreeMap<String, String> = BTreeMap::new();
             // A file outside the lists is the reviewer's to judge (D-115); only a format-only change is proven here.
             if outside_any || skip_wanted {
                 for (path, status) in &files {
@@ -1378,20 +1377,35 @@ fn report_inner(
                     let Some((repo, wt, rel, before)) = locate(p, &pl, &f, path)? else {
                         continue;
                     };
-                    // The places and kinds of file a unit's acceptance refuses are refused here by the same rule.
-                    if let Some(why) = crate::scope::hard_rule(p, &pl, &st, k, path) {
-                        why_not.insert(path.clone(), why);
+                    // A file the rules below refuse or name is no format-only change.
+                    if crate::scope::hard_rule(p, &pl, &st, k, path).is_some() {
                         continue;
                     }
                     let rel = crate::scope::normalize_path(&rel).unwrap_or(rel);
-                    match crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
-                        Ok(v) => {
-                            proven.insert(path.clone(), v);
-                        }
-                        Err(e) => {
-                            why_not.insert(path.clone(), e);
-                        }
+                    if let Ok(v) = crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
+                        proven.insert(path.clone(), v);
                     }
+                }
+            }
+            // A file outside the lists is the reviewer's to judge, except one no change may touch: a place the
+            // guard protects, a link, a look-alike name, a file outside the repository. Those are refused.
+            for (path, status) in &files {
+                if within(&live, path, *status) {
+                    continue;
+                }
+                if let Some(rule) = never_allowed(p, &pl, &st, k, path) {
+                    return Err(refuse_owned(
+                        crate::strings::t("ckfix_recommended.never.what", &[("k", k)]),
+                        crate::strings::t(
+                            "ckfix_recommended.never.because",
+                            &[("path", path), ("rule", &rule)],
+                        ),
+                        vec![crate::strings::t(
+                            "ckfix_recommended.never.step",
+                            &[("path", path)],
+                        )],
+                        crate::strings::t("ckfix_recommended.never.check", &[]),
+                    ));
                 }
             }
             if files.is_empty() {
@@ -1433,7 +1447,7 @@ fn report_inner(
                 steps.push(if to == "parked" {
                     "The fix is parked: the human decides.".into()
                 } else {
-                    "Repair it (only the files named in your brief), commit, run the failing checks again with `bf evidence run`, then report again.".into()
+                    crate::strings::t("ckfix_recommended.fail.repair", &[])
                 });
                 return Err(refuse_owned(
                     format!("report the fix of {k}"),
@@ -2103,6 +2117,8 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
             ));
         }
         md.push_str(&builder_extras(p, &st, f));
+        md.push('\n');
+        md.push_str(&outside_section(p, &pl, f, role)?);
         md.push_str(&format!(
             "\n## {}\n\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n",
             crate::strings::t("fix.scope.brief.rules_title", &[]),
@@ -2181,10 +2197,11 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                 )
             ));
         }
-        md.push_str(&outside_section(p, &pl, f)?);
+        md.push_str(&outside_section(p, &pl, f, role)?);
         md.push_str(&claim_section(p, f));
         md.push_str(&format!(
-            "## What to judge\n\nDoes the fix solve the failure without weakening a test? Look at how each probe test was added to the suite: it must be in the suite and run, not compiled out, skipped or emptied, and its command must run at least one test. Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
+            "{}\n",
+            crate::strings::t("ckfix_recommended.brief.judge", &[("k", k)])
         ));
     }
     if role != "builder" {
@@ -2243,9 +2260,18 @@ fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
     md
 }
 
+/// The rule that forbids a change to `path` whatever the lists say: a protected place, a link, a look-alike
+/// name, a file outside the repository. A file held by a unit that may run beside is named, not refused.
+fn never_allowed(p: &Project, pl: &Plan, st: &State, k: &str, path: &str) -> Option<String> {
+    let rule = crate::scope::hard_rule(p, pl, st, k, path)?;
+    crate::scope::holder_beside(p, pl, st, k, path)
+        .is_none()
+        .then_some(rule)
+}
+
 /// The files the fix changed that lie outside the lists of the checkpoint's units, with the line that
 /// says so, for the fix's reviewer. A format-only change accepted by the engine is not listed.
-fn outside_section(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<String> {
+fn outside_section(p: &Project, pl: &Plan, f: &CkFixOpen, role: &str) -> R<String> {
     use crate::strings::t;
     let st = events::replay(p)?;
     let lv = live(p, pl, &st, f);
@@ -2261,13 +2287,24 @@ fn outside_section(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<String> {
     let mut md = format!(
         "## {}\n\n{}\n\n",
         t("ckfix_recommended.brief.outside_title", &[]),
-        t("ckfix_recommended.brief.outside_intro", &[])
+        t(
+            if role == "builder" {
+                "ckfix_recommended.brief.outside_intro_builder"
+            } else {
+                "ckfix_recommended.brief.outside_intro"
+            },
+            &[]
+        )
     );
     for path in &out {
-        md.push_str(&format!(
-            "{}\n",
-            t("ckfix_recommended.brief.outside_file", &[("path", path)])
-        ));
+        let line = match crate::scope::hard_rule(p, pl, &st, &f.checkpoint, path) {
+            Some(rule) => t(
+                "ckfix_recommended.brief.outside_file_rule",
+                &[("path", path), ("rule", &rule)],
+            ),
+            None => t("ckfix_recommended.brief.outside_file", &[("path", path)]),
+        };
+        md.push_str(&format!("{line}\n"));
     }
     md.push('\n');
     Ok(md)

@@ -303,3 +303,90 @@ fn ckfix_recommended_a_grant_in_an_old_log_replays_as_before() {
     let d = one_directive(&fx, "fix-checkpoint");
     assert_eq!(d["granted"].as_array().unwrap().len(), 1, "{d}");
 }
+
+fn refused_with_rule(fx: &Fx, k: &Path, name: &str, rule_part: &str) {
+    let o = built(fx, k, "why");
+    assert_eq!(o.code, 2, "{name}: {}", o.all());
+    assert!(
+        o.stderr.contains(name) && o.stderr.contains(rule_part),
+        "{name}: {}",
+        o.stderr
+    );
+    one_directive(fx, "fix-checkpoint");
+}
+
+#[test]
+fn ckfix_recommended_a_protected_file_is_refused_with_its_rule() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::create_dir_all(k.join(".claude")).unwrap();
+    fs::write(k.join(".claude/x.txt"), "x\n").unwrap();
+    commit(&k);
+    refused_with_rule(&fx, &k, ".claude/x.txt", "a place the guard protects");
+}
+
+#[test]
+fn ckfix_recommended_a_symbolic_link_is_refused_with_its_rule() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", k.join("src/link.txt")).unwrap();
+    commit(&k);
+    refused_with_rule(&fx, &k, "src/link.txt", "symbolic link");
+}
+
+#[test]
+fn ckfix_recommended_a_look_alike_name_is_refused_with_its_rule() {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::write(k.join("src/\u{17f}rc.txt"), "x\n").unwrap();
+    commit(&k);
+    // Git quotes the odd name, so the engine reads it as a path outside the repository: refused either way.
+    refused_with_rule(&fx, &k, "rc.txt", "is never granted");
+}
+
+#[test]
+fn ckfix_recommended_a_plain_outside_file_is_named_to_the_reviewer_and_to_the_builder_of_a_later_round(
+) {
+    let fx = Fx::new();
+    let k = open_fix(&fx);
+    fs::write(k.join("src/a.txt"), "fixed\n").unwrap();
+    fs::write(k.join("src/outside.txt"), "x\n").unwrap();
+    commit(&k);
+    assert_eq!(built(&fx, &k, "because").code, 0);
+    let b = reviewer_brief(&fx);
+    assert!(
+        b.contains("`src/outside.txt` lies outside the lists of the checkpoint's units"),
+        "{b}"
+    );
+    assert!(!b.contains("Rule:"), "{b}");
+    let o = fx.bf_stdin(
+        &k,
+        &[
+            "report",
+            "K-1",
+            "--role",
+            "reviewer",
+            "--result",
+            "findings",
+            "--findings",
+            "-",
+        ],
+        &json!([{"title": "t", "severity": "medium", "where": "src/a.txt", "action": "a"}])
+            .to_string(),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    one_directive(&fx, "fix-checkpoint");
+    let b = builder_brief(&fx);
+    assert!(
+        b.contains("`src/outside.txt` lies outside the lists of the checkpoint's units"),
+        "{b}"
+    );
+    assert!(
+        b.contains("Give the reason for each in the note of your report"),
+        "{b}"
+    );
+    assert!(b.contains("recommendation"), "{b}");
+}
