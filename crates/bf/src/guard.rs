@@ -2336,24 +2336,7 @@ fn transfer_targets(prog: &str, args: &[String], dir: &Option<String>) -> Vec<St
 /// mode or owner, and the values of options.
 fn writer_paths(prog: &str, args: &[String]) -> Vec<String> {
     if prog == "mktemp" {
-        // With `-p DIR` the file is made in that folder and the template is only a name; with `-t` it is
-        // made in the temporary folder. Otherwise the template is a path in the working directory.
-        let mut it = args.iter();
-        let mut templates = Vec::new();
-        while let Some(a) = it.next() {
-            if a == "-p" || a == "--tmpdir" {
-                return it.next().cloned().into_iter().collect();
-            } else if let Some(d) = a.strip_prefix("--tmpdir=") {
-                return vec![d.to_string()];
-            } else if a == "-t" {
-                return Vec::new();
-            } else if a == "--suffix" {
-                it.next();
-            } else if !is_flag(a) {
-                templates.push(a.clone());
-            }
-        }
-        return templates;
+        return mktemp_targets(args);
     }
     let by_reference = args
         .iter()
@@ -2384,6 +2367,205 @@ fn writer_paths(prog: &str, args: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// The long options of `mktemp` (GNU, and the newer BSD).
+const MKTEMP_LONG: &[&str] = &[
+    "--directory",
+    "--dry-run",
+    "--quiet",
+    "--suffix",
+    "--tmpdir",
+    "--help",
+    "--version",
+];
+
+/// The temporary folder as a word the guard reads: the value of `TMPDIR` when the command line assigns
+/// it, else the session's own temporary folder.
+fn mktemp_tmp_word() -> String {
+    let own = std::env::var("TMPDIR")
+        .ok()
+        .map(|t| t.trim_end_matches('/').to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "/tmp".to_string());
+    format!("${{TMPDIR:-{own}}}")
+}
+
+/// One reading of the words of `mktemp`: the paths it makes (the folder joined with the template), and
+/// the first thing in the line that cannot be read, as a key of the strings and the word. GNU reads `-t`
+/// as a flag; BSD reads it with a value, the prefix of a name.
+fn mktemp_reading(args: &[String], bsd_t: bool) -> (Vec<String>, Option<(&'static str, String)>) {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut use_tmp = false;
+    let mut suffix = String::new();
+    let mut prefix: Option<String> = None;
+    let mut templates: Vec<String> = Vec::new();
+    let mut ended = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        i += 1;
+        if ended || a == "-" || !a.starts_with('-') {
+            templates.push(a.clone());
+            continue;
+        }
+        if !templates.is_empty() {
+            return (Vec::new(), Some(("guard.mktemp.late", a.clone())));
+        }
+        if a == "--" {
+            ended = true;
+            continue;
+        }
+        if a.starts_with("--") {
+            let (name, val) = match a.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (a.as_str(), None),
+            };
+            let exact = MKTEMP_LONG.iter().copied().find(|f| *f == name);
+            let hits: Vec<&str> = MKTEMP_LONG
+                .iter()
+                .copied()
+                .filter(|f| long_option(name, f, 3))
+                .collect();
+            let one = match (exact, hits.as_slice()) {
+                (Some(e), _) => e,
+                (None, [h]) => h,
+                (None, []) => return (Vec::new(), Some(("guard.mktemp.unknown", a.clone()))),
+                _ => return (Vec::new(), Some(("guard.mktemp.ambiguous", a.clone()))),
+            };
+            match one {
+                "--suffix" => {
+                    let v = match val {
+                        Some(v) => v.to_string(),
+                        None => {
+                            i += 1;
+                            match args.get(i - 1) {
+                                Some(v) => v.clone(),
+                                None => {
+                                    return (Vec::new(), Some(("guard.mktemp.value", a.clone())))
+                                }
+                            }
+                        }
+                    };
+                    suffix = v;
+                }
+                "--tmpdir" => match val {
+                    None | Some("") => use_tmp = true,
+                    Some(d) => dirs.push(d.to_string()),
+                },
+                _ => {
+                    if val.is_some() {
+                        return (Vec::new(), Some(("guard.mktemp.unknown", a.clone())));
+                    }
+                }
+            }
+            continue;
+        }
+        let body = &a[1..];
+        for (k, c) in body.char_indices() {
+            let rest = &body[k + c.len_utf8()..];
+            match c {
+                'd' | 'u' | 'q' => {}
+                'p' | 't' if c == 'p' || bsd_t => {
+                    let v = if rest.is_empty() {
+                        i += 1;
+                        match args.get(i - 1) {
+                            Some(v) => v.clone(),
+                            None => return (Vec::new(), Some(("guard.mktemp.value", a.clone()))),
+                        }
+                    } else {
+                        rest.to_string()
+                    };
+                    if c == 'p' {
+                        if v.is_empty() {
+                            use_tmp = true;
+                        } else {
+                            dirs.push(v);
+                        }
+                    } else {
+                        use_tmp = true;
+                        prefix = Some(v);
+                    }
+                    break;
+                }
+                't' => use_tmp = true,
+                _ => return (Vec::new(), Some(("guard.mktemp.unknown", a.clone()))),
+            }
+        }
+    }
+    let mut err = None;
+    if templates.len() > 1 {
+        err = Some(("guard.mktemp.two", templates.join(" ")));
+    }
+    if suffix.contains('/') {
+        err = Some(("guard.mktemp.suffix", suffix.clone()));
+    }
+    if templates.iter().any(|t| t.is_empty()) {
+        err = Some(("guard.mktemp.empty", String::new()));
+    }
+    let mut names: Vec<String> = templates.clone();
+    if let Some(pf) = &prefix {
+        names.push(format!("{pf}.XXXXXXXX"));
+    }
+    if names.is_empty() {
+        names.push("tmp.XXXXXXXXXX".to_string());
+    }
+    let mut places: Vec<String> = dirs;
+    if use_tmp {
+        places.push(mktemp_tmp_word());
+    } else if places.is_empty() {
+        places.push(if templates.is_empty() {
+            mktemp_tmp_word()
+        } else {
+            String::new()
+        });
+    }
+    let mut out: Vec<String> = Vec::new();
+    for place in &places {
+        for n in &names {
+            let n = format!("{n}{suffix}");
+            let t = if n.starts_with('/') || place.is_empty() {
+                n
+            } else {
+                format!("{}/{n}", place.trim_end_matches('/'))
+            };
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    (out, err)
+}
+
+/// Both readings of `mktemp` (GNU and BSD): the paths it makes in either, and the first fault of either.
+fn mktemp_both(args: &[String]) -> (Vec<String>, Option<(&'static str, String)>) {
+    let (mut out, mut err) = mktemp_reading(args, false);
+    let (more, err2) = mktemp_reading(args, true);
+    for t in more {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    if err.is_none() {
+        err = err2;
+    }
+    (out, err)
+}
+
+/// The new files `mktemp` makes, each judged by where it lands, never the folder it makes them in.
+fn mktemp_targets(args: &[String]) -> Vec<String> {
+    mktemp_both(args).0
+}
+
+/// The refusal of a `mktemp` line the guard cannot read the same way as both of its programs.
+fn mktemp_refusal(args: &[String]) -> Option<Decision> {
+    let (key, word) = mktemp_both(args).1?;
+    Some(deny(
+        &crate::strings::t("guard.mktemp.refused", &[]),
+        &crate::strings::t(&format!("{key}.because"), &[("word", word.as_str())]),
+        &[&crate::strings::t("guard.mktemp.step", &[])],
+        &crate::strings::t("guard.mktemp.worked", &[]),
+    ))
 }
 
 /// Is the mode word of `chmod` one that only takes permissions away (`go-w`, `a-x,o-r`)?
@@ -5045,6 +5227,7 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
         }
 
         let mut writes: Vec<(String, String, Reach)> = Vec::new();
+        let mut mktemp_faults: Vec<Decision> = Vec::new();
         for t in &p.redirects {
             if t.starts_with("/dev/") {
                 continue;
@@ -5482,6 +5665,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     && git_sub(&p.words[i..]).is_some_and(|(k, s)| {
                         s == "rm" && !git_index_only("rm", &p.words[i + k + 1..])
                     });
+                if prog == "mktemp" {
+                    mktemp_faults.extend(mktemp_refusal(&writer_in));
+                }
                 for t in writer_args(&prog, &writer_in, &start) {
                     let part = if via_xargs {
                         format!("`{prog}` started by `xargs`, with the path `{t}`")
@@ -5667,6 +5853,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                 }
             }
+        }
+        // A `mktemp` line the two programs read differently is refused once every path it makes has
+        // been judged, so a path in a protected place is named first.
+        if let Some(d) = mktemp_faults.into_iter().next() {
+            return d;
         }
         dirs.insert(p.scope, after);
     }
@@ -6036,6 +6227,93 @@ mod tests {
 
     fn bash(cmd: &str, cwd: &str) -> bool {
         call("Bash", json!({"command": cmd}), cwd).allow
+    }
+
+    #[test]
+    fn mktemp_is_judged_by_the_new_file_not_by_the_folder_it_is_made_in() {
+        // A project that lies in `/tmp`, as on the Linux runner: the folder `/tmp` holds its protected
+        // places, and a file made in it does not.
+        // (Where `/tmp` is a link, as on macOS, the project lies under what it points to: the guard
+        // resolves the links of a path it judges, so the table names the place the same way.)
+        let tmp = fs::canonicalize("/tmp")
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "/tmp".to_string());
+        let mut t = table();
+        t["root"] = json!(format!("{tmp}/p"));
+        t["state_dir"] = json!(format!("{tmp}/state/abc123def4567890"));
+        t["worktrees"] = json!([]);
+        let run = |cmd: &str, cwd: &str| {
+            decide(
+                &json!({"tool_name":"Bash","tool_input":{"command":cmd},"cwd":cwd}),
+                &t,
+            )
+            .allow
+        };
+        for cwd in [format!("{tmp}/p"), format!("{tmp}/p/src")] {
+            for cmd in [
+                "mktemp -p /tmp x.XXXX",
+                "mktemp -p/tmp x.XXXX",
+                "mktemp -dp /tmp x.XXXX",
+                "mktemp --tmpdir=/tmp x.XXXX",
+                "mktemp -t x.XXXX",
+                "mktemp",
+            ] {
+                assert!(run(cmd, &cwd), "should pass in {cwd}: {cmd}");
+            }
+            for cmd in [
+                "mktemp -p /tmp /tmp/p/factory/x.XXXX",
+                "mktemp -p/tmp/p/factory x.XXXX",
+                "mktemp -p /tmp/p/factory x.XXXX",
+                "mktemp -p /tmp --suffix=/x x.XXXX",
+                "mktemp x.XXXX -p /tmp",
+                "mktemp --d x.XXXX",
+                "mktemp -z x.XXXX",
+                "TMPDIR=/tmp/p/factory mktemp -t x.XXXX",
+                "mktemp -d -p /tmp/p/factory/.. factory/x.XXXX",
+                "rm -rf /tmp",
+            ] {
+                assert!(!run(cmd, &cwd), "should be refused in {cwd}: {cmd}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_words_of_mktemp_are_read_as_gnu_and_bsd_read_them() {
+        let w = |s: &str| -> Vec<String> { s.split_whitespace().map(|x| x.to_string()).collect() };
+        let place = |s: &str| mktemp_targets(&w(s));
+        assert_eq!(place("-p /tmp x.XXXX"), ["/tmp/x.XXXX"]);
+        assert_eq!(place("-dp/tmp x.XXXX"), ["/tmp/x.XXXX"]);
+        assert_eq!(place("-p /tmp --suffix=.txt x.XXXX"), ["/tmp/x.XXXX.txt"]);
+        assert_eq!(place("--tmp=/tmp -- x.XXXX"), ["/tmp/x.XXXX"]);
+        assert_eq!(place("x.XXXX"), ["x.XXXX"]);
+        assert_eq!(place("-p /tmp /a/b.XXXX"), ["/a/b.XXXX"]);
+        // `-t` is a flag for GNU and takes the prefix for BSD: the two readings give the same place.
+        assert_eq!(place("-t x.XXXX").len(), 2);
+        // With `-t` and `-p` both folders count.
+        assert!(place("-t -p factory x.XXXX").contains(&"factory/x.XXXX".to_string()));
+        for bad in [
+            "--d x",
+            "-z x",
+            "--zzz x",
+            "x.XXXX -p /tmp",
+            "--tmpdir /tmp x.XXXX",
+            "-p",
+            "--suffix",
+            "-p /tmp --suffix=/x x",
+        ] {
+            assert!(mktemp_refusal(&w(bad)).is_some(), "{bad}");
+        }
+        for ok in [
+            "-p /tmp x",
+            "--t x",
+            "--tmpdir x",
+            "--s=.a x",
+            "-qdp /tmp",
+            "--q x",
+            "",
+        ] {
+            assert!(mktemp_refusal(&w(ok)).is_none(), "{ok}");
+        }
     }
 
     #[test]

@@ -105,8 +105,8 @@ def components_css(text):
 
 
 def build():
-    t = json.loads(TOKENS.read_text())
-    text = TEMPLATE.read_text()
+    t = json.loads(TOKENS.read_text(encoding="utf-8"))
+    text = TEMPLATE.read_text(encoding="utf-8")
     new = re.sub(
         re.escape(BEGIN) + r".*?" + re.escape(END),
         lambda m: BEGIN + "\n" + tokens_css(t) + "\n" + END,
@@ -119,7 +119,7 @@ def build():
 def main(argv):
     t, text, new = build()
     panel_new = panel_tokens(t)
-    panel_old = PANEL_TOKENS.read_text() if PANEL_TOKENS.exists() else ""
+    panel_old = PANEL_TOKENS.read_text(encoding="utf-8") if PANEL_TOKENS.exists() else ""
     if "--check" in argv:
         bad = False
         if new != text:
@@ -134,17 +134,17 @@ def main(argv):
         return 0
     if "--css" in argv:
         dest = Path(argv[argv.index("--css") + 1])
-        dest.write_text(tokens_css(t) + "\n\n" + components_css(new) + "\n")
+        dest.write_text(tokens_css(t) + "\n\n" + components_css(new) + "\n", encoding="utf-8")
         print(f"wrote {dest}")
         return 0
     if new != text:
-        TEMPLATE.write_text(new)
+        TEMPLATE.write_text(new, encoding="utf-8")
         print("updated", TEMPLATE.relative_to(ROOT.parent))
     else:
         print("template already up to date")
     if panel_new != panel_old:
         PANEL_TOKENS.parent.mkdir(parents=True, exist_ok=True)
-        PANEL_TOKENS.write_text(panel_new)
+        PANEL_TOKENS.write_text(panel_new, encoding="utf-8")
         print("updated", PANEL_TOKENS.relative_to(ROOT.parent))
     else:
         print("panel tokens already up to date")

@@ -619,3 +619,20 @@ pub fn assert_contract(kind: &str, v: &serde_json::Value) {
         errs.join("\n")
     );
 }
+
+impl Fx {
+    /// The same as `new`, with the project made under `/tmp`, as on the Linux runner (on macOS the
+    /// temporary folder lies under `/var/folders`, and `/tmp` is a link to `/private/tmp`, where the
+    /// project is then found). The folder of `TempDir` is read from `TMPDIR` when the fixture is made:
+    /// a test that calls this runs in a process of its own and sets it for that process only.
+    pub fn new_in_tmp() -> Fx {
+        std::env::set_var("TMPDIR", "/tmp");
+        let fx = Fx::new();
+        assert!(
+            fx.root.starts_with("/tmp") || fx.root.starts_with("/private/tmp"),
+            "the project is not under /tmp: {}",
+            fx.root.display()
+        );
+        fx
+    }
+}
