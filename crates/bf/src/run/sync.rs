@@ -1177,6 +1177,8 @@ pub(crate) fn brief_sync(p: &Project, so: &events::SyncOpen, role: &str) -> R<Pa
                         gitx::must(&wt, &["diff", tree, "HEAD"]).unwrap_or_default(),
                     ));
                     md.push_str("\n```\n\n");
+                    let items = crate::outside::changed(&wt, tree, "HEAD", &r.allowed);
+                    md.push_str(&crate::outside::section(&items, "sync"));
                 }
             }
         }
