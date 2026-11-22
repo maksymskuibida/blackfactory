@@ -416,3 +416,23 @@ fn a_blocked_fix_builder_over_unreachable_marks_leaves_the_fix_open() {
     }
     assert!(parked, "the attempts limit parks the fix");
 }
+
+#[test]
+fn a_hold_that_turns_unreachable_only_moves_the_cut_off() {
+    let fx = marked("unreachable");
+    let p = fx.project();
+    let hold = |only: bool| {
+        let mut ev = json!({"checkpoint": "K-1", "cause": "marked", "detail": "X-2"});
+        if only {
+            ev["unreachable_only"] = json!(true);
+        }
+        bf::events::append(&p, "checkpoint.hold", ev).unwrap();
+        bf::events::replay_log(&bf::events::load_log(&p).unwrap()).ck_end_seq
+    };
+    let failed = hold(false);
+    let only = hold(true);
+    assert!(
+        only > failed,
+        "the failed hold's words stay behind the cut-off: {failed} {only}"
+    );
+}

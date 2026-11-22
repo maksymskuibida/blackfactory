@@ -2067,6 +2067,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     }
                 } else {
                     let started = st.ck_holds.get(&k).map(|h| h.seq).unwrap_or(seq);
+                    // A hold that was more than `unreachable` marks and now is only those ends the part that
+                    // decided nothing: the cut-off moves to this moment (D-110).
+                    let now_only = ev["unreachable_only"].as_bool().unwrap_or(false);
+                    if now_only && st.ck_holds.get(&k).is_some_and(|h| !h.unreachable_only) {
+                        st.ck_end_seq = seq;
+                    }
                     st.ck_holds.insert(
                         k,
                         CkHold {
