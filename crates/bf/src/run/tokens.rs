@@ -34,8 +34,8 @@ pub(crate) fn read_tokens(p: &Project) -> Value {
 /// `bf tokens` are the way a report says which role is speaking. The token of every open worker
 /// directive is kept in the state folder, keyed by unit and role, and `bf next` shows it every time it
 /// is asked: a conductor that resumes, or a new one, always gets the token of the work already handed
-/// out. A token is spent by one successful report, and tokens of directives that no longer exist are
-/// dropped.
+/// out. A token is spent by one successful report; it is dropped when its work is no longer open, and
+/// kept while it is, whether or not this read shows the directive.
 pub(crate) fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
     let _tl = crate::lock::tokens(p)?;
     let mut tokens = read_tokens(p);
@@ -101,6 +101,16 @@ pub(crate) fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
             }
         }
     }
+    // A token whose work is still open stays whether or not this read shows its directive: another
+    // hold may hide the directive, and the worker is still working.
+    if let Some(o) = tokens.as_object() {
+        let open = OpenWork::load(p);
+        for (k, t) in o {
+            if fresh.get(k).is_none() && open.as_ref().map(|w| w.is_open(p, k)).unwrap_or(false) {
+                fresh[k] = t.clone();
+            }
+        }
+    }
     // Tokens handed out by `bf roles token` stay until spent.
     if let Some(o) = tokens.as_object() {
         for (k, t) in o {
@@ -115,6 +125,98 @@ pub(crate) fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
     }
     util::atomic_write(&p.tokens_path(), serde_json::to_string(&fresh)?.as_bytes())?;
     Ok(())
+}
+
+/// The replayed state and the plan, to tell whether the work behind a token is still open.
+struct OpenWork {
+    st: crate::events::State,
+    pl: plan::Plan,
+    receipts: Vec<evidence::Receipt>,
+}
+
+impl OpenWork {
+    fn load(p: &Project) -> Option<OpenWork> {
+        Some(OpenWork {
+            st: events::replay(p).ok()?,
+            pl: plan::load(p).ok()?,
+            receipts: evidence::load_receipts(p).ok()?,
+        })
+    }
+
+    /// Whether the work of `key` (`<unit or checkpoint>:<role>`) is open.
+    fn is_open(&self, p: &Project, key: &str) -> bool {
+        let Some((id, role)) = key.split_once(':') else {
+            return false;
+        };
+        if self.pl.checkpoints.iter().any(|k| s(k, "id") == id) {
+            return self.checkpoint_open(p, id, role);
+        }
+        let state = self.st.unit_state(id);
+        match role {
+            "builder" => matches!(state, "running" | "fixing" | "blocked" | "parked"),
+            "reviewer" => state == "review",
+            _ => false,
+        }
+    }
+
+    fn checkpoint_open(&self, p: &Project, k: &str, role: &str) -> bool {
+        if self.st.closed.contains_key(k) {
+            return false;
+        }
+        let fix_phase = self
+            .st
+            .ck_fix
+            .as_ref()
+            .filter(|f| f.checkpoint == k)
+            .map(|f| f.phase.as_str());
+        let sync_phase = self
+            .st
+            .sync_open
+            .as_ref()
+            .filter(|f| f.checkpoint == k)
+            .map(|f| f.phase.as_str());
+        match role {
+            "builder" => {
+                matches!(fix_phase, Some("fix" | "scope")) || sync_phase == Some("resolve")
+            }
+            "reviewer" => {
+                fix_phase == Some("review")
+                    || sync_phase == Some("review")
+                    || crate::ckreview::rounds(p, k)
+                        .map(|rs| rs.last().map(|r| r.result.is_none()).unwrap_or(false))
+                        .unwrap_or(false)
+            }
+            "verifier" => self.verifier_open(p, k),
+            _ => false,
+        }
+    }
+
+    fn verifier_open(&self, p: &Project, k: &str) -> bool {
+        let Some(cp) = self.pl.checkpoints.iter().find(|c| s(c, "id") == k) else {
+            return false;
+        };
+        if matches!(
+            events::hold(&self.st, k, u64::MAX),
+            Some(events::Hold::Marked { .. })
+        ) {
+            return true;
+        }
+        let after = str_list(cp, "after");
+        if after.is_empty() || !after.iter().all(|u| self.st.unit_state(u) == "landed") {
+            return false;
+        }
+        let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+        str_list(cp, "checks").into_iter().any(|c| {
+            let rule = self.pl.checks.iter().find(|r| s(r, "id") == c);
+            let off = rule
+                .map(|r| crate::enforce::is_off(&self.st, r))
+                .unwrap_or(false);
+            let review = rule
+                .map(|r| s(r, "named") == crate::checks::CHECKPOINT_REVIEW)
+                .unwrap_or(false);
+            !off && !review && evidence::satisfied_at(&self.receipts, &c, &content).is_none()
+        })
+    }
 }
 
 pub(crate) fn check_token(p: &Project, unit: &str, role: &str, token: Option<&str>) -> R<String> {
