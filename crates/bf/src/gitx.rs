@@ -363,6 +363,15 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
     result
 }
 
+/// Whether a working copy holds changes that are not committed, or its state cannot be read (a broken
+/// link to the repository, a failed `git status`): what cannot be read is taken as work worth keeping.
+pub fn uncommitted_or_unreadable(dir: &Path) -> bool {
+    match run_owned(dir, &with_junk(&["status", "--porcelain"], &["."]), &[]) {
+        Ok(o) => !o.ok || !o.stdout.is_empty(),
+        Err(_) => true,
+    }
+}
+
 pub fn has_uncommitted(dir: &Path) -> bool {
     run_owned(dir, &with_junk(&["status", "--porcelain"], &["."]), &[])
         .map(|o| !o.stdout.is_empty())

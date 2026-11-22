@@ -7,7 +7,7 @@ use super::*;
 use crate::strings::t;
 
 pub(crate) mod disk;
-pub(crate) mod sweep;
+pub mod sweep;
 
 /// What `remove_unit_copy` did.
 pub enum Removal {
@@ -59,7 +59,7 @@ pub fn unit_copy_kept(p: &Project, unit: &str) -> R<Option<String>> {
             &[("unit", unit), ("branch", &ub), ("checkpoint", &cpb)],
         )));
     }
-    if path.join(".git").exists() && gitx::has_uncommitted(&path) {
+    if path.join(".git").exists() && gitx::uncommitted_or_unreadable(&path) {
         return Ok(Some(t(
             "cleanup.kept.uncommitted",
             &[("unit", unit), ("path", &path.to_string_lossy())],
