@@ -22,7 +22,7 @@ fn project(fx: &Fx, two: bool) {
         assert_eq!(r.code, 0, "{k}: {}{}", r.stdout, r.stderr);
     }
     if two {
-        // A second checkpoint with its own unit, so that a check of K-1 can be marked while K-2 is reviewed.
+        // A second checkpoint with its own unit, so that a check of K-2 can be marked while K-1 is reviewed.
         for (k, t) in [
             ("requirement", "id=\"R-2\"\nkind=\"requirement\"\ntitle=\"B\"\nacceptance=[\"src/b.txt exists\"]\n"),
             ("unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"u2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\ndepends_on=[\"U-1\"]\n"),
