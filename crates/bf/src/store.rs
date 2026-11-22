@@ -164,6 +164,23 @@ impl Default for ContextPol {
         }
     }
 }
+/// The disk a run holds (D-109): two levels at which the engine warns. It never refuses for the disk.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct DiskPol {
+    /// Gigabytes `.bf/work` may hold before the engine warns.
+    pub warn_gb: u64,
+    /// Gigabytes the volume of `.bf/work` may have free before the engine warns more strongly.
+    pub low_free_gb: u64,
+}
+impl Default for DiskPol {
+    fn default() -> Self {
+        DiskPol {
+            warn_gb: 20,
+            low_free_gb: 10,
+        }
+    }
+}
 /// The kinds of work in the factory, in the order the policy lists them. Each has a tier, an effort
 /// and optionally a model per harness.
 pub const WORK_KINDS: [&str; 8] = [
@@ -568,6 +585,7 @@ pub struct Policy {
     pub exec: ExecPol,
     pub limits: Limits,
     pub context: ContextPol,
+    pub disk: DiskPol,
     pub tiers: Tiers,
     pub efforts: Efforts,
     /// A model named outright, by kind of work and then by harness.

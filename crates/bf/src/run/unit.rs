@@ -76,6 +76,28 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
             ));
         }
     }
+    // A unit that has not started, on a disk with little free space: the clean-up runs first and the unit
+    // starts all the same. The disk only warns (D-109).
+    let mut disk_warning = None;
+    if cur.is_empty() {
+        let free = cleanup::disk::free(p);
+        if cleanup::disk::is_low(p, free) {
+            let swept = cleanup::disk::clean(p, false).ok();
+            let (count, bytes) = swept
+                .as_ref()
+                .map(|c| (c.removed.len(), c.freed()))
+                .unwrap_or((0, 0));
+            disk_warning = Some(crate::strings::t(
+                "clean.start.low",
+                &[
+                    ("limit", &p.policy.disk.low_free_gb.to_string()),
+                    ("free", &format!("{:.1}", free as f64 / (1u64 << 30) as f64)),
+                    ("count", &count.to_string()),
+                    ("bytes", &bytes.to_string()),
+                ],
+            ));
+        }
+    }
     let k = s(u, "checkpoint").to_string();
     let repo = p.repo_of_unit(u)?.clone();
     let cpb = p.checkpoint_branch(&k);
@@ -111,6 +133,9 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
     }
     if behind > 0 {
         out["behind"] = json!(behind);
+    }
+    if let Some(w) = disk_warning {
+        out["disk_warning"] = json!(w);
     }
     Ok(out)
 }
