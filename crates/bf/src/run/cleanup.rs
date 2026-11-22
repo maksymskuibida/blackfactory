@@ -60,7 +60,7 @@ pub fn remove_unit_copy(p: &Project, unit: &str) -> R<Removal> {
             &[("unit", unit), ("branch", &ub), ("checkpoint", &cpb)],
         )));
     }
-    if path.join(".git").exists() && gitx::has_uncommitted(&path) {
+    if path.join(".git").exists() && gitx::uncommitted_or_unreadable(&path) {
         return Ok(Removal::Kept(t(
             "cleanup.kept.uncommitted",
             &[("unit", unit), ("path", &path.to_string_lossy())],

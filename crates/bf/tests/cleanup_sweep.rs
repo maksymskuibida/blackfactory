@@ -282,3 +282,16 @@ fn a_folder_that_is_no_working_copy_stays_and_is_named() {
     let r = out.iter().find(|r| r.path == w).expect("named");
     assert!(r.kept.as_deref().unwrap_or("").contains("U-9"), "{r:?}");
 }
+
+#[test]
+fn a_copy_whose_git_link_is_broken_stays_and_is_named() {
+    let fx = fixture();
+    let w = fx.work("U-9");
+    fs::create_dir_all(&w).unwrap();
+    fs::write(w.join(".git"), "gitdir: /nonexistent/place/.git/worktrees/U-9\n").unwrap();
+    fs::write(w.join("notes.txt"), "mine\n").unwrap();
+    let out = sweep(&fx);
+    assert!(w.join("notes.txt").exists(), "{out:?}");
+    let r = out.iter().find(|r| r.path == w).expect("named");
+    assert!(r.kept.as_deref().unwrap_or("").contains("U-9"), "{r:?}");
+}

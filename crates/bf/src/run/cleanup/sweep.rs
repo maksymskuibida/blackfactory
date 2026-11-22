@@ -387,7 +387,7 @@ pub fn sweep(p: &Project, st: &State) -> Vec<Removed> {
             continue;
         }
         let copies = copies_in(&path);
-        let dirty = copies.is_empty() || copies.iter().any(|d| gitx::has_uncommitted(d));
+        let dirty = copies.is_empty() || copies.iter().any(|d| gitx::uncommitted_or_unreadable(d));
         if dirty {
             out.push(Removed::stays(
                 "stray",
