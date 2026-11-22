@@ -1,0 +1,9 @@
+# Strings of the group `scope.removed`: the commands that asked for files, judged a request or
+# withdrew a grant are gone, because a unit's file list is a recommendation (D-115). Keys are quoted and flat.
+
+"scope.removed.request" = "ask for files for {unit}"
+"scope.removed.verdict" = "report a scope verdict on {unit}"
+"scope.removed.revert" = "withdraw a grant of files of {unit}"
+"scope.removed.because" = "the file list of a unit is a recommendation: the unit may write any file that is not protected, so nothing asks for a file, nothing reviews the request and nothing is granted"
+"scope.removed.step" = "Write the file and give the reason in the report of the unit; the reviewer judges every change outside the list."
+"scope.removed.worked" = "`bf report` takes the unit's built or blocked report with no request for files."

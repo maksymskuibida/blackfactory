@@ -3,7 +3,6 @@
 //! the replay keeps it; each file carries `path` and its own `verdict`: `needed`, `retry`,
 //! `retry_spent` or `extension`. One file is judged at most `limit` times for one unit or one fix.
 
-use crate::events::{self, State};
 use crate::store::{s, Project};
 use serde_json::Value;
 
@@ -92,28 +91,6 @@ pub fn check_verdict_item(v: &Value) -> Result<(), String> {
         }
         _ => Err(crate::strings::t("scope.retry.verdict.word", &[])),
     }
-}
-
-/// The unit's refusals in force: those since its latest start or the human's latest release.
-pub fn for_unit(p: &Project, st: &State, unit: &str) -> Vec<Value> {
-    let all = st
-        .scope
-        .get(unit)
-        .map(|sc| sc.refused.clone())
-        .unwrap_or_default();
-    let from = events::load_log(p)
-        .map(|l| {
-            l.events
-                .iter()
-                .filter(|e| {
-                    s(e, "unit") == unit && matches!(s(e, "kind"), "unit.start" | "unit.release")
-                })
-                .filter_map(|e| e["seq"].as_u64())
-                .max()
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
-    since(&all, from)
 }
 
 #[cfg(test)]
