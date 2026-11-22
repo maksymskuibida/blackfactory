@@ -378,15 +378,14 @@ fn has_lookalike(rel: &str) -> bool {
     })
 }
 
-/// Is this session the builder of the copy it stands in? An agent of another type never is; a session
-/// that tells no type is taken for it only at the root of the copy, where it started.
+/// Is this session a builder working in a copy? A subagent's `cwd` is always the workspace root, so a
+/// builder agent is judged by its role, not its folder: it is taken for the builder of any copy at work
+/// (the guard cannot tie it to one copy). Other agent types never are; a session that tells no type is
+/// taken for it only at the root of the copy, where it started.
 fn builder_in_copy(cwd: &str, base: &str) -> bool {
-    if under(cwd, base).is_none() {
-        return false;
-    }
     match ROLE.with(|r| r.get()) {
         1 => true,
-        0 => cwd.trim_end_matches('/') == base.trim_end_matches('/'),
+        0 => under(cwd, base).is_some() && cwd.trim_end_matches('/') == base.trim_end_matches('/'),
         _ => false,
     }
 }
@@ -4905,6 +4904,27 @@ fn is_inline_flag(a: &str) -> bool {
 }
 
 fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
+    // A subagent's folder is always the workspace root, and a `cd` does not carry over between its
+    // commands, so a worker agent that is given a copy starts each command with `cd <copy> && ...`. Such
+    // a command is judged as run from that copy: the rest of the line, with the copy as its folder.
+    if GETS_COPY.with(|g| g.get()) && !matches!(zone_of(table, cwd).kind, "unit" | "checkpoint") {
+        if let Some((target, rest)) = cmd
+            .trim_start()
+            .strip_prefix("cd ")
+            .and_then(|r| r.split_once("&&"))
+        {
+            let t = target.trim();
+            let plain = !t.is_empty()
+                && !t
+                    .contains(|c: char| c.is_whitespace() || "\"'`$;|&<>()\\*?~{}[]!#".contains(c));
+            if plain {
+                let abs = resolve(t, cwd);
+                if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
+                    return check_bash(table, &abs, rest);
+                }
+            }
+        }
+    }
     // Where would a shell really run `bf`? Only a word in command position counts; the word `bf` as an
     // argument, in a pattern or in a heredoc for another program is data.
     let calls = crate::shellparse::bf_calls(cmd);
