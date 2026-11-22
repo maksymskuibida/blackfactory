@@ -151,6 +151,8 @@ fn land_merge_three_clean_units_land_in_one_turn_with_one_run() {
     let fx = Fx::new();
     plan(&fx);
     let wcs = all_built(&fx);
+    // The landing removes the working copies, so their content is read first.
+    let before: Vec<String> = wcs.iter().map(|w| fx.project().content_hash(w).unwrap()).collect();
     let o = fx.must(&["unit", "land", "U-2", "--json"]).json();
     assert_eq!(o["landed"], true, "{o}");
     assert!(o["line"].as_str().unwrap().contains("landed in the same turn: U-1, U-3"), "{o}");
@@ -166,8 +168,8 @@ fn land_merge_three_clean_units_land_in_one_turn_with_one_run() {
     assert_eq!(units, ["U-1", "U-2", "U-3"]);
     let p = fx.project();
     let receipts = bf::evidence::load_receipts(&p).unwrap();
-    for (e, wc) in ls.iter().zip(&wcs) {
-        assert_eq!(e["hash"].as_str().unwrap(), p.content_hash(wc).unwrap());
+    for (e, was) in ls.iter().zip(&before) {
+        assert_eq!(e["hash"].as_str().unwrap(), was);
         assert_eq!(e["merged_hash"], ls[0]["merged_hash"]);
         assert_ne!(e["merged_hash"], e["hash"]);
         // The ledger finds the unit's receipts by the unit's own content.

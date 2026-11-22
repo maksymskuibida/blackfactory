@@ -620,6 +620,8 @@ fn ordinary_reads_and_git_housekeeping_are_not_refused() {
         "X-1",
         &["test", "-f", "src/hello.txt"],
     );
+    // The landing removed the folder; the guard still judges a command that runs where it stood.
+    std::fs::create_dir_all(&wc).unwrap();
     assert_ne!(
         guard_decision(&fx, &wc, "Bash", json!({"command": "git reset --hard"})),
         "deny"

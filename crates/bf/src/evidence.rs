@@ -2301,10 +2301,21 @@ pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) ->
     let mut unmet: Vec<(String, String)> = Vec::new();
     if let Some(u) = unit {
         let dir = p.work_dir().join(u);
-        let top = if dir.is_dir() { dir } else { p.top.clone() };
-        let content = p.content_hash(&top)?;
-        let pl = crate::plan::load(p)?;
         let st = crate::events::replay(p)?;
+        // A landed unit's working copy is removed: its content is what its `unit.land` event recorded.
+        let landed = st
+            .units
+            .get(u)
+            .filter(|x| x.state == "landed" && !x.landed_hash.is_empty() && !dir.is_dir())
+            .map(|x| x.landed_hash.clone());
+        let content = match landed {
+            Some(h) => h,
+            None => {
+                let top = if dir.is_dir() { dir } else { p.top.clone() };
+                p.content_hash(&top)?
+            }
+        };
+        let pl = crate::plan::load(p)?;
         let needs = unit_landing_needs(p, &pl, &st, &receipts, u, &content);
         for n in &needs {
             match n.met {

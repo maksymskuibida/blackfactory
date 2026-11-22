@@ -380,7 +380,9 @@ fn the_wave_check_step_needs_no_token_and_a_worker_cannot_run_it() {
     start(&fx);
     land_first(&fx, "good\n");
     // From inside a working copy the engine refuses: planning and landing belong to the conductor.
+    // The landing removed the unit's folder; the call still comes from where it stood.
     let wc = fx.work("U-1");
+    std::fs::create_dir_all(&wc).unwrap();
     let o = fx.bf_in(&wc, &["checkpoint", "wave-check", "K-1", "--wave", "1"]);
     assert_eq!(o.code, 2, "{}", o.all());
 }

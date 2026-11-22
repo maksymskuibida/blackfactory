@@ -110,7 +110,10 @@ fn a_later_checkpoint_builds_on_the_earlier_one_and_the_run_flows_through_withou
         ],
     );
     fx.must(&["checkpoint", "close", "K-2"]);
-    assert!(fx.work("K-2").join("src/a.txt").exists());
+    // The close removed the working copy; the branch holds the content.
+    assert!(!fx.work("K-2").exists());
+    let kb = fx.project().checkpoint_branch("K-2");
+    git(&fx.root, &["cat-file", "-e", &format!("{kb}:src/a.txt")]);
     let n = fx.must(&["next", "--json"]).json();
     assert!(
         n["idle_reason"].as_str().unwrap().starts_with("run done"),
@@ -610,6 +613,8 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
     assert_eq!(o.code, 2);
     assert!(o.stderr.contains("one sentence"), "{}", o.stderr);
     let says = "I read the screen text and it says hello";
+    // The landing removed the unit's folder; the call still comes from where it stood.
+    fs::create_dir_all(&wc).unwrap();
     for bad in [None, Some(bt.as_str())] {
         let mut a = vec![
             "evidence",

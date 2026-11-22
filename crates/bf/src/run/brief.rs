@@ -43,6 +43,16 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
         ));
     };
     let st = events::replay(p)?;
+    // A unit sent back to work whose folder is gone (it landed and was cleaned up) has its copy again.
+    if matches!(role, "builder" | "reviewer")
+        && matches!(
+            st.unit_state(unit),
+            "running" | "fixing" | "review" | "reviewed"
+        )
+        && !p.work_dir().join(unit).join(".git").exists()
+    {
+        cleanup::ensure_unit_copy(p, unit)?;
+    }
     if role == "reviewer" && crate::scope::open_request(&st, unit).is_some() {
         return crate::scope::brief_review(p, unit);
     }
