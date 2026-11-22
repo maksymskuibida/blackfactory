@@ -639,6 +639,11 @@ pub fn overlay(table: &mut Value) {
     }
 }
 
+/// The directive an old log's scope review once gave. A fix whose request for files is open in such a log
+/// goes on as a fix at work now, and no directive carries this action any more.
+#[allow(dead_code)]
+const REVIEW_SCOPE_DIRECTIVE: &str = "review-scope";
+
 /// The directive for the open fix.
 pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
     let k = &f.checkpoint;
@@ -665,8 +670,8 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "abort_command": abort});
     }
     match f.phase.as_str() {
-        "fix" => {
-            let mut d = json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
+        "fix" | "scope" => {
+            let d = json!({"role": "builder", "action": if f.source == "wave" { "fix-wave" } else { "fix-checkpoint" }, "checkpoint": k,
             "wave": f.wave,
             "source": f.source, "tier": p.policy.tiers.builder, "working_copy": wc,
             "brief": brief("builder"), "limits": lim,
@@ -675,7 +680,6 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "failing_checks": f.failed.iter().filter_map(|x| x["check"].as_str()).collect::<Vec<_>>(),
             "findings": f.findings.iter().map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]})).collect::<Vec<_>>(),
             "commands": [format!("bf brief {k} --role builder")], "abort_command": abort});
-            crate::scope::merge_fields(&mut d, retry_directive(f));
             d
         }
         "review" => {
@@ -684,16 +688,6 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"),
             "limits": lim, "round": f.rounds_log.len() + 1,
             "commands": [format!("bf brief {k} --role reviewer")], "abort_command": abort})
-        }
-        "scope" => {
-            let files: Vec<String> = f.request.iter().map(|x| s(x, "path").to_string()).collect();
-            json!({"role": "reviewer", "action": "review-scope", "checkpoint": k,
-            "tier": p.policy.tiers.reviewer, "working_copy": wc, "brief": brief("reviewer"),
-            "limits": lim, "files": files,
-            "note": crate::strings::t("fix.scope.directive.note", &[("k", k)]),
-            "commands": [format!("bf brief {k} --role reviewer")],
-            "verdict_command": format!("bf checkpoint scope {k} --verdict - --token <token>"),
-            "abort_command": abort})
         }
         "low" => {
             let open = open_ids(f);
@@ -782,12 +776,21 @@ fn changed(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<Vec<(String, char)>> {
         }
         let d = gitx::must(
             &wt,
-            &["diff", "--name-status", "--no-renames", &before, "HEAD"],
+            &[
+                "diff",
+                "-z",
+                "--name-status",
+                "--no-renames",
+                &before,
+                "HEAD",
+            ],
         )?;
-        for l in d.lines() {
-            let Some((st, path)) = l.split_once('\t') else {
+        // NUL-separated pairs of a status and an unquoted path, whatever characters the name holds.
+        let mut parts = d.split('\0');
+        while let (Some(st), Some(path)) = (parts.next(), parts.next()) {
+            if st.is_empty() {
                 continue;
-            };
+            }
             let path = if several {
                 format!("{name}/{path}")
             } else {
@@ -1029,7 +1032,18 @@ fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Ve
         let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
             continue;
         };
-        let d = gitx::must(&wt, &["diff", "-U0", "--no-renames", before, "HEAD"])?;
+        let d = gitx::must(
+            &wt,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "-U0",
+                "--no-renames",
+                before,
+                "HEAD",
+            ],
+        )?;
         let mut cur = String::new();
         for l in d.lines() {
             if let Some(rest) = l.strip_prefix("diff --git a/") {
@@ -1042,6 +1056,9 @@ fn changed_hunks(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<BTreeMap<String, Ve
                     x.to_string()
                 };
                 out.entry(cur.clone()).or_default();
+            } else if l.starts_with("diff --git ") {
+                // A name git still quotes (a quote, a backslash, a newline): no hunk is credited to another file.
+                cur = String::new();
             } else if l.starts_with("old mode ")
                 || l.starts_with("new mode ")
                 || l.starts_with("new file mode ")
@@ -1204,9 +1221,13 @@ fn report_inner(
     let st = events::require_chain(p)?;
     run::need_run(&st)?;
     let pl = plan::load(p)?;
-    let Some(f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
+    let Some(mut f) = st.ck_fix.clone().filter(|f| f.checkpoint == k) else {
         return open_from_review(p, &st, &pl, k, result, role, findings, token, via_round);
     };
+    // A request for files left open in an old log holds nothing now: the builder goes on.
+    if f.phase == "scope" {
+        f.phase = "fix".into();
+    }
     // The review is settled (every finding accepted): any report of `built` goes on to the checks and the end,
     // with no further round. A stop between the accept and the checks leaves the fix here (R-71).
     if settled(&f) {
@@ -1370,7 +1391,7 @@ fn report_inner(
             let outside_any = files.iter().any(|(path, st)| !within(&live, path, *st));
             let skip_wanted = f.source == "check" && format_lint_only(&f.origin_failed);
             let mut proven: BTreeMap<String, Value> = BTreeMap::new();
-            let mut why_not: BTreeMap<String, String> = BTreeMap::new();
+            // A file outside the lists is the reviewer's to judge (D-115); only a format-only change is proven here.
             if outside_any || skip_wanted {
                 for (path, status) in &files {
                     if *status != 'M' || (within(&live, path, *status) && !skip_wanted) {
@@ -1379,50 +1400,36 @@ fn report_inner(
                     let Some((repo, wt, rel, before)) = locate(p, &pl, &f, path)? else {
                         continue;
                     };
-                    // The places and kinds of file a unit's acceptance refuses are refused here by the same rule.
-                    if let Some(why) = crate::scope::hard_rule(p, &pl, &st, k, path) {
-                        why_not.insert(path.clone(), why);
+                    // A file the rules below refuse or name is no format-only change.
+                    if crate::scope::hard_rule(p, &pl, &st, k, path).is_some() {
                         continue;
                     }
                     let rel = crate::scope::normalize_path(&rel).unwrap_or(rel);
-                    match crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
-                        Ok(v) => {
-                            proven.insert(path.clone(), v);
-                        }
-                        Err(e) => {
-                            why_not.insert(path.clone(), e);
-                        }
+                    if let Ok(v) = crate::scope::fmtproof::prove_in_fix(p, &repo, &wt, &before, &rel) {
+                        proven.insert(path.clone(), v);
                     }
                 }
             }
-            let outside: Vec<String> = files
-                .iter()
-                .filter(|(path, status)| {
-                    !within(&live, path, *status) && !proven.contains_key(path)
-                })
-                .flat_map(|(path, status)| {
-                    let key = if matches!(*status, 'A' | 'M' | 'D') {
-                        "cli.ckfix.outside.not_test"
-                    } else {
-                        "cli.ckfix.outside.units"
-                    };
-                    let mut v = vec![crate::strings::t(key, &[("path", path), ("k", k)])];
-                    if let Some(w) = why_not.get(path) {
-                        v.push(crate::strings::t(
-                            "cli.ckfix.format.refused",
-                            &[("path", path), ("why", w)],
-                        ));
-                    }
-                    v
-                })
-                .collect();
-            if !outside.is_empty() {
-                return plan_gap(
-                    p,
-                    k,
-                    &outside,
-                    "the fix changed files the plan never gave to this checkpoint",
-                );
+            // A file outside the lists is the reviewer's to judge, except one no change may touch: a place the
+            // guard protects, a link, a look-alike name, a file outside the repository. Those are refused.
+            for (path, status) in &files {
+                if within(&live, path, *status) {
+                    continue;
+                }
+                if let Some(rule) = never_allowed(p, &pl, &st, k, path) {
+                    return Err(refuse_owned(
+                        crate::strings::t("ckfix_recommended.never.what", &[("k", k)]),
+                        crate::strings::t(
+                            "ckfix_recommended.never.because",
+                            &[("path", &shown(path)), ("rule", &rule)],
+                        ),
+                        vec![crate::strings::t(
+                            "ckfix_recommended.never.step",
+                            &[("path", &shown(path))],
+                        )],
+                        crate::strings::t("ckfix_recommended.never.check", &[]),
+                    ));
+                }
             }
             if files.is_empty() {
                 return Err(refuse_owned(
@@ -1463,7 +1470,7 @@ fn report_inner(
                 steps.push(if to == "parked" {
                     "The fix is parked: the human decides.".into()
                 } else {
-                    "Repair it (only the files named in your brief), commit, run the failing checks again with `bf evidence run`, then report again.".into()
+                    crate::strings::t("ckfix_recommended.fail.repair", &[])
                 });
                 return Err(refuse_owned(
                     format!("report the fix of {k}"),
@@ -1484,7 +1491,8 @@ fn report_inner(
             events::append(
                 p,
                 "checkpoint.fix.built",
-                json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>()}),
+                json!({"checkpoint": k, "files": files.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+                    "note": note}),
             )?;
             write_overlay(p)?;
             p.write_guard()?;
@@ -2049,9 +2057,6 @@ fn limited(t: String, max: usize) -> String {
 pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     let k = &f.checkpoint;
     let pl = plan::load(p)?;
-    if f.phase == "scope" && role == "reviewer" {
-        return scope_brief(p, &pl, f);
-    }
     let wc = p.work_dir().join(k);
     let mut md = format!("# Brief: the fix of {k} as {role}\n\n");
     md.push_str(&format!(
@@ -2122,8 +2127,8 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         let lv = live(p, &pl, &st, f);
         md.push_str(&format!(
             "## {}\n\n{}\n\n",
-            crate::strings::t("fix.scope.brief.list_title", &[]),
-            crate::strings::t("fix.scope.brief.list_intro", &[])
+            crate::strings::t("ckfix_recommended.brief.list_title", &[]),
+            crate::strings::t("ckfix_recommended.brief.list_intro", &[])
         ));
         for g in lv.allowed.iter().take(80) {
             md.push_str(&format!("- `{g}`\n"));
@@ -2135,6 +2140,8 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
             ));
         }
         md.push_str(&builder_extras(p, &st, f));
+        md.push('\n');
+        md.push_str(&outside_section(p, &pl, f, role)?);
         md.push_str(&format!(
             "\n## {}\n\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n",
             crate::strings::t("fix.scope.brief.rules_title", &[]),
@@ -2145,7 +2152,7 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                 &[("wc", &wc.display().to_string())]
             ),
             crate::strings::t("fix.scope.brief.rule_report", &[("k", k)]),
-            crate::strings::t("fix.scope.brief.ask", &[("k", k)]),
+            crate::strings::t("ckfix_recommended.brief.outside_rule", &[]),
             crate::strings::t("fix.scope.brief.gap", &[("k", k)]),
             crate::strings::t("fix.scope.brief.rule_blocked", &[("k", k)])
         ));
@@ -2213,8 +2220,11 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                 )
             ));
         }
+        md.push_str(&outside_section(p, &pl, f, role)?);
+        md.push_str(&claim_section(p, f));
         md.push_str(&format!(
-            "## What to judge\n\nDoes the fix solve the failure without weakening a test? Look at how each probe test was added to the suite: it must be in the suite and run, not compiled out, skipped or emptied, and its command must run at least one test. Does it stay inside the files of the checkpoint's units (and new test files)? Report with `bf report {k} --role reviewer --result findings --findings -` (a JSON list of `{{title, severity, where, action}}`), or `--result built` when the fix is right. Pass the token of your directive with `--token`.\n"
+            "{}\n",
+            crate::strings::t("ckfix_recommended.brief.judge", &[("k", k)])
         ));
     }
     if role != "builder" {
@@ -2235,139 +2245,10 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
     Ok(path)
 }
 
-/// The latest refusal of the open fix when it is a `retry`, a `retry_spent` or an `extension` and no
-/// grant came after it: what the builder is told to do next.
-pub(crate) fn pending_refusal(f: &CkFixOpen) -> Option<&Value> {
-    let r = f
-        .refused
-        .last()
-        .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent" | "extension"))?;
-    let seq = r["seq"].as_u64().unwrap_or(0);
-    (!f.grants.last().is_some_and(|g| g.seq > seq)).then_some(r)
-}
-
-/// The directive's lines for a pending refusal: each file to ask for again with the reviewer's words,
-/// and the files that are not granted (R-70).
-fn retry_directive(f: &CkFixOpen) -> Value {
-    let Some(r) = pending_refusal(f) else {
-        return json!({});
-    };
-    let files = r["files"].as_array().cloned().unwrap_or_default();
-    let ask: Vec<Value> = files
-        .iter()
-        .filter(|x| s(x, "verdict") == "retry")
-        .map(|x| json!({"path": x["path"], "why": x["why"], "must": x["must"]}))
-        .collect();
-    let again: Vec<&str> = files
-        .iter()
-        .filter(|x| s(x, "verdict") == "needed")
-        .map(|x| s(x, "path"))
-        .collect();
-    let stuck: Vec<&str> = files
-        .iter()
-        .filter(|x| matches!(s(x, "verdict"), "extension" | "retry_spent"))
-        .map(|x| s(x, "path"))
-        .collect();
-    let any = !ask.is_empty() || !again.is_empty();
-    let mut o = json!({"ask_again": ask, "ask_again_same_patch": again});
-    if any {
-        o["retry_note"] = json!(crate::strings::t("fix.retry.directive.note", &[]));
-    }
-    if !stuck.is_empty() {
-        o["not_granted"] = json!(stuck);
-        o["not_granted_note"] = json!(crate::strings::t(
-            "fix.retry.directive.not_granted",
-            &[("files", &stuck.join(", "))]
-        ));
-    }
-    o
-}
-
-/// The builder's brief on grants, a corrected patch asked for, and saved work (R-70).
+/// The builder's brief on saved work (R-70).
 fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
     use crate::strings::t;
-    let k = &f.checkpoint;
     let mut md = String::new();
-    if !f.grants.is_empty() {
-        md.push_str(&format!(
-            "\n## {}\n\n",
-            t("fix.scope.brief.granted_title", &[])
-        ));
-        for (i, g) in f.grants.iter().enumerate() {
-            for path in &g.files {
-                md.push_str(&format!(
-                    "{}\n",
-                    t(
-                        "fix.scope.brief.granted_file",
-                        &[("path", path), ("n", &(i + 1).to_string())]
-                    )
-                ));
-            }
-        }
-    }
-    // The latest answer was a `retry` and nothing was granted since: the builder asks again.
-    if let Some(r) = pending_refusal(f) {
-        let lim = crate::scope::retry::limit(p);
-        let counted = matches!(s(r, "refusal"), "retry" | "retry_spent");
-        let mut asks = String::new();
-        let mut needed = String::new();
-        let mut stuck = String::new();
-        for x in r["files"].as_array().into_iter().flatten() {
-            let path = s(x, "path");
-            let used = crate::scope::retry::rounds_used(&f.refused, path);
-            match s(x, "verdict") {
-                "retry" => {
-                    let key = if counted {
-                        "fix.retry.brief.file"
-                    } else {
-                        "fix.retry.brief.file_free"
-                    };
-                    asks.push_str(&format!(
-                        "{}\n",
-                        t(
-                            key,
-                            &[
-                                ("path", path),
-                                ("why", s(x, "why")),
-                                ("must", s(x, "must")),
-                                ("round", &used.to_string()),
-                                ("limit", &lim.to_string()),
-                                ("left", &lim.saturating_sub(used).to_string()),
-                            ]
-                        )
-                    ));
-                }
-                "needed" => needed.push_str(&format!(
-                    "{}\n",
-                    t("fix.scope.brief.retry_needed", &[("path", path)])
-                )),
-                "extension" | "retry_spent" => stuck.push_str(&format!(
-                    "{}\n",
-                    t(
-                        "fix.retry.brief.not_granted_file",
-                        &[("path", path), ("why", s(x, "why"))]
-                    )
-                )),
-                _ => {}
-            }
-        }
-        if !(asks.is_empty() && needed.is_empty()) {
-            md.push_str(&format!(
-                "\n## {}\n\n{}\n\n{asks}{needed}\n{}\n",
-                t("fix.scope.brief.retry_title", &[]),
-                t("fix.scope.brief.retry_intro", &[]),
-                t("fix.scope.brief.retry_command", &[("k", k)])
-            ));
-        }
-        if !stuck.is_empty() {
-            md.push_str(&format!(
-                "\n## {}\n\n{}\n\n{stuck}\n{}\n",
-                t("fix.retry.brief.not_granted_title", &[]),
-                t("fix.retry.brief.not_granted_intro", &[]),
-                t("fix.retry.brief.not_granted_way", &[("k", k)])
-            ));
-        }
-    }
     if !f.from_saved.is_empty() {
         let note = crate::fixscope::reopened(p, &f.from_saved);
         md.push_str(&format!(
@@ -2402,176 +2283,130 @@ fn builder_extras(p: &Project, st: &State, f: &CkFixOpen) -> String {
     md
 }
 
-/// The brief of the scope reviewer of a fix's open request (R-70).
-fn scope_brief(p: &Project, pl: &Plan, f: &CkFixOpen) -> R<PathBuf> {
-    use crate::strings::t;
-    let k = &f.checkpoint;
-    let st = events::replay(p)?;
-    let kr = pl.checkpoint(k).cloned().unwrap_or_default();
-    let mut md = format!(
-        "# {}\n\n{}\n\n",
-        t("fix.scope.review.title", &[("k", k)]),
-        s(&kr, "title")
-    );
-    md.push_str(&format!("{}\n\n", t("fix.scope.review.intro", &[])));
-    md.push_str(&format!("## {}\n\n", t("fix.scope.review.proves", &[])));
-    for id in str_list(&kr, "proves") {
-        if let Some(r) = p.get_record(&id)? {
-            md.push_str(&format!("### {} {}\n\n", id, s(&r, "title")));
-            if !s(&r, "text").is_empty() {
-                md.push_str(&format!("{}\n\n", s(&r, "text")));
-            }
-            for a in str_list(&r, "acceptance") {
-                md.push_str(&format!(
-                    "{}\n",
-                    t("fix.scope.review.acceptance", &[("a", &a)])
-                ));
-            }
-            md.push('\n');
+/// A path as the brief prints it inside a code span: a backtick, a backslash and a control character are
+/// written as escapes, so no name can close the span or start a line of its own.
+fn shown(path: &str) -> String {
+    let mut o = String::new();
+    for c in path.chars() {
+        if c == '`' {
+            o.push_str("\\`");
+        } else if c == '\\' || c.is_control() {
+            o.extend(c.escape_default());
+        } else {
+            o.push(c);
         }
     }
-    md.push_str(&format!("## {}\n\n", t("fix.scope.review.units", &[])));
-    for u in pl.units.iter().filter(|u| s(u, "checkpoint") == k) {
-        md.push_str(&format!(
-            "{}\n",
-            t(
-                "fix.scope.review.unit_row",
-                &[
-                    ("id", s(u, "id")),
-                    ("title", s(u, "title")),
-                    ("files", &str_list(u, "files").join(", "))
-                ]
-            )
-        ));
-    }
-    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.cause", &[])));
-    for x in &f.origin_failed {
-        md.push_str(&format!(
-            "{}\n",
-            t(
-                "fix.scope.review.cause_check",
-                &[("check", s(x, "check")), ("command", s(x, "command"))]
-            )
-        ));
-    }
-    for x in &f.origin_findings {
-        md.push_str(&format!(
-            "{}\n",
-            t(
-                "fix.scope.review.cause_finding",
-                &[
-                    ("severity", s(x, "severity")),
-                    ("title", s(x, "title")),
-                    ("where", s(x, "where"))
-                ]
-            )
-        ));
-    }
+    o
+}
+
+/// The rule that forbids a change to `path` whatever the lists say: a protected place, a link, a look-alike
+/// name, a file outside the repository. A file held by a unit that may run beside is named, not refused.
+fn never_allowed(p: &Project, pl: &Plan, st: &State, k: &str, path: &str) -> Option<String> {
+    let rule = crate::scope::hard_rule(p, pl, st, k, path)?;
+    crate::scope::holder_beside(p, pl, st, k, path)
+        .is_none()
+        .then_some(rule)
+}
+
+/// The files the fix changed that lie outside the lists of the checkpoint's units, with the line that
+/// says so, for the fix's reviewer. A format-only change accepted by the engine is not listed.
+fn outside_section(p: &Project, pl: &Plan, f: &CkFixOpen, role: &str) -> R<String> {
+    use crate::strings::t;
+    let st = events::replay(p)?;
     let lv = live(p, pl, &st, f);
-    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.list", &[])));
-    for g in lv.allowed.iter().take(80) {
-        md.push_str(&format!("- `{g}`\n"));
+    let accepted = fmt_load(p, &f.checkpoint, f.open_seq);
+    let out: Vec<String> = changed(p, pl, f)?
+        .into_iter()
+        .filter(|(path, status)| !within(&lv, path, *status) && !accepted.contains_key(path))
+        .map(|(path, _)| path)
+        .collect();
+    if out.is_empty() {
+        return Ok(String::new());
     }
-    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.earlier", &[])));
-    if f.grants.is_empty() {
-        md.push_str(&format!("{}\n", t("fix.scope.review.earlier_none", &[])));
-    }
-    for (i, g) in f.grants.iter().enumerate() {
-        md.push_str(&format!(
-            "{}\n",
-            t(
-                "fix.scope.page.granted",
-                &[("n", &(i + 1).to_string()), ("files", &g.files.join(", "))]
-            )
-        ));
-    }
-    md.push_str(&format!("\n## {}\n\n", t("fix.scope.review.changes", &[])));
-    for (name, wt) in wts(p, pl, k)? {
-        let Some((_, before)) = f.before.iter().find(|(r, _)| *r == name) else {
-            continue;
+    let mut md = format!(
+        "## {}\n\n{}\n\n",
+        t("ckfix_recommended.brief.outside_title", &[]),
+        t(
+            if role == "builder" {
+                "ckfix_recommended.brief.outside_intro_builder"
+            } else {
+                "ckfix_recommended.brief.outside_intro"
+            },
+            &[]
+        )
+    );
+    for path in &out {
+        let rule = crate::scope::hard_rule(p, pl, &st, &f.checkpoint, path);
+        let path = shown(path);
+        let line = match rule {
+            Some(rule) => t(
+                "ckfix_recommended.brief.outside_file_rule",
+                &[("path", &path), ("rule", &rule)],
+            ),
+            None => t("ckfix_recommended.brief.outside_file", &[("path", &path)]),
         };
+        md.push_str(&format!("{line}\n"));
+    }
+    md.push('\n');
+    Ok(md)
+}
+
+/// The longest note of the fix builder the brief prints.
+const CLAIM_MAX: usize = 2000;
+
+/// The note of the fix builder's latest report, read from its `checkpoint.fix.built` event.
+pub fn built_note(p: &Project, f: &CkFixOpen) -> Option<String> {
+    let log = events::load_log(p).ok()?;
+    log.events
+        .iter()
+        .rev()
+        .filter(|e| {
+            e["kind"] == "checkpoint.fix.built"
+                && e["checkpoint"] == f.checkpoint.as_str()
+                && e["seq"].as_u64().unwrap_or(0) > f.open_seq
+        })
+        .map(|e| s(e, "note").to_string())
+        .next()
+}
+
+/// The builder's report as a claim: quoted line by line and cut, so no line of it reads as part of the brief.
+fn claim_section(p: &Project, f: &CkFixOpen) -> String {
+    use crate::strings::t;
+    let Some(note) = built_note(p, f) else {
+        return String::new();
+    };
+    let mut md = format!(
+        "## {}\n\n{}\n\n",
+        t("ckfix_recommended.brief.claim_title", &[]),
+        t(
+            "ckfix_recommended.brief.claim_result",
+            &[("result", "built")]
+        )
+    );
+    if note.trim().is_empty() {
         md.push_str(&format!(
             "{}\n\n",
-            t("fix.scope.review.changes_intro", &[("name", &name)])
+            t("ckfix_recommended.brief.claim_none", &[])
         ));
-        md.push_str(&format!(
-            "```diff\n{}\n```\n\n",
-            limited(gitx::must(&wt, &["diff", before]).unwrap_or_default(), 600)
-        ));
+        return md;
     }
-    md.push_str(&format!("## {}\n\n", t("fix.scope.review.request", &[])));
-    let lim = crate::scope::retry::limit(p);
-    for x in &f.request {
-        let new = if x["new"].as_bool().unwrap_or(false) {
-            t("fix.scope.review.new_file", &[])
-        } else {
-            String::new()
-        };
+    let cut = note.chars().count() > CLAIM_MAX;
+    let kept: String = note.chars().take(CLAIM_MAX).collect();
+    let kept = kept.replace("\r\n", "\n").replace('\r', "\n");
+    for line in kept.lines() {
+        md.push_str(&format!("> {line}\n"));
+    }
+    md.push('\n');
+    if cut {
         md.push_str(&format!(
-            "{}\n```diff\n{}\n```\n\n",
+            "{}\n\n",
             t(
-                "fix.scope.review.request_file",
-                &[("path", s(x, "path")), ("new", &new), ("why", s(x, "why"))]
-            ),
-            s(x, "patch")
+                "ckfix_recommended.brief.claim_cut",
+                &[("max", &CLAIM_MAX.to_string())]
+            )
         ));
-        let path = s(x, "path");
-        let earlier: Vec<&Value> = f
-            .refused
-            .iter()
-            .filter(|r| matches!(s(r, "refusal"), "retry" | "retry_spent"))
-            .filter_map(|r| {
-                r["files"].as_array()?.iter().find(|e| {
-                    s(e, "path") == path && matches!(s(e, "verdict"), "retry" | "retry_spent")
-                })
-            })
-            .collect();
-        if !earlier.is_empty() {
-            md.push_str(&format!(
-                "## {}\n\n",
-                t("fix.scope.review.rounds_title", &[])
-            ));
-            md.push_str(&format!(
-                "{}\n\n",
-                t(
-                    "fix.scope.review.rounds_file",
-                    &[
-                        ("path", path),
-                        ("round", &(earlier.len() + 1).to_string()),
-                        ("limit", &lim.to_string())
-                    ]
-                )
-            ));
-            for (i, e) in earlier.iter().enumerate() {
-                md.push_str(&format!(
-                    "{}\n\n```diff\n{}\n```\n",
-                    t(
-                        "fix.scope.review.rounds_earlier",
-                        &[
-                            ("round", &(i + 1).to_string()),
-                            ("verdict", s(e, "verdict")),
-                            ("why", s(e, "why")),
-                            ("must", s(e, "must"))
-                        ]
-                    ),
-                    s(e, "patch")
-                ));
-            }
-        }
     }
-    md.push_str(&format!(
-        "## {}\n\n{} {}\n\n## {}\n\n{} {}\n",
-        t("fix.scope.review.question_title", &[]),
-        t("fix.scope.review.question", &[]),
-        t("fix.retry.review.holds", &[]),
-        t("fix.scope.review.how_title", &[]),
-        t("fix.scope.review.how_to", &[("k", k)]),
-        t("fix.scope.review.answer", &[])
-    ));
-    let path = p.briefs_dir().join(format!("{k}-reviewer.md"));
-    fs::create_dir_all(p.briefs_dir())?;
-    util::atomic_write(&path, md.as_bytes())?;
-    Ok(path)
+    md
 }
 
 /// The file the guard reads, for tests and tools.
