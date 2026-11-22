@@ -41,6 +41,8 @@ Do not retell a worker's report in the line. Read every state from the engine (`
 6. With a budget cap (`bf cost status`) every report needs `--cost <number>`, the real usage you read from the session. A worker cannot see it, so tell it to end with its result, and findings, in its last message, and run the `bf report` command yourself with its token and `--cost`.
 7. When a builder's report names files as format only, run `bf unit format <U> <path>...` before starting the reviewer. When it refuses, start the reviewer as usual: a stray change is then a finding, and the builder puts the file back with `bf unit restore`.
 
+- Load: the conductor never tells a worker to skip a check for load and writes no load limit into a prompt; it asks the human (present) or waits for its next read of `bf next` (absent). When a timing check fails a second time on a quiet machine at about the same margin, it puts the choice (run again, accept by amendment, open a fix unit) to the human instead of running a third time.
+
 ## Engine steps
 
 - Land: a refusal about receipts means the work changed after the checks ran. Follow the steps; `bf next` names the re-run.

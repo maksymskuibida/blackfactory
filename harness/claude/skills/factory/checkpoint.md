@@ -17,7 +17,7 @@ Aborting a fix that has a built round is the human's choice; never abort it your
 
 What to run on a checkpoint fix:
 - `--open`: `bf checkpoint fix <K> --open` opens a fix for a failed check of the checkpoint's current content when none is open. A failed format or lint check ends with no review round once every change is accounted for.
-- `scope`: a fix builder's request for files (`--need-files`) gives a scope reviewer directive. Start that reviewer like any worker, then relay its verdict list with `bf checkpoint scope <K> --verdict - --token <token>`. A `retry` goes back to the builder; a gap goes to the human.
+- `scope`: a fix builder may change a file outside the lists, and its reviewer is shown that file (D-115); there is no request for files and no `bf checkpoint scope` command.
 - `low`: low findings of a review are the human's: `bf checkpoint finding <K> --accept low --quote "<their words>"` accepts them together, `--fix-findings <ids>` picks some to be fixed.
 - The human may accept any finding of a parked fix or review in their own words.
 
@@ -37,3 +37,8 @@ When `bf next` says the run is done:
 ## Test mode
 
 Never suggest it. Only after the human writes in chat that they grant a test run, run `bf test-mode grant --quote "<their words>"` at once. It attaches to the active run, or to the next `bf run start`. Draft the records of every stage first, pass `bf plan check`, grant, `bf run start`, then open each gate in order (the order and the not-empty rules hold in a test run too) and satisfy it with `bf gate approve <gate-id> --simulated` instead of waiting. Say in each message that the approval is simulated. A test run can never be merged onto `main`. Without a grant `--simulated` satisfies nothing: do not use it.
+
+## Load
+
+- The conductor never tells a worker to skip a check for load and writes no load limit into a prompt. With the human present it asks the human one short question, run now or wait; with the human absent it waits for its next read of `bf next`.
+- When a timing check fails a second time on a quiet machine at about the same margin, the conductor puts the choice (run again, accept by amendment, open a fix unit) to the human instead of running a third time.
