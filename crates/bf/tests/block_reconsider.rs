@@ -133,15 +133,18 @@ fn a_built_report_from_it_goes_to_review() {
 }
 
 #[test]
-fn a_plain_block_from_it_goes_to_the_human() {
+fn a_plain_block_without_a_note_goes_to_the_human_and_not_to_the_conductor() {
     let (fx, wc) = setup(None);
     block(&fx, &wc, "first");
     unblock(&fx);
     block(&fx, &wc, "");
     let n = fx.must(&["next", "--json"]).json();
     let ds = n["directives"].as_array().unwrap();
-    assert!(ds.iter().any(|d| d["unit"] == "U-1" && d["role"] != "builder"), "{n}");
-    assert!(!ds.iter().any(|d| d["action"] == "reconsider"));
+    let own: Vec<&Value> = ds.iter().filter(|d| d["unit"] == "U-1").collect();
+    assert_eq!(own.len(), 1, "{n}");
+    assert_eq!(own[0]["action"], "decide-unit", "{n}");
+    assert_eq!(own[0]["role"], "human", "{n}");
+    assert!(!ds.iter().any(|d| d["action"] == "judge-block" || d["action"] == "reconsider"));
     assert_eq!(state(&fx).0, "blocked");
 }
 

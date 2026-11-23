@@ -699,7 +699,7 @@ pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in
     if in_copy {
         return Err(stop("check_accept.because.copy", "check_accept.step.copy"));
     }
-    let _lock = crate::lock::engine(p, &format!("accept a check of {k}"))?;
+    let _lock = crate::lock::engine(p, &t("check_accept.lock", &[("k", k)]))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
     if crate::absent::is_on(&st) {
@@ -754,10 +754,13 @@ pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in
         }
         None => return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold")),
     }
+    if marks.iter().any(|m| m["mark"] != "unreachable") && !events::failed_mark_offered(&st, k, &content) {
+        return Err(stop("check_accept.because.not_offered", "check_accept.step.not_offered"));
+    }
     let Some(hold) = st.ck_holds.get(k).filter(|h| h.cause == "marked") else {
         return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold"));
     };
-    let (turn, _) = events::pick_turn(&st, hold.seq, events::Decide::Approve, quote)?;
+    let (turn, _) = events::pick_turn(&st, hold.seq.max(st.ck_end_seq), events::Decide::Approve, quote)?;
     events::append(
         p,
         "checkpoint.check.accept",

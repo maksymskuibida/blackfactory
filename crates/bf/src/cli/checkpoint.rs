@@ -257,13 +257,11 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         return Ok(());
     }
     if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
-        return Err(refuse(
-            "run `bf checkpoint`",
-            "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint check`, `bf checkpoint finding` and `bf checkpoint review` exist",
-            &[
-                "Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`.",
-            ],
-            "The command prints the result.",
+        return Err(refuse_owned(
+            crate::strings::t("check_accept.usage.what", &[]),
+            crate::strings::t("check_accept.usage.because", &[]),
+            vec![crate::strings::t("check_accept.usage.step", &[])],
+            crate::strings::t("check_accept.usage.worked", &[]),
         ));
     }
     let k = args.pos_at(2, "a checkpoint ID")?;

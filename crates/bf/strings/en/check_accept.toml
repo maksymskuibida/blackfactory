@@ -30,3 +30,13 @@
 "check_accept.refusal.retry_spent" = "the files asked for were sent back too often"
 "check_accept.refusal.extension" = "the files asked for belong to the plan, not to the unit"
 "check_accept.refusal.other" = "the files asked for are not the unit's to change"
+
+"check_accept.lock" = "accept a check of {k}"
+"check_accept.ignored.hold" = "event {seq}: a check accept was written for a checkpoint that is closed, is held by something else first, has no such mark, is a failed mark whose fix was not turned down or parked, or while the human-absent flag is on"
+"check_accept.ignored.turn" = "event {seq}: a check accept cites no valid human turn and quote, or words written before the decision was put to the human"
+"check_accept.usage.what" = "run `bf checkpoint`"
+"check_accept.usage.because" = "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint check`, `bf checkpoint finding` and `bf checkpoint review` exist"
+"check_accept.usage.step" = "Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`."
+"check_accept.usage.worked" = "The command prints the result."
+"check_accept.because.not_offered" = "a failed mark of {k} is put to the human only when its fix was turned down or is parked; until then the engine keeps the fix at work and `bf next` gives no `decide-check`"
+"check_accept.step.not_offered" = "Run `bf next` and go on with what it gives; when it gives `decide-check`, ask the human and run the command again with words written after it."

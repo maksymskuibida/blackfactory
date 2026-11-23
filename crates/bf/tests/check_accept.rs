@@ -33,8 +33,8 @@ fn plan(fx: &Fx, x2: &str) {
     fx.commit_all("records");
 }
 
-fn start(fx: &Fx) {
-    fx.must(&["checks", "propose", "checkpoint-review=off:the test does not exercise it", "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
+fn start(fx: &Fx, review: &str) {
+    fx.must(&["checks", "propose", review, "idea-review=off:the test does not exercise it", "requirements-review=off:the test does not exercise it", "architecture-review=off:the test does not exercise it", "plan-review=off:the test does not exercise it", "--scope", "default"]);
     fx.human("Yes, set the checkpoint review that way.");
     fx.must(&["checks", "set", "--quote", "set the checkpoint review that way"]);
     fx.must(&["gate", "open", "plan"]);
@@ -55,7 +55,7 @@ fn setup(x2: &str) -> Fx {
     let fx = Fx::new();
     fx.human(OLD0);
     plan(&fx, x2);
-    start(&fx);
+    start(&fx, "checkpoint-review=off:the test does not exercise it");
     fx
 }
 
@@ -229,4 +229,77 @@ fn a_failed_mark_with_a_fix_at_work_is_not_accepted_until_the_fix_is_parked() {
     assert_ne!(o.code, 0, "{}", o.all());
     assert!(o.stderr.contains("held first"), "{}", o.all());
     assert!(!kinds(&fx).contains(&"checkpoint.check.accept".to_string()));
+}
+
+fn f(sev: &str, title: &str) -> Value {
+    json!({"title": title, "severity": sev, "where": "src/a.txt:1", "action": "make it right"})
+}
+
+// The real path of a failed mark: a fix is at work (opened by a high finding of the review), the failed mark
+// is made while it works, the human sends the fix back, and only then does `bf next` give `decide-check`.
+// Words written while the fix was at work decide nothing; words written after `decide-check` do.
+#[test]
+fn a_failed_mark_is_accepted_on_words_written_after_decide_check_was_given() {
+    let fx = Fx::new();
+    fx.human(OLD0);
+    plan(&fx, PASS);
+    start(&fx, "checkpoint-review=on");
+    fx.bf(&["brief", "K-1", "--role", "reviewer", "--json"]);
+    let body = json!({"areas": [{"area": "the close rule", "how": "read"}], "findings": [f("high", "the answer is wrong")]});
+    let o = fx.bf_stdin(&fx.root, &["report", "K-1", "--role", "reviewer", "--result", "findings", "--findings", "-"], &body.to_string());
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(actions(&fx).contains(&"fix-checkpoint".to_string()));
+    mark(&fx, "fail");
+    fx.human(OLD);
+    let o = accept(&fx, "X-2", OLD);
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(o.stderr.contains("held first"), "{}", o.all());
+    let o = fx.bf(&["checkpoint", "fix", "K-1", "--abort"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(actions(&fx), vec!["decide-check"]);
+    let o = accept(&fx, "X-2", OLD);
+    assert_ne!(o.code, 0, "words written while the fix was at work: {}", o.all());
+    assert!(o.stderr.contains("written before"), "{}", o.all());
+    fx.human(NEW);
+    let o = accept(&fx, "X-2", NEW);
+    assert_eq!(o.code, 0, "{}", o.all());
+    // The high finding still holds the close until the human settles it.
+    fx.human("Fine, I accept the finding as it stands.");
+    let o = fx.bf(&["checkpoint", "finding", "K-1", "--accept", "r1.1", "--quote", "I accept the finding as it stands"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let c = fx.bf(&["checkpoint", "close", "K-1"]);
+    assert_eq!(c.code, 0, "{}", c.all());
+    assert!(c.stdout.contains("marked fail") && c.stdout.contains(NEW), "{}", c.all());
+    let ev = log_events(&fx).into_iter().find(|e| e["kind"] == "checkpoint.close").unwrap();
+    let a = &ev["accepted_checks"][0];
+    assert_eq!((a["check"].as_str(), a["mark"].as_str(), a["quote"].as_str()), (Some("X-2"), Some("fail"), Some(NEW)));
+    assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
+}
+
+// A failed mark is accepted only once `decide-check` can be given: with no `bf next` at all, or after a
+// check's fix was aborted (an abort of a check's fix declines nothing, so `bf next` reopens it), it is refused.
+#[test]
+fn a_failed_mark_is_refused_before_decide_check_was_given() {
+    let fx = setup(PASS);
+    mark(&fx, "fail");
+    fx.human(NEW);
+    let o = accept(&fx, "X-2", NEW);
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(o.stderr.contains("turned down or is parked"), "{}", o.all());
+    assert!(actions(&fx).contains(&"fix-checkpoint".to_string()));
+    let o = fx.bf(&["checkpoint", "fix", "K-1", "--abort"]);
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.human("Fine, go ahead and accept the failed check, I say.");
+    let o = accept(&fx, "X-2", "accept the failed check");
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(o.stderr.contains("turned down or is parked"), "{}", o.all());
+    assert!(!kinds(&fx).contains(&"checkpoint.check.accept".to_string()));
+}
+
+#[test]
+fn an_unreachable_mark_with_no_fix_is_still_accepted() {
+    let fx = marked("unreachable");
+    fx.human(NEW);
+    let o = accept(&fx, "X-2", NEW);
+    assert_eq!(o.code, 0, "{}", o.all());
 }

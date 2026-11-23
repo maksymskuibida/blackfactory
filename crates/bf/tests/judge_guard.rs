@@ -373,6 +373,7 @@ fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
         "bf record remove U-2",
         "bf roles token A-1 judge",
         "bf -C . roles token A-1 judge",
+        "bf checkpoint check K-1 --accept X-2 --quote x",
     ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_eq!(d, "deny", "{cmd}");

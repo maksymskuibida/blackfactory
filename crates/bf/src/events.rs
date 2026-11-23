@@ -722,6 +722,17 @@ pub struct CheckAccept {
     pub quote: String,
 }
 
+/// Whether a failed mark of checkpoint `k` at `content` can be put to the human: its fix was turned down (the
+/// content is declined) or is parked. Until then the engine opens or keeps the check's fix and gives no
+/// `decide-check`, so no words count for the accept (D-110). An `unreachable` mark needs no fix.
+pub fn failed_mark_offered(st: &State, k: &str, content: &str) -> bool {
+    st.ck_declined.contains(&format!("{k}@{content}"))
+        || st
+            .ck_fix
+            .as_ref()
+            .is_some_and(|f| f.checkpoint == k && matches!(f.phase.as_str(), "parked" | "low"))
+}
+
 /// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hold {
@@ -2110,13 +2121,21 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         let named: Vec<&str> = h.detail.split(',').collect();
                         !checks.is_empty() && checks.iter().all(|c| named.contains(&c.as_str()))
                     })
-                    .map(|h| h.seq);
-                let marked_hold = matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
+                    // The words count only after the hold started and after the latest end of a fix: a
+                    // failed mark is offered to the human when its fix is gone, not when it was made.
+                    .map(|h| h.seq.max(st.ck_end_seq));
+                let marks_ev = ev["marks"].as_array().cloned().unwrap_or_default();
+                let offered = marks_ev.iter().all(|m| {
+                    m["mark"].as_str() == Some("unreachable")
+                        || failed_mark_offered(&st, &k, &sv("content_hash"))
+                });
+                let marked_hold = offered && matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
                 let Some(bound) =
                     bound.filter(|_| marked_hold && !st.closed.contains_key(&k) && !st.absent.on)
                 else {
-                    st.ignored.push(format!(
-                        "event {seq}: a check accept was written for a checkpoint that is closed, is held by something else first, has no such mark, or while the human-absent flag is on"
+                    st.ignored.push(crate::strings::t(
+                        "check_accept.ignored.hold",
+                        &[("seq", &seq.to_string())],
                     ));
                     continue;
                 };
@@ -2129,8 +2148,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     &sv("quote"),
                     Decide::Approve,
                 ) {
-                    st.ignored.push(format!(
-                        "event {seq}: a check accept cites no valid human turn and quote, or words written before the decision was put to the human"
+                    st.ignored.push(crate::strings::t(
+                        "check_accept.ignored.turn",
+                        &[("seq", &seq.to_string())],
                     ));
                     continue;
                 }
