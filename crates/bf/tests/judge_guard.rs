@@ -393,6 +393,13 @@ fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
         "bf checkpoint $(true) check K-1 --accept X-2 --quote q",
         "bf record --note$E x put unit --file u.toml",
         "bf amend --note$E x approve A-1 --quote x",
+        "bf checkpoint {check,check} K-1 --accept X-2 --quote q",
+        "bf record {put,put} unit --file u.toml",
+        "bf amend {approve,approve} A-1 --quote x",
+        "bf checkpoint {a..b} check K-1 --accept X-2 --quote q",
+        "bf checkpoint ch?ck K-1 --accept X-2 --quote q",
+        "bf checkpoint ch*k K-1 --accept X-2 --quote q",
+        "bf checkpoint [c]heck K-1 --accept X-2 --quote q",
     ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_eq!(d, "deny", "{cmd}");

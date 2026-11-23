@@ -270,6 +270,11 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "bf -C$E unit unblock U-1 --why x",
         "bf unit --json$E unblock U-1 --why x",
         "bf unit `true` unblock U-1 --why x",
+        "bf unit {unblock,unblock} U-1 --why x",
+        "bf unit {a..b} unblock U-1 --why x",
+        "bf unit unbl?ck U-1 --why x",
+        "bf unit unbl*ck U-1 --why x",
+        "bf unit [u]nblock U-1 --why x",
         "bf unit $(true) unblock U-1 --why x",
     ] {
         let out = run_cmd(Some("builder"), cmd);

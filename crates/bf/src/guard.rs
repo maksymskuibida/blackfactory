@@ -4948,7 +4948,7 @@ fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
     None
 }
 
-/// Does a word the shell expands at run time (`$E`, `${E}x`, a backtick or `$(..)`) stand in a `bf` call
+/// Does a word the shell expands at run time (`$E`, `${E}x`, a backtick, `$(..)`, a brace group or a glob) stand in a `bf` call
 /// before its subcommand, flags and flag values included? It may vanish or join its neighbours and change
 /// what the parser reads, so it cannot be judged. `words` are the words after the program; the part read
 /// is the shortest prefix that holds two plain words (the subcommand and the word after it), or all.
@@ -4959,7 +4959,14 @@ fn run_time_before_subcommand(words: &[String]) -> bool {
     words[..end]
         .iter()
         .take_while(|x| x.as_str() != "--")
-        .any(|x| x.contains('$') || x.contains('`'))
+        .any(|x| {
+            // A brace group or a glob may also change into another word. The parse keeps no quotes, so a
+            // quoted one is refused with the rest.
+            x.contains('$')
+                || x.contains('`')
+                || x.contains(['*', '?', '['])
+                || (x.contains('{') && (x.contains(',') || x.contains("..")))
+        })
 }
 
 /// The words of a `bf` call after its program and its flags (`-C <dir>` takes a value).
