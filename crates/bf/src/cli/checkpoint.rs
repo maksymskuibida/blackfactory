@@ -236,7 +236,10 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
             super::real_zone(&p).is_some(),
         )?;
         out(args, &v, || {
-            crate::strings::t("check_accept.done", &[("k", k), ("checks", &ids.replace(',', ", "))])
+            crate::strings::t(
+                "check_accept.done",
+                &[("k", k), ("checks", &ids.replace(',', ", "))],
+            )
         });
         return Ok(());
     }
@@ -286,7 +289,11 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
             t.push('\n');
             t.push_str(&crate::strings::t(
                 "check_accept.close.line",
-                &[("check", s(a, "check")), ("mark", s(a, "mark")), ("quote", s(a, "quote"))],
+                &[
+                    ("check", s(a, "check")),
+                    ("mark", s(a, "mark")),
+                    ("quote", s(a, "quote")),
+                ],
             ));
         }
         t

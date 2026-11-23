@@ -193,7 +193,7 @@ fn heads(p: &Project, pl: &Plan, k: &str) -> R<Vec<Value>> {
 }
 
 /// The checks of `k` that fail at `content`, and whether one of them could not run at all.
-fn failing_checks(
+pub(crate) fn failing_checks(
     pl: &Plan,
     st: &State,
     receipts: &[Receipt],
@@ -206,7 +206,9 @@ fn failing_checks(
         let Some(c) = pl.checks.iter().find(|c| s(c, "id") == cid) else {
             continue;
         };
-        if crate::enforce::is_off(st, c) || evidence::accepted_at(st, s(k, "id"), &cid, content).is_some() {
+        if crate::enforce::is_off(st, c)
+            || evidence::accepted_at(st, s(k, "id"), &cid, content).is_some()
+        {
             continue;
         }
         let command = evidence::command_words(c).join(" ");
@@ -242,6 +244,13 @@ fn failing_checks(
     (failed, unreachable)
 }
 
+/// Whether the engine opens a fix for the failing checks `failing_checks` found: a check that could not run
+/// goes to the human instead, and a switched-off check is not among them. `maybe_open` and the hold of a
+/// checkpoint (`observe_holds`) read this one rule.
+pub(crate) fn opens_fix(failed: &[Value], unreachable: bool) -> bool {
+    !failed.is_empty() && !unreachable
+}
+
 /// Open a fix for a failed check of a checkpoint whose units have all landed. Called by `bf next`, so no
 /// question reaches the human for a check that merely failed. A check that could not run goes to the human.
 pub fn maybe_open(p: &Project) -> R<()> {
@@ -275,7 +284,7 @@ pub fn maybe_open(p: &Project) -> R<()> {
             continue;
         }
         let (failed, unreachable) = failing_checks(&pl, &st, &receipts, k, &content);
-        if failed.is_empty() || unreachable {
+        if !opens_fix(&failed, unreachable) {
             continue;
         }
         let _lock = crate::lock::engine(p, &format!("open a fix of {kid}"))?;

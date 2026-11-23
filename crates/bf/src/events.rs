@@ -709,9 +709,9 @@ pub struct CkHold {
     pub seq: u64,
     /// A `marked` hold whose marks are all `unreachable` (D-110): the human's words still count.
     pub unreachable_only: bool,
-    /// A `marked` hold with at least one `unreachable` mark: the engine opens no fix for the checkpoint
-    /// (`ckfix::maybe_open`), so its failed marks go to the human too.
-    pub has_unreachable: bool,
+    /// A `marked` hold for which the engine opens no fix (`ckfix::opens_fix`: a mark is `unreachable`, or the
+    /// failed check is switched off), so its failed marks go to the human at once.
+    pub no_fix: bool,
 }
 
 /// The human's accept of a blocked check of a checkpoint, in their own words (D-110).
@@ -730,14 +730,12 @@ pub struct CheckAccept {
 /// `decide-check`, so no words count for the accept (D-110). An `unreachable` mark needs no fix.
 pub fn failed_mark_offered(st: &State, k: &str, content: &str) -> bool {
     st.ck_declined.contains(&format!("{k}@{content}"))
-        || st
-            .ck_holds
-            .get(k)
-            .is_some_and(|h| h.cause == "marked" && h.has_unreachable)
+        || st.ck_holds.get(k).is_some_and(|h| h.cause == "marked" && h.no_fix)
+        // A parked or low fix of any checkpoint: `ckfix::maybe_open` opens nothing while one stands.
         || st
             .ck_fix
             .as_ref()
-            .is_some_and(|f| f.checkpoint == k && matches!(f.phase.as_str(), "parked" | "low"))
+            .is_some_and(|f| matches!(f.phase.as_str(), "parked" | "low"))
 }
 
 /// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
@@ -2105,6 +2103,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     if now_only && st.ck_holds.get(&k).is_some_and(|h| !h.unreachable_only) {
                         st.ck_end_seq = seq;
                     }
+                    // A hold for which no fix opens any more ends the part that was not put to the human.
+                    let now_no_fix = ev["no_fix"].as_bool().unwrap_or(false);
+                    if now_no_fix && st.ck_holds.get(&k).is_some_and(|h| !h.no_fix) {
+                        st.ck_end_seq = seq;
+                    }
                     st.ck_holds.insert(
                         k,
                         CkHold {
@@ -2112,7 +2115,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             detail: sv("detail"),
                             seq: started,
                             unreachable_only: ev["unreachable_only"].as_bool().unwrap_or(false),
-                            has_unreachable: ev["has_unreachable"].as_bool().unwrap_or(false),
+                            no_fix: ev["no_fix"].as_bool().unwrap_or(false),
                         },
                     );
                 }

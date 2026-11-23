@@ -333,3 +333,43 @@ fn a_failed_mark_next_to_an_unreachable_mark_is_accepted_on_words_after_decide_c
     assert_eq!(o.code, 0, "{}", o.all());
     assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
 }
+
+// F-532: words written after the failed mark and before the unreachable mark were written when the engine
+// would still have opened a fix; they do not count once the hold is mixed.
+#[test]
+fn words_written_before_the_hold_turned_mixed_do_not_count() {
+    let fx = Fx::new();
+    fx.human(OLD0);
+    plan_with(&fx, PASS, true);
+    start(&fx, "checkpoint-review=off:the test does not exercise it");
+    mark(&fx, "fail");
+    fx.human(OLD);
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-6", "--reason", "the service is down"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    let o = accept(&fx, "X-2,X-6", OLD);
+    assert_ne!(o.code, 0, "{}", o.all());
+    assert!(!kinds(&fx).contains(&"checkpoint.check.accept".to_string()));
+    assert!(actions(&fx).contains(&"decide-check".to_string()));
+    fx.human(NEW);
+    let o = accept(&fx, "X-2,X-6", NEW);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
+}
+
+// F-531: `maybe_open` opens no fix while a fix of another checkpoint is parked, yet `bf next` gives
+// `decide-check` for a failed mark of this one; the predicate both read says the mark is offered.
+#[test]
+fn a_failed_mark_is_offered_while_a_fix_of_another_checkpoint_is_parked() {
+    let mut st = bf::events::State::default();
+    assert!(!bf::events::failed_mark_offered(&st, "K-2", "c1"));
+    st.ck_fix = Some(bf::events::CkFixOpen { checkpoint: "K-1".into(), phase: "fix".into(), ..Default::default() });
+    assert!(!bf::events::failed_mark_offered(&st, "K-2", "c1"));
+    st.ck_fix.as_mut().unwrap().phase = "parked".into();
+    assert!(bf::events::failed_mark_offered(&st, "K-2", "c1"));
+    st.ck_fix.as_mut().unwrap().phase = "low".into();
+    assert!(bf::events::failed_mark_offered(&st, "K-2", "c1"));
+    // A hold whose failed marks no fix opens for (a switched-off check, an unreachable mark beside).
+    st.ck_fix = None;
+    st.ck_holds.insert("K-2".into(), bf::events::CkHold { cause: "marked".into(), no_fix: true, ..Default::default() });
+    assert!(bf::events::failed_mark_offered(&st, "K-2", "c1"));
+}
