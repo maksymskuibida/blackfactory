@@ -93,7 +93,7 @@ fn engine_doc_describes_unblock_and_the_automatic_sync() {
             "goes to the conductor's `judge-block` when it carries a reason",
             "The automatic sync",
             "`unit.sync`",
-            "`bf unit land` and the command `bf unit sync` do not change",
+            "The conflict of the command `bf unit sync` and the conflict of a landing take the same outcome",
         ],
     );
 }
