@@ -75,6 +75,180 @@ pub fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
 }
 
+/// Does the program word name the engine? Case is ignored, since the default macOS volume opens
+/// `/usr/local/bin/BF` as `bf`, and zsh's `=bf` (with `equals` set) is its path.
+pub fn is_engine(w: &str) -> bool {
+    basename(w.strip_prefix('=').unwrap_or(w)).eq_ignore_ascii_case("bf")
+}
+
+/// Text with each `$NAME`, `${NAME}` and zsh `$=NAME`, `$~NAME`, `${=NAME}` replaced by `value(NAME)`
+/// where it gives one. `None` when nothing was replaced.
+pub fn substitute(w: &str, value: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let b: Vec<char> = w.chars().collect();
+    let mut out = String::new();
+    let mut hit = false;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == '$' {
+            let mut j = i + 1;
+            let brace = b.get(j) == Some(&'{');
+            if brace {
+                j += 1;
+            }
+            while matches!(b.get(j), Some('=' | '~' | '^')) {
+                j += 1;
+            }
+            let s = j;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == '_') {
+                j += 1;
+            }
+            let name: String = b[s..j].iter().collect();
+            let closed = !brace || b.get(j) == Some(&'}');
+            if !name.is_empty() && closed {
+                if let Some(v) = value(&name) {
+                    out.push_str(&v);
+                    hit = true;
+                    i = if brace { j + 1 } else { j };
+                    continue;
+                }
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    hit.then_some(out)
+}
+
+/// What `printf FORMAT ARGS...` writes, for the conversions `%s`, `%b`, `%q`, `%c`, `%d`, `%i`, `%u`
+/// and `%%` and the escapes `\n`, `\t`, `\\`; the format is used again while arguments are left.
+/// `None` for anything else.
+fn printf_text(fmt: &str, args: &[String]) -> Option<String> {
+    let f: Vec<char> = fmt.chars().collect();
+    let mut out = String::new();
+    let mut next = 0usize;
+    loop {
+        let mut used = false;
+        let mut k = 0;
+        while k < f.len() {
+            match f[k] {
+                '\\' if k + 1 < f.len() => {
+                    out.push(match f[k + 1] {
+                        'n' => '\n',
+                        't' => '\t',
+                        '\\' => '\\',
+                        _ => return None,
+                    });
+                    k += 2;
+                }
+                '%' => {
+                    let mut j = k + 1;
+                    while j < f.len() && "-+ #0123456789.".contains(f[j]) {
+                        j += 1;
+                    }
+                    match f.get(j) {
+                        Some('%') => out.push('%'),
+                        Some('s' | 'b' | 'q' | 'c' | 'd' | 'i' | 'u') => {
+                            let a = args.get(next).map(|s| s.as_str()).unwrap_or("");
+                            next += 1;
+                            used = true;
+                            if f[j] == 'c' {
+                                out.extend(a.chars().take(1));
+                            } else {
+                                out.push_str(a);
+                            }
+                        }
+                        _ => return None,
+                    }
+                    k = j + 1;
+                }
+                c => {
+                    out.push(c);
+                    k += 1;
+                }
+            }
+        }
+        if !used || next >= args.len() {
+            return Some(out);
+        }
+    }
+}
+
+/// The text of a `$'...'` quote that starts at `b[i]` (after the opening quote), whether it holds an
+/// escape that is not decoded here, and the index of the closing quote (or the end).
+fn ansi_c(b: &[char], mut i: usize) -> (String, bool, usize) {
+    let mut text = String::new();
+    let mut unknown = false;
+    let n = b.len();
+    let digits = |i: usize, max: usize, radix: u32| -> (u32, usize) {
+        let mut v = 0u32;
+        let mut k = 0;
+        while k < max && i + k < n {
+            match b[i + k].to_digit(radix) {
+                Some(d) => v = v * radix + d,
+                None => break,
+            }
+            k += 1;
+        }
+        (v, k)
+    };
+    while i < n && b[i] != '\'' {
+        if b[i] == '\\' && i + 1 < n {
+            let e = b[i + 1];
+            i += 2;
+            let simple = match e {
+                'a' => Some('\u{7}'),
+                'b' => Some('\u{8}'),
+                'e' | 'E' => Some('\u{1b}'),
+                'f' => Some('\u{c}'),
+                'n' => Some('\n'),
+                'r' => Some('\r'),
+                't' => Some('\t'),
+                'v' => Some('\u{b}'),
+                '\\' | '\'' | '"' | '?' => Some(e),
+                _ => None,
+            };
+            if let Some(c) = simple {
+                text.push(c);
+                continue;
+            }
+            let (v, k) = match e {
+                'x' => digits(i, 2, 16),
+                'u' => digits(i, 4, 16),
+                'U' => digits(i, 8, 16),
+                '0'..='7' => {
+                    i -= 1;
+                    digits(i, 3, 8)
+                }
+                _ => (0, 0),
+            };
+            match char::from_u32(v) {
+                Some(c) if k > 0 => {
+                    text.push(c);
+                    i += k;
+                }
+                _ => {
+                    unknown = true;
+                    text.push(e);
+                }
+            }
+            continue;
+        }
+        text.push(b[i]);
+        i += 1;
+    }
+    (text, unknown, i)
+}
+
+/// Is the program word a shell the parse reads `-c` and scripts for?
+pub fn is_shell(w: &str) -> bool {
+    SHELLS.contains(&basename(w))
+}
+
+/// The text a via phrase stands for, from the strings files.
+fn via_text(key: &str) -> String {
+    crate::strings::t(&format!("guard.via.{key}"), &[])
+}
+
 fn is_assignment(w: &str) -> bool {
     match w.split_once('=') {
         Some((k, _)) => {
@@ -86,7 +260,9 @@ fn is_assignment(w: &str) -> bool {
     }
 }
 
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "mksh", "yash", "posh",
+];
 const KEYWORDS: &[&str] = &[
     "{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "case",
     "esac",
@@ -169,26 +345,73 @@ fn handed_lines(words: &[String]) -> Vec<(String, String)> {
                     }
                 }
             }
+            // zsh's `zpty NAME 'cmd ...'` runs its words after the name as a command line; BSD's
+            // `apply 'cmd %1' args` runs its first word with the arguments put in.
+            "zpty" if pi == Some(k) => {
+                let plain: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+                if plain.len() > 1 {
+                    let line: Vec<String> = plain[1..].iter().map(|s| s.to_string()).collect();
+                    out.push((line.join(" "), "zpty".to_string()));
+                }
+            }
+            "apply" if pi == Some(k) => {
+                if let Some(first) = rest.iter().find(|a| !a.starts_with('-')) {
+                    let mut line = first.clone();
+                    for a in rest.iter().skip_while(|a| *a != first).skip(1) {
+                        line.push(' ');
+                        line.push_str(a);
+                    }
+                    out.push((line, "apply".to_string()));
+                }
+            }
             _ => {}
         }
     }
     // A program word that holds a whole command line is a line some wrapper hands to a shell.
     if let Some(i) = program_index(words) {
         let p = &words[i];
-        if basename(p) != "bf" && p.contains([' ', '\t', '\n', ';', '|', '&']) {
-            out.push((words[i..].join(" "), "a quoted command".to_string()));
+        if !is_engine(p) && p.contains([' ', '\t', '\n', ';', '|', '&']) {
+            out.push((words[i..].join(" "), via_text("quoted_command")));
         }
     }
     out
 }
 
-/// The words `cargo run` hands to the program it builds, when `words` is such a call.
-fn cargo_run_args(words: &[String]) -> Option<Vec<String>> {
+/// The command of `bf evidence run <check> ... -- <command>`, when `words` (with `bf` first) is such a
+/// call: the words after the first `--`, read as the engine's parser reads the subcommand.
+pub fn evidence_command(words: &[String]) -> Option<Vec<String>> {
+    let a = crate::cli::Args::parse(words.get(1..).unwrap_or(&[]));
+    (a.pos.first().map(|s| s.as_str()) == Some("evidence")
+        && a.pos.get(1).map(|s| s.as_str()) == Some("run")
+        && !a.rest.is_empty())
+    .then_some(a.rest)
+}
+
+/// Does a handed line come from a quoted program word (read for calls only, not by the path rules)?
+fn is_quoted_command(how: &str) -> bool {
+    how == via_text("quoted_command")
+}
+
+/// The words `cargo run` hands to the program it builds, when `words` is such a call. Cargo's own
+/// options and a `+toolchain` may come before `run` (`cargo -q run`, `cargo +stable run`).
+pub fn cargo_run_args(words: &[String]) -> Option<Vec<String>> {
     let i = program_index(words)?;
-    if basename(&words[i]) != "cargo" || !matches!(words.get(i + 1)?.as_str(), "run" | "r") {
+    if basename(&words[i]) != "cargo" {
         return None;
     }
-    let rest = &words[i + 2..];
+    const OWN_WITH_VALUE: &[&str] = &["--color", "--config", "-Z", "-C", "--explain"];
+    let mut k = i + 1;
+    while k < words.len() && (words[k].starts_with('-') || words[k].starts_with('+')) {
+        k += if OWN_WITH_VALUE.contains(&words[k].as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    if !matches!(words.get(k)?.as_str(), "run" | "r") {
+        return None;
+    }
+    let rest = &words[k + 1..];
     if let Some(d) = rest.iter().position(|w| w == "--") {
         return Some(rest[d + 1..].to_vec());
     }
@@ -224,7 +447,8 @@ fn cargo_run_args(words: &[String]) -> Option<Vec<String>> {
 
 /// Split the words of one simple command where a zsh short form starts a command of its own: after the
 /// `]]` of `if|elif|while|until [[ ... ]]`, and at a `{` after a command that starts with a keyword,
-/// `for`, `select`, `foreach`, `coproc` or `always`. (A quoted `{` is split too; that only reads more.)
+/// `for`, `select`, `foreach`, `coproc`, `always`, `function` (zsh's `function f g { ... }` names two)
+/// or `time`. (A quoted `{` is split too; that only reads more.)
 fn split_short_forms(words: Vec<String>) -> Vec<Vec<String>> {
     let mut parts = Vec::new();
     let mut rest = words;
@@ -233,7 +457,7 @@ fn split_short_forms(words: Vec<String>) -> Vec<Vec<String>> {
             KEYWORDS.contains(&w.as_str())
                 || matches!(
                     w.as_str(),
-                    "for" | "select" | "foreach" | "coproc" | "always"
+                    "for" | "select" | "foreach" | "coproc" | "always" | "function" | "time"
                 )
         });
         let mut at = None;
@@ -279,7 +503,7 @@ fn shell_command_string(words: &[String], i: usize) -> Option<usize> {
             break;
         }
         if w.starts_with("--") {
-            j += if matches!(w, "--rcfile" | "--init-file") {
+            j += if matches!(w, "--rcfile" | "--init-file" | "--emulate") {
                 2
             } else {
                 1
@@ -311,20 +535,39 @@ fn is_fd_var(w: &str) -> bool {
         })
 }
 
-/// Does the `$` at `b[i]` start an expansion that evaluates text as code: arithmetic (`$((`, `$[`),
-/// a zsh parameter flag (`${(e)V}`), a bash parameter operator (`${V@P}`) or an array subscript, which
-/// bash reads as arithmetic (`${a[V]}`)?
+/// Does the `$` at `b[i]` start an expansion other than a plain one? Plain are `$name`, `${name}`, a
+/// positional or special parameter (`$1`, `$@`, `$?`) and a command substitution `$( )`. Every other
+/// form may evaluate text as code or turn it into other words: arithmetic (`$((`, `$[`), a subscript
+/// (`${a[V]}`, zsh's `$x[V]`), an operator (`${x:V}`, `${V@P}`, `${V:-w}`), a zsh flag or modifier
+/// (`${(e)V}`, `$~V`, `$=V`, `$^V`). Read as plain text when the `$` stands alone.
 fn evaluates_at(b: &[char], i: usize) -> bool {
     if b.get(i) != Some(&'$') {
         return false;
     }
-    match (b.get(i + 1), b.get(i + 2)) {
-        (Some('('), Some('(')) | (Some('['), _) | (Some('{'), Some('(')) => true,
-        (Some('{'), _) => b[i + 2..]
-            .iter()
-            .take_while(|c| **c != '}')
-            .any(|c| matches!(c, '@' | '[')),
-        _ => false,
+    let name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    match b.get(i + 1) {
+        Some('(') => b.get(i + 2) == Some(&'('),
+        Some('{') => {
+            // `${name}` with nothing after the name and no subscript after the brace.
+            let mut j = i + 2;
+            while j < b.len() && name(b[j]) {
+                j += 1;
+            }
+            !(j > i + 2 && b.get(j) == Some(&'}') && b.get(j + 1) != Some(&'['))
+        }
+        Some(c) if name(*c) => {
+            let mut j = i + 1;
+            while j < b.len() && name(b[j]) {
+                j += 1;
+            }
+            b.get(j) == Some(&'[')
+        }
+        Some('@' | '*' | '?' | '!' | '$' | '-') => false,
+        Some('#') => b.get(i + 2).is_some_and(|c| name(*c) || *c == '{'),
+        // zsh's `$~V`, `$=V`, `$^V`, `$+V`, and arithmetic `$[ ]`; any other character leaves the `$`
+        // as text.
+        Some(c) => matches!(c, '~' | '=' | '^' | '+' | '['),
+        None => false,
     }
 }
 
@@ -347,24 +590,45 @@ fn number_range(b: &[char], i: usize) -> Option<usize> {
     (b.get(j) == Some(&'>')).then_some(j + 1 - i)
 }
 
-/// The shell code of the zsh `e` glob qualifiers in the text of a `( )` group (`e:'cmd':`, `e{cmd}`),
-/// with quotes removed. The text is read loosely: any `e` followed by a delimiter counts.
-fn qualifier_code(group: &str, depth: usize) -> Vec<String> {
-    let mut counter = 0usize;
-    let mut cmds = Vec::new();
-    parse(group, None, depth, &mut counter, &mut cmds);
-    let plain: Vec<char> = cmds
-        .iter()
-        .flat_map(|c| c.words.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .collect();
+/// Text with its shell quotes and backslashes removed, read as one word: no comment, no operator.
+fn unquote(s: &str) -> String {
+    let b: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            '\\' if i + 1 < b.len() => {
+                out.push(b[i + 1]);
+                i += 2;
+                continue;
+            }
+            q @ ('\'' | '"') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    if q == '"' && b[i] == '\\' && i + 1 < b.len() {
+                        i += 1;
+                    }
+                    out.push(b[i]);
+                    i += 1;
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The shell code of the zsh `e` glob qualifiers in the text of a `( )` group (`e:'cmd':`, `e{cmd}`,
+/// `#qe:cmd:`), with quotes removed. The text is read loosely and fails closed: any `e` followed by
+/// any character counts, that character taken as the delimiter, and a `#` is never a comment here.
+fn qualifier_code(group: &str, _depth: usize) -> Vec<String> {
+    let plain: Vec<char> = unquote(group).chars().collect();
     let mut out = Vec::new();
     let mut k = 0;
     while k + 1 < plain.len() {
         let d = plain[k + 1];
-        if plain[k] == 'e' && !d.is_alphanumeric() && !d.is_whitespace() && d != ')' {
+        if plain[k] == 'e' && !d.is_whitespace() && d != ')' {
             let close = match d {
                 '(' => ')',
                 '[' => ']',
@@ -378,10 +642,10 @@ fn qualifier_code(group: &str, depth: usize) -> Vec<String> {
                 code.push(plain[j]);
                 j += 1;
             }
+            // Every `e` is a candidate, so a false one hides no later qualifier.
             if !code.trim().is_empty() {
                 out.push(code);
             }
-            k = j;
         }
         k += 1;
     }
@@ -437,6 +701,11 @@ pub struct Parsed {
     pub parent: usize,
     /// For the commands of a `sh -c` string: the words after the string (`$0`, `$1`, ...).
     pub bound: Option<Vec<String>>,
+    /// The command reads a pipe (`a | this`), whether or not `input` knows its text.
+    pub piped: bool,
+    /// A shell, `source` or `.` that reads a script from a pipe or a process substitution whose text
+    /// the parse cannot see (`... | rev | sh`, `sh <(curl ..)`).
+    pub script_unknown: bool,
 }
 
 /// The index of the program word of a simple command (after assignments, keywords and wrappers).
@@ -494,12 +763,28 @@ fn flatten_bound(
             scope,
             parent,
             bound: bound.clone(),
+            piped: cmd.pipe_from.is_some(),
+            script_unknown: idx.is_some_and(|i| {
+                let prog = basename(&cmd.words[i]);
+                // A script file named by its path is not read from the input.
+                let operand = cmd.words[i + 1..]
+                    .iter()
+                    .find(|a| !a.starts_with('-') || a.as_str() == "-");
+                let from_input = operand.is_none_or(|a| {
+                    matches!(a.as_str(), "-" | "/dev/stdin" | "/dev/fd/0" | "<(..)")
+                });
+                (SHELLS.contains(&prog) || matches!(prog, "source" | "."))
+                    && from_input
+                    && shell_command_string(&cmd.words, i).is_none()
+                    && (cmd.pipe_from.is_some() || cmd.words[i + 1..].iter().any(|w| w == "<(..)"))
+                    && script_text(&cmd, &texts).is_none()
+            }),
         });
         // A quoted program word with spaces is read for calls of the engine only: as a path it is still
         // the one program the path rules judge.
         for (line, _) in handed_lines(&cmd.words)
             .into_iter()
-            .filter(|(_, how)| how != "a quoted command")
+            .filter(|(_, how)| !is_quoted_command(how))
         {
             let mut c2 = 0usize;
             let mut inner = Vec::new();
@@ -617,17 +902,19 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
             .or(wrap);
         // zsh's `=bf` (with `equals` set) is the path of `bf`.
         let prog = basename(cmd.words[i].strip_prefix('=').unwrap_or(&cmd.words[i])).to_string();
+        let engine = is_engine(&cmd.words[i]);
         // A program that is a pattern or a brace group may become `bf` (`b?`, `b[f]`, `b(f)` where a
-        // file `bf` exists, `{bf,x}`): it is a call that cannot be read.
+        // file `bf` exists, `{bf,x}`): it is a call that cannot be read. Case is ignored.
+        let lower = prog.to_ascii_lowercase();
         let pattern_prog = (cmd.group_last && i + 1 == cmd.words.len())
-            || (prog.contains(['*', '?', '[']) && crate::guard::pattern_matches(&prog, "bf"))
-            || (prog.contains('{') && (prog.contains(',') || prog.contains("..")));
-        if pattern_prog && prog != "bf" {
+            || (lower.contains(['*', '?', '[']) && crate::guard::pattern_matches(&lower, "bf"))
+            || (lower.contains('{') && (lower.contains(',') || lower.contains("..")));
+        if pattern_prog && !engine {
             let mut words = vec!["bf".to_string()];
             words.extend(cmd.words[i + 1..].iter().cloned());
             calls.push(Call {
                 words,
-                via: Some("a pattern".to_string()),
+                via: Some(via_text("pattern")),
                 group: true,
                 cargo: false,
             });
@@ -638,7 +925,7 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
             && !cmd.words[i + 1..].iter().any(|a| a == "-d")
             && cmd.words[i + 1..].iter().any(|a| {
                 let v = a.split_once('=').map(|(_, v)| v).unwrap_or(a);
-                basename(v) == "bf" || v.contains('$') || v.contains('`')
+                is_engine(v) || v.contains('$') || v.contains('`')
             })
         {
             calls.push(Call {
@@ -658,20 +945,14 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                 cargo: true,
             });
         }
-        if prog == "bf" {
+        if engine {
             let words: Vec<String> = cmd.words[i..].to_vec();
             // `bf evidence run <check> ... -- <command>`: the command after `--` is a command line of
-            // its own, read by the same rule.
-            if words.get(1).map(|s| s.as_str()) == Some("evidence")
-                && words.get(2).map(|s| s.as_str()) == Some("run")
-            {
-                if let Some(d) = words.iter().position(|w| w == "--") {
-                    let rest: Vec<String> = words[d + 1..].to_vec();
-                    if !rest.is_empty() {
-                        let inner = vec![Cmd::of(rest)];
-                        collect(inner, None, depth + 1, calls);
-                    }
-                }
+            // its own, read by the same rule. Flags may stand anywhere (`bf -C . evidence run`,
+            // `bf evidence --unit U-1 run`), as the engine's own parser reads them.
+            if let Some(rest) = evidence_command(&words) {
+                let inner = vec![Cmd::of(rest)];
+                collect(inner, None, depth + 1, calls);
             }
             calls.push(Call {
                 words,
@@ -852,6 +1133,8 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     // The command being read holds a pattern group (see `Call::group`).
     let mut group = false;
     let mut group_last = false;
+    // Heredoc bodies whose delimiter line was not found.
+    let mut unclosed: Vec<String> = Vec::new();
     // The command being read evaluates text as code (see `Cmd::evaluates`).
     let mut evaluates = false;
     // After `>&` or `<&` and a space: a target of digits or `-` names a descriptor, not a file.
@@ -963,6 +1246,18 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     if evaluates_at(&b, i) {
                         evaluates = true;
                     }
+                    // bash 5.3's `${ cmd; }` and `${| cmd; }` inside double quotes.
+                    if b[i] == '$'
+                        && b.get(i + 1) == Some(&'{')
+                        && matches!(b.get(i + 2), Some(' ' | '\t' | '\n' | '|'))
+                    {
+                        let (inner, next) = braced(&b, i + 2);
+                        let inner = inner.strip_prefix('|').unwrap_or(&inner).to_string();
+                        cur.push_str("$(..)");
+                        parse(&inner, Some("$("), depth + 1, counter, out);
+                        i = next;
+                        continue;
+                    }
                     if b[i] == '$' && i + 1 < n && b[i + 1] == '(' {
                         let (inner, next) = balanced(&b, i + 2);
                         cur.push_str("$(..)");
@@ -991,27 +1286,54 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 continue;
             }
             '$' if b.get(i + 1) == Some(&'\'') => {
-                // `$'...'`: a quote in which a backslash escapes the next character (`$'\''`). Its text
-                // is the word's when it holds no backslash; otherwise the `$` stays in front of it, so
-                // the word counts as one the parse does not read (`$'\x72'` is `r`).
+                // `$'...'`: a quote whose backslash escapes the shell decodes (`$'\''`, `$'\x72'` is `r`,
+                // `$'\157'` is `o`). Its text is the word's; an escape the parse cannot decode leaves a
+                // `$` in front, so the word counts as one the parse does not read.
                 in_word = true;
                 i += 2;
-                let mut text = String::new();
-                let mut escaped = false;
-                while i < n && b[i] != '\'' {
-                    if b[i] == '\\' && i + 1 < n {
-                        escaped = true;
-                        text.push(b[i + 1]);
-                        i += 2;
-                        continue;
-                    }
-                    text.push(b[i]);
-                    i += 1;
-                }
-                if escaped {
+                let (text, unknown, next) = ansi_c(&b, i);
+                i = next;
+                if unknown {
                     cur.push('$');
                 }
                 cur.push_str(&text);
+            }
+            '$' if b.get(i + 1) == Some(&'{')
+                && matches!(b.get(i + 2), Some(' ' | '\t' | '\n' | '|')) =>
+            {
+                // bash 5.3's `${ cmd; }` and `${| cmd; }` run commands in this shell, like `$( )`.
+                in_word = true;
+                let (inner, next) = braced(&b, i + 2);
+                let inner = inner.strip_prefix('|').unwrap_or(&inner).to_string();
+                cur.push_str("$(..)");
+                parse(&inner, Some("$("), depth + 1, counter, out);
+                i = next;
+                continue;
+            }
+            '$' if b.get(i + 1) == Some(&'[') => {
+                // `$[ ... ]`: arithmetic. Its text is read on its own, so a `<<` in it takes no heredoc
+                // body, and a substitution in it still runs.
+                in_word = true;
+                evaluates = true;
+                let mut j = i + 2;
+                let mut d = 1usize;
+                while j < n {
+                    match b[j] {
+                        '[' => d += 1,
+                        ']' => {
+                            d -= 1;
+                            if d == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let inner: String = b[(i + 2).min(n)..j.min(n)].iter().collect();
+                parse(&inner, Some("$("), depth + 1, counter, out);
+                cur.push_str("$[..]");
+                i = j;
             }
             '$' if b.get(i + 1) == Some(&'{') => {
                 // `${...}` up to its own `}`: quotes and nested braces inside it are skipped, and the
@@ -1085,7 +1407,11 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 i = j + 1;
                 continue;
             }
-            '#' if !in_word => {
+            // A comment starts only where a word starts after a blank or an operator; a `#` right after a
+            // `(` or `)` is inside a zsh pattern group (`(#)x(N)`, `/(#qe:..:)`) and is a word character.
+            '#' if !in_word
+                && (i == 0 || matches!(b[i - 1], ' ' | '\t' | '\r' | '\n' | ';' | '&' | '|')) =>
+            {
                 while i < n && b[i] != '\n' {
                     i += 1;
                 }
@@ -1096,6 +1422,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 // Heredocs declared on this line read their bodies now.
                 for p in pending.drain(..) {
                     let mut body = String::new();
+                    let mut found = false;
                     i += 1;
                     while i < n {
                         let mut j = i;
@@ -1110,11 +1437,17 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                             line.as_str()
                         };
                         if l == p.delim {
+                            found = true;
                             break;
                         }
                         body.push_str(&line);
                         body.push('\n');
                         i += 1;
+                    }
+                    // A body whose delimiter line never comes may be a misreading: its lines are also
+                    // read as commands, so nothing the shell may run is hidden.
+                    if !found {
+                        unclosed.push(body.clone());
                     }
                     bodies.insert(p.cmd, (body, p.expands));
                     // `i` is at the newline that ends the delimiter line (or the end); the loop's own
@@ -1124,22 +1457,50 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             ' ' | '\t' | '\r' => {
                 end_word!();
             }
-            '(' if !in_word
-                && words
-                    .iter()
-                    .all(|w| KEYWORDS.contains(&w.as_str()) || w == "for")
-                && b.get(i + 1) == Some(&'(')
-                && matches!(balanced(&b, i + 2), (_, next) if b.get(next) == Some(&')')) =>
+            '(' if b.get(i + 1) == Some(&'(')
+                && matches!(balanced(&b, i + 2), (_, next) if b.get(next) == Some(&')'))
+                && (!in_word
+                    || (words.iter().all(|w| KEYWORDS.contains(&w.as_str()))
+                        && matches!(cur.as_str(), "for" | "while" | "until" | "if" | "elif"))) =>
             {
-                // `(( ... ))` and `for (( ... ))`: arithmetic, which evaluates what it reads. A `<<` in it
-                // is a shift, never a heredoc: its text is read on its own so nothing after it is taken
-                // for a heredoc body; a substitution in it still runs.
+                // `(( ... ))` wherever it stands (`time (( ))`, `{ (( )) }`, `for (( ))`, and glued to
+                // a keyword: `for((`, `while((`, `if((`): arithmetic, which evaluates what it reads. A
+                // `<<` in it is a shift, never a heredoc: its text is read on its own so nothing after it
+                // is taken for a heredoc body; a substitution in it still runs. After a word that is not
+                // a keyword or a wrapper it may also be a zsh pattern group, so the command is marked.
+                end_word!();
+                if !words.iter().all(|w| {
+                    KEYWORDS.contains(&w.as_str())
+                        || matches!(
+                            w.as_str(),
+                            "for" | "while" | "until" | "if" | "elif" | "time" | "repeat"
+                        )
+                }) {
+                    group = true;
+                }
                 end_cmd!();
                 let (inner, next) = balanced(&b, i + 2);
                 evaluates = true;
                 end_cmd!();
                 parse(&inner, via, depth + 1, counter, out);
                 i = next + 1;
+                continue;
+            }
+            '(' if in_word && cur == "=" => {
+                // zsh's `=( ... )`: its commands run, and what they print is a file, as for `<( )`.
+                cur.clear();
+                let (inner, next) = balanced(&b, i + 1);
+                let mut local: Vec<Cmd> = Vec::new();
+                parse(&inner, None, depth + 1, counter, &mut local);
+                let texts = producer_texts(&local);
+                for lc in &local {
+                    if let Some(t) = texts.get(&lc.id) {
+                        procs.push(t.clone());
+                    }
+                }
+                out.extend(local);
+                cur.push_str("<(..)");
+                i = next;
                 continue;
             }
             '(' if in_word || !words.iter().all(|w| KEYWORDS.contains(&w.as_str())) => {
@@ -1149,7 +1510,13 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 let fn_def = in_word
                     && (words.is_empty() || words.iter().all(|w| w == "function"))
                     && b.get(i + 1) == Some(&')');
-                let array = in_word && words.is_empty() && cur.contains('=');
+                // `name=(` and `name+=(` alone start an array; `/de[=v](..)` is a pattern.
+                let array = in_word
+                    && words.is_empty()
+                    && (cur
+                        .strip_suffix("+=")
+                        .is_some_and(|k| is_assignment(&format!("{k}=")))
+                        || (cur.ends_with('=') && is_assignment(&cur)));
                 if !(fn_def || array) {
                     group = true;
                 }
@@ -1160,7 +1527,8 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     // zsh's `e` glob qualifier, after a pattern, runs shell code: `x(e:'cmd':)`.
                     let (inner, _) = balanced(&b, i + 1);
                     for code in qualifier_code(&inner, depth + 1) {
-                        parse(&code, Some("a glob qualifier"), depth + 1, counter, out);
+                        let how = via_text("glob_qualifier");
+                        parse(&code, Some(&how), depth + 1, counter, out);
                     }
                 }
                 end_cmd!();
@@ -1203,6 +1571,13 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     for lc in &local {
                         if let Some(t) = texts.get(&lc.id) {
                             procs.push(t.clone());
+                        }
+                    }
+                } else {
+                    // `cmd > >(sh)`: the commands inside read what this command writes.
+                    for lc in local.iter_mut() {
+                        if lc.pipe_from.is_none() {
+                            lc.pipe_from = Some(cmd_id);
                         }
                     }
                 }
@@ -1250,6 +1625,22 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     while i + 1 < n && !" \t\n;|&()<>".contains(b[i + 1]) {
                         i += 1;
                         match b[i] {
+                            // `$'E'` and `$"E"` are the delimiter `E`.
+                            '$' if matches!(b.get(i + 1), Some('\'' | '"')) => {}
+                            // `$(x)` and a backtick stay in the delimiter as written.
+                            '$' if b.get(i + 1) == Some(&'(') => {
+                                let (inner, next) = balanced(&b, i + 2);
+                                delim.push_str("$(");
+                                delim.push_str(&inner);
+                                delim.push(')');
+                                i = next - 1;
+                            }
+                            '`' => {
+                                let (_, j) = backtick(&b, i);
+                                let end = j.min(n - 1);
+                                delim.extend(b[i..=end].iter());
+                                i = end;
+                            }
                             q @ ('\'' | '"') => {
                                 quoted = true;
                                 while i + 1 < n && b[i + 1] != q {
@@ -1280,13 +1671,18 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     here_string = true;
                     redir = Some(false);
                 } else if i + 1 < n && b[i + 1] == '&' {
-                    // `>&2`, `<&3`, `>&-`: the target is part of the operator. Any other word after it
-                    // (`>&file`, `>& file`) is the target: a file for `>&`, never a word of the command.
+                    // `>&2`, `<&3`, `>&-`: a word of digits or `-` alone names a descriptor. Any other
+                    // word after it (`>&file`, `>& file`, `>&2x`) is the target: a file for `>&`, never
+                    // a word of the command.
                     i += 1;
-                    if i + 1 < n && (b[i + 1].is_ascii_digit() || b[i + 1] == '-') {
-                        while i + 1 < n && (b[i + 1].is_ascii_digit() || b[i + 1] == '-') {
-                            i += 1;
-                        }
+                    let mut j = i + 1;
+                    while j < n && !" \t\r\n;|&()<>".contains(b[j]) {
+                        j += 1;
+                    }
+                    let target: String = b[i + 1..j].iter().collect();
+                    if !target.is_empty() && target.chars().all(|d| d.is_ascii_digit() || d == '-')
+                    {
+                        i = j - 1;
                     } else {
                         redir = Some(op == '>');
                         dup = true;
@@ -1322,6 +1718,9 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             cmd.heredoc = Some((body, expands));
         }
     }
+    for body in unclosed {
+        parse(&body, via, depth + 1, counter, &mut extra);
+    }
     out.extend(extra);
 }
 
@@ -1335,14 +1734,36 @@ fn producer_texts(cmds: &[Cmd]) -> HashMap<usize, String> {
             text.push_str(b);
         }
         if let Some((i, _)) = resolve(&c.words) {
-            if matches!(basename(&c.words[i]), "echo" | "printf") {
+            // zsh's `print` writes its words like `echo`, one on each line with `-l`. `printf` puts its
+            // arguments into its format (`printf 'bf unit unbl%s' ock`).
+            let prog = basename(&c.words[i]);
+            if prog == "printf" {
+                let args: Vec<String> = c.words[i + 1..]
+                    .iter()
+                    .skip_while(|a| a.starts_with('-') && a.len() > 1)
+                    .cloned()
+                    .collect();
+                match args
+                    .split_first()
+                    .and_then(|(f, rest)| printf_text(f, rest))
+                {
+                    Some(t) => text.push_str(&t),
+                    // Read the words as written, as before; that only reads more.
+                    None => text.push_str(&args.join(" ").replace("\\n", "\n")),
+                }
+            } else if matches!(prog, "echo" | "print") {
                 let args: Vec<&str> = c.words[i + 1..]
                     .iter()
                     .filter(|a| !(a.starts_with('-') && a.len() > 1))
                     .map(|s| s.as_str())
                     .collect();
-                // A newline written as `\n` is a line break to `echo -e` and `printf`.
-                text.push_str(&args.join(" ").replace("\\n", "\n"));
+                let lines = prog == "print"
+                    && c.words[i + 1..]
+                        .iter()
+                        .any(|a| a.starts_with('-') && a.contains('l'));
+                let sep = if lines { "\n" } else { " " };
+                // A newline written as `\n` is a line break to `echo -e`, `print` and `printf`.
+                text.push_str(&args.join(sep).replace("\\n", "\n"));
             }
         }
         if !text.is_empty() {
@@ -1536,6 +1957,16 @@ fn substitutions(body: &str) -> Vec<(String, &'static str)> {
             i = next;
             continue;
         }
+        // bash 5.3's `${ cmd; }`.
+        if b[i] == '$'
+            && b.get(i + 1) == Some(&'{')
+            && matches!(b.get(i + 2), Some(' ' | '\t' | '\n' | '|'))
+        {
+            let (inner, next) = braced(&b, i + 2);
+            out.push((inner.strip_prefix('|').unwrap_or(&inner).to_string(), "$("));
+            i = next;
+            continue;
+        }
         if b[i] == '`' {
             let (inner, j) = backtick(&b, i);
             out.push((inner, "`"));
@@ -1568,6 +1999,47 @@ fn backtick(b: &[char], i: usize) -> (String, usize) {
         j += 1;
     }
     (inner, j)
+}
+
+/// The text up to the `}` that closes a `${ `, and the index after it. Quotes and escapes are skipped.
+fn braced(b: &[char], start: usize) -> (String, usize) {
+    let mut depth = 1;
+    let mut i = start;
+    let mut s = String::new();
+    while i < b.len() {
+        match b[i] {
+            '\\' if i + 1 < b.len() => {
+                s.push('\\');
+                s.push(b[i + 1]);
+                i += 1;
+            }
+            q @ ('\'' | '"') => {
+                s.push(q);
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    s.push(b[i]);
+                    i += 1;
+                }
+                if i < b.len() {
+                    s.push(q);
+                }
+            }
+            '{' => {
+                depth += 1;
+                s.push('{');
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (s, i + 1);
+                }
+                s.push('}');
+            }
+            c => s.push(c),
+        }
+        i += 1;
+    }
+    (s, i)
 }
 
 /// The text up to the `)` that closes a `$(`, and the index after it. Quotes are skipped.

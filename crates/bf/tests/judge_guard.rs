@@ -568,6 +568,120 @@ fn judge_guard_patterns_hidden_calls_and_run_time_code_are_refused_to_the_judge(
 }
 
 #[test]
+fn judge_guard_the_second_review_rows_are_refused_and_the_judges_reading_passes() {
+    let fx = Fx::new();
+    let v = "V='a[$(bf record put unit --file u.toml)]'";
+    let g = "V='/(e:\"bf record put unit --file u.toml\":)'";
+    let rows: Vec<String> = [
+        // `>&word` is a descriptor only when the whole word is digits or `-`.
+        "bf checkpoint >&2x check K-1 --accept X-2 --quote q",
+        "bf checkpoint >&-x check K-1 --accept X-2 --quote q",
+        "bf record >&2x put unit --file u.toml",
+        // The engine's name in any case.
+        "BF record put unit --file u.toml",
+        "/usr/local/bin/Bf record put unit --file u.toml",
+        "./target/release/bF checkpoint check K-1 --accept X-2 --quote q",
+        // A `<<` in arithmetic takes no heredoc body, wherever the arithmetic stands.
+        "time (( x = 1 <<2 ))\nbf record put unit --file u.toml\n2",
+        "for((i=0;i<<2;i++)); do :; done\nbf record put unit --file u.toml\n2",
+        "while((0 <<2)); do :; done\nbf record put unit --file u.toml\n2",
+        "if((1 <<2)); then :; fi\nbf record put unit --file u.toml\n2",
+        "function f { (( x = 1 <<2 )); }\nbf record put unit --file u.toml\n2",
+        "{ : } always { (( x = 1 <<2 )) }\nbf record put unit --file u.toml\n2",
+        "echo $[ 1 <<2 ]\nbf record put unit --file u.toml\n2",
+        // A delimiter that holds `$( )` or `$'..'` is the shell's own.
+        "cat <<$(x)\nhi\n$(x)\nbf record put unit --file u.toml",
+        "cat <<$'E'\nhi\nE\nbf record put unit --file u.toml\n$'E'",
+        // A `#` inside a zsh pattern group is no comment.
+        "echo (#)x(N) ; bf record put unit --file u.toml",
+        "echo (#)x(N) ; bf checkpoint check K-1 --accept X-2 --quote q",
+        "setopt extendedglob; ls -d /(#qe:'bf record put unit --file u.toml':)",
+        // zsh's `function f g { }` names two functions with one body.
+        "function f g { bf record put unit --file u.toml }; f",
+        "function f g { bf checkpoint check K-1 --accept X-2 --quote q }; g",
+        // A first word with `=` before `(` is a pattern, not an array.
+        "/de[=v](e:'bf record put unit --file u.toml':)",
+        // Any character after `e` is read as a delimiter, failing closed.
+        "ls -d /(eZ'bf record put unit --file u.toml'Z)",
+        // Cargo's own options and a toolchain before `run`.
+        "cargo -q run -- record put unit --file u.toml",
+        "cargo +stable run -- record put unit --file u.toml",
+        "cargo --offline --color never run -- checkpoint check K-1 --accept X-2 --quote q",
+        // The command of `bf evidence run` with flags anywhere.
+        "bf -C . evidence run X-1 -- bf record put unit --file u.toml",
+        "bf evidence --unit U-1 run X-1 -- bf record put unit --file u.toml",
+        // bash 5.3's `${ cmd; }`.
+        "echo ${ bf record put unit --file u.toml; }",
+        "echo ${| bf record put unit --file u.toml; }",
+        // A whole call put in a variable, piped to a shell, or behind a shell or wrapper.
+        "V='bf record put unit --file u.toml'; eval $V",
+        "V='bf record put unit --file u.toml'; $=V",
+        "V='bf record put unit --file u.toml'; $V",
+        "print 'bf record put unit --file u.toml' | sh",
+        "sh <(print 'bf record put unit --file u.toml')",
+        "echo 'lmot.u elif-- tinu tup drocer fb' | rev | sh",
+        "source =(print 'bf record put unit --file u.toml')",
+        "zsh --emulate sh -c 'bf record put unit --file u.toml'",
+        "tcsh -c 'bf record put unit --file u.toml'",
+        "csh -c 'bf checkpoint check K-1 --accept X-2 --quote q'",
+        "zmodload zsh/zpty; zpty q 'bf record put unit --file u.toml'",
+        "eval \"$(printf 'bf record put unit --fi%s' 'le u.toml')\"",
+        // Found in this round.
+        "sh -c $'bf record p\\x75t unit --file u.toml'",
+        "printf 'bf record pu%s unit --file u.toml' t | sh",
+        "echo 'bf record put unit --file u.toml' > >(sh)",
+        "echo 'bf checkpoint check K-1 --accept X-2 --quote q' | xargs -0 sh -c",
+        "echo \"${ bf record put unit --file u.toml; }\"",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain(
+        [
+            // Arithmetic and globbing of a value the guard cannot read.
+            "x=abc; echo ${x:V}",
+            "x=(a b); echo $x[V]",
+            "declare -i x=V",
+            "typeset -i x=V",
+            "integer x=V",
+            "local -i x=V",
+            "printf %d V",
+            "print -f %d V",
+            "repeat V :",
+            "[ V -eq 0 ]",
+        ]
+        .iter()
+        .map(|r| format!("{v}; {r}")),
+    )
+    .chain(
+        ["echo $~V", "echo ${~V}", "ls $~V"]
+            .iter()
+            .map(|r| format!("{g}; {r}")),
+    )
+    .collect();
+    for cmd in &rows {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    // The judge's reading commands pass, a test of a file among them.
+    for cmd in [
+        "[[ -f u.toml ]] && bf record get U-2",
+        "if [[ -n x ]]; then bf status; fi",
+        "[[ $ID == U-* ]] && bf record get $ID",
+        "test -f u.toml && cat u.toml",
+        "grep -n depends_on u.toml | head -3",
+        "bf record get U-2 | jq .files",
+        "printf '%s\\n' x | head -1",
+        "function f { bf status; }; f",
+        "ls -la ${ID}",
+        "/usr/bin/grep -c x u.toml",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
 fn judge_guard_a_repair_that_names_a_marked_record_gets_no_judge_token() {
     let fx = Fx::new();
     let aid = ready(&fx);

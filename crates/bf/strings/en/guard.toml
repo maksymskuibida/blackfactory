@@ -13,5 +13,10 @@
 "guard.mktemp.step" = "Name one template and only options the guard knows before it, for example `mktemp -p /tmp name.XXXX`."
 "guard.mktemp.worked" = "The command makes a file whose place the guard can read the same way for GNU and BSD `mktemp`."
 
+# How a call of `bf` is reached when it is not called plainly, as a refusal names it.
+"guard.via.pattern" = "a program name the shell makes from a pattern"
+"guard.via.quoted_command" = "a quoted command line"
+"guard.via.glob_qualifier" = "a zsh glob qualifier"
+
 # A call of `bf` whose words hold a pattern group cannot be read.
 "guard.group.because" = "an unquoted `(` or `<->` in the words of `bf` is a pattern the shell may expand, drop or join with its neighbours"

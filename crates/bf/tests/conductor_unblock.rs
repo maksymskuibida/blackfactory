@@ -364,6 +364,86 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
     ] {
         assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
     }
+    // The second review's rows: each reaches the call, or runs text the guard cannot read. Both
+    // refusals name the agent type.
+    for cmd in [
+        "bf unit >&2x unblock U-1 --why x",
+        "bf unit >&-x unblock U-1 --why x",
+        "BF unit unblock U-1 --why x",
+        "/usr/local/bin/Bf unit unblock U-1 --why x",
+        "time (( x = 1 <<2 ))\nbf unit unblock U-1 --why x\n2",
+        "for((i=0;i<<2;i++)); do :; done\nbf unit unblock U-1 --why x\n2",
+        "while((0 <<2)); do :; done\nbf unit unblock U-1 --why x\n2",
+        "if((1 <<2)); then :; fi\nbf unit unblock U-1 --why x\n2",
+        "function f { (( x = 1 <<2 )); }\nbf unit unblock U-1 --why x\n2",
+        "{ : } always { (( x = 1 <<2 )) }\nbf unit unblock U-1 --why x\n2",
+        "echo $[ 1 <<2 ]\nbf unit unblock U-1 --why x\n2",
+        "cat <<$(x)\nhi\n$(x)\nbf unit unblock U-1 --why x",
+        "cat <<$'E'\nhi\nE\nbf unit unblock U-1 --why x\n$'E'",
+        "echo (#)x(N) ; bf unit unblock U-1 --why x",
+        "setopt extendedglob; ls -d /(#qe:'bf unit unblock U-1 --why x':)",
+        "function f g { bf unit unblock U-1 --why x }; f",
+        "/de[=v](e:'bf unit unblock U-1 --why x':)",
+        "ls -d /(eZ'bf unit unblock U-1 --why x'Z)",
+        "cargo -q run -- unit unblock U-1 --why x",
+        "cargo +stable run -- unit unblock U-1 --why x",
+        "bf -C . evidence run X-1 -- bf unit unblock U-1 --why x",
+        "bf evidence --unit U-1 run X-1 -- bf unit unblock U-1 --why x",
+        "echo ${ bf unit unblock U-1 --why x; }",
+        "V='bf unit unblock U-1 --why x'; eval $V",
+        "V='bf unit unblock U-1 --why x'; $=V",
+        "V='bf unit unblock U-1 --why x'; $V",
+        "print 'bf unit unblock U-1 --why x' | sh",
+        "sh <(print 'bf unit unblock U-1 --why x')",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | sh",
+        "source =(print 'bf unit unblock U-1 --why x')",
+        "zsh --emulate sh -c 'bf unit unblock U-1 --why x'",
+        "tcsh -c 'bf unit unblock U-1 --why x'",
+        "csh -c 'bf unit unblock U-1 --why x'",
+        "zmodload zsh/zpty; zpty q 'bf unit unblock U-1 --why x'",
+        "eval \"$(printf 'bf unit unbl%s U-1 --why x' ock)\"",
+        "V=\"$(printf 'bf unit unbl%s U-1' ock)\"; $V",
+        // Found in this round: escapes of `$'..'`, `printf` formats, `>(..)`, `xargs` into a shell,
+        // a coprocess shell, code kept in a variable and expanded as a pattern or evaluated, a loop
+        // that runs what it reads, and `${ cmd; }` in double quotes.
+        "sh -c $'bf unit unbl\\x6fck U-1 --why x'",
+        "sh -c $'bf unit unbl\\157ck U-1 --why x'",
+        "printf 'bf unit unbl%s U-1 --why x\\n' ock | sh",
+        "echo 'bf unit unblock U-1 --why x' > >(sh)",
+        "echo 'bf unit unblock U-1 --why x' | tee >(sh)",
+        "echo 'bf unit unblock U-1 --why x' | xargs -0 sh -c",
+        "cat f | xargs -I{} sh -c '{}'",
+        "coproc sh; print -p 'bf unit unblock U-1 --why x'",
+        "V='/(e:\"bf unit unblock U-1 --why x\":)'; echo $~V",
+        "setopt globsubst; V='/(e:\"bf unit unblock U-1 --why x\":)'; echo $V",
+        "V='a[$(bf unit unblock U-1 --why x)]'; echo $((V))",
+        "V='$(bf unit unblock U-1 --why x)'; echo ${(e)V}",
+        "while read l; do $l; done <<< 'bf unit unblock U-1 --why x'",
+        "echo \"${ bf unit unblock U-1 --why x; }\"",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(
+            out.contains("deny") && out.contains("builder"),
+            "{cmd}: {out}"
+        );
+    }
+    // A builder's commands with a program built at run time and the words `unit` or `unblock`, a
+    // test of a file, a script run by its path and output piped to a reader still pass.
+    for cmd in [
+        "$HOME/.cargo/bin/cargo nextest run conductor_unblock",
+        "\"$CARGO\" test unit",
+        "\"$(git rev-parse --show-toplevel)/target/debug/bf\" unit restore U-1 src/a.rs --token t",
+        "[[ -f src/a.rs ]] && echo unit",
+        "cat src/a.rs | bash scripts/check.sh",
+        "bf status | grep unblock",
+        "echo x >&2",
+        "N=0; echo $((N+1))",
+        "X=$(git rev-parse HEAD); echo ${X:0:7}",
+        "printf '%s\\n' b a | sort",
+        "ls src | xargs -n1 echo",
+    ] {
+        assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
     // A flag whose value is built at run time ahead of everything is refused for the conductor too.
     let cmd = "bf --root $E unit unblock U-1 --why x";
     assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");

@@ -356,8 +356,9 @@ fn table() -> Vec<Case> {
             Passed,
             "source /dev/stdin <<< 'echo hello'",
         ),
-        // Not judged, stated in docs/engine.md: other programs that run a string as code.
-        c(81, Root, Passed, "fish -c 'bf human-turn'"),
+        // Not judged, stated in docs/engine.md: other programs that run a string as code. `fish -c`
+        // is now read like `sh -c` (K-4), so its row is refused.
+        c(81, Root, Refused, "fish -c 'bf human-turn'"),
         c(82, Root, Passed, "busybox sh -c 'bf human-turn'"),
         c(83, Root, Passed, "tmux new -d 'bf human-turn'"),
         // The drafts folder itself is open from the main checkout, and a command after `find -exec` is
@@ -509,6 +510,15 @@ fn table() -> Vec<Case> {
         c(129, Root, Passed, "bf review release requirements --quote \"start over\""),
         c(130, Wc, Refused, "bf review release requirements --quote \"start over\""),
         c(131, Cpwc, Refused, "bf review release requirements --quote \"start over\""),
+        // `>&word` is a file unless the whole word is a descriptor: the path rules judge it.
+        c(132, Root, Refused, "echo x >&1/../factory/policy.toml"),
+        c(133, Root, Refused, "echo x >&2x/../factory/policy.toml"),
+        c(134, Root, Passed, "echo x >&2"),
+        // The engine's name in any case opens the same file on a volume that ignores case.
+        c(135, Root, Refused, "BF human-turn"),
+        c(136, Root, Refused, "/usr/local/bin/Bf human-turn"),
+        c(137, Root, Refused, "cargo -q run -- human-turn"),
+        c(138, Root, Refused, "cargo +stable run -- human-turn"),
     ]
 }
 
