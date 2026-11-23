@@ -656,21 +656,117 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         .into_iter()
         .map(|(id, c)| json!({"id": id, "checks": c}))
         .collect();
+    // D-110: the checks the human accepted for this content, with their words, beside those that are off.
+    let accepted_checks: Vec<Value> = str_list(kr, "checks")
+        .iter()
+        .filter_map(|c| {
+            evidence::accepted_at(&st, k, c, &content)
+                .map(|a| json!({"check": c, "mark": a.mark, "reason": a.reason, "turn": a.turn, "quote": a.quote}))
+        })
+        .collect();
     if !was_closed || merged {
         // The waiver is fixed here: the ledger reads it from the log, not from a later run's settings.
         let off_names: Vec<String> = crate::checks::off_closing(&st).keys().cloned().collect();
         events::append(
             p,
             "checkpoint.close",
-            json!({"checkpoint": k, "merged": merged, "hash": content, "unproven_off": unproven_off, "off_names": off_names, "run": crate::enforce::latest_run_id(&st)}),
+            json!({"checkpoint": k, "merged": merged, "hash": content, "unproven_off": unproven_off, "off_names": off_names, "run": crate::enforce::latest_run_id(&st), "accepted_checks": accepted_checks}),
         )?;
         p.write_guard()?;
         cleanup::remove_checkpoint_copies(p, &pl, k)?;
     }
     Ok(
         json!({"checkpoint": k, "closed": true, "already": was_closed && !merged, "merged": merged, "content_hash": content, "amendments": via_amend, "checks_off": crate::enforce::off_summary(&st),
-            "unproven_off": unproven_off}),
+            "unproven_off": unproven_off, "accepted_checks": accepted_checks}),
     )
+}
+
+/// `bf checkpoint check <K> --accept <X-ids> --quote "<words>"` (D-110): the human accepts a check of an open
+/// checkpoint that carries a `failed` or `unreachable` mark on the content now in its working copy, in their
+/// own words, written after `bf next` gave `decide-check`. It opens no amendment, reopens no unit and no
+/// checkpoint and starts no fix.
+pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in_copy: bool) -> R<Value> {
+    use crate::strings::t;
+    let what = t("check_accept.what", &[("k", k)]);
+    let stop = |because: &str, step: &str| {
+        crate::refusal::refuse_owned(
+            what.clone(),
+            t(because, &[("k", k)]),
+            vec![t(step, &[("k", k)])],
+            t("check_accept.worked", &[("k", k)]),
+        )
+    };
+    if in_copy {
+        return Err(stop("check_accept.because.copy", "check_accept.step.copy"));
+    }
+    let _lock = crate::lock::engine(p, &format!("accept a check of {k}"))?;
+    let st = events::require_chain(p)?;
+    need_run(&st)?;
+    if crate::absent::is_on(&st) {
+        return Err(stop("check_accept.because.absent", "check_accept.step.absent"));
+    }
+    let pl = plan::load(p)?;
+    let Some(kr) = pl.checkpoint(k) else {
+        return Err(stop("check_accept.because.unknown", "check_accept.step.unknown"));
+    };
+    if st.closed.contains_key(k) {
+        return Err(stop("check_accept.because.closed", "check_accept.step.closed"));
+    }
+    let ids: Vec<String> = spec
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect();
+    if ids.is_empty() {
+        return Err(stop("check_accept.because.none", "check_accept.step.none"));
+    }
+    observe_holds(p)?;
+    let st = events::require_chain(p)?;
+    let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+    let receipts = evidence::load_receipts(p)?;
+    let listed = str_list(kr, "checks");
+    let mut marks: Vec<Value> = Vec::new();
+    for id in &ids {
+        let standing = listed
+            .iter()
+            .any(|c| c == id)
+            .then(|| evidence::standing_unaccepted(&st, &receipts, k, id, &content))
+            .flatten();
+        let Some(r) = standing else {
+            return Err(crate::refusal::refuse_owned(
+                what.clone(),
+                t("check_accept.because.no_mark", &[("k", k), ("id", id)]),
+                vec![t("check_accept.step.no_mark", &[("k", k)])],
+                t("check_accept.worked", &[("k", k)]),
+            ));
+        };
+        marks.push(json!({"check": id, "mark": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")}));
+    }
+    match events::hold(&st, k, u64::MAX) {
+        Some(events::Hold::Marked { .. }) => {}
+        Some(h) => {
+            return Err(crate::refusal::refuse_owned(
+                what.clone(),
+                t("check_accept.because.other_hold", &[("k", k), ("why", &h.because())]),
+                vec![t("check_accept.step.no_hold", &[("k", k)])],
+                t("check_accept.worked", &[("k", k)]),
+            ));
+        }
+        None => return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold")),
+    }
+    let Some(hold) = st.ck_holds.get(k).filter(|h| h.cause == "marked") else {
+        return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold"));
+    };
+    let (turn, _) = events::pick_turn(&st, hold.seq, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "checkpoint.check.accept",
+        json!({"checkpoint": k, "checks": ids, "content_hash": content, "marks": marks,
+            "turn": turn, "quote": quote.trim()}),
+    )?;
+    observe_holds(p)?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "accepted": ids, "marks": marks, "content_hash": content}))
 }
 
 /// The command checks of a checkpoint that the human switched off: a sync leaves them out, as the close does.

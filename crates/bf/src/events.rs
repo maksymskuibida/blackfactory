@@ -711,6 +711,17 @@ pub struct CkHold {
     pub unreachable_only: bool,
 }
 
+/// The human's accept of a blocked check of a checkpoint, in their own words (D-110).
+#[derive(Debug, Clone, Default)]
+pub struct CheckAccept {
+    pub seq: u64,
+    pub content: String,
+    pub mark: String,
+    pub reason: String,
+    pub turn: u64,
+    pub quote: String,
+}
+
 /// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hold {
@@ -980,6 +991,9 @@ pub struct State {
     /// Checkpoint -> the hold the engine logged for it (a marked check, an unanswered question, a wave
     /// check), with the seq it started at. Kept by `checkpoint.hold`.
     pub ck_holds: BTreeMap<String, CkHold>,
+    /// (checkpoint, check) -> the human's accept of a check marked failed or unreachable, for the content
+    /// it names (D-110). A change of the content ends it.
+    pub check_accepts: BTreeMap<(String, String), CheckAccept>,
     /// Findings of checkpoint reviews that the human accepted or declined, in log order.
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
@@ -2080,6 +2094,59 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             detail: sv("detail"),
                             seq: started,
                             unreachable_only: ev["unreachable_only"].as_bool().unwrap_or(false),
+                        },
+                    );
+                }
+            }
+            "checkpoint.check.accept" => {
+                let k = sv("checkpoint");
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let checks = crate::store::str_list(ev, "checks");
+                let bound = st
+                    .ck_holds
+                    .get(&k)
+                    .filter(|h| h.cause == "marked")
+                    .filter(|h| {
+                        let named: Vec<&str> = h.detail.split(',').collect();
+                        !checks.is_empty() && checks.iter().all(|c| named.contains(&c.as_str()))
+                    })
+                    .map(|h| h.seq);
+                let marked_hold = matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
+                let Some(bound) =
+                    bound.filter(|_| marked_hold && !st.closed.contains_key(&k) && !st.absent.on)
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: a check accept was written for a checkpoint that is closed, is held by something else first, has no such mark, or while the human-absent flag is on"
+                    ));
+                    continue;
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: a check accept cites no valid human turn and quote, or words written before the decision was put to the human"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                let marks = ev["marks"].as_array().cloned().unwrap_or_default();
+                for c in &checks {
+                    let m = marks.iter().find(|m| m["check"].as_str() == Some(c.as_str()));
+                    st.check_accepts.insert(
+                        (k.clone(), c.clone()),
+                        CheckAccept {
+                            seq,
+                            content: sv("content_hash"),
+                            mark: m.and_then(|m| m["mark"].as_str()).unwrap_or("").to_string(),
+                            reason: m.and_then(|m| m["reason"].as_str()).unwrap_or("").to_string(),
+                            turn: tseq,
+                            quote: sv("quote"),
                         },
                     );
                 }

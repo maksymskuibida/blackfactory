@@ -316,16 +316,14 @@ fn a_verifier_can_mark_a_check_unreachable_or_failed() {
         "{}",
         o.stderr
     );
-    // `bf next` hands it to the human, not to the verifier again.
+    // `bf next` gives the human the decision and the verifier the check again (D-110).
     let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["can_start"], false);
+    assert_eq!(n["can_start"], true);
     assert_eq!(n["human_needed"], true);
     assert_eq!(n["directives"][0]["action"], "decide-check");
     assert_eq!(n["directives"][0]["checks"][0]["outcome"], "unreachable");
-    assert!(
-        n["idle_reason"].as_str().unwrap().contains("unreachable"),
-        "{n}"
-    );
+    assert_eq!(n["directives"][1]["action"], "run-checkpoint-checks");
+    assert_eq!(n["directives"][1]["role"], "verifier");
     // Views show it.
     let v = fx.must(&["view", "checkpoint", "K-1"]).json();
     assert_contract("checkpoint", &v);

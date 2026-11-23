@@ -1,0 +1,32 @@
+# Strings of the group `check_accept`: the human's accept of a failed or unreachable check of a checkpoint
+# (D-110), the directives that offer it, and the reasons of a refused request for files in the note of
+# `decide-unit` (FU-36).
+"check_accept.what" = "accept a check of {k}"
+"check_accept.worked" = "`bf next` shows {k} no longer held by that check, and `bf checkpoint close {k}` accepts it."
+"check_accept.done" = "{k}: {checks} accepted in the human's words; the checkpoint is not held by it for this content"
+
+"check_accept.because.copy" = "the human's accept is recorded from the main checkout, not from a working copy"
+"check_accept.step.copy" = "Ask the conductor to run it from the main checkout."
+"check_accept.because.absent" = "the human-absent flag is on, and the accept is the human's own act"
+"check_accept.step.absent" = "Wait until the human is back and the flag is off, then ask for their words."
+"check_accept.because.unknown" = "no such checkpoint"
+"check_accept.step.unknown" = "Use a checkpoint ID from `bf status`."
+"check_accept.because.closed" = "{k} is closed"
+"check_accept.step.closed" = "A closed checkpoint takes no accept; `bf status` shows what it closed on."
+"check_accept.because.none" = "no check was named"
+"check_accept.step.none" = "Run `bf checkpoint check {k} --accept <X-ids> --quote \"<the human's words>\"`."
+"check_accept.because.no_mark" = "{id} has no failed or unreachable mark at the content now in {k}"
+"check_accept.step.no_mark" = "`bf next` names the marked checks of {k} in its `decide-check` directive."
+"check_accept.because.no_hold" = "{k} is not held by a marked check"
+"check_accept.because.other_hold" = "{k} is held first by something that is not the check: {why}"
+"check_accept.step.no_hold" = "`bf next` shows what {k} waits for."
+
+"check_accept.close.line" = "accepted by the human, not run: {check} (marked {mark}), their words: {quote}"
+
+"check_accept.decide.note" = "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, change the plan, or accept the check in their own words with `bf checkpoint check {k} --accept <X-ids> --quote \"<the human's words>\"`; the words are written after this was put to them."
+"check_accept.run_again.note" = "Every blocked check of {k} could not be run. The machine's load is a warning only: run the checks again with the load and the cores in this directive in view."
+
+"check_accept.refusal.retry" = "the files asked for were sent back to be asked again"
+"check_accept.refusal.retry_spent" = "the files asked for were sent back too often"
+"check_accept.refusal.extension" = "the files asked for belong to the plan, not to the unit"
+"check_accept.refusal.other" = "the files asked for are not the unit's to change"

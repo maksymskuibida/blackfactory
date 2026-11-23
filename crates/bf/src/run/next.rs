@@ -327,11 +327,6 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
             "ready" => directives.push(json!({"role": "builder", "action": "start-unit", "unit": id, "tier": tier_for(p, u, "builder"),
                 "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
                 "commands": [format!("bf unit start {id}"), format!("bf brief {id} --role builder")]})),
-            "running" | "fixing" if crate::scope::open_request(&st, &id).is_some() => {
-                // A builder's request for files is with a cold reviewer: its directive replaces the
-                // builder's until the verdict is in.
-                directives.push(crate::scope::directive(p, &st, &id, limits(rounds)));
-            }
             "running" | "fixing" => {
                 let mut d = json!({"role": "builder", "action": if state == "fixing" { "fix" } else { "build" }, "unit": id,
                     "tier": tier_for(p, u, "builder"), "working_copy": wc, "brief": brief("builder"), "limits": limits(rounds),
@@ -339,7 +334,6 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 if let Some(a) = st.units.get(&id).map(|x| x.reopened_by.clone()).filter(|a| !a.is_empty()) {
                     d["amendment"] = json!(a);
                 }
-                crate::scope::wait::decorate(&st, &id, &mut d);
                 super::unblock::decorate(p, &st, &id, &mut d);
                 super::unit_sync::decorate(p, &id, &mut d);
                 directives.push(d);
@@ -374,9 +368,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
             "blocked" | "parked" => {
                 use crate::scope::NextEntry;
                 let entry = if state == "blocked" {
-                    crate::scope::reconsider::next_entry(p, &st, &id, limits(rounds))
-                        .or_else(|| crate::scope::wait::next_entry(p, &pl, &st, &id))
-                        .or_else(|| super::unblock::next_entry(p, &pl, &st, &id))
+                    super::unblock::next_entry(p, &pl, &st, &id)
                 } else {
                     None
                 };
@@ -405,9 +397,16 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                             )
                         })
                         .collect();
+                    // The reason of the refusal comes from a key of its own, never the raw word (FU-36).
+                    let word = s(r, "refusal");
+                    let key = format!("check_accept.refusal.{word}");
+                    let reason = match crate::strings::raw(&key) {
+                        Some(_) => crate::strings::t(&key, &[]),
+                        None => crate::strings::t("check_accept.refusal.other", &[]),
+                    };
                     note.push_str(&crate::strings::t(
                         "next.unit_parked.refused",
-                        &[("refusal", s(r, "refusal")), ("files", &files.join("; "))],
+                        &[("refusal", &reason), ("files", &files.join("; "))],
                     ));
                 }
                 note.push_str(&super::unblock::human_note(p, &pl, &st, &id));
@@ -471,7 +470,21 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                     })
                     .collect();
                 directives.push(json!({"role": "human", "action": "decide-check", "checkpoint": kid, "checks": marked,
-                    "note": "A check failed or could not be run. The human decides: fix the cause and have the verifier run it again (a passing run replaces the mark), accept the gap by amendment, or change the plan."}));
+                    "accept_command": format!("bf checkpoint check {kid} --accept <X-ids> --quote \"<the human's words>\""),
+                    "note": crate::strings::t("check_accept.decide.note", &[("k", kid)])}));
+                // D-110: a hold made only by `unreachable` marks is offered to the verifier again as an
+                // ordinary step; no agent judges the load.
+                if marked.iter().all(|m| m["outcome"] == "unreachable") {
+                    let (load, cores) = evidence::machine_load();
+                    directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": checks,
+                        "tier": p.policy.tiers.verifier, "working_copy": p.work_dir().join(kid).to_string_lossy(),
+                        "brief": p.briefs_dir().join(format!("{kid}-verifier.md")).to_string_lossy(),
+                        "load": load, "cores": cores,
+                        "limits": {"max_rounds": p.policy.limits.max_rounds, "idle_minutes": p.policy.limits.idle_minutes,
+                                   "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
+                        "commands": [format!("bf brief {kid} --role verifier")],
+                        "note": crate::strings::t("check_accept.run_again.note", &[("k", kid)])}));
+                }
                 continue;
             }
             // A sync or a fix is at work: their early returns above end the directives, except for the
@@ -506,6 +519,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         .any(|r| s(r, "id") == c && crate::enforce::is_off(&st, r))
                 })
                 .filter(|c| evidence::satisfied_at(&receipts, c, &content).is_none())
+                .filter(|c| evidence::accepted_at(&st, kid, c, &content).is_none())
                 // The checkpoint review is settled by its reviewer, never by the verifier.
                 .filter(|c| {
                     !pl.checks.iter().any(|r| {

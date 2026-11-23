@@ -206,7 +206,7 @@ fn failing_checks(
         let Some(c) = pl.checks.iter().find(|c| s(c, "id") == cid) else {
             continue;
         };
-        if crate::enforce::is_off(st, c) {
+        if crate::enforce::is_off(st, c) || evidence::accepted_at(st, s(k, "id"), &cid, content).is_some() {
             continue;
         }
         let command = evidence::command_words(c).join(" ");
@@ -638,11 +638,6 @@ pub fn overlay(table: &mut Value) {
         }
     }
 }
-
-/// The directive an old log's scope review once gave. A fix whose request for files is open in such a log
-/// goes on as a fix at work now, and no directive carries this action any more.
-#[allow(dead_code)]
-const REVIEW_SCOPE_DIRECTIVE: &str = "review-scope";
 
 /// The directive for the open fix.
 pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {

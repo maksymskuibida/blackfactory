@@ -1,5 +1,5 @@
-//! U-105 (R-107, D-86): after a builder's plain blocked report the engine gives one more builder
-//! directive to look again; a plain block made from it goes to the human.
+//! U-105 (R-107, D-86), D-102: after a builder's plain blocked report the engine gives no second builder
+//! directive; the conductor judges the block (`bf unit unblock`), and the unit then goes on.
 
 mod common;
 use common::*;
@@ -74,20 +74,25 @@ fn block(fx: &Fx, wc: &Path, note: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
+/// The conductor's judgment that ends the hold: the unit is at work again and a builder directive follows.
+fn unblock(fx: &Fx) {
+    fx.must(&["unit", "unblock", "U-1", "--why", "the cause is gone"]);
+}
+
 #[test]
-fn a_plain_block_gives_a_reconsider_directive_with_the_note_in_its_brief() {
+fn a_plain_block_gives_the_conductor_a_judgment_and_no_second_look_for_the_builder() {
     let (fx, wc) = setup(None);
     block(&fx, &wc, "my change breaks a test elsewhere");
     assert!(log(&fx).contains("\"reconsider\":true"));
-    let d = directive(&fx, "builder").expect("a builder directive");
-    assert_eq!(d["action"], "reconsider");
-    assert!(!d["token"].as_str().unwrap_or("").is_empty());
+    assert!(directive(&fx, "builder").is_none());
     let n = fx.must(&["next", "--json"]).json();
-    assert!(!n["directives"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|d| d["action"] == "decide-unit"));
+    let ds = n["directives"].as_array().unwrap();
+    assert!(ds.iter().any(|d| d["action"] == "judge-block"));
+    assert!(!ds.iter().any(|d| d["action"] == "reconsider"));
+    unblock(&fx);
+    let d = directive(&fx, "builder").expect("a builder directive");
+    assert_eq!(d["action"], "build");
+    assert!(!d["token"].as_str().unwrap_or("").is_empty());
     let brief = fs::read_to_string(d["brief"].as_str().unwrap()).unwrap();
     assert!(
         brief.contains("my change breaks a test elsewhere"),
@@ -102,6 +107,7 @@ fn a_restore_from_it_puts_the_unit_back_to_running() {
     let (fx, wc) = setup(None);
     write(&wc, "src/other.rs", "fn   o( ) { }\n");
     block(&fx, &wc, "a stray file");
+    unblock(&fx);
     let t = fx.take_token("U-1", "builder");
     fx.must_in(
         &wc,
@@ -119,6 +125,7 @@ fn a_restore_from_it_puts_the_unit_back_to_running() {
 fn a_built_report_from_it_goes_to_review() {
     let (fx, wc) = setup(None);
     block(&fx, &wc, "format only");
+    unblock(&fx);
     let t = fx.take_token("U-1", "builder");
     let o = fx.bf_in(&wc, &["report", "U-1", "--result", "built", "--token", &t]);
     assert_eq!(o.code, 0, "{}", o.all());
@@ -129,13 +136,11 @@ fn a_built_report_from_it_goes_to_review() {
 fn a_plain_block_from_it_goes_to_the_human() {
     let (fx, wc) = setup(None);
     block(&fx, &wc, "first");
+    unblock(&fx);
     block(&fx, &wc, "");
-    assert!(log(&fx).contains("\"confirmed\":true"));
     let n = fx.must(&["next", "--json"]).json();
     let ds = n["directives"].as_array().unwrap();
-    assert!(ds
-        .iter()
-        .any(|d| d["action"] == "decide-unit" && d["unit"] == "U-1"));
+    assert!(ds.iter().any(|d| d["unit"] == "U-1" && d["role"] != "builder"), "{n}");
     assert!(!ds.iter().any(|d| d["action"] == "reconsider"));
     assert_eq!(state(&fx).0, "blocked");
 }
@@ -156,16 +161,12 @@ fn every_builder_brief_holds_the_three_lines() {
 }
 
 #[test]
-fn block_and_restore_cannot_repeat_past_the_attempt_limit() {
+fn a_block_counts_as_an_attempt_and_waits_for_the_conductor() {
     let (fx, wc) = setup(Some(1));
     write(&wc, "src/other.rs", "fn   o( ) { }\n");
     block(&fx, &wc, "a stray file");
-    let t = fx.take_token("U-1", "builder");
-    fx.must_in(
-        &wc,
-        &["unit", "restore", "U-1", "src/other.rs", "--token", &t],
-    );
-    assert_eq!(state(&fx).0, "parked");
+    assert_eq!(state(&fx), ("blocked".to_string(), 1));
+    assert!(directive(&fx, "builder").is_none());
 }
 
 #[test]
@@ -177,8 +178,8 @@ fn a_block_without_a_note_leaves_the_said_clause_out() {
         &["report", "U-1", "--result", "blocked", "--token", &t],
     );
     assert_eq!(o.code, 0, "{}", o.all());
-    let d = directive(&fx, "builder").unwrap();
-    let brief = fs::read_to_string(d["brief"].as_str().unwrap()).unwrap();
+    fx.must(&["brief", "U-1", "--role", "builder"]);
+    let brief = fs::read_to_string(fx.project().briefs_dir().join("U-1-builder.md")).unwrap();
     assert!(brief.contains("You reported this unit blocked."), "{brief}");
     assert!(!brief.contains("and said"), "{brief}");
 }

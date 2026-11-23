@@ -121,7 +121,7 @@ pub fn releases_used(events: &[Value], unit: &str) -> u32 {
     counted_releases(events, unit).len() as u32
 }
 
-fn judgeable_in(p: &Project, events: &[Value], st: &State, unit: &str) -> Option<Block> {
+fn judgeable_in(_p: &Project, events: &[Value], st: &State, unit: &str) -> Option<Block> {
     if st.unit_state(unit) != "blocked" || crate::scope::open_request(st, unit).is_some() {
         return None;
     }
@@ -135,12 +135,6 @@ fn judgeable_in(p: &Project, events: &[Value], st: &State, unit: &str) -> Option
         || events.iter().any(|e| {
             s(e, "kind") == "unit.scope.refused" && s(e, "unit") == unit && seq_of(e) > report_seq
         })
-    {
-        return None;
-    }
-    let pl = plan::load(p).ok()?;
-    if crate::scope::reconsider::next_entry(p, st, unit, json!({})).is_some()
-        || crate::scope::wait::next_entry(p, &pl, st, unit).is_some()
     {
         return None;
     }

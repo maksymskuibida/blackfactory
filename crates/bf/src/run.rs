@@ -181,12 +181,12 @@ pub fn observe_holds(p: &Project) -> R<()> {
         let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
         let marked: Vec<String> = str_list(k, "checks")
             .into_iter()
-            .filter(|c| evidence::standing_outcome(rs, c, &content).is_some())
+            .filter(|c| evidence::standing_unaccepted(&st, rs, kid, c, &content).is_some())
             .collect();
         if !marked.is_empty() {
             // D-110: a hold made only by `unreachable` marks (no `failed` mark) decides nothing.
             if marked.iter().all(|c| {
-                evidence::standing_outcome(rs, c, &content).and_then(|r| r.outcome())
+                evidence::standing_unaccepted(&st, rs, kid, c, &content).and_then(|r| r.outcome())
                     == Some("unreachable")
             }) {
                 only_unreachable.insert(kid.to_string());

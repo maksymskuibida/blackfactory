@@ -413,7 +413,7 @@ fn a_parked_review_is_released_while_a_check_is_marked_unreachable_only() {
     report(&fx, json!([f("high", "the answer is wrong")]));
     let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
-    assert_eq!(actions(&fx), vec!["decide-check"]);
+    assert_eq!(actions(&fx), vec!["decide-check", "run-checkpoint-checks"]);
     fx.human(OLD);
     let o = release_review(&fx, OLD);
     say("review --release while a check is marked unreachable", &o);
@@ -761,7 +761,6 @@ const CLASSES: &[(&str, &str)] = &[
     ("security-audit", "neither"),
     ("land", "neither"),
     ("decide-unit", "neither"),
-    ("reconsider", "neither"),
     ("judge-repair", "neither"),
     ("decide-repair", "neither"),
     ("see-judged-repair", "neither"),

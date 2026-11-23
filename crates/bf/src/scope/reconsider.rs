@@ -1,10 +1,8 @@
-//! U-105 (A-73): after a builder's plain blocked report the engine gives one more builder
-//! directive, to look again; a plain block made from that directive goes to the human.
+//! U-105 (A-73): the marks of a builder's plain blocked report. No directive asks the builder to look
+//! again any more; the conductor judges the block (D-102) and the human decides after.
 
 use crate::events::State;
-use crate::scope::NextEntry;
-use crate::store::Project;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Replay step run after every event.
 pub fn after_event(st: &mut State, kind: &str, ev: &Value, seq: u64, at: &str) {
@@ -78,24 +76,6 @@ fn open(st: &State, unit: &str) -> bool {
                     .and_then(|sc| sc.refused.last())
                     .is_some_and(|r| r["seq"].as_u64() == Some(u.last_seq)))
     })
-}
-
-/// What `bf next` gives for a blocked unit, before the waiting rule.
-pub fn next_entry(p: &Project, st: &State, id: &str, limits: Value) -> Option<NextEntry> {
-    if !open(st, id) {
-        return None;
-    }
-    let pl = crate::plan::load(p).ok()?;
-    let u = pl.unit(id)?;
-    let d = json!({
-        "role": "builder", "action": "reconsider", "unit": id,
-        "tier": crate::run::tier_for(p, u, "builder"),
-        "working_copy": p.work_dir().join(id).to_string_lossy(),
-        "brief": p.briefs_dir().join(format!("{id}-builder.md")).to_string_lossy(),
-        "limits": limits,
-        "commands": [format!("bf brief {id} --role builder")],
-    });
-    Some(NextEntry::Directive(d))
 }
 
 /// The reviewer's `retry` refusal a second look is open for: none, since no reviewer judges a request.
