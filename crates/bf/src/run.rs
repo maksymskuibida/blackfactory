@@ -145,6 +145,7 @@ pub fn observe_holds(p: &Project) -> R<()> {
     let pl = plan::load(p)?;
     let mut want: BTreeMap<String, (&'static str, String)> = BTreeMap::new();
     let mut only_unreachable: std::collections::BTreeSet<String> = Default::default();
+    let mut has_unreachable: std::collections::BTreeSet<String> = Default::default();
     let open_questions: Vec<Value> = p
         .list_records(schema::kind_by_name("question"))?
         .into_iter()
@@ -185,6 +186,12 @@ pub fn observe_holds(p: &Project) -> R<()> {
             .collect();
         if !marked.is_empty() {
             // D-110: a hold made only by `unreachable` marks (no `failed` mark) decides nothing.
+            if marked.iter().any(|c| {
+                evidence::standing_unaccepted(&st, rs, kid, c, &content).and_then(|r| r.outcome())
+                    == Some("unreachable")
+            }) {
+                has_unreachable.insert(kid.to_string());
+            }
             if marked.iter().all(|c| {
                 evidence::standing_unaccepted(&st, rs, kid, c, &content).and_then(|r| r.outcome())
                     == Some("unreachable")
@@ -201,20 +208,32 @@ pub fn observe_holds(p: &Project) -> R<()> {
             .cloned(),
     );
     for kid in ids {
-        let logged = st
-            .ck_holds
-            .get(&kid)
-            .map(|h| (h.cause.clone(), h.detail.clone(), h.unreachable_only));
-        let now = want
-            .get(&kid)
-            .map(|(c, d)| (c.to_string(), d.clone(), only_unreachable.contains(&kid)));
+        let logged = st.ck_holds.get(&kid).map(|h| {
+            (
+                h.cause.clone(),
+                h.detail.clone(),
+                h.unreachable_only,
+                h.has_unreachable,
+            )
+        });
+        let now = want.get(&kid).map(|(c, d)| {
+            (
+                c.to_string(),
+                d.clone(),
+                only_unreachable.contains(&kid),
+                has_unreachable.contains(&kid),
+            )
+        });
         if logged == now {
             continue;
         }
-        let (cause, detail, unreachable_only) = now.unwrap_or_default();
+        let (cause, detail, unreachable_only, has_unreachable) = now.unwrap_or_default();
         let mut ev = json!({"checkpoint": kid, "cause": cause, "detail": detail});
         if unreachable_only {
             ev["unreachable_only"] = json!(true);
+        }
+        if has_unreachable {
+            ev["has_unreachable"] = json!(true);
         }
         events::append(p, "checkpoint.hold", ev)?;
     }

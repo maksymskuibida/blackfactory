@@ -709,6 +709,9 @@ pub struct CkHold {
     pub seq: u64,
     /// A `marked` hold whose marks are all `unreachable` (D-110): the human's words still count.
     pub unreachable_only: bool,
+    /// A `marked` hold with at least one `unreachable` mark: the engine opens no fix for the checkpoint
+    /// (`ckfix::maybe_open`), so its failed marks go to the human too.
+    pub has_unreachable: bool,
 }
 
 /// The human's accept of a blocked check of a checkpoint, in their own words (D-110).
@@ -727,6 +730,10 @@ pub struct CheckAccept {
 /// `decide-check`, so no words count for the accept (D-110). An `unreachable` mark needs no fix.
 pub fn failed_mark_offered(st: &State, k: &str, content: &str) -> bool {
     st.ck_declined.contains(&format!("{k}@{content}"))
+        || st
+            .ck_holds
+            .get(k)
+            .is_some_and(|h| h.cause == "marked" && h.has_unreachable)
         || st
             .ck_fix
             .as_ref()
@@ -2105,6 +2112,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             detail: sv("detail"),
                             seq: started,
                             unreachable_only: ev["unreachable_only"].as_bool().unwrap_or(false),
+                            has_unreachable: ev["has_unreachable"].as_bool().unwrap_or(false),
                         },
                     );
                 }
@@ -2129,7 +2137,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     m["mark"].as_str() == Some("unreachable")
                         || failed_mark_offered(&st, &k, &sv("content_hash"))
                 });
-                let marked_hold = offered && matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
+                let marked_hold =
+                    offered && matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
                 let Some(bound) =
                     bound.filter(|_| marked_hold && !st.closed.contains_key(&k) && !st.absent.on)
                 else {
@@ -2157,14 +2166,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.turns[turn_ix[&tseq]].used = true;
                 let marks = ev["marks"].as_array().cloned().unwrap_or_default();
                 for c in &checks {
-                    let m = marks.iter().find(|m| m["check"].as_str() == Some(c.as_str()));
+                    let m = marks
+                        .iter()
+                        .find(|m| m["check"].as_str() == Some(c.as_str()));
                     st.check_accepts.insert(
                         (k.clone(), c.clone()),
                         CheckAccept {
                             seq,
                             content: sv("content_hash"),
                             mark: m.and_then(|m| m["mark"].as_str()).unwrap_or("").to_string(),
-                            reason: m.and_then(|m| m["reason"].as_str()).unwrap_or("").to_string(),
+                            reason: m
+                                .and_then(|m| m["reason"].as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             turn: tseq,
                             quote: sv("quote"),
                         },

@@ -287,7 +287,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                 crate::strings::t("unit_sync.review.taken.body", &[])
             ));
             for f in &taken {
-                md.push_str(&format!("{}\n", crate::strings::t("autosync.brief.file", &[("path", f)])));
+                md.push_str(&format!(
+                    "{}\n",
+                    crate::strings::t("autosync.brief.file", &[("path", f)])
+                ));
             }
             md.push('\n');
         }
@@ -297,7 +300,10 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
                 format!(
                     "{}\n{}",
                     lines[..400].join("\n"),
-                    crate::strings::t("land_conflict.review.more", &[("count", &(lines.len() - 400).to_string())])
+                    crate::strings::t(
+                        "land_conflict.review.more",
+                        &[("count", &(lines.len() - 400).to_string())]
+                    )
                 )
             } else {
                 d.to_string()
@@ -307,13 +313,19 @@ pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
             format!(
                 "### {}\n\n{}\n\n```diff\n{}\n```\n\n",
                 crate::strings::t("land_conflict.review.title", &[]),
-                crate::strings::t("land_conflict.review.intro", &[("files", &files.join(", "))]),
+                crate::strings::t(
+                    "land_conflict.review.intro",
+                    &[("files", &files.join(", "))]
+                ),
                 capped(d)
             )
         };
         match prior.last() {
             None => {
-                md.push_str(&format!("{}\n\n", crate::strings::t("unit_sync.review.first", &[])));
+                md.push_str(&format!(
+                    "{}\n\n",
+                    crate::strings::t("unit_sync.review.first", &[])
+                ));
                 if !taken.is_empty() {
                     if let Some((files, d)) = unit_sync::resolution_diff(p, unit) {
                         md.push_str(&resolution(&files, &d));

@@ -13,13 +13,24 @@ const NEW: &str = "Fine, I have thought about it: accept it.";
 const PASS: &str = "test -f src/a.txt";
 
 fn plan(fx: &Fx, x2: &str) {
+    plan_with(fx, x2, false);
+}
+
+// With `two`, K-1 holds a second command check, X-6, next to X-2.
+fn plan_with(fx: &Fx, x2: &str, two: bool) {
+    let k1_checks = if two { "[\"X-2\",\"X-6\"]" } else { "[\"X-2\"]" };
+    if two {
+        let x6 = format!("id=\"X-6\"\nkind=\"check\"\ntitle=\"c6\"\nhow=\"command\"\ncommand=\"{PASS}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
+        let r = fx.put("check", &x6);
+        assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    }
     let x2 = format!("id=\"X-2\"\nkind=\"check\"\ntitle=\"c2\"\nhow=\"command\"\ncommand=\"{x2}\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
     for (k, t) in [
         ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"src/a.txt exists\"]\n".to_string()),
         ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"u\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n".into()),
         ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"c\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n".into()),
         ("check", x2),
-        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-2\"]\n".into()),
+        ("checkpoint", format!("id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Fixture.\"\ntitle=\"k\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks={k1_checks}\n")),
         ("requirement", "id=\"R-2\"\nkind=\"requirement\"\ntitle=\"B\"\nacceptance=[\"src/b.txt exists\"]\n".into()),
         ("unit", "id=\"U-2\"\nkind=\"unit\"\ntitle=\"u2\"\ndelivers=[\"R-2\"]\nfiles=[\"src/b.txt\"]\ncheckpoint=\"K-2\"\ndepends_on=[\"U-1\"]\n".into()),
         ("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"c4\"\nhow=\"command\"\ncommand=\"test -f src/b.txt\"\nproves=[\"R-2\"]\nscope=\"checkpoint\"\n".into()),
@@ -302,4 +313,23 @@ fn an_unreachable_mark_with_no_fix_is_still_accepted() {
     fx.human(NEW);
     let o = accept(&fx, "X-2", NEW);
     assert_eq!(o.code, 0, "{}", o.all());
+}
+
+// A failed mark next to an unreachable mark: `bf next` opens no fix (a check that could not run goes to the
+// human), so it gives `decide-check` for both and the failed mark is accepted on the words written after.
+#[test]
+fn a_failed_mark_next_to_an_unreachable_mark_is_accepted_on_words_after_decide_check() {
+    let fx = Fx::new();
+    fx.human(OLD0);
+    plan_with(&fx, PASS, true);
+    start(&fx, "checkpoint-review=off:the test does not exercise it");
+    mark(&fx, "fail");
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-6", "--reason", "the service is down"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    let a = actions(&fx);
+    assert!(a.contains(&"decide-check".to_string()) && !a.contains(&"fix-checkpoint".to_string()), "{a:?}");
+    fx.human(NEW);
+    let o = accept(&fx, "X-2,X-6", NEW);
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(ignored(&fx).is_empty(), "{:?}", ignored(&fx));
 }

@@ -685,7 +685,13 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
 /// checkpoint that carries a `failed` or `unreachable` mark on the content now in its working copy, in their
 /// own words, written after `bf next` gave `decide-check`. It opens no amendment, reopens no unit and no
 /// checkpoint and starts no fix.
-pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in_copy: bool) -> R<Value> {
+pub fn checkpoint_check_accept(
+    p: &Project,
+    k: &str,
+    spec: &str,
+    quote: &str,
+    in_copy: bool,
+) -> R<Value> {
     use crate::strings::t;
     let what = t("check_accept.what", &[("k", k)]);
     let stop = |because: &str, step: &str| {
@@ -703,14 +709,23 @@ pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in
     let st = events::require_chain(p)?;
     need_run(&st)?;
     if crate::absent::is_on(&st) {
-        return Err(stop("check_accept.because.absent", "check_accept.step.absent"));
+        return Err(stop(
+            "check_accept.because.absent",
+            "check_accept.step.absent",
+        ));
     }
     let pl = plan::load(p)?;
     let Some(kr) = pl.checkpoint(k) else {
-        return Err(stop("check_accept.because.unknown", "check_accept.step.unknown"));
+        return Err(stop(
+            "check_accept.because.unknown",
+            "check_accept.step.unknown",
+        ));
     };
     if st.closed.contains_key(k) {
-        return Err(stop("check_accept.because.closed", "check_accept.step.closed"));
+        return Err(stop(
+            "check_accept.because.closed",
+            "check_accept.step.closed",
+        ));
     }
     let ids: Vec<String> = spec
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -740,27 +755,50 @@ pub fn checkpoint_check_accept(p: &Project, k: &str, spec: &str, quote: &str, in
                 t("check_accept.worked", &[("k", k)]),
             ));
         };
-        marks.push(json!({"check": id, "mark": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")}));
+        marks.push(
+            json!({"check": id, "mark": r.outcome().unwrap_or(""), "reason": s(&r.v, "reason")}),
+        );
     }
     match events::hold(&st, k, u64::MAX) {
         Some(events::Hold::Marked { .. }) => {}
         Some(h) => {
             return Err(crate::refusal::refuse_owned(
                 what.clone(),
-                t("check_accept.because.other_hold", &[("k", k), ("why", &h.because())]),
+                t(
+                    "check_accept.because.other_hold",
+                    &[("k", k), ("why", &h.because())],
+                ),
                 vec![t("check_accept.step.no_hold", &[("k", k)])],
                 t("check_accept.worked", &[("k", k)]),
             ));
         }
-        None => return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold")),
+        None => {
+            return Err(stop(
+                "check_accept.because.no_hold",
+                "check_accept.step.no_hold",
+            ))
+        }
     }
-    if marks.iter().any(|m| m["mark"] != "unreachable") && !events::failed_mark_offered(&st, k, &content) {
-        return Err(stop("check_accept.because.not_offered", "check_accept.step.not_offered"));
+    if marks.iter().any(|m| m["mark"] != "unreachable")
+        && !events::failed_mark_offered(&st, k, &content)
+    {
+        return Err(stop(
+            "check_accept.because.not_offered",
+            "check_accept.step.not_offered",
+        ));
     }
     let Some(hold) = st.ck_holds.get(k).filter(|h| h.cause == "marked") else {
-        return Err(stop("check_accept.because.no_hold", "check_accept.step.no_hold"));
+        return Err(stop(
+            "check_accept.because.no_hold",
+            "check_accept.step.no_hold",
+        ));
     };
-    let (turn, _) = events::pick_turn(&st, hold.seq.max(st.ck_end_seq), events::Decide::Approve, quote)?;
+    let (turn, _) = events::pick_turn(
+        &st,
+        hold.seq.max(st.ck_end_seq),
+        events::Decide::Approve,
+        quote,
+    )?;
     events::append(
         p,
         "checkpoint.check.accept",
