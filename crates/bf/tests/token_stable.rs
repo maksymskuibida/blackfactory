@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One unit, one checkpoint with a command check and the checkpoint review, role tokens on.
 fn project(fx: &Fx, two: bool) {
@@ -64,7 +64,7 @@ fn start_unit(fx: &Fx) -> PathBuf {
     )
 }
 
-fn build(fx: &Fx, wc: &PathBuf) {
+fn build(fx: &Fx, wc: &Path) {
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/a.txt"), "from the unit\n").unwrap();
     fx.must_in(

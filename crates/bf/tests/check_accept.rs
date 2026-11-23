@@ -170,7 +170,8 @@ fn the_accept_is_refused_for_a_check_with_no_mark_and_for_a_closed_checkpoint() 
 
 #[test]
 fn after_an_accept_the_checkpoint_is_not_held_and_closes_with_the_words_in_its_event() {
-    for how in ["unreachable"] {
+    {
+        let how = "unreachable";
         let fx = marked(how);
         let units_before = fx.must(&["status", "--json"]).json()["units"].clone();
         fx.human(NEW);
