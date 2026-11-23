@@ -1,2 +1,23 @@
 # Strings of the group `guard`: keys are quoted and flat, `"cli.guard.some.key" = "text"`.
 # Filled by the unit that owns this group (D-62).
+
+# `mktemp`: a line GNU and BSD read differently, or that cannot be read at all, is refused.
+"guard.mktemp.refused" = "run `mktemp` as written"
+"guard.mktemp.unknown.because" = "`mktemp` is given `{word}`, an option the guard does not know, so it cannot tell where the new file lands"
+"guard.mktemp.ambiguous.because" = "`{word}` is a shortened option that fits more than one option of `mktemp`, so it cannot tell what is asked"
+"guard.mktemp.late.because" = "`{word}` comes after a template: GNU `mktemp` reads it as an option and BSD `mktemp` as another template, so the guard cannot tell where the new file lands"
+"guard.mktemp.value.because" = "`{word}` of `mktemp` is given no value, so the guard cannot tell where the new file lands"
+"guard.mktemp.suffix.because" = "the suffix `{word}` of `mktemp` holds a slash, which GNU `mktemp` refuses and which would move the new file to another folder"
+"guard.mktemp.two.because" = "`mktemp` is given more than one template (`{word}`): GNU refuses that and BSD reads each as a template, so the guard cannot tell where the new files land"
+"guard.mktemp.empty.because" = "`mktemp` is given an empty template, so the guard cannot tell where the new file lands"
+"guard.mktemp.step" = "Name one template and only options the guard knows before it, for example `mktemp -p /tmp name.XXXX`."
+"guard.mktemp.worked" = "The command makes a file whose place the guard can read the same way for GNU and BSD `mktemp`."
+
+# How a call of `bf` is reached when it is not called plainly, as a refusal names it.
+"guard.via.pattern" = "a program name the shell makes from a pattern"
+"guard.via.quoted_command" = "a quoted command line"
+"guard.via.glob_qualifier" = "a zsh glob qualifier"
+"guard.via.heredoc_body" = "a heredoc body whose end the guard does not find"
+
+# A call of `bf` whose words hold a pattern group cannot be read.
+"guard.group.because" = "an unquoted `(` or `<->` in the words of `bf` is a pattern the shell may expand, drop or join with its neighbours"

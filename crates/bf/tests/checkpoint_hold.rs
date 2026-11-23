@@ -273,7 +273,7 @@ fn words_written_while_a_check_is_marked_decide_nothing_during_it_or_after() {
     let fx = setup(PASS);
     report(&fx, json!([f("high", "the answer is wrong")]));
     abort_fix(&fx);
-    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
     assert_eq!(actions(&fx), vec!["decide-check"]);
     fx.human(OLD);
@@ -384,15 +384,15 @@ fn words_written_before_the_answer_to_a_worker_question_decide_nothing() {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
-// F-140: a parked review is not released while a check is marked, nor while a worker's question is unanswered.
+// F-140: a parked review is not released while a check is marked failed, nor on the words written during it.
 #[test]
 fn a_parked_review_is_not_released_while_a_check_is_marked() {
     let fx = setup(PASS);
     fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
     report(&fx, json!([f("high", "the answer is wrong")]));
-    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
-    assert_eq!(actions(&fx), vec!["decide-check"]);
+    // No `bf next` runs here, so no fix is opened for the failed check: the mark alone holds the decision.
     fx.human(OLD);
     refused_by_hold("review --release while a check is marked", &release_review(&fx, OLD), "a check of K-1 is marked failed or unreachable (X-2)", "decide-check");
     let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"], "");
@@ -401,6 +401,22 @@ fn a_parked_review_is_not_released_while_a_check_is_marked() {
     fx.human("Release it, please.");
     let o = release_review(&fx, "Release it, please.");
     say("review --release on a new message", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+}
+
+// F-140, D-110: a parked review is released on words written while a check is marked unreachable only
+// (such a hold decides nothing); `bf next` still gives decide-check.
+#[test]
+fn a_parked_review_is_released_while_a_check_is_marked_unreachable_only() {
+    let fx = setup(PASS);
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    assert_eq!(o.code, 0, "{}", o.all());
+    assert_eq!(actions(&fx), vec!["decide-check", "run-checkpoint-checks"]);
+    fx.human(OLD);
+    let o = release_review(&fx, OLD);
+    say("review --release while a check is marked unreachable", &o);
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
@@ -578,7 +594,7 @@ fn a_settle_appended_during_a_marked_check_or_an_unanswered_question_is_listed_w
     let fx = setup(PASS);
     report(&fx, json!([f("high", "the answer is wrong")]));
     abort_fix(&fx);
-    fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     fx.human(OLD);
     let t = turn_seq(&fx, OLD);
     let settle = |t: u64, q: &str| {
@@ -745,7 +761,6 @@ const CLASSES: &[(&str, &str)] = &[
     ("security-audit", "neither"),
     ("land", "neither"),
     ("decide-unit", "neither"),
-    ("reconsider", "neither"),
     ("judge-repair", "neither"),
     ("decide-repair", "neither"),
     ("see-judged-repair", "neither"),
@@ -1078,7 +1093,7 @@ fn a_hold_an_abort_brings_back_is_logged_before_the_next_command() {
     let fx = setup(PASS);
     report(&fx, json!([f("high", "the answer is wrong")]));
     eprintln!("next (the fix opens): {:?}", actions(&fx));
-    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
     commit_fix(&fx, "from the unit, changed\n");
     eprintln!("next after the fix changed the content: {:?}", actions(&fx));
@@ -1218,7 +1233,7 @@ fn scenario(action: &str) -> Fx {
             let fx = setup(PASS);
             report(&fx, json!([f("high", "the answer is wrong")]));
             abort_fix(&fx);
-            let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+            let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
             assert_eq!(o.code, 0, "{}", o.all());
             fx
         }
@@ -1363,7 +1378,7 @@ fn every_asking_and_holding_row_of_the_table_has_its_behaviour_test() {
 // the command's own look: the words written after the change are then refused as written before the end. A
 // command that did not look would find the old mark and refuse for it instead.
 fn mark_then_change_the_content(fx: &Fx) {
-    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "unreachable", "X-2", "--reason", "the service is down"], "");
+    let o = fx.bf_stdin(&fx.work("K-1"), &["evidence", "fail", "X-2", "--reason", "the service is down"], "");
     assert_eq!(o.code, 0, "{}", o.all());
     assert_eq!(hold_events(fx).last().map(|x| x.1.clone()), Some("marked".to_string()));
     commit_fix(fx, "from the unit, changed\n");

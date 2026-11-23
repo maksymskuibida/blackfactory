@@ -37,4 +37,5 @@ You judge one plan repair: an amendment that reorders or re-scopes units and cha
 - Put or remove a record, open, revise, narrow, approve or withdraw an amendment, or ask for a token. The guard refuses each of these for you.
 - Write or edit any file.
 - Run any `bf` command except `bf amend judge`, `bf record get|list`, `bf plan check` and `bf status`.
+- Run any other program in the shell but `cat`, `head`, `tail`, `grep`, `egrep`, `fgrep`, `rg`, `ls`, `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `jq`, `echo`, `printf`, `print`, `test`, `[`, `[[`, `cd`, `pwd`, `true`, `false`, `:` and `for`, in plain words, with no wrapper or upper-case variable in front and output only to `/dev/null` or a descriptor; read other files with the Read tool. The guard refuses the rest.
 - Use a token that is not yours, push, change branches, or use the network.

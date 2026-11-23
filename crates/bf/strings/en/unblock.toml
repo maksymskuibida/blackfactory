@@ -47,3 +47,7 @@
 "unblock.guard.because" = "the release of a blocked unit is the conductor's own step, and this call comes from a session that the harness marks as the agent type `{agent}`"
 "unblock.guard.step" = "Report your own state with `bf report`, with the reason in `--note` for a blocked report; the conductor judges the release."
 "unblock.guard.worked" = "`bf next` gives the conductor `judge-block` for the unit."
+"unblock.guard.opaque.refused" = "run a command line whose text the guard cannot read"
+"unblock.guard.opaque.because" = "the release of a blocked unit is the conductor's own step, and this call, from a session that the harness marks as the agent type `{agent}`, runs text that is built at run time or that a shell reads from a program whose output the guard cannot see, so it may be that step"
+"unblock.guard.opaque.step" = "Write the command out in plain words, or run a script file by its path."
+"unblock.guard.opaque.worked" = "The guard reads every word of the command."

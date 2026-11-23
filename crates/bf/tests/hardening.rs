@@ -1054,6 +1054,8 @@ fn a_git_alias_that_moves_main_is_noted_in_status_and_denied_to_agents() {
     );
     // The guard denies setting up the alias.
     let wc = fx.work("U-1");
+    // The landing removed the unit's folder; the guard still judges a command that runs where it stood.
+    std::fs::create_dir_all(&wc).unwrap();
     {
         let cmd = "git config alias.up update-ref";
         assert_eq!(

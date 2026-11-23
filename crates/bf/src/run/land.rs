@@ -382,6 +382,13 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     }
     let _ = fs::remove_file(lock::turn_mark(p, k));
     *marked = false;
+    // Each landed unit's working copy goes; one that holds something stays and says why.
+    let mut cleaned: Vec<(String, cleanup::Removal)> = Vec::new();
+    for (r, _, _) in &landed {
+        if let Ok(x) = cleanup::remove_unit_copy(p, &r.unit) {
+            cleaned.push((r.unit.clone(), x));
+        }
+    }
 
     let mut requested_err: Option<crate::refusal::Fail> = None;
     let mut sent_back: Vec<(String, String)> = Vec::new();
@@ -484,7 +491,28 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
             &[("unit", u), ("reason", why)],
         ));
     }
+    let mut removed = Value::Null;
+    let mut kept = Value::Null;
+    for (u, x) in &cleaned {
+        let line = match x {
+            cleanup::Removal::Removed(path) => {
+                let at = path.to_string_lossy();
+                if u == unit {
+                    removed = json!(at);
+                }
+                t("cleanup.line.removed", &[("unit", u), ("path", &at)])
+            }
+            cleanup::Removal::Kept(why) => {
+                if u == unit {
+                    kept = json!(why);
+                }
+                t("cleanup.line.kept", &[("unit", u), ("reason", why)])
+            }
+        };
+        lines.push(line);
+    }
     Ok(json!({
+        "removed": removed, "kept": kept,
         "unit": unit, "landed": true, "checkpoint": k, "branch": cpb, "merge": tip,
         "content_hash": me.content, "merged_hash": merged_hash,
         "landed_units": landed.iter().map(|l| l.0.unit.clone()).collect::<Vec<_>>(),

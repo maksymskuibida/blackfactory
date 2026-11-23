@@ -27,7 +27,11 @@ fn plan(fx: &Fx) {
 }
 
 fn start(fx: &Fx, u: &str) -> PathBuf {
-    PathBuf::from(fx.must(&["unit", "start", u, "--json"]).json()["working_copy"].as_str().unwrap())
+    PathBuf::from(
+        fx.must(&["unit", "start", u, "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    )
 }
 
 /// Land U-1 and U-3 so the checkpoint branch moves ahead of a unit started before.
@@ -54,7 +58,7 @@ fn tip(wc: &Path) -> String {
 }
 
 fn own_commit(wc: &Path, file: &str) {
-    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::create_dir_all(wc.join(file).parent().unwrap()).unwrap();
     fs::write(wc.join(file), "own\n").unwrap();
     git(wc, &["add", "-A"]);
     git(wc, &["commit", "-q", "-m", "own"]);
@@ -101,19 +105,49 @@ fn a_unit_with_commits_gets_a_merge_and_lands_with_its_own_scope() {
 }
 
 #[test]
-fn a_conflict_is_refused_and_leaves_the_working_copy_as_it_was() {
+fn a_conflict_is_left_for_the_builder() {
     let fx = Fx::new();
     plan(&fx);
     let wc = start(&fx, "U-2");
     own_commit(&wc, "src/a.txt");
     advance(&fx);
+    let o = fx.must(&["unit", "sync", "U-2", "--json"]).json();
+    assert!(o["conflicts"].to_string().contains("src/a.txt"), "{o}");
+    assert!(!o["line"].as_str().unwrap().contains("human"), "{o}");
+    assert!(fs::read_to_string(wc.join("src/a.txt"))
+        .unwrap()
+        .contains("<<<<<<<"));
+    assert!(git(&wc, &["status", "--porcelain"]).contains("src/a.txt"));
+    let ev = syncs(&fx);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0]["cause"], "sync");
+    assert_eq!(ev[0]["conflicts"], serde_json::json!(["src/a.txt"]));
+}
+
+#[test]
+fn a_conflict_in_a_protected_place_is_aborted_and_leaves_the_working_copy_as_it_was() {
+    let fx = Fx::new();
+    plan(&fx);
+    let wc = start(&fx, "U-2");
+    own_commit(&wc, ".claude/settings.json");
+    let w1 = start(&fx, "U-1");
+    let dir = w1.join(".claude");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("settings.json"), "one\n").unwrap();
+    proof(&fx, &w1, "1");
+    fx.must(&["report", "U-1", "--result", "built"]);
+    fx.must(&["report", "U-1", "--result", "built", "--role", "reviewer"]);
+    fx.must(&["unit", "land", "U-1"]);
     let (head, status) = (tip(&wc), git(&wc, &["status", "--porcelain"]));
     let o = fx.refused(&["unit", "sync", "U-2"]);
-    assert!(o.all().contains("src/a.txt"), "{}", o.all());
+    assert!(o.all().contains(".claude/settings.json"), "{}", o.all());
     assert_eq!(tip(&wc), head);
     assert_eq!(git(&wc, &["status", "--porcelain"]), status);
-    assert_eq!(fs::read_to_string(wc.join("src/a.txt")).unwrap(), "own\n");
-    assert!(syncs(&fx).is_empty());
+    assert_eq!(
+        fs::read_to_string(wc.join(".claude/settings.json")).unwrap(),
+        "own\n"
+    );
+    assert_eq!(syncs(&fx).last().unwrap()["how"], "aborted");
 }
 
 #[test]
@@ -176,7 +210,9 @@ fn release_syncs_a_unit_without_commits_by_fast_forward_and_one_with_commits_by_
     fx.build_unit("U-1", "src/a.txt", "X-1", &["true"]);
     for (u, q) in [("U-2", "Release it"), ("U-3", "Release it too")] {
         fx.human(&format!("{q}, please."));
-        let o = fx.must(&["unit", "release", u, "--quote", q, "--json"]).json();
+        let o = fx
+            .must(&["unit", "release", u, "--quote", q, "--json"])
+            .json();
         assert!(o.get("behind").is_none(), "{o}");
     }
     assert_eq!(tip(&w2), git(&fx.root, &["rev-parse", "bf/K-1"]));

@@ -59,11 +59,8 @@ fn deadlocked() -> Fx {
 }
 
 fn build_and_review(fx: &Fx, start: bool) {
-    let wc = if start {
-        PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap())
-    } else {
-        fx.work("U-1")
-    };
+    // Landing removes the unit's working copy, so a reopened unit is started again for a fresh one.
+    let wc = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/a.txt"), if start { "from the unit\n" } else { "amended\n" }).unwrap();
     fx.must_in(&wc, &["evidence", "run", "X-1", "--unit", "U-1", "--", "test", "-f", "src/a.txt"]);

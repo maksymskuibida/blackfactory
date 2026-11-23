@@ -135,7 +135,7 @@ fn seal_input(v: &Value) -> String {
             })
             .collect::<String>()
         // R-32: what makes two runs the same run, and the receipt a counted one stands for.
-        + &["repos", "folder", "counted_from"]
+        + &["repos", "folder", "counted_from", "load", "cores"]
             .iter()
             .map(|k| match f(k) {
                 h if h.is_empty() => String::new(),
@@ -739,6 +739,22 @@ pub fn run_with(
     } else {
         None
     };
+    // D-110: the machine's load at the start of the run is written into the receipt; a busy machine
+    // is a warning only, and the check runs all the same.
+    let (load, cores) = machine_load();
+    if load_is_high(load, cores) {
+        eprintln!(
+            "{}",
+            crate::strings::t(
+                "cli.evidence.load_warning",
+                &[
+                    ("load", &format!("{load:.2}")),
+                    ("cores", &cores.to_string()),
+                    ("check", check_id),
+                ]
+            )
+        );
+    }
     let started = std::time::Instant::now();
     // TH-11: a heavy check runs under the time limit of a check; its place is freed when it ends.
     let limit = (chk["heavy"].as_bool() == Some(true)).then(|| heavy_time_limit(p));
@@ -803,6 +819,8 @@ pub fn run_with(
         "failing_tests": failing.iter().map(|(n, h)| json!({"name": n, "head": h})).collect::<Vec<_>>(),
         "at": util::now(),
         "seconds": started.elapsed().as_secs_f64(),
+        "load": (load * 100.0).round() / 100.0,
+        "cores": cores,
         "working_copy": key.folder,
         "repos": key.repos,
         "folder": key.folder,
@@ -820,6 +838,46 @@ pub fn run_with(
         }
     }
     Ok(v)
+}
+
+/// D-110: a run warns when the one-minute load is at or above this share of the cores (one half).
+/// There is no policy key and no refusal for load.
+const LOAD_WARN_NUMERATOR: f64 = 1.0;
+const LOAD_WARN_DENOMINATOR: f64 = 2.0;
+
+/// The one-minute load average and the number of cores. A test build reads the load from
+/// `BF_TEST_LOAD` when it is set (C-3).
+pub(crate) fn machine_load() -> (f64, u64) {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+    #[cfg(feature = "test_seam")]
+    if let Some(l) = std::env::var("BF_TEST_LOAD")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+    {
+        return (l, cores);
+    }
+    let mut avg = [0f64; 1];
+    // SAFETY: the call writes at most one value into the array it is given.
+    let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 1) };
+    (if n >= 1 { avg[0] } else { 0.0 }, cores)
+}
+
+/// Whether the load is at or above half the cores.
+fn load_is_high(load: f64, cores: u64) -> bool {
+    load * LOAD_WARN_DENOMINATOR >= cores as f64 * LOAD_WARN_NUMERATOR
+}
+
+/// The line `verify` and a printed receipt show for the load of a run; empty for a receipt without one.
+pub fn load_line(v: &Value) -> String {
+    match (v["load"].as_f64(), v["cores"].as_u64()) {
+        (Some(l), Some(c)) => crate::strings::t(
+            "cli.evidence.load_line",
+            &[("load", &format!("{l:.2}")), ("cores", &c.to_string())],
+        ),
+        _ => String::new(),
+    }
 }
 
 /// What makes two runs the same run (TH-13): the command text, the content, the repositories, the
@@ -904,6 +962,8 @@ fn counted_receipt(
         "repos": key.repos,
         "folder": key.folder,
         "counted_from": src["id"],
+        "load": src["load"],
+        "cores": src["cores"],
     });
     let v = write_receipt(p, v)?;
     events::append(
@@ -1877,6 +1937,32 @@ pub fn standing_outcome<'a>(
     cur
 }
 
+/// The human's accept of a check of checkpoint `k` for exactly this content, if there is one (D-110).
+pub fn accepted_at<'a>(
+    st: &'a crate::events::State,
+    k: &str,
+    check_id: &str,
+    content: &str,
+) -> Option<&'a crate::events::CheckAccept> {
+    st.check_accepts
+        .get(&(k.to_string(), check_id.to_string()))
+        .filter(|a| a.content == content)
+}
+
+/// The standing mark of a check of checkpoint `k`, unless the human accepted it for this content.
+pub fn standing_unaccepted<'a>(
+    st: &crate::events::State,
+    receipts: &'a [Receipt],
+    k: &str,
+    check_id: &str,
+    content: &str,
+) -> Option<&'a Receipt> {
+    if accepted_at(st, k, check_id, content).is_some() {
+        return None;
+    }
+    standing_outcome(receipts, check_id, content)
+}
+
 /// A check is satisfied at `content` when a sealed, passing receipt for it carries that content hash.
 ///
 /// R-58: a pass that follows a failing run at the same content counts only after the checkpoint
@@ -2280,6 +2366,8 @@ pub struct VerifyRow {
     pub seal_ok: bool,
     pub content_ok: Option<bool>,
     pub exit: Option<i64>,
+    /// The load line of the receipt; empty for one written before the load was kept.
+    pub load: String,
 }
 
 /// `bf evidence verify [--unit U] [--checkpoint K]`
@@ -2301,10 +2389,21 @@ pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) ->
     let mut unmet: Vec<(String, String)> = Vec::new();
     if let Some(u) = unit {
         let dir = p.work_dir().join(u);
-        let top = if dir.is_dir() { dir } else { p.top.clone() };
-        let content = p.content_hash(&top)?;
-        let pl = crate::plan::load(p)?;
         let st = crate::events::replay(p)?;
+        // A landed unit's working copy is removed: its content is what its `unit.land` event recorded.
+        let landed = st
+            .units
+            .get(u)
+            .filter(|x| x.state == "landed" && !x.landed_hash.is_empty() && !dir.is_dir())
+            .map(|x| x.landed_hash.clone());
+        let content = match landed {
+            Some(h) => h,
+            None => {
+                let top = if dir.is_dir() { dir } else { p.top.clone() };
+                p.content_hash(&top)?
+            }
+        };
+        let pl = crate::plan::load(p)?;
         let needs = unit_landing_needs(p, &pl, &st, &receipts, u, &content);
         for n in &needs {
             match n.met {
@@ -2354,6 +2453,7 @@ pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) ->
             seal_ok: r.seal_ok,
             content_ok,
             exit: r.v["exit"].as_i64(),
+            load: load_line(&r.v),
         });
     }
     // The sync's runs of this checkpoint, apart from its own receipts: each row's check reads
@@ -2372,6 +2472,7 @@ pub fn verify_full(p: &Project, unit: Option<&str>, checkpoint: Option<&str>) ->
                 seal_ok: r.seal_ok,
                 content_ok: Some(h == r.content()),
                 exit: r.v["exit"].as_i64(),
+                load: load_line(&r.v),
             });
         }
     }

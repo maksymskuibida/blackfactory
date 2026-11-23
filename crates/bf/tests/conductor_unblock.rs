@@ -62,9 +62,8 @@ fn block(fx: &Fx, wc: &Path, note: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
-/// A builder's blocked report that the second look confirmed.
+/// A builder's blocked report: the conductor judges it at once, with no second look for the builder.
 fn confirmed(fx: &Fx, wc: &Path, note: &str) {
-    block(fx, wc, "first");
     block(fx, wc, note);
 }
 
@@ -223,9 +222,6 @@ fn conductor_unblock_refusals_name_the_reason() {
     let (fx, wc) = setup(false);
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "x"]);
     assert!(o.all().contains("running"), "{}", o.all());
-    block(&fx, &wc, "first");
-    let o = fx.refused(&["unit", "unblock", "U-1", "--why", "x"]);
-    assert!(o.all().contains("second look"), "{}", o.all());
     block(&fx, &wc, "second");
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "  "]);
     assert!(o.all().contains("`--why` is empty"), "{}", o.all());
@@ -247,8 +243,8 @@ fn conductor_unblock_an_empty_note_stays_with_the_human() {
 #[test]
 fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor() {
     let (fx, _wc) = setup(false);
-    let run = |agent: Option<&str>| -> String {
-        let mut payload = json!({"tool_name": "Bash", "tool_input": {"command": "bf unit unblock U-1 --why \"x\""},
+    let run_cmd = |agent: Option<&str>, cmd: &str| -> String {
+        let mut payload = json!({"tool_name": "Bash", "tool_input": {"command": cmd},
             "cwd": fx.root.to_string_lossy(), "session_id": "s"});
         if let Some(a) = agent {
             payload["agent_type"] = json!(a);
@@ -258,11 +254,273 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         assert_eq!(o.code, 0, "{}", o.all());
         o.stdout
     };
+    let run = |agent: Option<&str>| run_cmd(agent, "bf unit unblock U-1 --why \"x\"");
     for a in ["builder", "repair-judge", "designer"] {
         let out = run(Some(a));
         assert!(out.contains("deny") && out.contains(a), "{a}: {out}");
     }
     assert!(!run(None).contains("deny"));
+    // A flag before `unblock`, or a word the shell expands at run time, is the same call.
+    for cmd in [
+        "bf unit --json unblock U-1 --why x",
+        "bf unit --wait unblock U-1 --why x",
+        "bf unit $E unblock U-1 --why x",
+        "bf unit ${E}unblock U-1 --why x",
+        "bf unit --note$E x unblock U-1 --why x",
+        "bf -C$E unit unblock U-1 --why x",
+        "bf unit --json$E unblock U-1 --why x",
+        "bf unit `true` unblock U-1 --why x",
+        "bf unit {unblock,unblock} U-1 --why x",
+        "bf unit {a..b} unblock U-1 --why x",
+        "bf unit unbl?ck U-1 --why x",
+        "bf unit unbl*ck U-1 --why x",
+        "bf unit [u]nblock U-1 --why x",
+        "bf unit $(true) unblock U-1 --why x",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(out.contains("deny"), "{cmd}: {out}");
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    // A pattern group, a redirect between the words, a line no heredoc holds, a wrapper or precommand
+    // modifier, the engine built by cargo and a program built at run time reach the same call. The
+    // refusal names the agent type, so it is the unblock guard's own.
+    for cmd in [
+        "bf unit x(N) unblock U-1 --why x",
+        "bf unit (unblock|zz) U-1 --why x",
+        "bf unit unbl(o)ck U-1 --why x",
+        "bf unit \"x\"(N) unblock U-1 --why x",
+        "bf unit x<-> unblock U-1 --why x",
+        "bf unit unblo#ck U-1 --why x",
+        "bf unit {u}nblock U-1 --why x",
+        "bf unit {fd}>/dev/null unblock U-1 --why x",
+        "bf unit >& /dev/null unblock U-1 --why x",
+        "bf unit >&/dev/null unblock U-1 --why x",
+        "cat << \"E F\"\nE F\nbf unit unblock U-1 --why x\nE",
+        "(( x = 1 <<2 ))\nbf unit unblock U-1 --why x\n2",
+        "ls /(e:'bf unit unblock U-1 --why x':)",
+        "env -S 'bf unit unblock U-1 --why x'",
+        "watch 'bf unit unblock U-1 --why x'",
+        "flock /tmp/l -c 'bf unit unblock U-1 --why x'",
+        "noglob bf unit unblock U-1 --why x",
+        "- bf unit unblock U-1 --why x",
+        "repeat 1 bf unit unblock U-1 --why x",
+        "function f { bf unit unblock U-1 --why x; }; f",
+        "cargo run -- unit unblock U-1 --why x",
+        "cargo run -q unit unblock U-1 --why x",
+        "B=bf; $B unit unblock U-1 --why x",
+        "$(echo bf) unit unblock U-1 --why x",
+        "bash -c -e 'bf unit unblock U-1 --why x'",
+        "bash --norc -c 'bf unit unblock U-1 --why x'",
+        "bash -o posix -c 'bf unit unblock U-1 --why x'",
+        "echo $'\\'' ; bf unit unblock U-1 --why x # '",
+        "echo ${V:-'}'} ; bf unit unblock U-1 --why x #'",
+        "echo ${V:-$(bf unit unblock U-1 --why x)}",
+        "setopt equals; =bf unit unblock U-1 --why x",
+        "b[f] unit unblock U-1 --why x",
+        "if [[ -n x ]] bf unit unblock U-1 --why x",
+        "while (( x-- )) { bf unit unblock U-1 --why x }",
+        "{ true } always { bf unit unblock U-1 --why x }",
+        "coproc CP { bf unit unblock U-1 --why x; }",
+        "bf evidence run X-1 --unit U-1 -- $B unit unblock U-1 --why x",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(
+            out.contains("deny") && out.contains("builder"),
+            "{cmd}: {out}"
+        );
+    }
+    // A program that is a pattern (`b(f)` runs `bf` where a file `bf` exists) is refused as a call that
+    // cannot be read, and a redirect before the program takes its word.
+    for cmd in [
+        "b(f) unit unblock U-1 --why x",
+        "b? unit unblock U-1 --why x",
+        "{fd}>/dev/null bf unit unblock U-1 --why x",
+        ">&/dev/null bf unit unblock U-1 --why x",
+    ] {
+        assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
+    // The pattern group cannot be read for the conductor either; the plain lines stay open to it.
+    for cmd in [
+        "bf unit x(N) unblock U-1 --why x",
+        "bf unit (unblock|zz) U-1 --why x",
+    ] {
+        assert!(run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    for cmd in [
+        "cat << \"E F\"\nE F\nbf unit unblock U-1 --why x\nE",
+        "bf unit unblock U-1 --why x 2>&1 | tail -3",
+        "bf unit unblock U-1 --why x >&2",
+        "noglob bf unit unblock U-1 --why x",
+    ] {
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    // A builder's ordinary commands are not taken for the call.
+    for cmd in [
+        "bf report U-1 --result built --token t --note \"fixed (see the test)\"",
+        "f() { cargo nextest run unit_sync; }; f",
+        "if (true); then bf status; fi",
+        "bf evidence run X-1 --unit U-1 -- cargo nextest run --package=bf unit_sync",
+        "bf evidence run X-1 --unit U-1 -- cargo test 2>&1 >& /dev/null",
+    ] {
+        assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
+    // The second review's rows: each reaches the call, or runs text the guard cannot read. Both
+    // refusals name the agent type.
+    for cmd in [
+        "bf unit >&2x unblock U-1 --why x",
+        "bf unit >&-x unblock U-1 --why x",
+        "BF unit unblock U-1 --why x",
+        "/usr/local/bin/Bf unit unblock U-1 --why x",
+        "time (( x = 1 <<2 ))\nbf unit unblock U-1 --why x\n2",
+        "for((i=0;i<<2;i++)); do :; done\nbf unit unblock U-1 --why x\n2",
+        "while((0 <<2)); do :; done\nbf unit unblock U-1 --why x\n2",
+        "if((1 <<2)); then :; fi\nbf unit unblock U-1 --why x\n2",
+        "function f { (( x = 1 <<2 )); }\nbf unit unblock U-1 --why x\n2",
+        "{ : } always { (( x = 1 <<2 )) }\nbf unit unblock U-1 --why x\n2",
+        "echo $[ 1 <<2 ]\nbf unit unblock U-1 --why x\n2",
+        "cat <<$(x)\nhi\n$(x)\nbf unit unblock U-1 --why x",
+        "cat <<$'E'\nhi\nE\nbf unit unblock U-1 --why x\n$'E'",
+        "echo (#)x(N) ; bf unit unblock U-1 --why x",
+        "setopt extendedglob; ls -d /(#qe:'bf unit unblock U-1 --why x':)",
+        "function f g { bf unit unblock U-1 --why x }; f",
+        "/de[=v](e:'bf unit unblock U-1 --why x':)",
+        "ls -d /(eZ'bf unit unblock U-1 --why x'Z)",
+        "cargo -q run -- unit unblock U-1 --why x",
+        "cargo +stable run -- unit unblock U-1 --why x",
+        "bf -C . evidence run X-1 -- bf unit unblock U-1 --why x",
+        "bf evidence --unit U-1 run X-1 -- bf unit unblock U-1 --why x",
+        "echo ${ bf unit unblock U-1 --why x; }",
+        "V='bf unit unblock U-1 --why x'; eval $V",
+        "V='bf unit unblock U-1 --why x'; $=V",
+        "V='bf unit unblock U-1 --why x'; $V",
+        "print 'bf unit unblock U-1 --why x' | sh",
+        "sh <(print 'bf unit unblock U-1 --why x')",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | sh",
+        "source =(print 'bf unit unblock U-1 --why x')",
+        "zsh --emulate sh -c 'bf unit unblock U-1 --why x'",
+        "tcsh -c 'bf unit unblock U-1 --why x'",
+        "csh -c 'bf unit unblock U-1 --why x'",
+        "zmodload zsh/zpty; zpty q 'bf unit unblock U-1 --why x'",
+        "eval \"$(printf 'bf unit unbl%s U-1 --why x' ock)\"",
+        "V=\"$(printf 'bf unit unbl%s U-1' ock)\"; $V",
+        // Found in this round: escapes of `$'..'`, `printf` formats, `>(..)`, `xargs` into a shell,
+        // a coprocess shell, code kept in a variable and expanded as a pattern or evaluated, a loop
+        // that runs what it reads, and `${ cmd; }` in double quotes.
+        "sh -c $'bf unit unbl\\x6fck U-1 --why x'",
+        "sh -c $'bf unit unbl\\157ck U-1 --why x'",
+        "printf 'bf unit unbl%s U-1 --why x\\n' ock | sh",
+        "echo 'bf unit unblock U-1 --why x' > >(sh)",
+        "echo 'bf unit unblock U-1 --why x' | tee >(sh)",
+        "echo 'bf unit unblock U-1 --why x' | xargs -0 sh -c",
+        "cat f | xargs -I{} sh -c '{}'",
+        "coproc sh; print -p 'bf unit unblock U-1 --why x'",
+        "V='/(e:\"bf unit unblock U-1 --why x\":)'; echo $~V",
+        "setopt globsubst; V='/(e:\"bf unit unblock U-1 --why x\":)'; echo $V",
+        "V='a[$(bf unit unblock U-1 --why x)]'; echo $((V))",
+        "V='$(bf unit unblock U-1 --why x)'; echo ${(e)V}",
+        "while read l; do $l; done <<< 'bf unit unblock U-1 --why x'",
+        "echo \"${ bf unit unblock U-1 --why x; }\"",
+        // The third review's rows, and their siblings.
+        "READNULLCMD=sh; <<< 'bf unit unblock U-1 --why x'",
+        "export READNULLCMD=sh; < /tmp/s",
+        "while :; do((x=1<<2)); break; done\nbf unit unblock U-1 --why x\n2",
+        "if true; then((x=1<<2)); fi\nbf unit unblock U-1 --why x\n2",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | sh -s x",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | bash -es x y",
+        "CARGO_ALIAS_X='run --' cargo x unit unblock U-1 --why x",
+        "cargo --config 'alias.x=\"run --\"' x unit unblock U-1 --why x",
+        "export CARGO_ALIAS_X='run --'; cargo x unit unblock U-1 --why x",
+        "echo (a #b)x(N) ; bf unit unblock U-1 --why x",
+        "ls (|$(bf unit unblock U-1 --why x))",
+        "run() { \"$@\"; }; run bf unit unblock U-1 --why x",
+        "sh -c '\"$@\"' _ bf unit unblock U-1 --why x",
+        "for c in 'bf unit unblock U-1 --why x'; do $c; done",
+        // The lists and subshells after a word stay commands where the shell runs them.
+        "case x in (x) bf unit unblock U-1 --why x;; esac",
+        "for x (a) bf unit unblock U-1 --why x",
+        "time (bf unit unblock U-1 --why x)",
+        "if (bf unit unblock U-1 --why x); then :; fi",
+        // A function defined with a blank before `()`, in every form, runs its body.
+        "f () { bf unit unblock U-1 --why x; }; f",
+        "f ( ) { bf unit unblock U-1 --why x; }; f",
+        "function f () { bf unit unblock U-1 --why x; }; f",
+        "f ()\n{\nbf unit unblock U-1 --why x\n}\nf",
+        "f() (bf unit unblock U-1 --why x); f",
+        "f () (bf unit unblock U-1 --why x); f",
+        "f g () { bf unit unblock U-1 --why x }; g",
+        // A line that sets READNULLCMD runs its text wherever the redirect stands.
+        "READNULLCMD=sh; case x in x) <<< 'bf unit unblock U-1 --why x' ;; esac",
+        // The fifth review: every way a line sets READNULLCMD or NULLCMD, and qualifiers that zsh
+        // reads on unquoted characters.
+        "typeset READNULLCMD=sh; <<< 'bf unit unblock U-1 --why x'",
+        "read READNULLCMD <<< sh; <<< 'bf unit unblock U-1 --why x'",
+        "printf -v READNULLCMD sh; <<< 'bf unit unblock U-1 --why x'",
+        ": ${READNULLCMD:=sh}; <<< 'bf unit unblock U-1 --why x'",
+        "declare -x NULLCMD=sh; > /tmp/x",
+        "print -l -- /(e:'bf unit unblock U-1 --why x \"|\"':)",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)''",
+        "print -l -- /(e'|bf unit unblock U-1 --why x|')",
+        // The sixth review: a qualifier before an expansion, or with an unquoted `~`.
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)$E",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)${E}",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)$(true)",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)`true`",
+        "print -l -- /(e:'bf unit unblock U-1 --why x'~:)",
+        "print -l -- /(Ne:'bf unit unblock U-1 --why x':)x",
+        // The seventh review: a group that opens its word (zsh runs nothing there, measured; read
+        // fail-closed), and the places zsh runs a qualifier (measured): an array, a brace group, a
+        // redirect target, after a quoted part.
+        "print -l -- (e:'bf unit unblock U-1 --why x':)",
+        "x=(/(e:'bf unit unblock U-1 --why x':)); :",
+        "print -l -- {a,/(e:'bf unit unblock U-1 --why x':)}",
+        "cat < /(e:'bf unit unblock U-1 --why x':)",
+        "print -l -- \"/\"(e:'bf unit unblock U-1 --why x':)",
+        // Found in this round: a prompt the shell expands as code.
+        "PS4='$(bf unit unblock U-1 --why x)'; set -x; :",
+        "PROMPT_COMMAND='$(bf unit unblock U-1 --why x)'; :",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(
+            out.contains("deny") && out.contains("builder"),
+            "{cmd}: {out}"
+        );
+    }
+    // A builder's commands with a program built at run time and the words `unit` or `unblock`, a
+    // test of a file, a script run by its path and output piped to a reader still pass.
+    for cmd in [
+        "$HOME/.cargo/bin/cargo nextest run conductor_unblock",
+        "\"$CARGO\" test unit",
+        "\"$(git rev-parse --show-toplevel)/target/debug/bf\" unit restore U-1 src/a.rs --token t",
+        "[[ -f src/a.rs ]] && echo unit",
+        "cat src/a.rs | bash scripts/check.sh",
+        "bf status | grep unblock",
+        "echo x >&2",
+        "N=0; echo $((N+1))",
+        "X=$(git rev-parse HEAD); echo ${X:0:7}",
+        "printf '%s\\n' b a | sort",
+        "ls src | xargs -n1 echo",
+        "git ls-files | xargs -I{} sh -c 'wc -l {}'",
+        "find . -name '*.rs' | xargs -n1 sh -c 'echo $0'",
+        "run() { \"$@\"; }; run cargo test",
+        "for c in true false; do $c; done",
+        "ls src/(lexer|parser)/*.rs",
+        "while read -r l; do echo $l; done < src/a.rs",
+        "(cd src && ls) 2>/dev/null",
+        "t () { cargo test unit_sync; }; t",
+    ] {
+        assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
+    // A flag whose value is built at run time ahead of everything is refused for the conductor too.
+    let cmd = "bf --root $E unit unblock U-1 --why x";
+    assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    for cmd in [
+        "bf unit unblock U-1 --wait --why x",
+        "bf unit --json status U-1",
+        "bf unit unblock U-1 --why \"$(cat f)\"",
+        "bf unit status $U",
+    ] {
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
 }
 
 #[test]
@@ -319,12 +577,25 @@ fn conductor_unblock_the_note_and_refusal_count_since_the_human_release() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(note.contains("release 1: new one") && note.contains("release 2: new two"), "{note}");
-    assert!(note.contains("release 1 (before the human's own release of the unit): old one"), "{note}");
-    assert!(note.contains("release 2 (before the human's own release of the unit): old two"), "{note}");
+    assert!(
+        note.contains("release 1: new one") && note.contains("release 2: new two"),
+        "{note}"
+    );
+    assert!(
+        note.contains("release 1 (before the human's own release of the unit): old one"),
+        "{note}"
+    );
+    assert!(
+        note.contains("release 2 (before the human's own release of the unit): old two"),
+        "{note}"
+    );
     assert!(!note.contains("release 3"), "{note}");
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "again"]);
-    assert!(o.all().contains("new one") && !o.all().contains("old one"), "{}", o.all());
+    assert!(
+        o.all().contains("new one") && !o.all().contains("old one"),
+        "{}",
+        o.all()
+    );
 }
 
 #[test]
@@ -337,6 +608,13 @@ fn conductor_unblock_with_no_release_left_a_wait_is_refused_and_the_human_keeps_
     assert!(directive(&fx, "decide-unit").is_some());
     assert!(waiting(&fx).iter().all(|w| !w.starts_with("U-1:")));
     // A `human` judgment is still taken.
-    fx.must(&["unit", "unblock", "U-1", "--human", "--why", "only the human"]);
+    fx.must(&[
+        "unit",
+        "unblock",
+        "U-1",
+        "--human",
+        "--why",
+        "only the human",
+    ]);
     assert!(directive(&fx, "decide-unit").is_some());
 }

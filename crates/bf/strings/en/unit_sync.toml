@@ -1,0 +1,38 @@
+# Strings of `bf unit sync` (D-62, D-130): its refusals, its answer, and the reviewer's lines about what a
+# sync took in. A conflict the sync meets is left for the builder; one in a protected path is aborted.
+
+"unit_sync.what" = "sync {unit}"
+"unit_sync.worked" = "`bf unit sync` brings the unit's branch up to the checkpoint branch."
+
+"unit_sync.no.state_review" = "it is in `{state}`: the content the reviewer judges would change"
+"unit_sync.no.state_other" = "it is `{state}`"
+"unit_sync.no.state_step" = "Let the review end, or sync after findings send the unit back to work."
+"unit_sync.no.copy" = "the unit has no working copy"
+"unit_sync.no.copy_step" = "Use `bf unit start` first, or a unit ID from `bf status`."
+"unit_sync.no.request" = "a request for files is open"
+"unit_sync.no.request_step" = "Let the request be answered (`bf next`), then sync."
+"unit_sync.no.sync_open" = "a sync of the main branch into {checkpoint} is open"
+"unit_sync.no.sync_open_step" = "Settle that sync (`bf next`), then sync the unit."
+"unit_sync.no.dirty" = "the working copy has changes `git status` shows"
+"unit_sync.no.dirty_step" = "The builder commits them or puts them back; then sync."
+"unit_sync.no.nothing" = "nothing to do: the checkpoint branch is already in the unit's branch"
+"unit_sync.no.nothing_step" = "Go on with the unit."
+"unit_sync.no.merging" = "a merge is in progress in the unit's working copy; these files still hold conflict marks: {files}"
+"unit_sync.no.merging_step" = "The builder resolves the marks in those files in its working copy and reports `built` or `fixed` first; the engine finishes the merge at the report."
+
+"unit_sync.aborted.because" = "the merge of {checkpoint} into the unit's branch conflicts in a protected path no builder may write: {files}"
+"unit_sync.aborted.because_none" = "the merge of {checkpoint} into the unit's branch failed: {why}"
+"unit_sync.aborted.step" = "The merge was aborted and the working copy is as it was; the aborted sync is recorded with its files."
+"unit_sync.aborted.step_stuck" = "The working copy could not be restored. Run `git status` in {path}, then restore it (`git merge --abort` or `git reset --merge`) before anything else."
+"unit_sync.aborted.worked" = "`bf status` names the files of the aborted sync."
+
+"unit_sync.line.merged" = "{unit}: {how} ({base}); granted files the checkpoint changed: {files}"
+"unit_sync.line.none" = "none"
+"unit_sync.line.conflicts" = "{unit}: the merge of the checkpoint branch conflicts in: {files}; it is left in the unit's working copy for its builder."
+"unit_sync.step.conflicts" = "The builder resolves the marks in those files in its working copy and reports `built` or `fixed`; a builder at work reads its brief again with `bf brief {unit} --role builder`. The engine finishes the merge at the report."
+
+"unit_sync.review.taken.title" = "What the sync took in"
+"unit_sync.review.taken.body" = "The checkpoint branch was taken into the unit's branch since the last review round, or since the unit started when this is the first round. The files below are the checkpoint's work, not the unit's: read them only to judge the merge, and do not file findings on them."
+"unit_sync.review.since" = "Changes since round {round}"
+"unit_sync.review.since_own" = "Changes since round {round}, limited to the files of the unit's own diff"
+"unit_sync.review.first" = "This is the first round and it is cold: no earlier report is given. Read everything in the unit's scope."

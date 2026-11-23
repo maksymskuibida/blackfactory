@@ -1,0 +1,3 @@
+# Strings of the sweep of working copies and briefs (D-109, U-89).
+
+"cleanup.kept.stray" = "{name} is not in the plan and its working copy {path} has changes that are not committed"

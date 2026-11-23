@@ -18,3 +18,5 @@ The steps after an approved amendment, in this order:
 1. Commit the factory's records (`git add -A && git commit -m "<what the amendment changed>"` in the project folder or the workspace, never in a code repository of a workspace). The step right after `bf amend approve` is the commit of the factory's records; you neither judge whether to commit nor ask the human.
 2. Follow `bf next`: it offers exactly the re-opened work.
 3. Tell the human in one line what the amendment re-opened, as `bf next` shows it, not as you judge it.
+
+When a designer or a design reviewer names a fact it lacks, start an investigator for that one question and pass its report on. Never ask a designer to measure, build or test (D-111).

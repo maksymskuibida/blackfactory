@@ -1,0 +1,8 @@
+# Strings of the clean-up of working copies (D-109, D-113): why a copy stays and what the output says.
+
+"cleanup.kept.state" = "{unit} is `{state}`, not landed"
+"cleanup.kept.plan" = "{unit} is not in the plan"
+"cleanup.kept.unmerged" = "the branch {branch} is not yet in {checkpoint}"
+"cleanup.kept.uncommitted" = "the working copy {path} has changes that are not committed"
+"cleanup.line.removed" = "The working copy of {unit} is removed: {path}. Its branch stays."
+"cleanup.line.kept" = "The working copy of {unit} stays: {reason}."
