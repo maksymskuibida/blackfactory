@@ -281,6 +281,89 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         assert!(out.contains("deny"), "{cmd}: {out}");
         assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
     }
+    // A pattern group, a redirect between the words, a line no heredoc holds, a wrapper or precommand
+    // modifier, the engine built by cargo and a program built at run time reach the same call. The
+    // refusal names the agent type, so it is the unblock guard's own.
+    for cmd in [
+        "bf unit x(N) unblock U-1 --why x",
+        "bf unit (unblock|zz) U-1 --why x",
+        "bf unit unbl(o)ck U-1 --why x",
+        "bf unit \"x\"(N) unblock U-1 --why x",
+        "bf unit x<-> unblock U-1 --why x",
+        "bf unit unblo#ck U-1 --why x",
+        "bf unit {u}nblock U-1 --why x",
+        "bf unit {fd}>/dev/null unblock U-1 --why x",
+        "bf unit >& /dev/null unblock U-1 --why x",
+        "bf unit >&/dev/null unblock U-1 --why x",
+        "cat << \"E F\"\nE F\nbf unit unblock U-1 --why x\nE",
+        "(( x = 1 <<2 ))\nbf unit unblock U-1 --why x\n2",
+        "ls /(e:'bf unit unblock U-1 --why x':)",
+        "env -S 'bf unit unblock U-1 --why x'",
+        "watch 'bf unit unblock U-1 --why x'",
+        "flock /tmp/l -c 'bf unit unblock U-1 --why x'",
+        "noglob bf unit unblock U-1 --why x",
+        "- bf unit unblock U-1 --why x",
+        "repeat 1 bf unit unblock U-1 --why x",
+        "function f { bf unit unblock U-1 --why x; }; f",
+        "cargo run -- unit unblock U-1 --why x",
+        "cargo run -q unit unblock U-1 --why x",
+        "B=bf; $B unit unblock U-1 --why x",
+        "$(echo bf) unit unblock U-1 --why x",
+        "bash -c -e 'bf unit unblock U-1 --why x'",
+        "bash --norc -c 'bf unit unblock U-1 --why x'",
+        "bash -o posix -c 'bf unit unblock U-1 --why x'",
+        "echo $'\\'' ; bf unit unblock U-1 --why x # '",
+        "echo ${V:-'}'} ; bf unit unblock U-1 --why x #'",
+        "echo ${V:-$(bf unit unblock U-1 --why x)}",
+        "setopt equals; =bf unit unblock U-1 --why x",
+        "b[f] unit unblock U-1 --why x",
+        "if [[ -n x ]] bf unit unblock U-1 --why x",
+        "while (( x-- )) { bf unit unblock U-1 --why x }",
+        "{ true } always { bf unit unblock U-1 --why x }",
+        "coproc CP { bf unit unblock U-1 --why x; }",
+        "bf evidence run X-1 --unit U-1 -- $B unit unblock U-1 --why x",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(
+            out.contains("deny") && out.contains("builder"),
+            "{cmd}: {out}"
+        );
+    }
+    // A program that is a pattern (`b(f)` runs `bf` where a file `bf` exists) is refused as a call that
+    // cannot be read, and a redirect before the program takes its word.
+    for cmd in [
+        "b(f) unit unblock U-1 --why x",
+        "b? unit unblock U-1 --why x",
+        "{fd}>/dev/null bf unit unblock U-1 --why x",
+        ">&/dev/null bf unit unblock U-1 --why x",
+    ] {
+        assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
+    // The pattern group cannot be read for the conductor either; the plain lines stay open to it.
+    for cmd in [
+        "bf unit x(N) unblock U-1 --why x",
+        "bf unit (unblock|zz) U-1 --why x",
+    ] {
+        assert!(run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    for cmd in [
+        "cat << \"E F\"\nE F\nbf unit unblock U-1 --why x\nE",
+        "bf unit unblock U-1 --why x 2>&1 | tail -3",
+        "bf unit unblock U-1 --why x >&2",
+        "noglob bf unit unblock U-1 --why x",
+    ] {
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    // A builder's ordinary commands are not taken for the call.
+    for cmd in [
+        "bf report U-1 --result built --token t --note \"fixed (see the test)\"",
+        "f() { cargo nextest run unit_sync; }; f",
+        "if (true); then bf status; fi",
+        "bf evidence run X-1 --unit U-1 -- cargo nextest run --package=bf unit_sync",
+        "bf evidence run X-1 --unit U-1 -- cargo test 2>&1 >& /dev/null",
+    ] {
+        assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
+    }
     // A flag whose value is built at run time ahead of everything is refused for the conductor too.
     let cmd = "bf --root $E unit unblock U-1 --why x";
     assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");

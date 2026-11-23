@@ -437,6 +437,137 @@ fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
 }
 
 #[test]
+fn judge_guard_patterns_hidden_calls_and_run_time_code_are_refused_to_the_judge() {
+    let fx = Fx::new();
+    // Each row runs a barred command under zsh or bash although its plain reading may not show one.
+    let pattern_rows = [
+        // zsh glob qualifiers and groups: `x(N)` vanishes, `(check|zz)` and `chec(k)` match a file.
+        "bf checkpoint x(N) check K-1 --accept X-2 --quote q",
+        "bf record x(N) put unit --file u.toml",
+        "bf amend x(N) approve A-1 --quote x",
+        "bf x(N) checkpoint check K-1 --accept X-2 --quote q",
+        "bf checkpoint \"x\"(N) check K-1 --accept X-2 --quote q",
+        "bf checkpoint (check|zz) K-1 --accept X-2 --quote q",
+        "bf checkpoint chec(k) K-1 --accept X-2 --quote q",
+        "bf checkpoint (#i)CHECK K-1 --accept X-2 --quote q",
+        "bf checkpoint @(check) K-1 --accept X-2 --quote q",
+        // zsh's number range `<->` is a pattern, bash's reading is two redirects.
+        "bf checkpoint x<-> check K-1 --accept X-2 --quote q",
+    ];
+    let rows = [
+        // zsh extended globs and `brace_ccl`, which a command can switch on.
+        "bf checkpoint chec#k K-1 --accept X-2 --quote q",
+        "bf checkpoint ch^x K-1 --accept X-2 --quote q",
+        "bf checkpoint check~zz K-1 --accept X-2 --quote q",
+        "bf checkpoint {c}heck K-1 --accept X-2 --quote q",
+        "bf checkpoint =check K-1 --accept X-2 --quote q",
+        // A redirect between the words takes its word with it.
+        "bf checkpoint {fd}>/dev/null check K-1 --accept X-2 --quote q",
+        "bf checkpoint >& /dev/null check K-1 --accept X-2 --quote q",
+        "bf checkpoint >&/dev/null check K-1 --accept X-2 --quote q",
+        "bf record {fd}<u.toml put unit --file u.toml",
+        // Lines the shell runs that are no heredoc body.
+        "cat << \"E F\"\nE F\nbf record put unit --file u.toml\nE",
+        "(( x = 1 <<2 ))\nbf record put unit --file u.toml\n2",
+        "for (( i = 0; i <<2; i++ )); do :; done\nbf record put unit --file u.toml\n2",
+        // Code a glob qualifier, a wrapper or a precommand modifier runs.
+        "ls /(e:'bf record put unit --file u.toml':)",
+        "ls /(e{'bf amend approve A-1 --quote x'})",
+        "env -S 'bf record put unit --file u.toml'",
+        "env -S'bf record put unit --file u.toml'",
+        "flock /tmp/l -c 'bf record put unit --file u.toml'",
+        "script -q -c 'bf record put unit --file u.toml' /dev/null",
+        "watch -n 1 'bf record put unit --file u.toml'",
+        "noglob bf record put unit --file u.toml",
+        "nocorrect bf amend approve A-1 --quote x",
+        "- bf record put unit --file u.toml",
+        "repeat 1 bf record put unit --file u.toml",
+        "function f { bf record put unit --file u.toml; }; f",
+        "coproc bf record put unit --file u.toml",
+        "parallel bf record put unit --file ::: u.toml",
+        "sandbox-exec -n no-network bf record put unit --file u.toml",
+        "alias q='bf record put'; eval q unit --file u.toml",
+        "hash q=/usr/local/bin/bf; q record put unit --file u.toml",
+        // A shell's command string is the first word after all its options.
+        "bash -c -e 'bf record put unit --file u.toml'",
+        "bash --norc -c 'bf record put unit --file u.toml'",
+        "bash -o posix -c 'bf record put unit --file u.toml'",
+        "bash +x -c 'bf record put unit --file u.toml'",
+        "zsh -o extendedglob -c 'bf record put unit --file u.toml'",
+        // Quotes the shell closes elsewhere than a plain reading: `$'\''` and a quote inside `${ }`.
+        "echo $'\\'' ; bf record put unit --file u.toml # '",
+        "echo ${V:-'}'} ; bf record put unit --file u.toml #'",
+        // A substitution inside `${ }` runs.
+        "echo ${V:-$(bf record put unit --file u.toml)}",
+        "echo ${V:-`bf record put unit --file u.toml`}",
+        // A backtick escaped inside backticks nests a substitution; `$'...'` with no escape is plain text.
+        "echo `echo \\`bf record put unit --file u.toml\\``",
+        "eval $'bf record put unit --file u.toml'",
+        "sh -c $'bf record put unit --file u.toml'",
+        // Wrappers that run the words after their options.
+        "pkexec bf record put unit --file u.toml",
+        "nsenter -t 1 bf record put unit --file u.toml",
+        // A program name the shell makes from a pattern or with zsh's `equals`.
+        "setopt equals; =bf record put unit --file u.toml",
+        "b[f] record put unit --file u.toml",
+        "b? record put unit --file u.toml",
+        "b(f) record put unit --file u.toml",
+        "{bf,x} record put unit --file u.toml",
+        // A redirect before the program takes its word: the program is `bf`.
+        "{fd}>/dev/null bf record put unit --file u.toml",
+        ">&/dev/null bf record put unit --file u.toml",
+        // zsh's short forms run a command inside the same simple command.
+        "if [[ -n x ]] bf record put unit --file u.toml",
+        "{ true } always { bf record put unit --file u.toml }",
+        "coproc CP { bf record put unit --file u.toml; }",
+        // The engine built from this project.
+        "cargo run -q -- record put unit --file u.toml",
+        "cargo run --bin bf checkpoint check K-1 --accept X-2 --quote q",
+        // Code the shell builds or evaluates at run time.
+        "B=bf; $B record put unit --file u.toml",
+        "V='bf record put unit --file u.toml'; eval $V",
+        "V='$(bf record put unit --file u.toml)'; echo ${(e)V}",
+        "V='$(bf record put unit --file u.toml)'; echo ${V@P}",
+        "V='a[$(bf record put unit --file u.toml)]'; echo $((V))",
+        "V='a[$(bf record put unit --file u.toml)]'; (( V ))",
+        "V='a[$(bf record put unit --file u.toml)]'; [[ V -eq 0 ]]",
+        "V='a[$(bf record put unit --file u.toml)]'; printf -v \"$V\" x",
+        "V='a[$(bf record put unit --file u.toml)]'; let V",
+        "V='a[$(bf record put unit --file u.toml)]'; echo ${a[V]}",
+        "V='a[$(bf record put unit --file u.toml)]'; cat <<EOF\n$((V))\nEOF",
+        // The judge runs no check, so no check's command either.
+        "bf evidence run X-1 -- sh -c 'B=bf; $B record put unit --file u.toml'",
+    ];
+    for cmd in pattern_rows.iter().chain(rows.iter()) {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    // A pattern group in the words of `bf` cannot be read for any caller.
+    for cmd in pattern_rows {
+        let (d, why) = hook(&fx, None, "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("pattern"), "{cmd}: {why}");
+    }
+    // The judge's own commands, and plain shell around them, still pass.
+    for cmd in [
+        "printf '%s' '{\"verdict\":\"go\",\"reasons\":\"U-2 [a] (b) waits\"}' | bf amend judge A-1 --file - --token t --model m",
+        "bf record get U-2 && bf plan check",
+        "bf record get U-2 2>&1 | head -5",
+        "bf record get U-2 >&2",
+        "bf record get U-2 2>/dev/null >&2",
+        "f() { bf status; }; f",
+        "if (true); then bf status; fi",
+        "(bf status)",
+        "for id in U-1 U-2; do bf record get $id; done",
+        "cat <<'EOF'\n$((V)) ${(e)V}\nEOF",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
 fn judge_guard_a_repair_that_names_a_marked_record_gets_no_judge_token() {
     let fx = Fx::new();
     let aid = ready(&fx);

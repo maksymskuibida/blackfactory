@@ -3071,6 +3071,13 @@ fn unpack_dir(prog: &str, args: &[String]) -> Option<String> {
     }
 }
 
+/// `glob_match` on text.
+pub(crate) fn pattern_matches(p: &str, s: &str) -> bool {
+    let p: Vec<char> = p.chars().collect();
+    let s: Vec<char> = s.chars().collect();
+    glob_match(&p, &s)
+}
+
 /// Does the pattern match the whole text? `*` is any run of characters (a slash too), `?` is one
 /// character, `[...]` is a class, a backslash quotes the next character.
 fn glob_match(p: &[char], s: &[char]) -> bool {
@@ -4929,6 +4936,9 @@ fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
             "`bf` is run through `{v}`, which hides what it does"
         ));
     }
+    if c.group {
+        return misuse(crate::strings::t("guard.group.because", &[]));
+    }
     let w = &c.words;
     let mut j = 1;
     while j < w.len() && w[j].starts_with('-') {
@@ -4959,14 +4969,18 @@ fn run_time_before_subcommand(words: &[String]) -> bool {
     words[..end]
         .iter()
         .take_while(|x| x.as_str() != "--")
-        .any(|x| {
-            // A brace group or a glob may also change into another word. The parse keeps no quotes, so a
-            // quoted one is refused with the rest.
-            x.contains('$')
-                || x.contains('`')
-                || x.contains(['*', '?', '['])
-                || (x.contains('{') && (x.contains(',') || x.contains("..")))
-        })
+        .any(|x| run_time_word(x))
+}
+
+/// Is `x` a word the shell may change at run time? A variable, a substitution, a glob (zsh's extended
+/// ones too: `^x`, `x#`, `a~b`, `(a|b)`), a brace group (`{a,b}`, `{a..b}`, zsh's `{c}heck` under
+/// `brace_ccl`, bash's `{fd}`) or zsh's `=cmd`. The parse keeps no quotes, so a quoted one is refused
+/// with the rest.
+fn run_time_word(x: &str) -> bool {
+    x.contains([
+        '$', '`', '*', '?', '[', ']', '(', ')', '|', '{', '}', '#', '^',
+    ]) || x.starts_with('=')
+        || x.get(1..).is_some_and(|r| r.contains('~'))
 }
 
 /// The words of a `bf` call after its program and its flags (`-C <dir>` takes a value).
@@ -4988,14 +5002,38 @@ fn agent_type(input: &Value) -> &str {
 /// guard trusts the harness's agent type as R-69 does, so a second top-level session that the harness
 /// does not mark as a subagent cannot be told from the conductor.
 fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
-    let hit = crate::shellparse::bf_calls(cmd).into_iter().any(|c| {
+    // `cargo run -- unit unblock U-1` runs the engine built from this project: its words count too.
+    let hit = crate::shellparse::engine_calls(cmd).into_iter().any(|c| {
         // The plain words the command line parser keeps: flags may stand anywhere, before `unblock` too.
         let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
         (plain.first().map(|x| x.as_str()) == Some("unit")
             && plain.get(1).map(|x| x.as_str()) == Some("unblock"))
             || (plain.iter().any(|x| x == "unit")
-                && run_time_before_subcommand(c.words.get(1..).unwrap_or(&[])))
-    });
+                && (c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))))
+    }) || {
+        // A program built at run time (`B=bf; $B unit unblock U-1`) may be the engine, also as the
+        // command of `bf evidence run <check> -- <command>`.
+        let mut lines: Vec<Vec<String>> = crate::shellparse::commands(cmd)
+            .into_iter()
+            .map(|p| p.words)
+            .collect();
+        for c in crate::shellparse::bf_calls(cmd) {
+            let rest = bf_rest(&c.words);
+            if rest.first().is_some_and(|x| x == "evidence") {
+                if let Some(d) = rest.iter().position(|w| w == "--") {
+                    lines.push(rest[d + 1..].to_vec());
+                }
+            }
+        }
+        lines.iter().any(|words| {
+            crate::shellparse::program_index(words).is_some_and(|i| {
+                run_time_program(&words[i])
+                    && words[i + 1..]
+                        .iter()
+                        .any(|w| w == "unit" || w.contains("unblock"))
+            })
+        })
+    };
     if !hit {
         return None;
     }
@@ -5023,22 +5061,38 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
     if tool != "Bash" {
         return None;
     }
-    for c in crate::shellparse::bf_calls(cmd) {
+    if let Some(what) = judge_code_at_run_time(cmd) {
+        return Some(deny(
+            &t("judge_guard.code.refused", &[("command", &what)]),
+            &t("judge_guard.code.because", &[]),
+            &[&t("judge_guard.code.step", &[])],
+            &t("judge_guard.code.worked", &[]),
+        ));
+    }
+    // `cargo run -- record put ...` runs the engine built from this project: its words count too.
+    for c in crate::shellparse::engine_calls(cmd) {
         // The plain words the command line parser keeps: flags may stand anywhere, before the subcommand too.
         let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
         let sub = plain.first().map(|x| x.as_str()).unwrap_or("");
         let second = plain.get(1).map(|x| x.as_str()).unwrap_or("");
         // A word the shell expands at run time (`$E`, `${E}check`) may vanish and leave the barred
-        // subcommand: it cannot be read here, so it is refused where a bar stands.
-        let run_time = run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]));
+        // subcommand: it cannot be read here, so it is refused where a bar stands. So is a call whose
+        // words a pattern group cut (`x(N)`).
+        let run_time = c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]));
         let barred = match sub {
             _ if run_time => true,
+            // A call reached through anything (`eval`, an alias, `hash`, a glob qualifier, `env -S`)
+            // is not one of the judge's plain calls.
+            _ if c.via.is_some() => true,
             "record" => matches!(second, "put" | "remove"),
             "amend" => matches!(
                 second,
                 "open" | "revise" | "narrow" | "checkpoint" | "approve" | "withdraw" | "seen"
             ),
             "roles" => true,
+            // The judge runs no check; a check's command would run with words the guard reads only
+            // for calls of the engine.
+            "evidence" => true,
             // The human's accept of a blocked check is their own act, never the judge's (D-110).
             "checkpoint" => second == "check",
             _ => false,
@@ -5051,6 +5105,95 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
                 &[&t("judge_guard.command.step", &[])],
                 &t("judge_guard.command.worked", &[]),
             ));
+        }
+    }
+    None
+}
+
+/// Is a program word built at run time (`$B`, `${B}`, a backtick, `$(..)`), or a pattern or brace
+/// group the shell turns into another name (`b?`, `b[f]`, `{bf,}`, zsh's `=b*`)? `[` and `[[` are
+/// the test commands.
+fn run_time_program(w: &str) -> bool {
+    !matches!(w, "[" | "[[") && run_time_word(w)
+}
+
+/// The builtins that read a word they are given as code, a variable name or an arithmetic expression
+/// (`eval`, `let`, `declare`, `printf -v`, `read`, `[[ x -eq 1 ]]` ...): bash evaluates the subscript
+/// of such a name (`a[$(cmd)]`), so a word built at run time there may run any command.
+const EVALUATING_BUILTINS: &[&str] = &[
+    "eval",
+    "let",
+    "declare",
+    "typeset",
+    "local",
+    "export",
+    "readonly",
+    "integer",
+    "float",
+    "unset",
+    "read",
+    "printf",
+    "print",
+    "mapfile",
+    "readarray",
+    "getopts",
+    "[[",
+    "source",
+    ".",
+    "trap",
+    "alias",
+    "hash",
+    "vared",
+    "wait",
+    "fc",
+    "emulate",
+    "zmodload",
+    "autoload",
+];
+
+/// A command of the repair judge that the shell builds or evaluates at run time, which the guard
+/// cannot read: a program built at run time, arithmetic, a zsh parameter flag or bash operator that
+/// evaluates, an array subscript assignment, or a word built at run time given to a builtin that
+/// evaluates it. Its words, for the refusal.
+fn judge_code_at_run_time(cmd: &str) -> Option<String> {
+    let short = |s: String| -> String {
+        let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if one.chars().count() > 60 {
+            format!("{}...", one.chars().take(60).collect::<String>())
+        } else {
+            one
+        }
+    };
+    if crate::shellparse::evaluates_text(cmd) {
+        return Some(short(cmd.lines().next().unwrap_or("").to_string()));
+    }
+    for p in crate::shellparse::commands(cmd) {
+        let Some(i) = crate::shellparse::program_index(&p.words) else {
+            continue;
+        };
+        let prog = &p.words[i];
+        let args = &p.words[i + 1..];
+        let words = || short(p.words[i..].join(" "));
+        if run_time_program(prog) {
+            return Some(words());
+        }
+        // `a[x]=1` assigns through a subscript that bash reads as arithmetic.
+        if prog.contains('[') && prog.contains("]=") {
+            return Some(words());
+        }
+        let base = basename(prog);
+        let arith_test = base == "[["
+            && args
+                .iter()
+                .any(|a| matches!(a.as_str(), "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"));
+        // `printf` and `print` evaluate only the name of `-v`; their text is data.
+        let sink = EVALUATING_BUILTINS.contains(&base)
+            && (!matches!(base, "printf" | "print") || args.iter().any(|a| a == "-v"));
+        if arith_test
+            || base == "let"
+            || (sink && args.iter().any(|a| run_time_program(a) || a.contains('[')))
+        {
+            return Some(words());
         }
     }
     None

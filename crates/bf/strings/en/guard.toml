@@ -12,3 +12,6 @@
 "guard.mktemp.empty.because" = "`mktemp` is given an empty template, so the guard cannot tell where the new file lands"
 "guard.mktemp.step" = "Name one template and only options the guard knows before it, for example `mktemp -p /tmp name.XXXX`."
 "guard.mktemp.worked" = "The command makes a file whose place the guard can read the same way for GNU and BSD `mktemp`."
+
+# A call of `bf` whose words hold a pattern group cannot be read.
+"guard.group.because" = "an unquoted `(` or `<->` in the words of `bf` is a pattern the shell may expand, drop or join with its neighbours"

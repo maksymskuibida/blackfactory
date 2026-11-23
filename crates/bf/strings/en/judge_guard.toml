@@ -10,6 +10,11 @@
 "judge_guard.command.step" = "Run `bf record get`, `bf plan check` and `bf amend judge <A-n> --file - --token <token> --model <model>` with the verdict on standard input."
 "judge_guard.command.worked" = "`bf amend judge` takes your verdict."
 
+"judge_guard.code.refused" = "run `{command}`, which the shell builds or evaluates at run time"
+"judge_guard.code.because" = "the guard reads the repair judge's commands before they run, and a program, an array subscript or arithmetic that the shell makes from text at run time may run a command the judge may not run"
+"judge_guard.code.step" = "Write each command out in plain words: `bf record get`, `bf plan check` or `bf amend judge <A-n> --file - --token <token> --model <model>` with the verdict on standard input."
+"judge_guard.code.worked" = "The guard reads the command and lets it run."
+
 "judge_guard.pass.bad_signature" = "the pass for `bf amend judge {amend}` is not signed with this project's key"
 "judge_guard.pass.other_amend" = "the pass the guard wrote is for {other}, not for {amend}, so it is not taken"
 "judge_guard.pass.other_token" = "the pass the guard wrote for `bf amend judge {amend}` is for another token, so it is not taken"
