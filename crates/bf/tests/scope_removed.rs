@@ -152,19 +152,27 @@ fn the_old_log_replays_to_the_same_unit_states_and_the_same_files() {
 }
 
 #[test]
-fn bf_next_gives_each_unit_its_builders_directive_and_no_scope_directive() {
+fn bf_next_gives_a_free_unit_its_builders_directive_a_blocked_one_the_human_and_no_scope_directive() {
     let fx = Fx::new();
     old_log(&fx);
     let ds = directives(&fx);
     for d in &ds {
         assert_ne!(d["action"], "review-scope", "{d}");
-        assert_ne!(d["action"], "decide-unit", "{d}");
         assert_ne!(d["role"], "reviewer", "{d}");
     }
-    for u in ["U-1", "U-2", "U-3", "U-4"] {
+    for u in ["U-1", "U-2"] {
         let own = of(&ds, u);
         assert_eq!(own.len(), 1, "{u}: {ds:?}");
         assert_eq!(own[0]["role"], "builder", "{u}");
+    }
+    // A unit an old refusal blocked goes to the human, and the note gives the reason from a key, never the
+    // raw word of the refusal (FU-36).
+    for u in ["U-3", "U-4"] {
+        let own = of(&ds, u);
+        assert_eq!(own.len(), 1, "{u}: {ds:?}");
+        assert_eq!(own[0]["action"], "decide-unit", "{u}");
+        let note = own[0]["note"].as_str().unwrap();
+        assert!(!note.contains("(extension)") && !note.contains("(hard)") && !note.contains("retry_spent"), "{note}");
     }
     // The order an old request made no longer holds U-5 back.
     let five = of(&ds, "U-5");

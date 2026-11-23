@@ -5000,6 +5000,8 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
                 "open" | "revise" | "narrow" | "checkpoint" | "approve" | "withdraw" | "seen"
             ),
             "roles" => true,
+            // The human's accept of a blocked check is their own act, never the judge's (D-110).
+            "checkpoint" => second == "check",
             _ => false,
         };
         if barred {

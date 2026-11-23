@@ -547,11 +547,6 @@ pub fn brief_review(_p: &Project, unit: &str) -> R<PathBuf> {
     Err(removed("scope.removed.verdict", unit))
 }
 
-/// The directive of the review of a request: none, since no request is open.
-pub fn directive(_p: &Project, _st: &State, _unit: &str, _limits: Value) -> Value {
-    Value::Null
-}
-
 /// Landing no longer looks at a granted file or at a file accepted as format only: every file may be
 /// written, so there is nothing to find.
 pub fn landing_check(_st: &State, _unit: &str, _repo: &std::path::Path, _range: &str) -> R<()> {

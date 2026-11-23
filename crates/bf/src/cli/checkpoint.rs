@@ -225,6 +225,24 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         });
         return Ok(());
     }
+    if args.pos.get(1).map(|x| x.as_str()) == Some("check") {
+        let k = args.pos_at(2, "a checkpoint ID")?;
+        let ids = args.flag("accept").unwrap_or("");
+        let v = run::checkpoint_check_accept(
+            &p,
+            k,
+            ids,
+            args.flag("quote").unwrap_or(""),
+            super::real_zone(&p).is_some(),
+        )?;
+        out(args, &v, || {
+            crate::strings::t(
+                "check_accept.done",
+                &[("k", k), ("checks", &ids.replace(',', ", "))],
+            )
+        });
+        return Ok(());
+    }
     if args.pos.get(1).map(|x| x.as_str()) == Some("review") {
         let k = args.pos_at(2, "a checkpoint ID")?;
         if !args.has("release") {
@@ -242,13 +260,11 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         return Ok(());
     }
     if args.pos.get(1).map(|x| x.as_str()) != Some("close") {
-        return Err(refuse(
-            "run `bf checkpoint`",
-            "only `bf checkpoint close`, `bf checkpoint sync`, `bf checkpoint fix`, `bf checkpoint finding` and `bf checkpoint review` exist",
-            &[
-                "Run `bf checkpoint close <K>`, `bf checkpoint sync <K> --quote \"...\"` or `bf checkpoint fix <K> --abort`.",
-            ],
-            "The command prints the result.",
+        return Err(refuse_owned(
+            crate::strings::t("check_accept.usage.what", &[]),
+            crate::strings::t("check_accept.usage.because", &[]),
+            vec![crate::strings::t("check_accept.usage.step", &[])],
+            crate::strings::t("check_accept.usage.worked", &[]),
         ));
     }
     let k = args.pos_at(2, "a checkpoint ID")?;
@@ -267,6 +283,17 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
             t.push_str(&format!(
                 "\nnot proven, their checks are off: {}",
                 enforce::unproven_text(&un)
+            ));
+        }
+        for a in v["accepted_checks"].as_array().into_iter().flatten() {
+            t.push('\n');
+            t.push_str(&crate::strings::t(
+                "check_accept.close.line",
+                &[
+                    ("check", s(a, "check")),
+                    ("mark", s(a, "mark")),
+                    ("quote", s(a, "quote")),
+                ],
             ));
         }
         t

@@ -135,6 +135,7 @@ pub fn id_proven(
             st.gate_passed("checkpoint-step", Some(k))
         } else {
             evidence::satisfied_at(receipts, s(c, "id"), content).is_some()
+                || evidence::accepted_at(st, k, s(c, "id"), content).is_some()
         }
     })
 }
@@ -601,6 +602,7 @@ pub fn checkpoint_gaps(
                 st.gate_passed("checkpoint-step", Some(kid))
             } else {
                 evidence::satisfied_at(receipts, s(r, "id"), content).is_some()
+                    || evidence::accepted_at(st, kid, s(r, "id"), content).is_some()
             }
         });
         if !ok {

@@ -62,9 +62,8 @@ fn block(fx: &Fx, wc: &Path, note: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
-/// A builder's blocked report that the second look confirmed.
+/// A builder's blocked report: the conductor judges it at once, with no second look for the builder.
 fn confirmed(fx: &Fx, wc: &Path, note: &str) {
-    block(fx, wc, "first");
     block(fx, wc, note);
 }
 
@@ -223,9 +222,6 @@ fn conductor_unblock_refusals_name_the_reason() {
     let (fx, wc) = setup(false);
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "x"]);
     assert!(o.all().contains("running"), "{}", o.all());
-    block(&fx, &wc, "first");
-    let o = fx.refused(&["unit", "unblock", "U-1", "--why", "x"]);
-    assert!(o.all().contains("second look"), "{}", o.all());
     block(&fx, &wc, "second");
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "  "]);
     assert!(o.all().contains("`--why` is empty"), "{}", o.all());

@@ -4,7 +4,6 @@
 use crate::events::State;
 use crate::plan::Plan;
 use crate::refusal::R;
-use crate::scope::NextEntry;
 use crate::store::Project;
 use serde_json::{json, Value};
 
@@ -37,14 +36,6 @@ pub fn replay(st: &mut State, ev: &Value, seq: u64, at: &str) {
 /// No unit waits for a holder any more, so there is nothing to resume.
 pub fn resume_waiting(_p: &Project) -> R<()> {
     Ok(())
-}
-
-/// Nothing is asked again.
-pub fn decorate(_st: &State, _id: &str, _d: &mut Value) {}
-
-/// No unit waits, and no circle of waiting units asks for a plan repair.
-pub fn next_entry(_p: &Project, _pl: &Plan, _st: &State, _id: &str) -> Option<NextEntry> {
-    None
 }
 
 /// A refusal carries no list of holders any more.

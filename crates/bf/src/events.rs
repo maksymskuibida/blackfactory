@@ -709,6 +709,33 @@ pub struct CkHold {
     pub seq: u64,
     /// A `marked` hold whose marks are all `unreachable` (D-110): the human's words still count.
     pub unreachable_only: bool,
+    /// A `marked` hold for which the engine opens no fix (`ckfix::opens_fix`: a mark is `unreachable`, or the
+    /// failed check is switched off), so its failed marks go to the human at once.
+    pub no_fix: bool,
+}
+
+/// The human's accept of a blocked check of a checkpoint, in their own words (D-110).
+#[derive(Debug, Clone, Default)]
+pub struct CheckAccept {
+    pub seq: u64,
+    pub content: String,
+    pub mark: String,
+    pub reason: String,
+    pub turn: u64,
+    pub quote: String,
+}
+
+/// Whether a failed mark of checkpoint `k` at `content` can be put to the human: its fix was turned down (the
+/// content is declined) or is parked. Until then the engine opens or keeps the check's fix and gives no
+/// `decide-check`, so no words count for the accept (D-110). An `unreachable` mark needs no fix.
+pub fn failed_mark_offered(st: &State, k: &str, content: &str) -> bool {
+    st.ck_declined.contains(&format!("{k}@{content}"))
+        || st.ck_holds.get(k).is_some_and(|h| h.cause == "marked" && h.no_fix)
+        // A parked or low fix of any checkpoint: `ckfix::maybe_open` opens nothing while one stands.
+        || st
+            .ck_fix
+            .as_ref()
+            .is_some_and(|f| matches!(f.phase.as_str(), "parked" | "low"))
 }
 
 /// A reason the human is not being asked about a checkpoint's findings. Each carries what a refusal names.
@@ -980,6 +1007,9 @@ pub struct State {
     /// Checkpoint -> the hold the engine logged for it (a marked check, an unanswered question, a wave
     /// check), with the seq it started at. Kept by `checkpoint.hold`.
     pub ck_holds: BTreeMap<String, CkHold>,
+    /// (checkpoint, check) -> the human's accept of a check marked failed or unreachable, for the content
+    /// it names (D-110). A change of the content ends it.
+    pub check_accepts: BTreeMap<(String, String), CheckAccept>,
     /// Findings of checkpoint reviews that the human accepted or declined, in log order.
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
@@ -2073,6 +2103,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     if now_only && st.ck_holds.get(&k).is_some_and(|h| !h.unreachable_only) {
                         st.ck_end_seq = seq;
                     }
+                    // A hold for which no fix opens any more ends the part that was not put to the human.
+                    let now_no_fix = ev["no_fix"].as_bool().unwrap_or(false);
+                    if now_no_fix && st.ck_holds.get(&k).is_some_and(|h| !h.no_fix) {
+                        st.ck_end_seq = seq;
+                    }
                     st.ck_holds.insert(
                         k,
                         CkHold {
@@ -2080,6 +2115,75 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             detail: sv("detail"),
                             seq: started,
                             unreachable_only: ev["unreachable_only"].as_bool().unwrap_or(false),
+                            no_fix: ev["no_fix"].as_bool().unwrap_or(false),
+                        },
+                    );
+                }
+            }
+            "checkpoint.check.accept" => {
+                let k = sv("checkpoint");
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let checks = crate::store::str_list(ev, "checks");
+                let bound = st
+                    .ck_holds
+                    .get(&k)
+                    .filter(|h| h.cause == "marked")
+                    .filter(|h| {
+                        let named: Vec<&str> = h.detail.split(',').collect();
+                        !checks.is_empty() && checks.iter().all(|c| named.contains(&c.as_str()))
+                    })
+                    // The words count only after the hold started and after the latest end of a fix: a
+                    // failed mark is offered to the human when its fix is gone, not when it was made.
+                    .map(|h| h.seq.max(st.ck_end_seq));
+                let marks_ev = ev["marks"].as_array().cloned().unwrap_or_default();
+                let offered = marks_ev.iter().all(|m| {
+                    m["mark"].as_str() == Some("unreachable")
+                        || failed_mark_offered(&st, &k, &sv("content_hash"))
+                });
+                let marked_hold =
+                    offered && matches!(hold(&st, &k, seq), Some(Hold::Marked { .. }));
+                let Some(bound) =
+                    bound.filter(|_| marked_hold && !st.closed.contains_key(&k) && !st.absent.on)
+                else {
+                    st.ignored.push(crate::strings::t(
+                        "check_accept.ignored.hold",
+                        &[("seq", &seq.to_string())],
+                    ));
+                    continue;
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(crate::strings::t(
+                        "check_accept.ignored.turn",
+                        &[("seq", &seq.to_string())],
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                let marks = ev["marks"].as_array().cloned().unwrap_or_default();
+                for c in &checks {
+                    let m = marks
+                        .iter()
+                        .find(|m| m["check"].as_str() == Some(c.as_str()));
+                    st.check_accepts.insert(
+                        (k.clone(), c.clone()),
+                        CheckAccept {
+                            seq,
+                            content: sv("content_hash"),
+                            mark: m.and_then(|m| m["mark"].as_str()).unwrap_or("").to_string(),
+                            reason: m
+                                .and_then(|m| m["reason"].as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            turn: tseq,
+                            quote: sv("quote"),
                         },
                     );
                 }

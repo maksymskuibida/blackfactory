@@ -847,7 +847,7 @@ const LOAD_WARN_DENOMINATOR: f64 = 2.0;
 
 /// The one-minute load average and the number of cores. A test build reads the load from
 /// `BF_TEST_LOAD` when it is set (C-3).
-fn machine_load() -> (f64, u64) {
+pub(crate) fn machine_load() -> (f64, u64) {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as u64)
         .unwrap_or(1);
@@ -1935,6 +1935,32 @@ pub fn standing_outcome<'a>(
         }
     }
     cur
+}
+
+/// The human's accept of a check of checkpoint `k` for exactly this content, if there is one (D-110).
+pub fn accepted_at<'a>(
+    st: &'a crate::events::State,
+    k: &str,
+    check_id: &str,
+    content: &str,
+) -> Option<&'a crate::events::CheckAccept> {
+    st.check_accepts
+        .get(&(k.to_string(), check_id.to_string()))
+        .filter(|a| a.content == content)
+}
+
+/// The standing mark of a check of checkpoint `k`, unless the human accepted it for this content.
+pub fn standing_unaccepted<'a>(
+    st: &crate::events::State,
+    receipts: &'a [Receipt],
+    k: &str,
+    check_id: &str,
+    content: &str,
+) -> Option<&'a Receipt> {
+    if accepted_at(st, k, check_id, content).is_some() {
+        return None;
+    }
+    standing_outcome(receipts, check_id, content)
 }
 
 /// A check is satisfied at `content` when a sealed, passing receipt for it carries that content hash.
