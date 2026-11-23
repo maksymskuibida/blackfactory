@@ -53,20 +53,19 @@ struct Auto {
     wip: String,
 }
 
-/// Take the checkpoint branch in and append `unit.sync`. With `auto`, any conflict is left in the working
-/// copy with its marks, except one in a protected path, which is aborted and recorded.
+/// Take the checkpoint branch in and append `unit.sync`. Any conflict is left in the working copy with
+/// its marks, except one in a protected path, which is aborted and recorded.
 fn take_in(
     p: &Project,
     unit: &str,
     c: &Ctx,
     cause: &str,
     ff: bool,
-    auto: Option<&Auto>,
+    auto: &Auto,
 ) -> R<(Value, Vec<String>)> {
     let old_base = gitx::must(&c.repo, &["merge-base", &c.cpb, &c.ub])?;
     let new_base = gitx::must(&c.repo, &["rev-parse", &c.cpb])?;
     let head = gitx::must(&c.wt, &["rev-parse", "HEAD"])?;
-    let before = status(&c.wt)?;
     let args: &[&str] = if ff {
         &["merge", "--ff-only", "-q", &c.cpb]
     } else {
@@ -77,58 +76,44 @@ fn take_in(
         let files =
             gitx::must(&c.wt, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
         let files: Vec<String> = files.lines().map(String::from).collect();
-        if let Some(a) = auto {
-            let protected = p.protected_paths();
-            let inside = !files.is_empty()
-                && !files
-                    .iter()
-                    .any(|f| protected.iter().any(|g| util::path_matches(g, f)));
-            let ev = if inside {
-                json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": new_base, "how": "merge", "commit": head, "wip_commit": a.wip, "conflicts": files})
-            } else {
-                let _ = gitx::run(&c.wt, &["merge", "--abort"], &[]);
-                json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": "", "how": "aborted", "checkpoint_commit": new_base, "commit": head, "wip_commit": a.wip, "conflicts": [], "files": files})
-            };
-            events::append(p, "unit.sync", ev.clone())?;
-            return Ok((ev, Vec::new()));
-        }
-        let _ = gitx::run(&c.wt, &["merge", "--abort"], &[]);
-        let same = gitx::must(&c.wt, &["rev-parse", "HEAD"])? == head && status(&c.wt)? == before;
-        let named = if files.is_empty() {
-            o.stderr.clone()
+        let protected = p.protected_paths();
+        let inside = !files.is_empty()
+            && !files
+                .iter()
+                .any(|f| protected.iter().any(|g| util::path_matches(g, f)));
+        let mut ev = if inside {
+            json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": new_base, "how": "merge", "commit": head, "wip_commit": auto.wip, "conflicts": files})
         } else {
-            files.join(", ")
+            let _ = gitx::run(&c.wt, &["merge", "--abort"], &[]);
+            json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": "", "how": "aborted", "checkpoint_commit": new_base, "commit": head, "wip_commit": auto.wip, "conflicts": [], "files": files})
         };
-        return Err(refuse_owned(
-            format!("sync {unit}"),
-            format!("the merge of {} into the unit's branch conflicts in: {named}{}", c.cpb, if same { "" } else { " (the working copy could not be restored; check `git status`)" }),
-            vec![
-                format!("The human resolves it in {} (merge, fix the files, commit), or lands the unit first.", c.wt.display()),
-                if same { "The working copy is as it was; nothing is recorded.".to_string() } else { format!("Nothing is recorded. Run `git status` in {}, then restore it (`git merge --abort` or `git reset --merge`) before anything else.", c.wt.display()) },
-            ],
-            "`bf unit sync` is taken again and prints the files the checkpoint changed.",
-        ));
+        events::append(p, "unit.sync", ev.clone())?;
+        if !inside {
+            ev["why"] = json!(o.stderr.trim());
+        }
+        return Ok((ev, Vec::new()));
     }
     let commit = gitx::must(&c.wt, &["rev-parse", "HEAD"])?;
     let changed = gitx::must(&c.repo, &["diff", "--name-only", &old_base, &new_base])?;
     let changed: Vec<String> = changed.lines().map(String::from).collect();
     let how = if ff { "fast-forward" } else { "merge" };
-    let wip = auto.map(|a| a.wip.as_str()).unwrap_or("");
-    let ev = json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": new_base, "how": how, "commit": commit, "wip_commit": wip, "conflicts": []});
+    let ev = json!({"unit": unit, "cause": cause, "old_base": old_base, "new_base": new_base, "how": how, "commit": commit, "wip_commit": auto.wip, "conflicts": []});
     events::append(p, "unit.sync", ev.clone())?;
     Ok((ev, changed))
 }
 
-fn no(unit: &str, because: String, step: &str) -> Fail {
+fn no(unit: &str, because: String, step: String) -> Fail {
+    use crate::strings::t;
     refuse_owned(
-        format!("sync {unit}"),
+        t("unit_sync.what", &[("unit", unit)]),
         because,
-        vec![step.into()],
-        "`bf unit sync` brings the unit's branch up to the checkpoint branch.",
+        vec![step],
+        t("unit_sync.worked", &[]),
     )
 }
 
 pub(crate) fn unit_sync(p: &Project, unit: &str) -> R<Value> {
+    use crate::strings::t;
     let _lock = crate::lock::engine(p, &format!("sync {unit}"))?;
     let st = events::require_chain(p)?;
     need_run(&st)?;
@@ -137,78 +122,149 @@ pub(crate) fn unit_sync(p: &Project, unit: &str) -> R<Value> {
         cur.as_str(),
         "" | "running" | "fixing" | "blocked" | "parked"
     ) {
-        let why = if matches!(cur.as_str(), "review" | "reviewed") {
-            format!("it is in `{cur}`: the content the reviewer judges would change")
+        let key = if matches!(cur.as_str(), "review" | "reviewed") {
+            "unit_sync.no.state_review"
         } else {
-            format!("it is `{cur}`")
+            "unit_sync.no.state_other"
         };
         return Err(no(
             unit,
-            why,
-            "Let the review end, or sync after findings send the unit back to work.",
+            t(key, &[("state", &cur)]),
+            t("unit_sync.no.state_step", &[]),
         ));
     }
     let Some(c) = ctx(p, unit) else {
         return Err(no(
             unit,
-            "the unit has no working copy".into(),
-            "Use `bf unit start` first, or a unit ID from `bf status`.",
+            t("unit_sync.no.copy", &[]),
+            t("unit_sync.no.copy_step", &[]),
         ));
     };
     if crate::scope::open_request(&st, unit).is_some() {
         return Err(no(
             unit,
-            "a request for files is open".into(),
-            "Let the request be answered (`bf next`), then sync.",
+            t("unit_sync.no.request", &[]),
+            t("unit_sync.no.request_step", &[]),
         ));
     }
     if let Some(so) = &st.sync_open {
         return Err(no(
             unit,
-            format!("a sync of the main branch into {} is open", so.checkpoint),
-            "Settle that sync (`bf next`), then sync the unit.",
+            t("unit_sync.no.sync_open", &[("checkpoint", &so.checkpoint)]),
+            t("unit_sync.no.sync_open_step", &[]),
+        ));
+    }
+    if merge_in_progress(&c.wt) {
+        let mut files = marked_files(p, unit);
+        if files.is_empty() {
+            files = unmerged(&c.wt);
+        }
+        return Err(no(
+            unit,
+            t("unit_sync.no.merging", &[("files", &files.join(", "))]),
+            t("unit_sync.no.merging_step", &[]),
         ));
     }
     if !status(&c.wt)?.is_empty() {
         return Err(no(
             unit,
-            "the working copy has changes `git status` shows".into(),
-            "The builder commits them or puts them back; then sync.",
+            t("unit_sync.no.dirty", &[]),
+            t("unit_sync.no.dirty_step", &[]),
         ));
     }
     if gitx::is_ancestor(&c.repo, &c.cpb, &c.ub) {
         return Err(no(
             unit,
-            "nothing to do: the checkpoint branch is already in the unit's branch".into(),
-            "Go on with the unit.",
+            t("unit_sync.no.nothing", &[]),
+            t("unit_sync.no.nothing_step", &[]),
         ));
     }
     let ff = count(&c, &format!("{}..{}", c.cpb, c.ub)) == 0;
-    let (ev, changed) = take_in(p, unit, &c, "sync", ff, None)?;
+    let auto = Auto { wip: String::new() };
+    let (ev, changed) = take_in(p, unit, &c, "sync", ff, &auto)?;
     p.write_guard()?;
+    let mut out = ev;
+    if s(&out, "how") == "aborted" {
+        let files = str_list(&out, "files");
+        let stuck = gitx::must(&c.wt, &["rev-parse", "HEAD"]).ok().as_deref()
+            != Some(s(&out, "commit"))
+            || merge_in_progress(&c.wt);
+        let because = if files.is_empty() {
+            t(
+                "unit_sync.aborted.because_none",
+                &[("checkpoint", &c.cpb), ("why", s(&out, "why"))],
+            )
+        } else {
+            t(
+                "unit_sync.aborted.because",
+                &[("checkpoint", &c.cpb), ("files", &files.join(", "))],
+            )
+        };
+        let wt = c.wt.display().to_string();
+        let step = if stuck {
+            t("unit_sync.aborted.step_stuck", &[("path", &wt)])
+        } else {
+            t("unit_sync.aborted.step", &[])
+        };
+        return Err(no_with(
+            unit,
+            because,
+            step,
+            t("unit_sync.aborted.worked", &[]),
+        ));
+    }
+    let conflicts = str_list(&out, "conflicts");
+    if !conflicts.is_empty() {
+        let _ = super::brief::write_brief(p, unit, "builder");
+        out["line"] = json!(format!(
+            "{}\n{}",
+            t(
+                "unit_sync.line.conflicts",
+                &[("unit", unit), ("files", &conflicts.join(", "))]
+            ),
+            t("unit_sync.step.conflicts", &[("unit", unit)])
+        ));
+        out["step"] = json!(t("unit_sync.step.conflicts", &[("unit", unit)]));
+        return Ok(out);
+    }
     let granted = crate::scope::granted_files(&st, unit);
     let files: Vec<&String> = changed
         .iter()
         .filter(|f| granted.iter().any(|g| util::path_matches(g, f)))
         .collect();
-    let mut out = ev;
-    let line = format!(
-        "{unit}: {} ({}); granted files the checkpoint changed: {}",
-        s(&out, "how"),
-        &s(&out, "new_base")[..12.min(s(&out, "new_base").len())],
-        if files.is_empty() {
-            "none".into()
-        } else {
-            files
-                .iter()
-                .map(|f| f.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
+    let list = if files.is_empty() {
+        t("unit_sync.line.none", &[])
+    } else {
+        files
+            .iter()
+            .map(|f| f.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let line = t(
+        "unit_sync.line.merged",
+        &[
+            ("unit", unit),
+            ("how", s(&out, "how")),
+            (
+                "base",
+                &s(&out, "new_base")[..12.min(s(&out, "new_base").len())],
+            ),
+            ("files", &list),
+        ],
     );
     out["files"] = json!(files);
     out["line"] = json!(line);
     Ok(out)
+}
+
+fn no_with(unit: &str, because: String, step: String, worked: String) -> Fail {
+    refuse_owned(
+        crate::strings::t("unit_sync.what", &[("unit", unit)]),
+        because,
+        vec![step],
+        worked,
+    )
 }
 
 fn merge_in_progress(wt: &Path) -> bool {
@@ -229,7 +285,7 @@ pub(crate) fn unmerged(wt: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The latest automatic sync of the unit, from the log.
+/// The latest `unit.sync` of the unit, of any cause, from the log.
 fn latest_auto(p: &Project, unit: &str) -> Option<Value> {
     let log = events::load_log(p).ok()?;
     latest_auto_in(&log.events, unit)
@@ -238,7 +294,7 @@ fn latest_auto(p: &Project, unit: &str) -> Option<Value> {
 fn latest_auto_in(evs: &[Value], unit: &str) -> Option<Value> {
     evs.iter()
         .rev()
-        .find(|e| e["kind"] == "unit.sync" && s(e, "unit") == unit && s(e, "cause") != "sync")
+        .find(|e| e["kind"] == "unit.sync" && s(e, "unit") == unit)
         .cloned()
 }
 
@@ -398,6 +454,7 @@ pub(crate) fn finish_merge(p: &Project, unit: &str) -> R<()> {
     for f in &files {
         gitx::must(&wt, &["add", "-A", "--", f])?;
     }
+    gitx::add_all_without_junk(&wt)?;
     let msg = t(
         "autosync.merge_commit",
         &[("unit", unit), ("files", &files.join(", "))],
@@ -451,7 +508,7 @@ fn auto_inner(p: &Project, st: &State, unit: &str, cause: &str) -> (u64, Option<
     let ff = count(&c, &format!("{}..{}", c.cpb, c.ub)) == 0;
     let auto = Auto { wip };
     let mut ev = None;
-    if let Ok((e, _)) = take_in(p, unit, &c, cause, ff, Some(&auto)) {
+    if let Ok((e, _)) = take_in(p, unit, &c, cause, ff, &auto) {
         if s(&e, "how") == "aborted" || !str_list(&e, "conflicts").is_empty() {
             let _ = p.write_guard();
             let _ = super::brief::write_brief(p, unit, "builder");
@@ -474,22 +531,84 @@ fn sent_back(p: &Project, unit: &str) -> Option<Value> {
         .then(|| last.clone())
 }
 
-/// The reviewer's view of a resolution round: the conflicted files of the landing that sent the unit
-/// back and what the builder changed while resolving them, as a diff against what git merges by itself.
+/// The index in the log after which a reviewer's round looks for syncs: the unit's latest report of a
+/// reviewer, else the unit's latest start.
+fn round_start(evs: &[Value], unit: &str) -> usize {
+    let at =
+        |pred: &dyn Fn(&Value) -> bool| evs.iter().rposition(|e| s(e, "unit") == unit && pred(e));
+    at(&|e| e["kind"] == "unit.report" && s(e, "role") == "reviewer")
+        .or_else(|| at(&|e| e["kind"] == "unit.start"))
+        .unwrap_or(0)
+}
+
+/// The files each `unit.sync` of the unit since the reviewer's latest round (for the first round, since
+/// the unit's start) took in from the checkpoint branch.
+pub(crate) fn taken_in(p: &Project, unit: &str) -> Vec<String> {
+    let Ok(log) = events::load_log(p) else {
+        return Vec::new();
+    };
+    let Some(c) = ctx(p, unit) else {
+        return Vec::new();
+    };
+    let from = round_start(&log.events, unit);
+    let mut out: Vec<String> = Vec::new();
+    for e in log.events.iter().skip(from + 1) {
+        if e["kind"] != "unit.sync" || s(e, "unit") != unit || s(e, "new_base").is_empty() {
+            continue;
+        }
+        let d = gitx::must(
+            &c.repo,
+            &["diff", "--name-only", s(e, "old_base"), s(e, "new_base")],
+        )
+        .unwrap_or_default();
+        for f in d.lines() {
+            if !out.iter().any(|o| o == f) {
+                out.push(f.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The files of the unit's own diff against its checkpoint branch.
+pub(crate) fn own_files(p: &Project, unit: &str) -> Vec<String> {
+    let Some(c) = ctx(p, unit) else {
+        return Vec::new();
+    };
+    gitx::must(
+        &c.wt,
+        &["diff", "--name-only", &format!("{}...HEAD", c.cpb)],
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(String::from)
+    .collect()
+}
+
+/// The reviewer's view of a resolution round: the conflicted files of the landing or the sync that left a
+/// conflict for the builder and what the builder changed while resolving them, as a diff against what git
+/// merges by itself.
 pub(crate) fn resolution_diff(p: &Project, unit: &str) -> Option<(Vec<String>, String)> {
     let log = events::load_log(p).ok()?;
     let mine = |e: &&Value| e["kind"] == "unit.report" && s(e, "unit") == unit;
     let sent = log.events.iter().rposition(|e| {
         mine(&e) && s(e, "role") == "engine" && s(e, "from") == "reviewed" && s(e, "to") == "fixing"
-    })?;
+    });
     let found = log
         .events
         .iter()
         .rposition(|e| mine(&e) && s(e, "result") == "findings");
-    if found.is_some_and(|j| j > sent) {
-        return None;
-    }
-    let files = str_list(&log.events[sent], "conflicts");
+    let sent = sent.filter(|i| !found.is_some_and(|j| j > *i));
+    let from = round_start(&log.events, unit);
+    let synced = log.events.iter().rposition(|e| {
+        e["kind"] == "unit.sync" && s(e, "unit") == unit && !str_list(e, "conflicts").is_empty()
+    });
+    let synced = synced.filter(|i| *i > from);
+    let pick = match (sent, synced) {
+        (Some(a), Some(b)) => a.max(b),
+        (a, b) => a.or(b)?,
+    };
+    let files = str_list(&log.events[pick], "conflicts");
     if files.is_empty() {
         return None;
     }

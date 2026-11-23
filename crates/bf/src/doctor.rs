@@ -268,9 +268,18 @@ pub fn doctor(p: &Project) -> R<Value> {
             )
         },
     );
+    // The disk the run holds: information and a warning, never a problem (D-109).
+    let look = crate::run::cleanup::disk::look(p);
+    add("disk", true, look.line());
     // A check that waited over ten minutes for a place of the heavy checks: information, no problem.
     let heavy_waits = evidence::long_waits(p);
-    Ok(json!({"ok": ok, "checks": checks, "heavy_waits": heavy_waits}))
+    let disk = json!({
+        "held_bytes": look.held,
+        "free_bytes": look.free,
+        "warn": look.warn,
+        "low": look.low,
+    });
+    Ok(json!({"ok": ok, "checks": checks, "disk": disk, "heavy_waits": heavy_waits}))
 }
 
 fn time_ms<F: FnMut()>(n: usize, mut f: F) -> (f64, f64) {

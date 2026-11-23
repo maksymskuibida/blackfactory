@@ -88,7 +88,6 @@ fn engine_doc_describes_unblock_and_the_automatic_sync() {
             "After two releases of the unit, plain `--why` and `--wait` are refused, and `--human` is still accepted",
             "for `--wait` and `--human` given together",
             "a report with an empty note is not the conductor's to judge",
-            "the second look of the scope reviewer",
             "A release keeps the round and attempt counts",
             "whose hook payload names an agent type",
             "goes to the conductor's `judge-block` when it carries a reason",

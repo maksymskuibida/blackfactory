@@ -8,6 +8,7 @@ mod amend;
 mod ask;
 mod brief;
 mod checkpoint;
+mod clean;
 mod cost;
 mod doctor;
 mod evidence;
@@ -527,6 +528,7 @@ fn dispatch(args: &Args) -> R<()> {
         "head" => head::cmd_head(args),
         "absent" => absent::cmd_absent(args),
         "doctor" => doctor::cmd_doctor(args),
+        "clean" => clean::cmd_clean(args),
         "intent" => intent::cmd_intent(args),
         "space" => space::cmd_space(args),
         "waiting" => waiting::cmd_waiting(args),

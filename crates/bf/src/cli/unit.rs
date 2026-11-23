@@ -56,10 +56,17 @@ pub(crate) fn cmd_unit(args: &Args) -> R<()> {
         }
     };
     out(args, &v, || match sub {
-        "start" => format!(
-            "{unit} working copy: {}",
-            v["working_copy"].as_str().unwrap_or("")
-        ),
+        "start" => {
+            let mut line = format!(
+                "{unit} working copy: {}",
+                v["working_copy"].as_str().unwrap_or("")
+            );
+            if let Some(w) = v["disk_warning"].as_str() {
+                line.push('\n');
+                line.push_str(w);
+            }
+            line
+        }
         "release" => format!(
             "{unit} is back at work ({})",
             v["state"].as_str().unwrap_or("")

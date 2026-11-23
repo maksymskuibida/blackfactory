@@ -298,6 +298,10 @@ pub fn sweep(p: &Project, st: &State) -> Vec<Removed> {
         if !plain(id) || st.unit_state(id) != "landed" || !work.join(id).exists() {
             continue;
         }
+        // A copy with a live token stays: someone is working there.
+        if token_live(&tokens, id) {
+            continue;
+        }
         let path = work.join(id);
         let bytes = size_of(&path);
         match remove_unit_copy(p, id) {
@@ -308,7 +312,7 @@ pub fn sweep(p: &Project, st: &State) -> Vec<Removed> {
     }
     for c in &pl.checkpoints {
         let k = s(c, "id");
-        if !plain(k) || !st.closed.contains_key(k) {
+        if !plain(k) || !st.closed.contains_key(k) || token_live(&tokens, k) {
             continue;
         }
         let mut roots = vec![work.join(k), work.join(format!("{k}-review"))];
