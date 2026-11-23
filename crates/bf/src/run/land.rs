@@ -128,6 +128,34 @@ pub fn open_reason(p: &Project, st: &State, k: &str) -> Option<&'static str> {
     }
 }
 
+/// The line of a unit that waits for an open turn of its checkpoint. A review round that cannot go on yet (not
+/// every unit of the checkpoint has landed) also names the human's way out.
+pub fn wait_line(
+    p: &Project,
+    st: &State,
+    pl: &plan::Plan,
+    unit: &str,
+    k: &str,
+    why: &str,
+) -> String {
+    let w = t(&format!("land_merge.waits.why.{why}"), &[]);
+    let mut line = t(
+        "land_merge.waits.open",
+        &[("unit", unit), ("why", &w), ("checkpoint", k)],
+    );
+    let _ = p;
+    let all_landed = pl
+        .units
+        .iter()
+        .filter(|x| s(x, "checkpoint") == k)
+        .all(|x| st.unit_state(s(x, "id")) == "landed");
+    if why == "review" && !all_landed {
+        line.push(' ');
+        line.push_str(&t("land_merge.waits.abort_hint", &[("checkpoint", k)]));
+    }
+    line
+}
+
 /// Test seam: hold the turn open at a named point until the process's input ends.
 pub(crate) fn hold_point(name: &str, k: &str) {
     if std::env::var("BF_HOLD_AT").is_ok_and(|v| v == name) {
@@ -150,10 +178,9 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     // The unit's own rules come first: a refusal about the unit is more to the point than a wait.
     ready(p, &st, &pl, &evidence::load_receipts(p)?, unit, true)?;
     if let Some(why) = open_reason(p, &st, k) {
-        let w = t(&format!("land_merge.waits.why.{why}"), &[]);
         return Ok(
             json!({"unit": unit, "landed": false, "waiting": true, "checkpoint": k,
-            "line": t("land_merge.waits.open", &[("unit", unit), ("why", &w), ("checkpoint", k)])}),
+            "line": wait_line(p, &st, &pl, unit, k, why)}),
         );
     }
     recover(p, &st, &pl, k, unit)?;

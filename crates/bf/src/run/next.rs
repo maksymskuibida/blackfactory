@@ -357,10 +357,9 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 // round of the checkpoint is open, or another process holds the turn.
                 let k = s(u, "checkpoint");
                 if let Some(why) = super::land::open_reason(p, &st, k) {
-                    let w = crate::strings::t(&format!("land_merge.waits.why.{why}"), &[]);
                     waiting.push(format!(
                         "{id}: {}",
-                        crate::strings::t("land_merge.waits.open", &[("unit", &id), ("why", &w), ("checkpoint", k)])
+                        super::land::wait_line(p, &st, &pl, &id, k, why)
                     ));
                 } else if crate::lock::turn_open(p, k) {
                     waiting.push(format!(

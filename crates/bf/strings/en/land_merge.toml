@@ -10,6 +10,7 @@
 "land_merge.waits.open" = "{unit} waits: {why} of {checkpoint} is open, and no landing turn opens meanwhile. `bf next` offers it again when that ends."
 "land_merge.waits.why.sync" = "a sync of the main branch"
 "land_merge.waits.why.fix" = "a fix"
+"land_merge.waits.abort_hint" = "The round cannot go on until every unit of {checkpoint} has landed. If the round is dead, the human may end it: `bf checkpoint review {checkpoint} --abort --quote \"<their words>\"`."
 "land_merge.waits.why.review" = "a review round"
 
 "land_merge.left.paused" = "it is paused"
@@ -52,3 +53,10 @@
 "land_merge.recheck.findings" = "it has open findings: {ids}"
 
 "land_merge.brief.after" = "Fix the failing tests named above in your working copy, run the unit's checks again and report. The unit then gets one review round on the change, and lands after a clean one."
+
+"ckreview.abort.closed.why" = "{k} is closed, so it has no review round to end"
+"ckreview.abort.closed.step" = "Nothing to do: a closed checkpoint takes no more review."
+"ckreview.abort.none.why" = "{k} has no open review round: its last round has a result, or none was opened"
+"ckreview.abort.none.step" = "`bf status` shows the rounds of the checkpoint; `bf next` shows what it waits for."
+"ckreview.abort.check" = "`bf status` shows the round as void and `bf next` offers the landing again."
+"ckreview.abort.done" = "the open review round of {k} is ended; it counts as no review"
