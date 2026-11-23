@@ -243,8 +243,8 @@ fn conductor_unblock_an_empty_note_stays_with_the_human() {
 #[test]
 fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor() {
     let (fx, _wc) = setup(false);
-    let run = |agent: Option<&str>| -> String {
-        let mut payload = json!({"tool_name": "Bash", "tool_input": {"command": "bf unit unblock U-1 --why \"x\""},
+    let run_cmd = |agent: Option<&str>, cmd: &str| -> String {
+        let mut payload = json!({"tool_name": "Bash", "tool_input": {"command": cmd},
             "cwd": fx.root.to_string_lossy(), "session_id": "s"});
         if let Some(a) = agent {
             payload["agent_type"] = json!(a);
@@ -254,11 +254,29 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         assert_eq!(o.code, 0, "{}", o.all());
         o.stdout
     };
+    let run = |agent: Option<&str>| run_cmd(agent, "bf unit unblock U-1 --why \"x\"");
     for a in ["builder", "repair-judge", "designer"] {
         let out = run(Some(a));
         assert!(out.contains("deny") && out.contains(a), "{a}: {out}");
     }
     assert!(!run(None).contains("deny"));
+    // A flag before `unblock`, or a word the shell expands at run time, is the same call.
+    for cmd in [
+        "bf unit --json unblock U-1 --why x",
+        "bf unit --wait unblock U-1 --why x",
+        "bf unit $E unblock U-1 --why x",
+        "bf unit ${E}unblock U-1 --why x",
+    ] {
+        let out = run_cmd(Some("builder"), cmd);
+        assert!(out.contains("deny"), "{cmd}: {out}");
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
+    for cmd in [
+        "bf unit unblock U-1 --wait --why x",
+        "bf unit --json status U-1",
+    ] {
+        assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
+    }
 }
 
 #[test]
@@ -315,12 +333,25 @@ fn conductor_unblock_the_note_and_refusal_count_since_the_human_release() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(note.contains("release 1: new one") && note.contains("release 2: new two"), "{note}");
-    assert!(note.contains("release 1 (before the human's own release of the unit): old one"), "{note}");
-    assert!(note.contains("release 2 (before the human's own release of the unit): old two"), "{note}");
+    assert!(
+        note.contains("release 1: new one") && note.contains("release 2: new two"),
+        "{note}"
+    );
+    assert!(
+        note.contains("release 1 (before the human's own release of the unit): old one"),
+        "{note}"
+    );
+    assert!(
+        note.contains("release 2 (before the human's own release of the unit): old two"),
+        "{note}"
+    );
     assert!(!note.contains("release 3"), "{note}");
     let o = fx.refused(&["unit", "unblock", "U-1", "--why", "again"]);
-    assert!(o.all().contains("new one") && !o.all().contains("old one"), "{}", o.all());
+    assert!(
+        o.all().contains("new one") && !o.all().contains("old one"),
+        "{}",
+        o.all()
+    );
 }
 
 #[test]
@@ -333,6 +364,13 @@ fn conductor_unblock_with_no_release_left_a_wait_is_refused_and_the_human_keeps_
     assert!(directive(&fx, "decide-unit").is_some());
     assert!(waiting(&fx).iter().all(|w| !w.starts_with("U-1:")));
     // A `human` judgment is still taken.
-    fx.must(&["unit", "unblock", "U-1", "--human", "--why", "only the human"]);
+    fx.must(&[
+        "unit",
+        "unblock",
+        "U-1",
+        "--human",
+        "--why",
+        "only the human",
+    ]);
     assert!(directive(&fx, "decide-unit").is_some());
 }

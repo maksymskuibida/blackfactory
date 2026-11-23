@@ -4968,9 +4968,11 @@ fn agent_type(input: &Value) -> &str {
 /// does not mark as a subagent cannot be told from the conductor.
 fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
     let hit = crate::shellparse::bf_calls(cmd).into_iter().any(|c| {
-        let rest = bf_rest(&c.words);
-        rest.first().map(|x| x.as_str()) == Some("unit")
-            && rest.get(1).map(|x| x.as_str()) == Some("unblock")
+        // The plain words the command line parser keeps: flags may stand anywhere, before `unblock` too.
+        let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
+        let run_time = |w: Option<&String>| w.is_some_and(|x| x.contains('$') || x.contains('`'));
+        plain.first().map(|x| x.as_str()) == Some("unit")
+            && (plain.get(1).map(|x| x.as_str()) == Some("unblock") || run_time(plain.get(1)))
     });
     if !hit {
         return None;
@@ -5004,7 +5006,14 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
         let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
         let sub = plain.first().map(|x| x.as_str()).unwrap_or("");
         let second = plain.get(1).map(|x| x.as_str()).unwrap_or("");
+        // A word the shell expands at run time (`$E`, `${E}check`) may vanish and leave the barred
+        // subcommand: it cannot be read here, so it is refused where a bar stands.
+        let run_time = plain
+            .iter()
+            .take(2)
+            .any(|x| x.contains('$') || x.contains('`'));
         let barred = match sub {
+            "record" | "amend" | "checkpoint" if run_time => true,
             "record" => matches!(second, "put" | "remove"),
             "amend" => matches!(
                 second,
