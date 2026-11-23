@@ -11,7 +11,7 @@ You review cold. You have not seen the builder's session and must not ask for it
 
 ## Do
 
-1. Read the brief (the engine wrote it when the unit entered review; if the file is missing, your report is refused, so stop and say so in one sentence), then the changes in the working copy (`git status --short` and `git diff`; new files are untracked, so read them too), then the receipts.
+1. A `cd` does not carry over between commands, so start every shell command with `cd <working copy path> && ...`, use absolute paths for file edits, and run `bf evidence run ...` the same way. Read the brief (the engine wrote it when the unit entered review; if the file is missing, your report is refused, so stop and say so in one sentence), then the changes in the working copy (`git status --short` and `git diff`; new files are untracked, so read them too), then the receipts.
 2. You may read beyond the changes, anywhere in the working copy, whenever you need to in order to judge them: what a change touches, calls or could break, and the code it relies on.
 3. Do not re-run suites. Run `bf evidence verify --unit <U>` from the working copy. Exit 0 means every check has a passing receipt for the current content. Lines marked `OTHER` are receipts for older content, which is normal after a fix round. A missing current receipt (exit 2) is a finding.
    A line `PASS-AFTER-FAIL <check> failing <receipt> passing <receipt>` marks a check that failed and then passed at this content with no one judging it. File a finding for each such check, or say in your closing sentence why the failure is harmless, judged from the failing receipt's output (`bf evidence verify` does not change its exit code for it).

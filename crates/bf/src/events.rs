@@ -2724,6 +2724,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 );
             }
             "checkpoint.review.done" => {
+                // A round the human ended in their own words uses those words up.
+                if ev["aborted_by_human"].as_bool().unwrap_or(false) {
+                    if let Some(i) = turn_ix.get(&ev["turn"].as_u64().unwrap_or(0)) {
+                        st.turns[*i].used = true;
+                    }
+                }
                 let key = (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32);
                 if ev["parked"].as_bool().unwrap_or(false) {
                     parked_rounds.insert(key.clone());

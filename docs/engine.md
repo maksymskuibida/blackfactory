@@ -8,7 +8,8 @@ This page lists every command with one example and the refusals you can meet. Fo
 
 ```bash
 cargo build --release          # binary at target/release/bf
-cargo test                     # unit, attack, resume, timing and end-to-end tests
+cargo nextest run              # unit, attack, resume and end-to-end tests
+cargo nextest run --profile extended   # the same plus the timing tests, on a quiet machine
 ```
 
 ```bash
@@ -303,6 +304,8 @@ What became of a finding is one of three: **fixed** (with the unit or units whos
 **Probes.** Every probe test a reviewer writes goes in `probes` with `name`, `meant` (what it was meant to show), `showed`, and `file` (its path inside the reviewer's copy), `command` and `expect` (the right answer). The engine stores the file under `factory/evidence/probes/<K>-review-<n>/`, apart from the checkpoint's code. A probe holding a home path, a link, an e-mail address or the name of the person at the machine is refused. A finding that a probe exposed names it in `probe`. The checkpoint fix for that finding must add the probe to the suite as a permanent test: the builder's `built` report is refused until the file is committed in the checkpoint's working copy, holds the stored probe, and its command gives the expected exit (`expect_exit`, 0 by default).
 
 **When a checkpoint may close.** It cannot close while a critical, high or medium finding of any review since the human last released it is open, and it cannot close while a fix of it is open, whatever opened the fix (`bf checkpoint close` names the fix and `bf next`). A review that files none lets it go on to its close; its low findings are listed for the human (`decide-low-findings`), who accepts them together or picks some to be fixed, and they never hold the checkpoint back. The number of reviews a checkpoint may have is `[limits] checkpoint_reviews` in the policy (3 as shipped). When it is reached with a high or medium finding still open, the checkpoint parks: no fix opens, no new brief is written, and `bf next` asks the human (`decide-checkpoint-review`). Only the human releases it, in their own words, from a message written after the report that parked it: `bf checkpoint review <K> --release --quote "..."`. The reviews so far then stop counting, and the open findings go to a fix. No review starts while an open high or medium finding waits for the human's decision (`decide-checkpoint-fix`): the brief is refused.
+
+`bf checkpoint review <K> --abort --quote "..."` is the human's way to end an open review round whose reviewer will not report (for example after an amendment reopened units of the checkpoint). It records the round as void, in the human's own words (same quote check as `--release`), so it counts as no review and landing goes on; it refuses when `<K>` has no open round or is closed. `bf unit land` and `bf next` name it while a round that cannot go on blocks a landing.
 
 **The checkpoint fix.** A fix for failed checks or findings runs in the checkpoint's own working copy and parks when its builder reports `blocked`, its attempts reach the limit or its review rounds do. A parked fix waits for the human: `bf checkpoint fix <K> --release --quote "..."` takes only a human message written after the fix parked, so words written before the plan or while the fix ran do not release it. `bf checkpoint fix <K> --abort` needs no words. The replay ignores a release that cites an older message, and a release of a fix that is not parked; the fix stays as it was.
 

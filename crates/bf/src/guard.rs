@@ -365,6 +365,8 @@ thread_local! {
     /// The kind of session judged now: 0 a session with no agent type (the top-level one), 1 a builder
     /// agent, 2 any other agent (reviewer, verifier, auditor, judge, conductor's helpers).
     static ROLE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// Is the session judged now an agent of a type in `COPY_ROLES`?
+    static GETS_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A name part that is not ASCII but folds to an ASCII letter (`ſ`, the Kelvin sign, `ß`, a ligature)
@@ -376,15 +378,14 @@ fn has_lookalike(rel: &str) -> bool {
     })
 }
 
-/// Is this session the builder of the copy it stands in? An agent of another type never is; a session
-/// that tells no type is taken for it only at the root of the copy, where it started.
+/// Is this session a builder working in a copy? A subagent's `cwd` is always the workspace root, so a
+/// builder agent is judged by its role, not its folder: it is taken for the builder of any copy at work
+/// (the guard cannot tie it to one copy). Other agent types never are; a session that tells no type is
+/// taken for it only at the root of the copy, where it started.
 fn builder_in_copy(cwd: &str, base: &str) -> bool {
-    if under(cwd, base).is_none() {
-        return false;
-    }
     match ROLE.with(|r| r.get()) {
         1 => true,
-        0 => cwd.trim_end_matches('/') == base.trim_end_matches('/'),
+        0 => under(cwd, base).is_some() && cwd.trim_end_matches('/') == base.trim_end_matches('/'),
         _ => false,
     }
 }
@@ -4994,6 +4995,18 @@ fn bf_rest(w: &[String]) -> &[String] {
 }
 
 /// The agent type the harness put in the hook payload, if any.
+/// The agent types the conductor starts with a working copy path in the prompt. They enter it from
+/// outside as their first step; the main session (no agent type) and every other agent do not.
+const COPY_ROLES: &[&str] = &[
+    "builder",
+    "reviewer",
+    "verifier",
+    "security-auditor",
+    "legal-auditor",
+    "uiux-verifier",
+    "knowledge-writer",
+];
+
 fn agent_type(input: &Value) -> &str {
     input["agent_type"].as_str().unwrap_or("")
 }
@@ -5611,6 +5624,27 @@ fn is_inline_flag(a: &str) -> bool {
 }
 
 fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
+    // A subagent's folder is always the workspace root, and a `cd` does not carry over between its
+    // commands, so a worker agent that is given a copy starts each command with `cd <copy> && ...`. Such
+    // a command is judged as run from that copy: the rest of the line, with the copy as its folder.
+    if GETS_COPY.with(|g| g.get()) && !matches!(zone_of(table, cwd).kind, "unit" | "checkpoint") {
+        if let Some((target, rest)) = cmd
+            .trim_start()
+            .strip_prefix("cd ")
+            .and_then(|r| r.split_once("&&"))
+        {
+            let t = target.trim();
+            let plain = !t.is_empty()
+                && !t
+                    .contains(|c: char| c.is_whitespace() || "\"'`$;|&<>()\\*?~{}[]!#".contains(c));
+            if plain {
+                let abs = resolve(t, cwd);
+                if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
+                    return check_bash(table, &abs, rest);
+                }
+            }
+        }
+    }
     // Where would a shell really run `bf`? Only a word in command position counts; the word `bf` as an
     // argument, in a pattern or in a heredoc for another program is data.
     let calls = crate::shellparse::bf_calls(cmd);
@@ -5801,9 +5835,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                             );
                         }
                     }
-                    if !(in_worker || in_cp) {
+                    if !(in_worker || in_cp) && !GETS_COPY.with(|g| g.get()) {
                         // A session outside every working copy does not step into one: it would stand
-                        // where a builder stands and be taken for it.
+                        // where a builder stands and be taken for it. A worker agent that is given a copy
+                        // starts at the root and enters it as its first step, so it may. The guard
+                        // cannot tell which copy the caller was given, so such a worker may enter any.
                         let abs = resolve(target, &dir_str);
                         if matches!(zone_of(table, &abs).kind, "unit" | "checkpoint") {
                             return deny(
@@ -6419,6 +6455,7 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     } else {
         resolve(cwd_raw, "/")
     };
+    GETS_COPY.with(|g| g.set(COPY_ROLES.contains(&agent_type(input))));
     ROLE.with(|r| {
         r.set(match agent_type(input) {
             "" => 0,
