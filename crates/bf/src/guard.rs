@@ -5073,9 +5073,9 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
             }
         }
     }
-    // zsh runs `$READNULLCMD` for a command that is only an input redirect.
-    let mut opaque = (vals.contains_key("READNULLCMD") || vals.contains_key("NULLCMD"))
-        && crate::shellparse::null_command_with_redirect(cmd);
+    // zsh runs `$READNULLCMD` or `$NULLCMD` for a command that is only a redirect: a line that
+    // sets either may run its text, wherever that redirect stands.
+    let mut opaque = vals.contains_key("READNULLCMD") || vals.contains_key("NULLCMD");
     let defined = crate::shellparse::defined_functions(cmd);
     let positional = |w: &str| {
         let w = w.trim_start_matches('$');

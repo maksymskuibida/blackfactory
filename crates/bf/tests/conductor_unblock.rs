@@ -440,6 +440,16 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "for x (a) bf unit unblock U-1 --why x",
         "time (bf unit unblock U-1 --why x)",
         "if (bf unit unblock U-1 --why x); then :; fi",
+        // A function defined with a blank before `()`, in every form, runs its body.
+        "f () { bf unit unblock U-1 --why x; }; f",
+        "f ( ) { bf unit unblock U-1 --why x; }; f",
+        "function f () { bf unit unblock U-1 --why x; }; f",
+        "f ()\n{\nbf unit unblock U-1 --why x\n}\nf",
+        "f() (bf unit unblock U-1 --why x); f",
+        "f () (bf unit unblock U-1 --why x); f",
+        "f g () { bf unit unblock U-1 --why x }; g",
+        // A line that sets READNULLCMD runs its text wherever the redirect stands.
+        "READNULLCMD=sh; case x in x) <<< 'bf unit unblock U-1 --why x' ;; esac",
     ] {
         let out = run_cmd(Some("builder"), cmd);
         assert!(
@@ -467,6 +477,8 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "for c in true false; do $c; done",
         "ls src/(lexer|parser)/*.rs",
         "while read -r l; do echo $l; done < src/a.rs",
+        "(cd src && ls) 2>/dev/null",
+        "t () { cargo test unit_sync; }; t",
     ] {
         assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
     }

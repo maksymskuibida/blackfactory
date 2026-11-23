@@ -49,6 +49,9 @@ struct Cmd {
     defines: Vec<String>,
     /// The command has an input redirect, a heredoc or a here string.
     reads_redirect: bool,
+    /// A command of no words right after a `)` or `))`: its redirects belong to that subshell or
+    /// arithmetic (`(cmd) 2>/dev/null`), not to a command of their own.
+    attached: bool,
 }
 
 impl Cmd {
@@ -67,6 +70,7 @@ impl Cmd {
             evaluates: false,
             defines: vec![],
             reads_redirect: false,
+            attached: false,
         }
     }
 }
@@ -340,6 +344,7 @@ pub fn null_command_with_redirect(cmd: &str) -> bool {
     parse(cmd, None, 0, &mut counter, &mut cmds);
     cmds.iter().any(|c| {
         c.words.iter().all(|w| is_assignment(w))
+            && !c.attached
             && (c.reads_redirect || !c.redirs.is_empty() || c.heredoc.is_some())
     })
 }
@@ -1245,6 +1250,11 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     // Functions the command being read defines, and whether it reads an input redirect.
     let mut defines: Vec<String> = Vec::new();
     let mut reads_redirect = false;
+    // The last thing read closed a subshell or arithmetic: a redirect now belongs to it.
+    let mut after_close = false;
+    // The groups opened and not yet closed: `true` for a subshell, `false` for the list of a
+    // `case` pattern or a `for x (..)`.
+    let mut sub_depth: Vec<bool> = Vec::new();
     // Heredoc bodies whose delimiter line was not found.
     let mut unclosed: Vec<String> = Vec::new();
     // The command being read evaluates text as code (see `Cmd::evaluates`).
@@ -1276,6 +1286,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         if words.is_empty() {
                             first_quoted = cur_quoted;
                         }
+                        after_close = false;
                         words.push(w)
                     }
                 }
@@ -1293,6 +1304,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             redir = None;
             dup = false;
             if !words.is_empty() || !redirs.is_empty() || evaluates || reads_redirect {
+                let attached = words.is_empty() && after_close;
                 // `function f [g] { ... }` with an unquoted keyword defines its names.
                 if words.first().is_some_and(|w| w == "function") && !first_quoted {
                     defines.extend(
@@ -1332,8 +1344,10 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     evaluates,
                     defines: std::mem::take(&mut defines),
                     reads_redirect,
+                    attached,
                 });
             }
+            after_close = false;
             group = false;
             group_word = None;
             evaluates = false;
@@ -1625,6 +1639,8 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 evaluates = true;
                 end_cmd!();
                 parse(&inner, via, depth + 1, counter, out);
+                // A redirect after `))` belongs to the arithmetic.
+                after_close = true;
                 i = next + 1;
                 continue;
             }
@@ -1652,9 +1668,16 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 // word: its text holds no command, no blank ends it and no `#` starts a comment in it.
                 // `name()`, `a=(..)` and the lists of `for x (..)`, `select`, `foreach` and `case`
                 // patterns stay what they are.
-                let fn_def = in_word
-                    && (words.is_empty() || words.iter().all(|w| w == "function"))
-                    && b.get(i + 1) == Some(&')');
+                // An empty `()` (or `( )`) defines functions, glued or not: `name()`, `name () {`,
+                // `function name () {`, zsh's `name1 name2 () { }`. Its body is read as commands.
+                let empty = balanced(&b, i + 1).0.trim().is_empty();
+                let fn_def = empty
+                    && ((in_word && (words.is_empty() || words.iter().all(|w| w == "function")))
+                        || (!in_word
+                            && !words.is_empty()
+                            && !words.first().is_some_and(|w| {
+                                matches!(w.as_str(), "for" | "foreach" | "select" | "case")
+                            })));
                 // `name=(` and `name+=(` alone start an array; `/de[=v](..)` is a pattern.
                 let array = in_word
                     && words.is_empty()
@@ -1666,15 +1689,24 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     && words.first().is_some_and(|w| {
                         matches!(w.as_str(), "for" | "foreach" | "select" | "case")
                     });
-                if fn_def && words.is_empty() && !cur_quoted {
+                if fn_def && in_word && words.is_empty() && !cur_quoted {
                     // A real definition: an unquoted name in command position.
                     defines.push(cur.clone());
+                }
+                if fn_def && !in_word && !first_quoted {
+                    // `name () {` and zsh's `name1 name2 () {`; `function name ()` is read by the
+                    // keyword.
+                    if words.first().is_some_and(|w| w != "function") {
+                        defines.extend(words.iter().cloned());
+                    }
                 }
                 if fn_def || array || list {
                     if !(fn_def || array) {
                         group = true;
                     }
                     end_cmd!();
+                    // Its `)` closes no subshell.
+                    sub_depth.push(false);
                 } else {
                     group = true;
                     let (inner, next) = balanced(&b, i + 1);
@@ -1707,6 +1739,13 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             ';' | '|' | '(' | ')' => {
                 let ended = cmd_id;
                 end_cmd!();
+                // A redirect right after the `)` that closes a subshell belongs to it
+                // (`(cmd) 2>/dev/null`); the `)` of a `case` pattern closes none.
+                if c == '(' {
+                    sub_depth.push(true);
+                } else if c == ')' {
+                    after_close = sub_depth.pop() == Some(true);
+                }
                 if (c == '|' || c == ';') && i + 1 < n && b[i + 1] == c {
                     i += 1;
                 } else if c == '|' {

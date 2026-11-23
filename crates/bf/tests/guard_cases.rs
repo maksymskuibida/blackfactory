@@ -523,6 +523,13 @@ fn table() -> Vec<Case> {
         c(139, Root, Refused, "CARGO_ALIAS_X='run --' cargo x human-turn"),
         c(140, Root, Refused, "cargo --config 'alias.x=\"run --\"' x human-turn"),
         c(141, Root, Passed, "cargo test -p bf human_turn"),
+        // A function defined with a blank before `()` runs its body: the path rules judge it.
+        c(142, Root, Refused, "f () { echo x > factory/policy.toml; }; f"),
+        c(143, Root, Refused, "f g () { rm -rf factory; }; g"),
+        c(144, Root, Refused, "f () { bf human-turn; }; f"),
+        // A redirect after a subshell is the subshell's, judged where it lands.
+        c(145, Root, Refused, "(echo x) > factory/policy.toml"),
+        c(146, Root, Passed, "(echo x) > /tmp/out.txt"),
     ]
 }
 

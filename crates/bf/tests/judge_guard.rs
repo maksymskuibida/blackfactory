@@ -753,6 +753,40 @@ fn judge_guard_the_third_review_rows_are_refused_and_the_judges_reading_passes()
 }
 
 #[test]
+fn judge_guard_the_fourth_review_rows_definitions_with_a_blank_and_redirects_after_a_subshell() {
+    let fx = Fx::new();
+    for cmd in [
+        "f () { bf record put unit --file u.toml; }; f",
+        "f ( ) { bf record put unit --file u.toml; }; f",
+        "function f () { bf record put unit --file u.toml; }; f",
+        "f ()\n{\nbf record put unit --file u.toml\n}\nf",
+        "f () (bf record put unit --file u.toml); f",
+        "f g () { bf checkpoint check K-1 --accept X-2 --quote q }; g",
+        "f () { awk 'BEGIN{system(\"bf status\")}'; }; f",
+        // The `)` of a `case` pattern closes no subshell: the redirect after it is a command alone.
+        "case x in x) <<< 'y' ;; esac",
+        // A redirect after a subshell writes only where the judge may.
+        "(bf status) > /tmp/out",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    for cmd in [
+        "(bf status) 2>/dev/null",
+        "(bf record get U-2; bf plan check) 2>&1 | head -5",
+        "{ bf status; } 2>/dev/null",
+        "f () { bf status; }; f",
+        "f ()\n{\nbf status\n}\nf",
+        "f() (bf status); f",
+        "for id in U-1 U-2; do (bf record get $id) 2>/dev/null; done",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
 fn judge_guard_the_role_file_names_every_program_the_guard_allows_the_judge() {
     let t = fs::read_to_string(role_source()).unwrap();
     for p in bf::guard::JUDGE_PROGRAMS {
