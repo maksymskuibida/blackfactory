@@ -467,6 +467,14 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "print -l -- /(e:'bf unit unblock U-1 --why x':)`true`",
         "print -l -- /(e:'bf unit unblock U-1 --why x'~:)",
         "print -l -- /(Ne:'bf unit unblock U-1 --why x':)x",
+        // The seventh review: a group that opens its word (zsh runs nothing there, measured; read
+        // fail-closed), and the places zsh runs a qualifier (measured): an array, a brace group, a
+        // redirect target, after a quoted part.
+        "print -l -- (e:'bf unit unblock U-1 --why x':)",
+        "x=(/(e:'bf unit unblock U-1 --why x':)); :",
+        "print -l -- {a,/(e:'bf unit unblock U-1 --why x':)}",
+        "cat < /(e:'bf unit unblock U-1 --why x':)",
+        "print -l -- \"/\"(e:'bf unit unblock U-1 --why x':)",
         // Found in this round: a prompt the shell expands as code.
         "PS4='$(bf unit unblock U-1 --why x)'; set -x; :",
         "PROMPT_COMMAND='$(bf unit unblock U-1 --why x)'; :",

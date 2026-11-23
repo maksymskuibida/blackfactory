@@ -1743,20 +1743,20 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         // program is a pattern too (`b(f) record put` runs `bf` where a file `bf`
                         // exists).
                         group_word = Some(words.len());
-                        // zsh's `e` glob qualifier runs shell code: `x(e:'cmd':)`. A qualifier is the
-                        // last group of a word and holds no `|` or `~`; `(#q..)` may stand anywhere.
-                        // Read fail-closed: the code of every group after a word, unless its
-                        // unquoted text holds `|` (an alternation, `src/(a|b)/x`). zsh decides
-                        // whether a group is the word's last at run time (an expansion after it may
-                        // be empty: `/(e:..:)$E`), and a `~` is special only under
-                        // `extended_glob` (measured: both run their code).
-                        let bare = unquoted_only(&inner);
-                        let explicit = bare.trim_start().starts_with("#q");
-                        if explicit || !bare.contains('|') {
-                            for code in qualifier_code(&inner, depth + 1) {
-                                let how = via_text("glob_qualifier");
-                                parse(&code, Some(&how), depth + 1, counter, out);
-                            }
+                    }
+                    // zsh's `e` glob qualifier runs shell code: `x(e:'cmd':)`. Read fail-closed:
+                    // the code of every group in a word, with or without characters before it,
+                    // unless its unquoted text holds `|` (an alternation, `src/(a|b)/x`). zsh
+                    // decides whether a group is the word's last at run time (an expansion after
+                    // it may be empty: `/(e:..:)$E`), and a `~` is special only under
+                    // `extended_glob` (measured: both run their code). A group that opens its
+                    // word (`(e:'cmd':)`) runs nothing in zsh (measured), and is read anyway.
+                    let bare = unquoted_only(&inner);
+                    let explicit = bare.trim_start().starts_with("#q");
+                    if explicit || !bare.contains('|') {
+                        for code in qualifier_code(&inner, depth + 1) {
+                            let how = via_text("glob_qualifier");
+                            parse(&code, Some(&how), depth + 1, counter, out);
                         }
                     }
                     // The group stays part of the word; the word goes on after it.

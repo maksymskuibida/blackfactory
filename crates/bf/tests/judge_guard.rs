@@ -843,7 +843,30 @@ fn judge_guard_the_sixth_review_rows_qualifiers_before_an_expansion_or_with_a_ti
         assert_eq!(d, "deny", "{cmd}");
         assert!(why.contains("repair judge"), "{cmd}: {why}");
     }
-    for cmd in ["ls src/(lexer|parser)/*.rs", "ls -d src/(a|b)x"] {
+    // The seventh review: a group that opens its word, and the places a group may stand. zsh runs
+    // the code in an array, a brace group, a redirect target and after a quoted part (measured);
+    // a group that opens its word, or follows `=` or `:` in an argument, runs nothing in zsh
+    // (measured: no match), and is read fail-closed all the same.
+    for cmd in [
+        "print -l -- (e:'bf record put unit --file u.toml':)",
+        "print -l -- (#qe:'bf record put unit --file u.toml':)",
+        "x=(/(e:'bf record put unit --file u.toml':)); :",
+        "print -l -- {a,/(e:'bf record put unit --file u.toml':)}",
+        "cat < /(e:'bf record put unit --file u.toml':)",
+        "print -l -- \"/\"(e:'bf record put unit --file u.toml':)",
+        "print -l -- --x=/(e:'bf record put unit --file u.toml':)",
+        "print -l -- x:/(e:'bf record put unit --file u.toml':)",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    // A path with parentheses and an `e` passes when it is quoted.
+    for cmd in [
+        "ls src/(lexer|parser)/*.rs",
+        "ls -d src/(a|b)x",
+        "ls 'src/(element)/x'",
+    ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_ne!(d, "deny", "{cmd}: {why}");
     }
