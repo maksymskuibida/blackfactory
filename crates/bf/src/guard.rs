@@ -4948,6 +4948,20 @@ fn judge_call(c: &crate::shellparse::Call) -> Option<Decision> {
     None
 }
 
+/// Does a word the shell expands at run time (`$E`, `${E}x`, a backtick or `$(..)`) stand in a `bf` call
+/// before its subcommand, flags and flag values included? It may vanish or join its neighbours and change
+/// what the parser reads, so it cannot be judged. `words` are the words after the program; the part read
+/// is the shortest prefix that holds two plain words (the subcommand and the word after it), or all.
+fn run_time_before_subcommand(words: &[String]) -> bool {
+    let end = (1..=words.len())
+        .find(|&k| crate::cli::Args::parse(&words[..k]).pos.len() >= 2)
+        .unwrap_or(words.len());
+    words[..end]
+        .iter()
+        .take_while(|x| x.as_str() != "--")
+        .any(|x| x.contains('$') || x.contains('`'))
+}
+
 /// The words of a `bf` call after its program and its flags (`-C <dir>` takes a value).
 fn bf_rest(w: &[String]) -> &[String] {
     let mut j = 1;
@@ -4970,9 +4984,10 @@ fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
     let hit = crate::shellparse::bf_calls(cmd).into_iter().any(|c| {
         // The plain words the command line parser keeps: flags may stand anywhere, before `unblock` too.
         let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
-        let run_time = |w: Option<&String>| w.is_some_and(|x| x.contains('$') || x.contains('`'));
-        plain.first().map(|x| x.as_str()) == Some("unit")
-            && (plain.get(1).map(|x| x.as_str()) == Some("unblock") || run_time(plain.get(1)))
+        (plain.first().map(|x| x.as_str()) == Some("unit")
+            && plain.get(1).map(|x| x.as_str()) == Some("unblock"))
+            || (plain.iter().any(|x| x == "unit")
+                && run_time_before_subcommand(c.words.get(1..).unwrap_or(&[])))
     });
     if !hit {
         return None;
@@ -5008,12 +5023,9 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
         let second = plain.get(1).map(|x| x.as_str()).unwrap_or("");
         // A word the shell expands at run time (`$E`, `${E}check`) may vanish and leave the barred
         // subcommand: it cannot be read here, so it is refused where a bar stands.
-        let run_time = plain
-            .iter()
-            .take(2)
-            .any(|x| x.contains('$') || x.contains('`'));
+        let run_time = run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]));
         let barred = match sub {
-            "record" | "amend" | "checkpoint" if run_time => true,
+            _ if run_time => true,
             "record" => matches!(second, "put" | "remove"),
             "amend" => matches!(
                 second,

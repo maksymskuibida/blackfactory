@@ -266,6 +266,12 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "bf unit --wait unblock U-1 --why x",
         "bf unit $E unblock U-1 --why x",
         "bf unit ${E}unblock U-1 --why x",
+        "bf unit --note$E x unblock U-1 --why x",
+        "bf -C$E unit unblock U-1 --why x",
+        "bf --root $E unit unblock U-1 --why x",
+        "bf unit --json$E unblock U-1 --why x",
+        "bf unit `true` unblock U-1 --why x",
+        "bf unit $(true) unblock U-1 --why x",
     ] {
         let out = run_cmd(Some("builder"), cmd);
         assert!(out.contains("deny"), "{cmd}: {out}");
@@ -274,6 +280,8 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
     for cmd in [
         "bf unit unblock U-1 --wait --why x",
         "bf unit --json status U-1",
+        "bf unit unblock U-1 --why \"$(cat f)\"",
+        "bf unit status $U",
     ] {
         assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
     }

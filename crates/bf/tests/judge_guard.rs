@@ -385,6 +385,14 @@ fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
         "bf record $E put unit --file u.toml",
         "bf record `true` remove U-2",
         "bf amend $E approve A-1 --quote x",
+        "bf checkpoint --note$E x check K-1 --accept X-2 --quote q",
+        "bf -C$E checkpoint check K-1 --accept X-2 --quote q",
+        "bf checkpoint --root $E check K-1 --accept X-2 --quote q",
+        "bf checkpoint --json$E check K-1 --accept X-2 --quote q",
+        "bf checkpoint `true` check K-1 --accept X-2 --quote q",
+        "bf checkpoint $(true) check K-1 --accept X-2 --quote q",
+        "bf record --note$E x put unit --file u.toml",
+        "bf amend --note$E x approve A-1 --quote x",
     ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_eq!(d, "deny", "{cmd}");
@@ -409,7 +417,13 @@ fn judge_guard_the_repair_judge_may_not_propose_narrow_or_write() {
         );
         assert_ne!(d, "deny", "{tool}");
     }
-    for cmd in ["bf record get U-2", "bf plan check", "bf status"] {
+    for cmd in [
+        "bf record get U-2",
+        "bf plan check",
+        "bf status",
+        "bf record get $ID",
+        "bf record get U-2 --note \"$(cat f)\"",
+    ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_ne!(d, "deny", "{cmd}: {why}");
     }
