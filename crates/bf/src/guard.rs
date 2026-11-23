@@ -6282,15 +6282,21 @@ mod tests {
                 "mktemp x.XXXX -p /tmp",
                 "mktemp --d x.XXXX",
                 "mktemp -z x.XXXX",
-                "mktemp -tq factory/x.XXXX",
-                "mktemp -td factory/x.XXXX",
-                "mktemp -tq -p /tmp factory/x.XXXX",
                 "TMPDIR=/tmp/p/factory mktemp -t x.XXXX",
                 "mktemp -d -p /tmp/p/factory/.. factory/x.XXXX",
                 "rm -rf /tmp",
             ] {
                 assert!(!run(cmd, &cwd), "should be refused in {cwd}: {cmd}");
             }
+        }
+        // BSD `-t prefix` makes a template word in the current folder: from the project's own folder
+        // that is its protected `factory/`.
+        for cmd in [
+            "mktemp -tq factory/x.XXXX",
+            "mktemp -td factory/x.XXXX",
+            "mktemp -tq -p /tmp factory/x.XXXX",
+        ] {
+            assert!(!run(cmd, &format!("{tmp}/p")), "should be refused: {cmd}");
         }
     }
 
