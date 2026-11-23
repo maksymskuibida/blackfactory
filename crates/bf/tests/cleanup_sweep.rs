@@ -72,11 +72,13 @@ fn a_unit_with_an_event_inside_the_idle_limit_keeps_its_folder() {
 #[test]
 fn a_running_unit_with_a_live_builder_token_keeps_its_folder_past_the_limit() {
     let fx = fixture();
-    idle_zero(&fx);
     fx.set_policy("tokens = false", "tokens = true");
     let wc = start(&fx, "U-1");
     dirty(&wc);
     fx.take_token("U-1", "builder");
+    // The limit goes to zero only now: with it at zero from the start, a slow machine parks the
+    // unit as idle between `unit start` and `bf next`, and the token is never taken.
+    idle_zero(&fx);
     let tokens = fs::read_to_string(fx.state_dir().join("tokens.json")).unwrap();
     assert!(tokens.contains("U-1:builder"), "{tokens}");
     assert!(sweep(&fx).is_empty());
