@@ -450,6 +450,19 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "f g () { bf unit unblock U-1 --why x }; g",
         // A line that sets READNULLCMD runs its text wherever the redirect stands.
         "READNULLCMD=sh; case x in x) <<< 'bf unit unblock U-1 --why x' ;; esac",
+        // The fifth review: every way a line sets READNULLCMD or NULLCMD, and qualifiers that zsh
+        // reads on unquoted characters.
+        "typeset READNULLCMD=sh; <<< 'bf unit unblock U-1 --why x'",
+        "read READNULLCMD <<< sh; <<< 'bf unit unblock U-1 --why x'",
+        "printf -v READNULLCMD sh; <<< 'bf unit unblock U-1 --why x'",
+        ": ${READNULLCMD:=sh}; <<< 'bf unit unblock U-1 --why x'",
+        "declare -x NULLCMD=sh; > /tmp/x",
+        "print -l -- /(e:'bf unit unblock U-1 --why x \"|\"':)",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)''",
+        "print -l -- /(e'|bf unit unblock U-1 --why x|')",
+        // Found in this round: a prompt the shell expands as code.
+        "PS4='$(bf unit unblock U-1 --why x)'; set -x; :",
+        "PROMPT_COMMAND='$(bf unit unblock U-1 --why x)'; :",
     ] {
         let out = run_cmd(Some("builder"), cmd);
         assert!(

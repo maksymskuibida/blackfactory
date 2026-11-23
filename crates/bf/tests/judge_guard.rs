@@ -556,7 +556,8 @@ fn judge_guard_patterns_hidden_calls_and_run_time_code_are_refused_to_the_judge(
         "bf record get U-2 2>&1 | head -5",
         "bf record get U-2 >&2",
         "bf record get U-2 2>/dev/null >&2",
-        "f() { bf status; }; f",
+        // `f() { bf status; }; f` moved to the refused rows of the fifth review: a function the
+        // line defines is no program the judge may run.
         "if (true); then bf status; fi",
         "(bf status)",
         "for id in U-1 U-2; do bf record get $id; done",
@@ -672,7 +673,7 @@ fn judge_guard_the_second_review_rows_are_refused_and_the_judges_reading_passes(
         "grep -n depends_on u.toml | head -3",
         "bf record get U-2 | jq .files",
         "printf '%s\\n' x | head -1",
-        "function f { bf status; }; f",
+        // `function f { bf status; }; f` moved to the refused rows of the fifth review.
         "ls -la ${ID}",
         "/usr/bin/grep -c x u.toml",
     ] {
@@ -744,7 +745,7 @@ fn judge_guard_the_third_review_rows_are_refused_and_the_judges_reading_passes()
         "sort -u u.toml | head -3",
         "print -l a b",
         "print -rn x",
-        "f() { bf status; }; f",
+        // `f() { bf status; }; f` moved to the refused rows of the fifth review.
         "for id in U-1 U-2; do bf record get $id; done 2>/dev/null",
     ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
@@ -776,10 +777,49 @@ fn judge_guard_the_fourth_review_rows_definitions_with_a_blank_and_redirects_aft
         "(bf status) 2>/dev/null",
         "(bf record get U-2; bf plan check) 2>&1 | head -5",
         "{ bf status; } 2>/dev/null",
+        // The three function rows moved to the refused rows of the fifth review.
+        "for id in U-1 U-2; do (bf record get $id) 2>/dev/null; done",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
+fn judge_guard_the_fifth_review_rows_functions_qualifiers_and_writers_are_refused() {
+    let fx = Fx::new();
+    for cmd in [
+        // A function the line defines is no program the judge may run, wherever the definition
+        // stands: after the call, in a subshell, in a branch never taken, or before it.
+        "awk 'BEGIN{system(\"bf record put unit --file u.toml\")}'; awk() { :; }",
+        "(awk() { :; }); awk 'BEGIN{system(\"bf record put unit --file u.toml\")}'",
+        "if false; then awk() { :; }; fi; awk 'BEGIN{system(\"bf record put unit --file u.toml\")}'",
+        "f() { bf status; }; f",
+        "function f { bf status; }; f",
         "f () { bf status; }; f",
         "f ()\n{\nbf status\n}\nf",
         "f() (bf status); f",
-        "for id in U-1 U-2; do (bf record get $id) 2>/dev/null; done",
+        // zsh decides on unquoted characters: a quoted `|` is text, and empty quotes after the
+        // group leave it the last of its word (measured: zsh runs the code of both).
+        "print -l -- /(e:'bf record put unit --file u.toml \"|\"':)",
+        "print -l -- /(e:'bf record put unit --file u.toml':)''",
+        "print -l -- /(e'|bf record put unit --file u.toml|')",
+        // The readers that write a file by an option or an operand.
+        "sort -o /tmp/out u.toml",
+        "sort -uo /tmp/out u.toml",
+        "sort --output=/tmp/out u.toml",
+        "sort --out=/tmp/out u.toml",
+        "uniq u.toml /tmp/out",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    for cmd in [
+        "sort -u u.toml",
+        "sort -k 2 -t , u.toml | uniq -c",
+        "uniq -f 1 u.toml",
+        "ls src/(lexer|parser)/*.rs",
     ] {
         let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
         assert_ne!(d, "deny", "{cmd}: {why}");

@@ -714,6 +714,30 @@ fn unquote(s: &str) -> String {
     out
 }
 
+/// Text with its quoted parts and escaped characters left out: what the shell reads as special.
+fn unquoted_only(s: &str) -> String {
+    let b: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            '\\' => i += 2,
+            q @ ('\'' | '"') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The shell code of the zsh `e` glob qualifiers in the text of a `( )` group (`e:'cmd':`, `e{cmd}`,
 /// `#qe:cmd:`), with quotes removed. The text is read loosely and fails closed: any `e` followed by
 /// any character counts, that character taken as the delimiter, and a `#` is never a comment here.
@@ -1721,9 +1745,16 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         group_word = Some(words.len());
                         // zsh's `e` glob qualifier runs shell code: `x(e:'cmd':)`. A qualifier is the
                         // last group of a word and holds no `|` or `~`; `(#q..)` may stand anywhere.
-                        let trailing = next >= n || " \t\r\n;&|)<>".contains(b[next]);
-                        let explicit = inner.trim_start().starts_with("#q");
-                        if explicit || (trailing && !inner.contains(['|', '~'])) {
+                        // zsh decides on unquoted characters: quoted `|` and `~` are text, and
+                        // empty quotes after the group (`(e:..:)''`) do not move the word's end.
+                        let mut end = next;
+                        while end + 1 < n && matches!(b[end], '\'' | '"') && b[end + 1] == b[end] {
+                            end += 2;
+                        }
+                        let trailing = end >= n || " \t\r\n;&|)<>".contains(b[end]);
+                        let bare = unquoted_only(&inner);
+                        let explicit = bare.trim_start().starts_with("#q");
+                        if explicit || (trailing && !bare.contains(['|', '~'])) {
                             for code in qualifier_code(&inner, depth + 1) {
                                 let how = via_text("glob_qualifier");
                                 parse(&code, Some(&how), depth + 1, counter, out);

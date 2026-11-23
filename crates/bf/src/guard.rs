@@ -5074,8 +5074,9 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
         }
     }
     // zsh runs `$READNULLCMD` or `$NULLCMD` for a command that is only a redirect: a line that
-    // sets either may run its text, wherever that redirect stands.
-    let mut opaque = vals.contains_key("READNULLCMD") || vals.contains_key("NULLCMD");
+    // names either, in any way it may set it (an assignment, `export`, `typeset`, `read`,
+    // `printf -v`, `${NULLCMD:=sh}`), may run its text wherever that redirect stands.
+    let mut opaque = cmd.contains("NULLCMD") || vals.contains_key("NULLCMD");
     let defined = crate::shellparse::defined_functions(cmd);
     let positional = |w: &str| {
         let w = w.trim_start_matches('$');
@@ -5201,7 +5202,22 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
         let rest = v.replace("$(..)", "").replace("`..`", "");
         rest.contains("$(") || rest.contains('`') || rest.contains("${") || rest.contains("(e")
     });
-    if glob_subst || (code_in_value && crate::shellparse::evaluates_text(cmd)) {
+    // The shell also expands a prompt as code: `PS4` under `set -x`, `PROMPT_COMMAND`, a prompt
+    // with `prompt_subst`.
+    let prompt = [
+        "PS1",
+        "PS2",
+        "PS3",
+        "PS4",
+        "PROMPT",
+        "RPROMPT",
+        "xtrace",
+        "set -x",
+        "promptsubst",
+    ]
+    .iter()
+    .any(|w| cmd.contains(w));
+    if glob_subst || (code_in_value && (crate::shellparse::evaluates_text(cmd) || prompt)) {
         opaque = true;
     }
     for words in &lines {
@@ -5362,9 +5378,6 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
         return Some(short(cmd.lines().next().unwrap_or("").to_string()));
     }
     let parsed = crate::shellparse::commands(cmd);
-    // Functions the line really defines (`f() { ... }`, `function f [g] { ... }`, unquoted, in
-    // command position). Their bodies are read as commands of their own.
-    let defined = crate::shellparse::defined_functions(cmd);
     // A variable the judge may set: a lower-case name that is none of zsh's special lower-case
     // parameters (an upper-case one may be a special the shell reads as arithmetic, `COLUMNS`, or
     // a setting a program reads, `RIPGREP_CONFIG_PATH`, `READNULLCMD`).
@@ -5454,12 +5467,10 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
         if crate::shellparse::is_engine(prog) && !run_time_program(prog) {
             continue;
         }
+        // No exemption for a function the line defines: whether a definition is in effect where the
+        // name is called (order, a subshell, a branch never taken) is not read here, so a name runs
+        // only when it is the engine or a listed program.
         let base = basename(prog);
-        // A function the line defines runs its body, which is read on its own; a defined name that
-        // is a listed program keeps that program's rules.
-        if defined.contains(prog) && !run_time_program(prog) && !JUDGE_PROGRAMS.contains(&base) {
-            continue;
-        }
         let known = JUDGE_PROGRAMS.contains(&base)
             && !run_time_program(prog)
             && (!prog.contains('/') || JUDGE_PROGRAM_DIRS.iter().any(|d| prog.starts_with(d)));
@@ -5510,7 +5521,31 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
             || number_format
             || print_option
             || (base == "rg" && args.iter().any(|a| a.starts_with("--pre")))
-            || (base == "sort" && args.iter().any(|a| a.starts_with("--c")));
+            || (base == "sort" && args.iter().any(|a| a.starts_with("--c")))
+            // Writers by an option or an operand: `sort -o file` (and `--o..`, `-uo file`), and
+            // `uniq in out`, which writes its second operand.
+            || (base == "sort"
+                && args.iter().any(|a| {
+                    a.starts_with("--o")
+                        || (a.starts_with('-') && !a.starts_with("--") && a.contains('o'))
+                }))
+            || (base == "uniq" && {
+                // Operands, with the values of `-f`, `-s` and `-w` left out.
+                let mut operands = 0;
+                let mut k = 0;
+                while k < args.len() {
+                    let a = args[k].as_str();
+                    if matches!(a, "-f" | "-s" | "-w") {
+                        k += 2;
+                        continue;
+                    }
+                    if !a.starts_with('-') || a == "-" {
+                        operands += 1;
+                    }
+                    k += 1;
+                }
+                operands > 1
+            });
         if numeric_test || runs_program {
             return Some(words());
         }
