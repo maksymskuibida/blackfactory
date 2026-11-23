@@ -39,11 +39,16 @@ struct Cmd {
     procs: Vec<String>,
     /// See `Call::group`.
     group: bool,
-    /// The group touched the last word (`x(N)`): that word is a pattern.
-    group_last: bool,
+    /// The index of a word that is itself a pattern because a group touches it (`b(f)`, `x(N)`).
+    group_word: Option<usize>,
     /// The command line evaluates text as code at run time here: arithmetic (`$(( ))`, `(( ))`,
     /// `$[ ]`), a zsh parameter flag (`${(e)V}`) or a bash parameter operator (`${V@P}`).
     evaluates: bool,
+    /// The functions this command defines: an unquoted `name()` in command position, or the names
+    /// after an unquoted keyword `function`.
+    defines: Vec<String>,
+    /// The command has an input redirect, a heredoc or a here string.
+    reads_redirect: bool,
 }
 
 impl Cmd {
@@ -58,8 +63,10 @@ impl Cmd {
             pipe_from: None,
             procs: vec![],
             group: false,
-            group_last: false,
+            group_word: None,
             evaluates: false,
+            defines: vec![],
+            reads_redirect: false,
         }
     }
 }
@@ -239,6 +246,11 @@ fn ansi_c(b: &[char], mut i: usize) -> (String, bool, usize) {
     (text, unknown, i)
 }
 
+/// The index of the `-c` string of the shell at `words[i]`, as `shell_command_string` reads it.
+pub fn shell_string(words: &[String], i: usize) -> Option<usize> {
+    shell_command_string(words, i)
+}
+
 /// Is the program word a shell the parse reads `-c` and scripts for?
 pub fn is_shell(w: &str) -> bool {
     SHELLS.contains(&basename(w))
@@ -281,7 +293,55 @@ pub fn engine_calls(cmd: &str) -> Vec<Call> {
     parse(cmd, None, 0, &mut counter, &mut cmds);
     let mut calls = Vec::new();
     collect(cmds, None, 0, &mut calls);
+    // `export CARGO_ALIAS_X='run --'; cargo x ...`: an alias the line sets reaches every cargo call.
+    let parsed = commands(cmd);
+    let line_alias = parsed.iter().any(|p| {
+        p.words
+            .iter()
+            .any(|w| w.to_ascii_uppercase().starts_with("CARGO_ALIAS_") && w.contains('='))
+    });
+    if line_alias {
+        for p in &parsed {
+            if let Some(i) = program_index(&p.words) {
+                if basename(&p.words[i]) == "cargo" {
+                    let mut words = vec!["bf".to_string()];
+                    words.extend(p.words[i + 1..].iter().cloned());
+                    calls.push(Call {
+                        words,
+                        via: None,
+                        group: true,
+                        cargo: true,
+                    });
+                }
+            }
+        }
+    }
     calls
+}
+
+/// The functions the command line defines in its own shell: an unquoted `name()` in command position
+/// or names after an unquoted keyword `function`. A quoted `"function"`, a `name()` in a comment or a
+/// string, a body of a heredoc and the inside of a substitution define nothing here.
+pub fn defined_functions(cmd: &str) -> Vec<String> {
+    let mut counter = 0usize;
+    let mut cmds = Vec::new();
+    parse(cmd, None, 0, &mut counter, &mut cmds);
+    cmds.into_iter()
+        .filter(|c| c.via.is_none())
+        .flat_map(|c| c.defines)
+        .collect()
+}
+
+/// Is there a command with no program, only assignments, that has a redirect, a heredoc or a here
+/// string? zsh runs `$READNULLCMD` or `$NULLCMD` for it (`READNULLCMD=sh; <<< 'cmd'`).
+pub fn null_command_with_redirect(cmd: &str) -> bool {
+    let mut counter = 0usize;
+    let mut cmds = Vec::new();
+    parse(cmd, None, 0, &mut counter, &mut cmds);
+    cmds.iter().any(|c| {
+        c.words.iter().all(|w| is_assignment(w))
+            && (c.reads_redirect || !c.redirs.is_empty() || c.heredoc.is_some())
+    })
 }
 
 /// Does the command line evaluate text as code at run time (see `Cmd::evaluates`)?
@@ -390,6 +450,36 @@ pub fn evidence_command(words: &[String]) -> Option<Vec<String>> {
 /// Does a handed line come from a quoted program word (read for calls only, not by the path rules)?
 fn is_quoted_command(how: &str) -> bool {
     how == via_text("quoted_command")
+}
+
+/// The words after cargo's own options when the line gives cargo an alias it cannot read here: a
+/// `CARGO_ALIAS_*` assignment before it, or a `--config` value that names an alias
+/// (`--config 'alias.x="run --"'`). Such a call may be `cargo run`.
+pub fn cargo_alias_args(words: &[String]) -> Option<Vec<String>> {
+    let i = program_index(words)?;
+    if basename(&words[i]) != "cargo" {
+        return None;
+    }
+    let assigned = words[..i]
+        .iter()
+        .any(|w| w.to_ascii_uppercase().starts_with("CARGO_ALIAS_"));
+    let mut configured = false;
+    let mut k = i + 1;
+    while k < words.len() && (words[k].starts_with('-') || words[k].starts_with('+')) {
+        let w = words[k].as_str();
+        if w == "--config" {
+            configured |= words.get(k + 1).is_some_and(|v| v.contains("alias"));
+            k += 2;
+        } else if let Some(v) = w.strip_prefix("--config=") {
+            configured |= v.contains("alias");
+            k += 1;
+        } else if matches!(w, "--color" | "-Z" | "-C" | "--explain") {
+            k += 2;
+        } else {
+            k += 1;
+        }
+    }
+    (assigned || configured).then(|| words[k.min(words.len())..].to_vec())
 }
 
 /// The words `cargo run` hands to the program it builds, when `words` is such a call. Cargo's own
@@ -770,9 +860,15 @@ fn flatten_bound(
                 let operand = cmd.words[i + 1..]
                     .iter()
                     .find(|a| !a.starts_with('-') || a.as_str() == "-");
-                let from_input = operand.is_none_or(|a| {
-                    matches!(a.as_str(), "-" | "/dev/stdin" | "/dev/fd/0" | "<(..)")
-                });
+                // With `-s` the script comes from the input whatever words follow.
+                let dash_s = cmd.words[i + 1..]
+                    .iter()
+                    .take_while(|a| a.starts_with('-') || a.starts_with('+'))
+                    .any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('s'));
+                let from_input = dash_s
+                    || operand.is_none_or(|a| {
+                        matches!(a.as_str(), "-" | "/dev/stdin" | "/dev/fd/0" | "<(..)")
+                    });
                 (SHELLS.contains(&prog) || matches!(prog, "source" | "."))
                     && from_input
                     && shell_command_string(&cmd.words, i).is_none()
@@ -906,7 +1002,7 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
         // A program that is a pattern or a brace group may become `bf` (`b?`, `b[f]`, `b(f)` where a
         // file `bf` exists, `{bf,x}`): it is a call that cannot be read. Case is ignored.
         let lower = prog.to_ascii_lowercase();
-        let pattern_prog = (cmd.group_last && i + 1 == cmd.words.len())
+        let pattern_prog = cmd.group_word == Some(i)
             || (lower.contains(['*', '?', '[']) && crate::guard::pattern_matches(&lower, "bf"))
             || (lower.contains('{') && (lower.contains(',') || lower.contains("..")));
         if pattern_prog && !engine {
@@ -942,6 +1038,16 @@ fn collect(cmds: Vec<Cmd>, via: Option<&str>, depth: usize, calls: &mut Vec<Call
                 words,
                 via: eff.clone(),
                 group: cmd.group,
+                cargo: true,
+            });
+        } else if let Some(args) = cargo_alias_args(&cmd.words) {
+            // An alias may be `run`: its words cannot be read, as after a pattern group.
+            let mut words = vec!["bf".to_string()];
+            words.extend(args);
+            calls.push(Call {
+                words,
+                via: eff.clone(),
+                group: true,
                 cargo: true,
             });
         }
@@ -1132,7 +1238,13 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
     let mut bodies: HashMap<usize, (String, bool)> = HashMap::new();
     // The command being read holds a pattern group (see `Call::group`).
     let mut group = false;
-    let mut group_last = false;
+    let mut group_word: Option<usize> = None;
+    // The word being read holds a quote or a backslash; the first word of the command did.
+    let mut cur_quoted = false;
+    let mut first_quoted = false;
+    // Functions the command being read defines, and whether it reads an input redirect.
+    let mut defines: Vec<String> = Vec::new();
+    let mut reads_redirect = false;
     // Heredoc bodies whose delimiter line was not found.
     let mut unclosed: Vec<String> = Vec::new();
     // The command being read evaluates text as code (see `Cmd::evaluates`).
@@ -1160,13 +1272,19 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                             bodies.insert(cmd_id, (format!("{w}\n"), true));
                         }
                     }
-                    None => words.push(w),
+                    None => {
+                        if words.is_empty() {
+                            first_quoted = cur_quoted;
+                        }
+                        words.push(w)
+                    }
                 }
                 cur.clear();
                 in_word = false;
                 here_string = false;
                 dup = false;
             }
+            cur_quoted = false;
         };
     }
     macro_rules! end_cmd {
@@ -1174,20 +1292,33 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             end_word!();
             redir = None;
             dup = false;
-            if !words.is_empty() || !redirs.is_empty() || evaluates {
+            if !words.is_empty() || !redirs.is_empty() || evaluates || reads_redirect {
+                // `function f [g] { ... }` with an unquoted keyword defines its names.
+                if words.first().is_some_and(|w| w == "function") && !first_quoted {
+                    defines.extend(
+                        words[1..]
+                            .iter()
+                            .take_while(|w| !matches!(w.as_str(), "{" | "()"))
+                            .cloned(),
+                    );
+                }
                 // zsh's short forms run a command in the same simple command: `if [[ x ]] cmd`,
                 // `while (( x )) { cmd }`, `coproc NAME { cmd; }`.
                 let mut parts = split_short_forms(std::mem::take(&mut words));
                 words = parts.pop().unwrap_or_default();
+                let first_len = parts.iter().map(|p| p.len()).sum::<usize>();
                 for p in parts {
                     out.push(Cmd {
                         id: *counter,
                         via: via.map(|v| v.to_string()),
                         group,
+                        defines: std::mem::take(&mut defines),
                         ..Cmd::of(p)
                     });
                     *counter += 1;
                 }
+                // The pattern word's index in the last part.
+                let gw = group_word.and_then(|k| k.checked_sub(first_len));
                 out.push(Cmd {
                     id: cmd_id,
                     words: std::mem::take(&mut words),
@@ -1197,13 +1328,18 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     pipe_from: pipe_in.take(),
                     procs: std::mem::take(&mut procs),
                     group,
-                    group_last,
+                    group_word: gw,
                     evaluates,
+                    defines: std::mem::take(&mut defines),
+                    reads_redirect,
                 });
             }
             group = false;
-            group_last = false;
+            group_word = None;
             evaluates = false;
+            defines.clear();
+            reads_redirect = false;
+            first_quoted = false;
             cmd_id = *counter;
             *counter += 1;
         };
@@ -1217,12 +1353,14 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     if b[i + 1] != '\n' {
                         cur.push(b[i + 1]);
                         in_word = true;
+                        cur_quoted = true;
                     }
                     i += 1;
                 }
             }
             '\'' => {
                 in_word = true;
+                cur_quoted = true;
                 i += 1;
                 while i < n && b[i] != '\'' {
                     cur.push(b[i]);
@@ -1231,6 +1369,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             }
             '"' => {
                 in_word = true;
+                cur_quoted = true;
                 i += 1;
                 while i < n && b[i] != '"' {
                     if b[i] == '\\' && i + 1 < n {
@@ -1290,6 +1429,7 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 // `$'\157'` is `o`). Its text is the word's; an escape the parse cannot decode leaves a
                 // `$` in front, so the word counts as one the parse does not read.
                 in_word = true;
+                cur_quoted = true;
                 i += 2;
                 let (text, unknown, next) = ansi_c(&b, i);
                 i = next;
@@ -1461,10 +1601,12 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 && matches!(balanced(&b, i + 2), (_, next) if b.get(next) == Some(&')'))
                 && (!in_word
                     || (words.iter().all(|w| KEYWORDS.contains(&w.as_str()))
-                        && matches!(cur.as_str(), "for" | "while" | "until" | "if" | "elif"))) =>
+                        && !cur_quoted
+                        && (KEYWORDS.contains(&cur.as_str())
+                            || matches!(cur.as_str(), "for" | "time" | "select" | "foreach")))) =>
             {
                 // `(( ... ))` wherever it stands (`time (( ))`, `{ (( )) }`, `for (( ))`, and glued to
-                // a keyword: `for((`, `while((`, `if((`): arithmetic, which evaluates what it reads. A
+                // any keyword: `for((`, `while((`, `then((`, `do((`, `!((`): arithmetic, which evaluates what it reads. A
                 // `<<` in it is a shift, never a heredoc: its text is read on its own so nothing after it
                 // is taken for a heredoc body; a substitution in it still runs. After a word that is not
                 // a keyword or a wrapper it may also be a zsh pattern group, so the command is marked.
@@ -1503,10 +1645,13 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                 i = next;
                 continue;
             }
-            '(' if in_word || !words.iter().all(|w| KEYWORDS.contains(&w.as_str())) => {
-                // An unquoted `(` after the first word, or inside a word, starts no subshell: zsh reads it
-                // as a pattern group (`x(N)`, `(check|zz)`, `chec(k)`), bash's extglob too (`@(x)`), and a
-                // pattern may vanish or join its neighbours. `name()` and `a=(..)` stay what they are.
+            '(' if in_word || program_index(&words).is_some() => {
+                // An unquoted `(` inside a word, or after the program, starts no subshell: zsh reads it
+                // as a pattern group (`x(N)`, `(check|zz)`, `chec(k)`, `(a #b)`), bash's extglob too
+                // (`@(x)`), and a pattern may vanish or join its neighbours. The group is part of the
+                // word: its text holds no command, no blank ends it and no `#` starts a comment in it.
+                // `name()`, `a=(..)` and the lists of `for x (..)`, `select`, `foreach` and `case`
+                // patterns stay what they are.
                 let fn_def = in_word
                     && (words.is_empty() || words.iter().all(|w| w == "function"))
                     && b.get(i + 1) == Some(&')');
@@ -1517,21 +1662,47 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         .strip_suffix("+=")
                         .is_some_and(|k| is_assignment(&format!("{k}=")))
                         || (cur.ends_with('=') && is_assignment(&cur)));
-                if !(fn_def || array) {
-                    group = true;
+                let list = !in_word
+                    && words.first().is_some_and(|w| {
+                        matches!(w.as_str(), "for" | "foreach" | "select" | "case")
+                    });
+                if fn_def && words.is_empty() && !cur_quoted {
+                    // A real definition: an unquoted name in command position.
+                    defines.push(cur.clone());
                 }
-                if !(fn_def || array) && in_word {
-                    // The pattern is the word before the `(`: when that is the program, the program
-                    // is a pattern too (`b(f) record put` runs `bf` where a file `bf` exists).
-                    group_last = true;
-                    // zsh's `e` glob qualifier, after a pattern, runs shell code: `x(e:'cmd':)`.
-                    let (inner, _) = balanced(&b, i + 1);
-                    for code in qualifier_code(&inner, depth + 1) {
-                        let how = via_text("glob_qualifier");
-                        parse(&code, Some(&how), depth + 1, counter, out);
+                if fn_def || array || list {
+                    if !(fn_def || array) {
+                        group = true;
                     }
+                    end_cmd!();
+                } else {
+                    group = true;
+                    let (inner, next) = balanced(&b, i + 1);
+                    // A substitution inside a pattern still runs (`x(|$(cmd))`).
+                    for (code, v) in substitutions(&inner) {
+                        parse(&code, Some(v), depth + 1, counter, out);
+                    }
+                    if in_word {
+                        // The pattern is the word before the `(`: when that is the program, the
+                        // program is a pattern too (`b(f) record put` runs `bf` where a file `bf`
+                        // exists).
+                        group_word = Some(words.len());
+                        // zsh's `e` glob qualifier runs shell code: `x(e:'cmd':)`. A qualifier is the
+                        // last group of a word and holds no `|` or `~`; `(#q..)` may stand anywhere.
+                        let trailing = next >= n || " \t\r\n;&|)<>".contains(b[next]);
+                        let explicit = inner.trim_start().starts_with("#q");
+                        if explicit || (trailing && !inner.contains(['|', '~'])) {
+                            for code in qualifier_code(&inner, depth + 1) {
+                                let how = via_text("glob_qualifier");
+                                parse(&code, Some(&how), depth + 1, counter, out);
+                            }
+                        }
+                    }
+                    // The group stays part of the word; the word goes on after it.
+                    in_word = in_word || next < n && !" \t\r\n;&|()<>".contains(b[next]);
+                    i = next;
+                    continue;
                 }
-                end_cmd!();
             }
             ';' | '|' | '(' | ')' => {
                 let ended = cmd_id;
@@ -1604,6 +1775,9 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                     end_word!();
                 }
                 let op = c;
+                if op == '<' {
+                    reads_redirect = true;
+                }
                 let mut count = 1;
                 while i + 1 < n && b[i + 1] == op && count < 3 {
                     i += 1;
@@ -1718,8 +1892,10 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
             cmd.heredoc = Some((body, expands));
         }
     }
+    // Marked as read from a heredoc body, so nothing in it counts as a plain call or a definition.
+    let how = via_text("heredoc_body");
     for body in unclosed {
-        parse(&body, via, depth + 1, counter, &mut extra);
+        parse(&body, Some(&how), depth + 1, counter, &mut extra);
     }
     out.extend(extra);
 }

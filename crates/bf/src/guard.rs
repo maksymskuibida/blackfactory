@@ -5063,7 +5063,28 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
                 }
             }
         }
+        // `for c in a b`: the loop variable takes each word.
+        if p.words.first().is_some_and(|w| w == "for") && p.words.get(2).is_some_and(|w| w == "in")
+        {
+            if let Some(name) = p.words.get(1) {
+                vals.entry(name.clone())
+                    .or_default()
+                    .extend(p.words[3..].iter().cloned());
+            }
+        }
     }
+    // zsh runs `$READNULLCMD` for a command that is only an input redirect.
+    let mut opaque = (vals.contains_key("READNULLCMD") || vals.contains_key("NULLCMD"))
+        && crate::shellparse::null_command_with_redirect(cmd);
+    let defined = crate::shellparse::defined_functions(cmd);
+    let positional = |w: &str| {
+        let w = w.trim_start_matches('$');
+        let w = w
+            .strip_prefix('{')
+            .and_then(|x| x.strip_suffix('}'))
+            .unwrap_or(w);
+        matches!(w, "@" | "*") || (!w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+    };
     // Every command, and the command of each `bf evidence run <check> -- <command>`.
     let mut lines: Vec<Vec<String>> = parsed.iter().map(|p| p.words.clone()).collect();
     for c in crate::shellparse::bf_calls(cmd) {
@@ -5071,13 +5092,38 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
             lines.push(rest);
         }
     }
-    let mut opaque = parsed.iter().any(|p| p.script_unknown);
+    opaque |= parsed.iter().any(|p| p.script_unknown);
     for p in &parsed {
         let Some(i) = crate::shellparse::program_index(&p.words) else {
             continue;
         };
         let before = &p.words[..i];
         let prog = basename(&p.words[i]);
+        // A positional parameter as the program (`run() { "$@"; }; run cargo test`, `sh -c '"$@"' _
+        // cmd`): the words it stands for are those the function is called with on this line, or the
+        // words after the `sh -c` string. Each is read as a command line.
+        if positional(&p.words[i]) {
+            let tail = p.words[i + 1..].join(" ");
+            let mut lines_for: Vec<String> = Vec::new();
+            for q in &parsed {
+                if let Some(j) = crate::shellparse::program_index(&q.words) {
+                    if defined.contains(&q.words[j]) && q.words.len() > j + 1 {
+                        lines_for.push(q.words[j + 1..].join(" "));
+                    }
+                }
+            }
+            if let Some(b) = &p.bound {
+                lines_for.push(b.iter().skip(1).cloned().collect::<Vec<_>>().join(" "));
+            }
+            if lines_for.iter().any(|l| {
+                crate::shellparse::engine_calls(&format!("{l} {tail}"))
+                    .iter()
+                    .any(is_unblock_call)
+            }) {
+                return Some(false);
+            }
+            continue;
+        }
         let reads_code =
             crate::shellparse::is_shell(prog) || matches!(prog, "eval" | "source" | ".");
         // `xargs sh -c`, `xargs eval`: the input becomes words of the code.
@@ -5097,7 +5143,36 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
                         return Some(false);
                     }
                 }
-                None => opaque = true,
+                None => {
+                    // Unknown input is refused only where it becomes code: no `-c` string at all,
+                    // `eval` or `source`, or a string whose program is the replacement string or a
+                    // word built at run time (`xargs -I{} sh -c '{}'`, `xargs sh -c '$0 "$@"'`).
+                    let placeholder = before
+                        .windows(2)
+                        .find(|w| w[0] == "-I")
+                        .map(|w| w[1].clone())
+                        .or_else(|| {
+                            before
+                                .iter()
+                                .find_map(|w| w.strip_prefix("-I").filter(|r| !r.is_empty()))
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "{}".to_string());
+                    let code_from_input = match crate::shellparse::shell_string(&p.words, i) {
+                        Some(j) if crate::shellparse::is_shell(prog) => {
+                            crate::shellparse::commands(&p.words[j]).iter().any(|q| {
+                                crate::shellparse::program_index(&q.words).is_some_and(|k| {
+                                    q.words[k].contains(&placeholder)
+                                        || run_time_program(&q.words[k])
+                                })
+                            })
+                        }
+                        _ => true,
+                    };
+                    if code_from_input {
+                        opaque = true;
+                    }
+                }
             }
         }
         // A shell run as a coprocess reads what the line writes to it later.
@@ -5134,7 +5209,7 @@ fn unblock_reading(cmd: &str) -> Option<bool> {
             continue;
         };
         let prog = &words[i];
-        if !run_time_program(prog) {
+        if !run_time_program(prog) || positional(prog) {
             continue;
         }
         let line = words[i..].join(" ");
@@ -5248,7 +5323,7 @@ fn run_time_program(w: &str) -> bool {
 
 /// The programs the repair judge's shell may run besides the engine: they read and print text and
 /// run nothing they are given (R-69: the judge reads the amendment, the plan and files, and reports).
-const JUDGE_PROGRAMS: &[&str] = &[
+pub const JUDGE_PROGRAMS: &[&str] = &[
     "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ls", "wc", "sort", "uniq", "cut", "tr",
     "diff", "jq", "echo", "printf", "print", "test", "[", "[[", "cd", "pwd", "true", "false", ":",
     "for",
@@ -5282,27 +5357,75 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
     if crate::shellparse::evaluates_text(cmd) {
         return Some(short(cmd.lines().next().unwrap_or("").to_string()));
     }
-    let parsed = crate::shellparse::commands(cmd);
-    // Functions the line defines: `f() { ... }` and `function f [g] { ... }`. Their bodies are read
-    // as commands of their own.
-    let mut defined: Vec<String> = Vec::new();
-    for p in &parsed {
-        if p.words.first().is_some_and(|w| w == "function") {
-            defined.extend(p.words[1..].iter().cloned());
-        } else if p.words.len() == 1
-            && (cmd.contains(&format!("{}()", p.words[0]))
-                || cmd.contains(&format!("{} ()", p.words[0])))
-        {
-            defined.push(p.words[0].clone());
-        }
+    // zsh runs `$READNULLCMD` or `$NULLCMD` for a command that is only a redirect.
+    if crate::shellparse::null_command_with_redirect(cmd) {
+        return Some(short(cmd.lines().next().unwrap_or("").to_string()));
     }
+    let parsed = crate::shellparse::commands(cmd);
+    // Functions the line really defines (`f() { ... }`, `function f [g] { ... }`, unquoted, in
+    // command position). Their bodies are read as commands of their own.
+    let defined = crate::shellparse::defined_functions(cmd);
+    // A variable the judge may set: a lower-case name that is none of zsh's special lower-case
+    // parameters (an upper-case one may be a special the shell reads as arithmetic, `COLUMNS`, or
+    // a setting a program reads, `RIPGREP_CONFIG_PATH`, `READNULLCMD`).
+    let plain_name = |k: &str| {
+        !k.is_empty()
+            && k.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && !matches!(
+                k,
+                "path"
+                    | "fpath"
+                    | "cdpath"
+                    | "manpath"
+                    | "module_path"
+                    | "mailpath"
+                    | "psvar"
+                    | "watch"
+                    | "histchars"
+                    | "prompt"
+                    | "argv"
+                    | "status"
+                    | "pipestatus"
+                    | "signals"
+                    | "options"
+                    | "parameters"
+                    | "functions"
+                    | "aliases"
+                    | "commands"
+            )
+    };
     for p in &parsed {
-        let Some(i) = crate::shellparse::program_index(&p.words) else {
+        // Assignments: only to plain names, and never in front of a program.
+        let i_opt = crate::shellparse::program_index(&p.words);
+        for (k, w) in p.words.iter().enumerate() {
+            if i_opt.is_some_and(|i| k >= i) {
+                break;
+            }
+            if let Some((name, _)) = w.split_once('=') {
+                let assignment =
+                    crate::shellparse::program_index(std::slice::from_ref(w)).is_none();
+                if assignment && (!plain_name(name.trim_end_matches('+')) || i_opt.is_some()) {
+                    return Some(short(p.words.join(" ")));
+                }
+            }
+        }
+        // Output goes only to a descriptor or the null device: the judge writes nothing.
+        if p.redirects
+            .iter()
+            .any(|t| !matches!(t.as_str(), "/dev/null" | "/dev/stdout" | "/dev/stderr"))
+        {
+            return Some(short(p.words.join(" ")));
+        }
+        let Some(i) = i_opt else {
             continue;
         };
         let prog = &p.words[i];
         let args = &p.words[i + 1..];
         let words = || short(p.words[i..].join(" "));
+        if basename(prog) == "for" && !args.first().is_some_and(|v| plain_name(v)) {
+            return Some(words());
+        }
         // No wrapper stands before the program (`repeat V cmd` reads V as arithmetic, `env -S`
         // splits text): only assignments and keywords may.
         let first = p.words.iter().position(|w| {
@@ -5331,20 +5454,33 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
         if crate::shellparse::is_engine(prog) && !run_time_program(prog) {
             continue;
         }
-        if defined.contains(prog) && !run_time_program(prog) {
+        let base = basename(prog);
+        // A function the line defines runs its body, which is read on its own; a defined name that
+        // is a listed program keeps that program's rules.
+        if defined.contains(prog) && !run_time_program(prog) && !JUDGE_PROGRAMS.contains(&base) {
             continue;
         }
-        let base = basename(prog);
         let known = JUDGE_PROGRAMS.contains(&base)
             && !run_time_program(prog)
             && (!prog.contains('/') || JUDGE_PROGRAM_DIRS.iter().any(|d| prog.starts_with(d)));
         if !known {
             return Some(words());
         }
+        // zsh reads the operand of a number comparison, of `-t` and of `-v` as arithmetic.
         let numeric_test = matches!(base, "[[" | "[" | "test")
+            && args.iter().any(|a| {
+                matches!(
+                    a.as_str(),
+                    "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge" | "-t" | "-v"
+                )
+            });
+        // zsh's `print` takes a few plain options; `-C`, `-c`, `-u`, `-P`, `-z`, `-s`, `-v` and the
+        // rest read a number, a descriptor or a prompt, or write elsewhere.
+        let print_option = base == "print"
             && args
                 .iter()
-                .any(|a| matches!(a.as_str(), "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"));
+                .take_while(|a| a.starts_with('-') && a.as_str() != "--")
+                .any(|a| a != "-f" && !a[1..].chars().all(|c| "rnlNR".contains(c)));
         // `printf` and zsh's `print -f` read a number format as arithmetic (zsh: `printf %d V`), and
         // `-v` assigns through a name.
         let printer = matches!(base, "printf" | "print");
@@ -5356,20 +5492,25 @@ fn judge_code_at_run_time(cmd: &str) -> Option<String> {
             };
             fmt.is_some_and(|f| {
                 let c: Vec<char> = f.chars().collect();
-                (0..c.len()).any(|k| {
-                    c[k] == '%'
-                        && (k == 0 || c[k - 1] != '%')
-                        && c[k + 1..]
-                            .iter()
-                            .find(|x| x.is_ascii_alphabetic() || **x == '%')
-                            .is_some_and(|x| !matches!(x, 's' | 'b' | 'q' | '%'))
-                })
+                // A width or precision taken from an argument (`%*s`) is a number too.
+                f.contains('*')
+                    || (0..c.len()).any(|k| {
+                        c[k] == '%'
+                            && (k == 0 || c[k - 1] != '%')
+                            && c[k + 1..]
+                                .iter()
+                                .find(|x| x.is_ascii_alphabetic() || **x == '%')
+                                .is_some_and(|x| !matches!(x, 's' | 'b' | 'q' | '%'))
+                    })
             })
         };
+        // Long options are matched by prefix, since GNU tools take an abbreviation
+        // (`sort --compress-prog=sh`).
         let runs_program = (printer && args.iter().any(|a| a == "-v"))
             || number_format
+            || print_option
             || (base == "rg" && args.iter().any(|a| a.starts_with("--pre")))
-            || (base == "sort" && args.iter().any(|a| a.starts_with("--compress-program")));
+            || (base == "sort" && args.iter().any(|a| a.starts_with("--c")));
         if numeric_test || runs_program {
             return Some(words());
         }
@@ -5465,7 +5606,11 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                 && w.iter().skip(2).any(|a| a == "human-turn")
         }) || crate::shellparse::cargo_run_args(&p.words)
             .is_some_and(|args| args.iter().any(|a| a == "human-turn"))
-    }) {
+    }) || crate::shellparse::engine_calls(cmd)
+        .iter()
+        // A cargo alias the line sets may be `run` (`CARGO_ALIAS_X='run --' cargo x human-turn`).
+        .any(|c| c.cargo && c.words.iter().any(|w| w == "human-turn"))
+    {
         return human_turn_denial();
     }
     // The state folder, however it is spelled: no command word or redirect target may name it. The body

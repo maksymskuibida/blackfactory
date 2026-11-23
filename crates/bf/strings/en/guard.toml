@@ -17,6 +17,7 @@
 "guard.via.pattern" = "a program name the shell makes from a pattern"
 "guard.via.quoted_command" = "a quoted command line"
 "guard.via.glob_qualifier" = "a zsh glob qualifier"
+"guard.via.heredoc_body" = "a heredoc body whose end the guard does not find"
 
 # A call of `bf` whose words hold a pattern group cannot be read.
 "guard.group.because" = "an unquoted `(` or `<->` in the words of `bf` is a pattern the shell may expand, drop or join with its neighbours"

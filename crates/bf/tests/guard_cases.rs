@@ -519,6 +519,10 @@ fn table() -> Vec<Case> {
         c(136, Root, Refused, "/usr/local/bin/Bf human-turn"),
         c(137, Root, Refused, "cargo -q run -- human-turn"),
         c(138, Root, Refused, "cargo +stable run -- human-turn"),
+        // A cargo alias the line sets may be `run`.
+        c(139, Root, Refused, "CARGO_ALIAS_X='run --' cargo x human-turn"),
+        c(140, Root, Refused, "cargo --config 'alias.x=\"run --\"' x human-turn"),
+        c(141, Root, Passed, "cargo test -p bf human_turn"),
     ]
 }
 

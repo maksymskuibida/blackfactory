@@ -420,6 +420,26 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "V='$(bf unit unblock U-1 --why x)'; echo ${(e)V}",
         "while read l; do $l; done <<< 'bf unit unblock U-1 --why x'",
         "echo \"${ bf unit unblock U-1 --why x; }\"",
+        // The third review's rows, and their siblings.
+        "READNULLCMD=sh; <<< 'bf unit unblock U-1 --why x'",
+        "export READNULLCMD=sh; < /tmp/s",
+        "while :; do((x=1<<2)); break; done\nbf unit unblock U-1 --why x\n2",
+        "if true; then((x=1<<2)); fi\nbf unit unblock U-1 --why x\n2",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | sh -s x",
+        "echo 'x yhw-- 1-U kcolbnu tinu fb' | rev | bash -es x y",
+        "CARGO_ALIAS_X='run --' cargo x unit unblock U-1 --why x",
+        "cargo --config 'alias.x=\"run --\"' x unit unblock U-1 --why x",
+        "export CARGO_ALIAS_X='run --'; cargo x unit unblock U-1 --why x",
+        "echo (a #b)x(N) ; bf unit unblock U-1 --why x",
+        "ls (|$(bf unit unblock U-1 --why x))",
+        "run() { \"$@\"; }; run bf unit unblock U-1 --why x",
+        "sh -c '\"$@\"' _ bf unit unblock U-1 --why x",
+        "for c in 'bf unit unblock U-1 --why x'; do $c; done",
+        // The lists and subshells after a word stay commands where the shell runs them.
+        "case x in (x) bf unit unblock U-1 --why x;; esac",
+        "for x (a) bf unit unblock U-1 --why x",
+        "time (bf unit unblock U-1 --why x)",
+        "if (bf unit unblock U-1 --why x); then :; fi",
     ] {
         let out = run_cmd(Some("builder"), cmd);
         assert!(
@@ -441,6 +461,12 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "X=$(git rev-parse HEAD); echo ${X:0:7}",
         "printf '%s\\n' b a | sort",
         "ls src | xargs -n1 echo",
+        "git ls-files | xargs -I{} sh -c 'wc -l {}'",
+        "find . -name '*.rs' | xargs -n1 sh -c 'echo $0'",
+        "run() { \"$@\"; }; run cargo test",
+        "for c in true false; do $c; done",
+        "ls src/(lexer|parser)/*.rs",
+        "while read -r l; do echo $l; done < src/a.rs",
     ] {
         assert!(!run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
     }

@@ -682,6 +682,85 @@ fn judge_guard_the_second_review_rows_are_refused_and_the_judges_reading_passes(
 }
 
 #[test]
+fn judge_guard_the_third_review_rows_are_refused_and_the_judges_reading_passes() {
+    let fx = Fx::new();
+    let v = "V='a[$(bf record put unit --file u.toml)]'";
+    let rows: Vec<String> = [
+        // A quoted `function`, or `name()` in a comment or a heredoc, defines nothing.
+        "\"function\" awk; awk 'BEGIN{system(\"bf record put unit --file u.toml\")}'",
+        "'function' perl; perl -e 'system(\"bf record put unit --file u.toml\")'",
+        "python3 <<'EOF' # python3()\nimport os\nEOF",
+        "echo 'awk() { :; }'; awk 'BEGIN{system(\"bf status\")}'",
+        // A command that is only a redirect runs zsh's `$READNULLCMD`.
+        "READNULLCMD=sh; <<< 'bf record put unit --file u.toml'",
+        "READNULLCMD=sh; < /tmp/s",
+        // An assignment in front of a listed program, or to a name that is not plain.
+        "RIPGREP_CONFIG_PATH=/tmp/rc rg x /tmp/s",
+        "LC_ALL=C sort u.toml",
+        "COLUMNS=\"$X\"",
+        "for COLUMNS in 'a[$(bf record put unit --file u.toml)]'; do :; done",
+        "path=(/tmp/x); cat u.toml",
+        // Tests and formats that read arithmetic, and options matched by prefix.
+        "[[ -v 'a[$(bf record put unit --file u.toml)]' ]]",
+        "sort --compress-prog=/bin/sh u.toml",
+        "sort --compress=/bin/sh u.toml",
+        // Arithmetic glued to `then`, `do`, `else`, `!`.
+        "if true; then((x=1<<2)); fi\nbf record put unit --file u.toml\n2",
+        "while :; do((x=1<<2)); break; done\nbf record put unit --file u.toml\n2",
+        "if false; then :; else((x=1<<2)); fi\nbf record put unit --file u.toml\n2",
+        // A `#` after a blank inside a zsh pattern group is no comment (measured: zsh runs the rest).
+        "echo (a #b)x(N) ; bf record put unit --file u.toml",
+        "echo (a #b)x(N) ; bf checkpoint check K-1 --accept X-2 --quote q",
+        // A substitution inside a pattern group runs.
+        "ls (|$(bf record put unit --file u.toml))",
+        // The judge writes no file from the shell either.
+        "echo x > /tmp/out",
+        "cat u.toml >> notes.txt",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain(
+        [
+            "[[ -t V ]]",
+            "[ -t V ]",
+            "test -t V",
+            "printf '%*s' V x",
+            "print -C V x",
+            "print -u V x",
+        ]
+        .iter()
+        .map(|r| format!("{v}; {r}")),
+    )
+    .collect();
+    for cmd in &rows {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    for cmd in [
+        "ls src/(lexer|parser)/*.rs",
+        "bf record get U-2 2>/dev/null",
+        "id=U-2; bf record get $id",
+        "sort -u u.toml | head -3",
+        "print -l a b",
+        "print -rn x",
+        "f() { bf status; }; f",
+        "for id in U-1 U-2; do bf record get $id; done 2>/dev/null",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
+fn judge_guard_the_role_file_names_every_program_the_guard_allows_the_judge() {
+    let t = fs::read_to_string(role_source()).unwrap();
+    for p in bf::guard::JUDGE_PROGRAMS {
+        assert!(t.contains(&format!("`{p}`")), "the role file names `{p}`");
+    }
+}
+
+#[test]
 fn judge_guard_a_repair_that_names_a_marked_record_gets_no_judge_token() {
     let fx = Fx::new();
     let aid = ready(&fx);
