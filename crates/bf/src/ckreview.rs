@@ -1654,3 +1654,39 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
     p.write_guard()?;
     Ok(json!({"checkpoint": k, "released": true, "fix_opened": true}))
 }
+
+/// `bf checkpoint review <K> --abort --quote ...`: the human ends the open round of a checkpoint in their own
+/// words. The round is recorded void, as a stale round is, so it counts as no review and no longer holds
+/// landing back.
+pub fn abort(p: &Project, k: &str, quote: &str) -> R<Value> {
+    let what = format!("abort the open review round of {k}");
+    let _lock = crate::lock::engine(p, &what)?;
+    let st = events::require_chain(p)?;
+    run::need_run(&st)?;
+    if st.closed.contains_key(k) {
+        return Err(refuse_owned(
+            what,
+            crate::strings::t("ckreview.abort.closed.why", &[("k", k)]),
+            vec![crate::strings::t("ckreview.abort.closed.step", &[])],
+            crate::strings::t("ckreview.abort.check", &[("k", k)]),
+        ));
+    }
+    let rs = rounds(p, k)?;
+    let Some(open) = open_round(&rs).cloned() else {
+        return Err(refuse_owned(
+            what,
+            crate::strings::t("ckreview.abort.none.why", &[("k", k)]),
+            vec![crate::strings::t("ckreview.abort.none.step", &[])],
+            crate::strings::t("ckreview.abort.check", &[("k", k)]),
+        ));
+    };
+    let (turn, _) = events::pick_turn(&st, st.ck_end_seq, events::Decide::Approve, quote)?;
+    events::append(
+        p,
+        "checkpoint.review.done",
+        json!({"checkpoint": k, "round": open.round, "content": open.content, "result": "void", "findings": [],
+               "aborted_by_human": true, "turn": turn, "quote": quote.trim()}),
+    )?;
+    p.write_guard()?;
+    Ok(json!({"checkpoint": k, "round": open.round, "aborted": true}))
+}

@@ -227,11 +227,18 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
     }
     if args.pos.get(1).map(|x| x.as_str()) == Some("review") {
         let k = args.pos_at(2, "a checkpoint ID")?;
+        if args.has("abort") && !args.has("release") {
+            let v = crate::ckreview::abort(&p, k, args.flag("quote").unwrap_or(""))?;
+            out(args, &v, || {
+                crate::strings::t("ckreview.abort.done", &[("k", k)])
+            });
+            return Ok(());
+        }
         if !args.has("release") {
             return Err(refuse(
                 "run `bf checkpoint review`",
-                "it needs --release",
-                &["Run `bf checkpoint review <K> --release --quote \"<the human's words>\"`."],
+                "it needs --release or --abort",
+                &["Run `bf checkpoint review <K> --release --quote \"<the human's words>\"` or `bf checkpoint review <K> --abort --quote \"<the human's words>\"`."],
                 "The command prints the result.",
             ));
         }
