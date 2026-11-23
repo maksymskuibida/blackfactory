@@ -766,45 +766,81 @@ fn check_copy(copy: &Path, seam: bool) -> std::process::Output {
     let mut c = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     c.args(["check", "--offline", "--lib", "--manifest-path"])
         .arg(copy.join("crates/bf/Cargo.toml"))
-        .env("CARGO_TARGET_DIR", target);
+        .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_TERM_COLOR", "never");
     if seam {
         c.args(["--features", "test_seam"]);
     }
     c.output().unwrap()
 }
 
-/// C-3, TH-5: a test empties each seam key in a copy of the strings; the build with the feature is
-/// refused, naming the key, and the build without it, which carries neither key, is not affected.
+/// C-3, TH-5: a test changes the seam keys in one copy of the strings and proves that the build with
+/// the feature is refused, naming the key, and that the build without it, which carries neither key,
+/// is not affected. It makes one copy of the crate and six builds: four with the feature (each of
+/// the two keys empty and missing), which must fail naming the key, and two library checks without
+/// it. Two builds without the feature cover each key empty and missing: case A has the version key
+/// empty and the doctor key missing, case B the version key missing and the doctor key empty. Each
+/// must succeed and show `Compiling bf `, so the build script ran again on that case's text and the
+/// library was checked on its output. The file is written again from its original text before each
+/// build. One line per build is printed: the case, the feature, the result and the seconds.
 #[test]
 fn the_seam_build_fails_on_an_empty_or_missing_seam_text() {
-    for key in ["cli.version.test_seam_build", "cli.doctor.test_seam_build"] {
-        for missing in [false, true] {
-            let copy = crate_copy();
-            let file = copy.path().join("crates/bf/strings/en/version.toml");
-            let text = fs::read_to_string(&file).unwrap();
-            let changed: String = text
-                .lines()
-                .filter_map(|l| {
+    const V: &str = "cli.version.test_seam_build";
+    const D: &str = "cli.doctor.test_seam_build";
+    let copy = crate_copy();
+    let file = copy.path().join("crates/bf/strings/en/version.toml");
+    let original = fs::read_to_string(&file).unwrap();
+    // Each change is (key, missing): the key's line removed, or its value set to the empty text.
+    let write = |changes: &[(&str, bool)]| {
+        let changed: String = original
+            .lines()
+            .filter_map(|l| {
+                for (key, missing) in changes {
                     if l.starts_with(&format!("\"{key}\"")) {
-                        (!missing).then(|| format!("\"{key}\" = \"\""))
-                    } else {
-                        Some(l.to_string())
+                        return (!missing).then(|| format!("\"{key}\" = \"\""));
                     }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            fs::write(&file, changed).unwrap();
-            let o = check_copy(copy.path(), true);
+                }
+                Some(l.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&file, changed).unwrap();
+    };
+    let run = |case: &str, seam: bool| {
+        let t = std::time::Instant::now();
+        let o = check_copy(copy.path(), seam);
+        println!(
+            "seam build: case={case} feature={seam} success={} seconds={:.1}",
+            o.status.success(),
+            t.elapsed().as_secs_f64()
+        );
+        o
+    };
+    for key in [V, D] {
+        for missing in [false, true] {
+            write(&[(key, missing)]);
+            let case = format!("{key} missing={missing}");
+            let o = run(&case, true);
             let err = String::from_utf8_lossy(&o.stderr).to_string();
             assert!(!o.status.success(), "{key} missing={missing}: built");
             assert!(err.contains(key), "{key} missing={missing}: {err}");
-            let o = check_copy(copy.path(), false);
-            assert!(
-                o.status.success(),
-                "{key} missing={missing}: the build without the feature is affected: {}",
-                String::from_utf8_lossy(&o.stderr)
-            );
         }
+    }
+    for (case, changes) in [
+        ("A: version empty, doctor missing", [(V, false), (D, true)]),
+        ("B: version missing, doctor empty", [(V, true), (D, false)]),
+    ] {
+        write(&changes);
+        let o = run(case, false);
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(
+            o.status.success(),
+            "case {case}: the build without the feature is affected: {err}"
+        );
+        assert!(
+            err.contains("Compiling bf "),
+            "case {case}: the library was not checked again: {err}"
+        );
     }
 }
 
