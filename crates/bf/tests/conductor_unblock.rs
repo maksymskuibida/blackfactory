@@ -460,6 +460,13 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "print -l -- /(e:'bf unit unblock U-1 --why x \"|\"':)",
         "print -l -- /(e:'bf unit unblock U-1 --why x':)''",
         "print -l -- /(e'|bf unit unblock U-1 --why x|')",
+        // The sixth review: a qualifier before an expansion, or with an unquoted `~`.
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)$E",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)${E}",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)$(true)",
+        "print -l -- /(e:'bf unit unblock U-1 --why x':)`true`",
+        "print -l -- /(e:'bf unit unblock U-1 --why x'~:)",
+        "print -l -- /(Ne:'bf unit unblock U-1 --why x':)x",
         // Found in this round: a prompt the shell expands as code.
         "PS4='$(bf unit unblock U-1 --why x)'; set -x; :",
         "PROMPT_COMMAND='$(bf unit unblock U-1 --why x)'; :",

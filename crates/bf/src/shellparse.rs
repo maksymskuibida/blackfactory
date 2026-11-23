@@ -1745,16 +1745,14 @@ fn parse(text: &str, via: Option<&str>, depth: usize, counter: &mut usize, out: 
                         group_word = Some(words.len());
                         // zsh's `e` glob qualifier runs shell code: `x(e:'cmd':)`. A qualifier is the
                         // last group of a word and holds no `|` or `~`; `(#q..)` may stand anywhere.
-                        // zsh decides on unquoted characters: quoted `|` and `~` are text, and
-                        // empty quotes after the group (`(e:..:)''`) do not move the word's end.
-                        let mut end = next;
-                        while end + 1 < n && matches!(b[end], '\'' | '"') && b[end + 1] == b[end] {
-                            end += 2;
-                        }
-                        let trailing = end >= n || " \t\r\n;&|)<>".contains(b[end]);
+                        // Read fail-closed: the code of every group after a word, unless its
+                        // unquoted text holds `|` (an alternation, `src/(a|b)/x`). zsh decides
+                        // whether a group is the word's last at run time (an expansion after it may
+                        // be empty: `/(e:..:)$E`), and a `~` is special only under
+                        // `extended_glob` (measured: both run their code).
                         let bare = unquoted_only(&inner);
                         let explicit = bare.trim_start().starts_with("#q");
-                        if explicit || (trailing && !bare.contains(['|', '~'])) {
+                        if explicit || !bare.contains('|') {
                             for code in qualifier_code(&inner, depth + 1) {
                                 let how = via_text("glob_qualifier");
                                 parse(&code, Some(&how), depth + 1, counter, out);

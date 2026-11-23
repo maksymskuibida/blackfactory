@@ -827,6 +827,29 @@ fn judge_guard_the_fifth_review_rows_functions_qualifiers_and_writers_are_refuse
 }
 
 #[test]
+fn judge_guard_the_sixth_review_rows_qualifiers_before_an_expansion_or_with_a_tilde() {
+    let fx = Fx::new();
+    // zsh runs the code of each (measured in `zsh -c`): an expansion after the group may be empty,
+    // and an unquoted `~` is special only under `extended_glob`.
+    for cmd in [
+        "print -l -- /(e:'bf record put unit --file u.toml':)$E",
+        "print -l -- /(e:'bf record put unit --file u.toml':)${E}",
+        "print -l -- /(e:'bf record put unit --file u.toml':)$(true)",
+        "print -l -- /(e:'bf record put unit --file u.toml':)`true`",
+        "print -l -- /(e:'bf record put unit --file u.toml'~:)",
+        "print -l -- /(Ne:'bf checkpoint check K-1 --accept X-2 --quote q':)x",
+    ] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_eq!(d, "deny", "{cmd}");
+        assert!(why.contains("repair judge"), "{cmd}: {why}");
+    }
+    for cmd in ["ls src/(lexer|parser)/*.rs", "ls -d src/(a|b)x"] {
+        let (d, why) = hook(&fx, Some(AGENT), "Bash", json!({"command": cmd}));
+        assert_ne!(d, "deny", "{cmd}: {why}");
+    }
+}
+
+#[test]
 fn judge_guard_the_role_file_names_every_program_the_guard_allows_the_judge() {
     let t = fs::read_to_string(role_source()).unwrap();
     for p in bf::guard::JUDGE_PROGRAMS {
