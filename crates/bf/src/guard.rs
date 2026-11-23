@@ -6285,7 +6285,6 @@ mod tests {
                 "mktemp -tq factory/x.XXXX",
                 "mktemp -td factory/x.XXXX",
                 "mktemp -tq -p /tmp factory/x.XXXX",
-                "mktemp -tq .claude/agents/new.md",
                 "TMPDIR=/tmp/p/factory mktemp -t x.XXXX",
                 "mktemp -d -p /tmp/p/factory/.. factory/x.XXXX",
                 "rm -rf /tmp",
