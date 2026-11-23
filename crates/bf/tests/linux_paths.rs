@@ -92,6 +92,7 @@ fn mktemp_in_the_temporary_folder_passes_from_a_working_copy() {
             "mktemp --tmp=/tmp x.XXXX",
             "mktemp --tmpdir x.XXXX",
             "mktemp -t x.XXXX",
+            "mktemp -tq x.XXXX",
             "mktemp -q -p /tmp --suffix=.txt x.XXXX",
             "mktemp -p /tmp -- x.XXXX",
             "mktemp",
@@ -122,6 +123,10 @@ fn mktemp_into_a_protected_place_and_whole_folders_stay_refused() {
         "mktemp --t=factory x.XXXX".to_string(),
         "mktemp -t -p factory x.XXXX".to_string(),
         "mktemp -p factory -t x.XXXX".to_string(),
+        "mktemp -tq factory/x.XXXX".to_string(),
+        "mktemp -td factory/x.XXXX".to_string(),
+        "mktemp -tq -p /tmp factory/x.XXXX".to_string(),
+        "mktemp -t q -p /tmp factory/x.XXXX".to_string(),
         format!("mktemp -p /tmp {root}/factory/x.XXXX"),
         format!("mktemp -p {root}/src ../factory/x.XXXX"),
         format!("mktemp -p {} ../{project}/factory/x.XXXX", sib.display()),
@@ -135,6 +140,7 @@ fn mktemp_into_a_protected_place_and_whole_folders_stay_refused() {
         "mktemp -p . .claude/settings.json",
         "mktemp -p .claude settings.local.json",
         "mktemp -p . .claude/skills/factory-panel/x.XXXX",
+        "mktemp -tq .claude/settings.json",
     ]);
     let unreadable = s(&[
         "mktemp --d x.XXXX",

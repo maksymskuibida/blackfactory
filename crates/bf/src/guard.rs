@@ -2503,11 +2503,15 @@ fn mktemp_reading(args: &[String], bsd_t: bool) -> (Vec<String>, Option<(&'stati
     if templates.iter().any(|t| t.is_empty()) {
         err = Some(("guard.mktemp.empty", String::new()));
     }
+    // BSD with `-t prefix`: the prefix file is made in the temporary folder (and in DIR), but the template
+    // words are made in the current folder, as typed.
+    let mut here: Vec<String> = Vec::new();
     let mut names: Vec<String> = templates.clone();
     if let Some(pf) = &prefix {
+        here = std::mem::take(&mut names);
         names.push(format!("{pf}.XXXXXXXX"));
     }
-    if names.is_empty() {
+    if names.is_empty() && here.is_empty() {
         names.push("tmp.XXXXXXXXXX".to_string());
     }
     let mut places: Vec<String> = dirs;
@@ -2521,6 +2525,12 @@ fn mktemp_reading(args: &[String], bsd_t: bool) -> (Vec<String>, Option<(&'stati
         });
     }
     let mut out: Vec<String> = Vec::new();
+    for n in &here {
+        let t = format!("{n}{suffix}");
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
     for place in &places {
         for n in &names {
             let n = format!("{n}{suffix}");
@@ -4990,9 +5000,10 @@ fn judge_role_denial(tool: &str, cmd: &str) -> Option<Decision> {
         return None;
     }
     for c in crate::shellparse::bf_calls(cmd) {
-        let rest = bf_rest(&c.words);
-        let sub = rest.first().map(|x| x.as_str()).unwrap_or("");
-        let second = rest.get(1).map(|x| x.as_str()).unwrap_or("");
+        // The plain words the command line parser keeps: flags may stand anywhere, before the subcommand too.
+        let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
+        let sub = plain.first().map(|x| x.as_str()).unwrap_or("");
+        let second = plain.get(1).map(|x| x.as_str()).unwrap_or("");
         let barred = match sub {
             "record" => matches!(second, "put" | "remove"),
             "amend" => matches!(
@@ -6258,6 +6269,7 @@ mod tests {
                 "mktemp -dp /tmp x.XXXX",
                 "mktemp --tmpdir=/tmp x.XXXX",
                 "mktemp -t x.XXXX",
+                "mktemp -tq x.XXXX",
                 "mktemp",
             ] {
                 assert!(run(cmd, &cwd), "should pass in {cwd}: {cmd}");
@@ -6270,6 +6282,10 @@ mod tests {
                 "mktemp x.XXXX -p /tmp",
                 "mktemp --d x.XXXX",
                 "mktemp -z x.XXXX",
+                "mktemp -tq factory/x.XXXX",
+                "mktemp -td factory/x.XXXX",
+                "mktemp -tq -p /tmp factory/x.XXXX",
+                "mktemp -tq .claude/agents/new.md",
                 "TMPDIR=/tmp/p/factory mktemp -t x.XXXX",
                 "mktemp -d -p /tmp/p/factory/.. factory/x.XXXX",
                 "rm -rf /tmp",
@@ -6288,6 +6304,10 @@ mod tests {
         assert_eq!(place("-p /tmp --suffix=.txt x.XXXX"), ["/tmp/x.XXXX.txt"]);
         assert_eq!(place("--tmp=/tmp -- x.XXXX"), ["/tmp/x.XXXX"]);
         assert_eq!(place("x.XXXX"), ["x.XXXX"]);
+        // BSD `-t prefix` makes the template words in the current folder, never in the temporary one.
+        assert!(place("-tq factory/x.XXXX").contains(&"factory/x.XXXX".to_string()));
+        assert!(place("-t q -p /d2 z.XXXX").contains(&"z.XXXX".to_string()));
+        assert!(!place("-t q -p /d2 z.XXXX").contains(&"/d2/z.XXXX".to_string()));
         assert_eq!(place("-p /tmp /a/b.XXXX"), ["/a/b.XXXX"]);
         // `-t` is a flag for GNU and takes the prefix for BSD: the two readings give the same place.
         assert_eq!(place("-t x.XXXX").len(), 2);
