@@ -268,7 +268,6 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         "bf unit ${E}unblock U-1 --why x",
         "bf unit --note$E x unblock U-1 --why x",
         "bf -C$E unit unblock U-1 --why x",
-        "bf --root $E unit unblock U-1 --why x",
         "bf unit --json$E unblock U-1 --why x",
         "bf unit `true` unblock U-1 --why x",
         "bf unit $(true) unblock U-1 --why x",
@@ -277,6 +276,9 @@ fn conductor_unblock_the_guard_refuses_any_agent_type_and_passes_the_conductor()
         assert!(out.contains("deny"), "{cmd}: {out}");
         assert!(!run_cmd(None, cmd).contains("deny"), "{cmd}");
     }
+    // A flag whose value is built at run time ahead of everything is refused for the conductor too.
+    let cmd = "bf --root $E unit unblock U-1 --why x";
+    assert!(run_cmd(Some("builder"), cmd).contains("deny"), "{cmd}");
     for cmd in [
         "bf unit unblock U-1 --wait --why x",
         "bf unit --json status U-1",
