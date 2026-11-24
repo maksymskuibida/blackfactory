@@ -56,6 +56,11 @@ fn status_text(v: &Value) -> String {
             m["checkpoint"].as_str().unwrap_or(""),
         ));
     }
+    for c in v["checkpoint_reviews"].as_array().into_iter().flatten() {
+        if let Some(l) = c["recovery_line"].as_str().filter(|l| !l.is_empty()) {
+            t.push_str(&format!("{l}\n"));
+        }
+    }
     for pg in v["pages"].as_array().into_iter().flatten() {
         t.push_str(&format!(
             "page {}: {}\n",
