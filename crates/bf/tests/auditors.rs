@@ -43,8 +43,7 @@ fn running_unit(fx: &Fx) -> std::path::PathBuf {
 
 #[test]
 fn a_built_stage_role_is_briefed_for_a_checkpoint() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for role in ["security-auditor", "legal-auditor", "uiux-verifier"] {
         let v = fx.must(&["brief", "K-1", "--role", role, "--json"]).json();
         let path = v["path"].as_str().unwrap();
@@ -140,8 +139,7 @@ fn a_finding_needs_the_token_and_the_units_own_copy() {
 
 #[test]
 fn an_auditor_reports_and_files_from_the_checkpoints_working_copy() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // A unit of a second checkpoint, which the first checkpoint's auditor may not file findings for.
     for (kind, text) in [
         ("unit", "id=\"U-3\"\nkind=\"unit\"\ntitle=\"Other\"\ndelivers=[\"R-2\"]\nfiles=[\"src/other.txt\"]\ncheckpoint=\"K-0\"\nestimate=1\n"),

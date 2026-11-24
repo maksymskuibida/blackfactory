@@ -45,8 +45,7 @@ fn a_token_of_one_kind_is_refused_for_another() {
 
 #[test]
 fn a_token_on_an_amendment_is_refused_when_none_is_open() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.refused(&["review", "token", "amendment", "--subject", "A-1"]);
     assert!(o.stderr.contains("A-1"), "{}", o.stderr);
     fx.refused(&["review", "token", "--subject", "A-1", "--stage", "ui", "--role", "uiux-verifier"]);

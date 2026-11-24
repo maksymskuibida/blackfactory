@@ -107,13 +107,40 @@ pub fn sandbox_probe() -> bool {
 /// (`sandbox-exec` or `none`). Adds records of its own. In a project the check runs in the main
 /// checkout; in a workspace, whose main folder holds no code, it runs in a unit's working copy of a
 /// test run. A fixture with role tokens on (`shipped`) has them switched off first, the human's way,
-/// so the records can be put; the sandbox line of its policy stays as it is.
+/// so the records can be put; the sandbox line of its policy stays as it is. A project whose test run
+/// has started (`Fx::tiny_run`) takes no new record, so there the tiny project's own check X-1 runs in
+/// U-1's working copy.
 pub fn receipt_sandbox(fx: &Fx) -> String {
     let pol = fs::read_to_string(fx.root.join("factory/policy.toml")).unwrap();
     if pol.contains("tokens = true") {
         fx.set_policy("tokens = true", "tokens = false");
     }
     let workspace = fx.root.join("factory/workspace.toml").exists();
+    if !workspace && fx.must(&["status", "--json"]).json()["run"].is_string() {
+        let wc = PathBuf::from(
+            fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+                .as_str()
+                .unwrap(),
+        );
+        fs::create_dir_all(wc.join("src")).unwrap();
+        fs::write(wc.join("src/hello.txt"), "hello\n").unwrap();
+        let o = fx.bf_in(
+            &wc,
+            &[
+                "evidence",
+                "run",
+                "X-1",
+                "--unit",
+                "U-1",
+                "--",
+                "test",
+                "-f",
+                "src/hello.txt",
+            ],
+        );
+        assert_eq!(o.code, 0, "{}", o.all());
+        return receipt_sandbox_of(fx, "X-1");
+    }
     let mut recs: Vec<(&str, &str)> = vec![
         ("requirement", "id=\"R-900\"\nkind=\"requirement\"\ntitle=\"sandbox probe\"\n"),
         ("check", "id=\"X-900\"\nkind=\"check\"\ntitle=\"true\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-900\"]\nscope=\"checkpoint\"\n"),
@@ -147,11 +174,16 @@ pub fn receipt_sandbox(fx: &Fx) -> String {
         fx.bf(&["evidence", "run", "X-900", "--", "true"])
     };
     assert_eq!(o.code, 0, "{}", o.all());
+    receipt_sandbox_of(fx, "X-900")
+}
+
+/// The `sandbox` value of the last receipt of a check.
+fn receipt_sandbox_of(fx: &Fx, check: &str) -> String {
     let rcs = bf::evidence::load_receipts(&fx.project()).unwrap();
     let rc = rcs
         .iter()
         .rev()
-        .find(|r| r.check() == "X-900")
+        .find(|r| r.check() == check)
         .expect("no receipt for the probe check");
     rc.v["sandbox"]
         .as_str()
@@ -186,6 +218,7 @@ pub fn require_sandbox_from_env(fx: &Fx) {
 // ---------------------------------------------------------------------------------------------------
 // The template store (D-140): `Fx::new`, `Fx::with_checks`, `Fx::workspace` and their forms copy a
 // project built once per key by a real `git init` and `bf init`, instead of running them every time.
+// `Fx::tiny_project` and `Fx::tiny_run` copy one built further by `tiny()` (and `start_test_run()`).
 
 /// The text of this file, hashed from memory into every template key.
 const COMMON_TEXT: &str = include_str!("mod.rs");
@@ -228,6 +261,10 @@ pub enum Kind {
     WithChecks,
     /// `Fx::workspace`: a workspace pointing at these sibling repositories, named checks off.
     Workspace(Vec<String>),
+    /// `Fx::tiny_project`: `Fx::new`, then `tiny()` and its commit.
+    Tiny,
+    /// `Fx::tiny_run`: `Fx::new`, then `tiny()` and `start_test_run()`.
+    TinyRun,
 }
 
 impl Kind {
@@ -236,6 +273,8 @@ impl Kind {
             Kind::New => "new".into(),
             Kind::WithChecks => "with_checks".into(),
             Kind::Workspace(r) => format!("workspace:{}", r.join(",")),
+            Kind::Tiny => "tiny".into(),
+            Kind::TinyRun => "tiny_run".into(),
         }
     }
     fn top(&self) -> &'static str {
@@ -258,6 +297,18 @@ impl Kind {
                 let repos: Vec<&str> = r.iter().map(|s| s.as_str()).collect();
                 let fx = Fx::build_with(true, &repos, sandbox);
                 fx.checks_all_off();
+                fx
+            }
+            // Built by the same helper calls a test makes, never by writing records or events.
+            Kind::Tiny => {
+                let fx = Kind::New.build_real(sw);
+                fx.tiny();
+                fx
+            }
+            Kind::TinyRun => {
+                let fx = Kind::New.build_real(sw);
+                fx.tiny();
+                fx.start_test_run();
                 fx
             }
         }
@@ -342,9 +393,11 @@ fn copy_tree(from: &Path, to: &Path) {
             std::os::unix::fs::symlink(fs::read_link(e.path()).unwrap(), &dst).unwrap();
         } else if ft.is_dir() {
             copy_tree(&e.path(), &dst);
-        } else {
-            fs::copy(e.path(), &dst)
-                .unwrap_or_else(|err| panic!("copy {}: {err}", e.path().display()));
+        } else if let Err(err) = fs::copy(e.path(), &dst) {
+            // A lock file git removed while the tree was read is not part of the project.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                panic!("copy {}: {err}", e.path().display());
+            }
         }
     }
     fs::set_permissions(to, fs::metadata(from).unwrap().permissions()).unwrap();
@@ -491,7 +544,7 @@ impl TemplateStore {
 impl Fx {
     /// The one step a copy needs: its policy names the build folder's transcript root, so the policy
     /// is changed to this copy's and accepted through the engine with the human's words, and the
-    /// commit of `bf init` takes it. Returns the build folder.
+    /// last commit (`bf init`, or the tiny project's records) takes it. Returns the build folder.
     fn adopt_copy(&self) -> PathBuf {
         let pol = fs::read_to_string(self.root.join("factory/policy.toml")).unwrap();
         let old_line = pol
@@ -525,6 +578,13 @@ impl Fx {
         git(&self.root, &["commit", "-q", "--amend", "--no-edit"]);
         build_dir
     }
+}
+
+/// Switch off git's automatic maintenance in a fixture repository, so no detached `git gc` writes in
+/// a build folder while its template is copied or after it is removed.
+fn no_auto_maintenance(dir: &Path) {
+    git(dir, &["config", "gc.auto", "0"]);
+    git(dir, &["config", "maintenance.auto", "false"]);
 }
 
 /// The paths `git status` names as changed or new in a checkout.
@@ -596,6 +656,37 @@ impl Fx {
     /// The same as `new`, with the sandbox switch given for this fixture instead of the environment's.
     pub fn new_with(sw: Switch) -> Fx {
         TemplateStore::shared().fixture(&Kind::New, sw).0
+    }
+
+    /// The same as `new` followed by `tiny()`, copied from a template built by those calls (D-140).
+    pub fn tiny_project() -> Fx {
+        Fx::tiny_project_with(sandbox_switch())
+    }
+
+    /// `tiny_project` with the sandbox switch given for this fixture.
+    pub fn tiny_project_with(sw: Switch) -> Fx {
+        TemplateStore::shared().fixture(&Kind::Tiny, sw).0
+    }
+
+    /// `tiny_project` with the sandbox always on.
+    pub fn tiny_project_sandboxed() -> Fx {
+        Fx::tiny_project_with(Switch::All)
+    }
+
+    /// The same as `new` followed by `tiny()` and `start_test_run()`, copied from a template built by
+    /// those calls (D-140).
+    pub fn tiny_run() -> Fx {
+        Fx::tiny_run_with(sandbox_switch())
+    }
+
+    /// `tiny_run` with the sandbox switch given for this fixture.
+    pub fn tiny_run_with(sw: Switch) -> Fx {
+        TemplateStore::shared().fixture(&Kind::TinyRun, sw).0
+    }
+
+    /// `tiny_run` with the sandbox always on.
+    pub fn tiny_run_sandboxed() -> Fx {
+        Fx::tiny_run_with(Switch::All)
     }
 
     /// The same as `new`, made by a real `git init` and `bf init` in this test: for the tests about
@@ -701,12 +792,14 @@ impl Fx {
                 let d = root.parent().unwrap().join(r);
                 fs::create_dir_all(&d).unwrap();
                 git(&d, &["init", "-q", "-b", "main"]);
+                no_auto_maintenance(&d);
                 fs::write(d.join("README.md"), format!("# {r}\n")).unwrap();
                 git(&d, &["add", "-A"]);
                 git(&d, &["commit", "-q", "-m", "init"]);
             }
         } else {
             git(&root, &["init", "-q", "-b", "main"]);
+            no_auto_maintenance(&root);
             fs::write(root.join("README.md"), "# toy\n").unwrap();
             git(&root, &["add", "-A"]);
             git(&root, &["commit", "-q", "-m", "init"]);

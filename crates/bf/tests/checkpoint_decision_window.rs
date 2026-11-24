@@ -399,9 +399,7 @@ fn a_fix_release_on_words_from_before_the_park_is_listed_with_the_turn_and_quote
 // A K-1 era run (no checkpoint review) writes none of the new decision events and replays clean.
 #[test]
 fn a_run_with_the_checkpoint_review_off_has_no_ignored_event() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     let o = fx.bf(&["log", "--verify"]);

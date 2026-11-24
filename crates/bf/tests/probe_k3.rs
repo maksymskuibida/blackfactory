@@ -196,9 +196,7 @@ fn probe_p3b_words_that_released_a_review_do_not_lift_the_designer_rule() {
 /// its unit land.
 #[test]
 fn probe_p4_a_check_changed_in_an_unapproved_repair_does_not_land_a_unit() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fx.must(&["amend", "open", "--repair", "X-1"]);

@@ -50,9 +50,7 @@ fn questions_come_before_their_gate() {
 
 #[test]
 fn review_rounds_end_in_parking_and_stuck_lists_it() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -153,8 +151,7 @@ fn review_rounds_end_in_parking_and_stuck_lists_it() {
 
 #[test]
 fn a_builder_that_keeps_failing_its_check_is_parked_and_a_blocked_unit_can_be_released() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("max_attempts = 10", "max_attempts = 3");
     fx.start_test_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
@@ -202,8 +199,7 @@ fn a_builder_that_keeps_failing_its_check_is_parked_and_a_blocked_unit_can_be_re
 
 #[test]
 fn bf_next_parks_an_idle_unit_by_itself() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("idle_minutes = 60", "idle_minutes = 0");
     fx.start_test_run();
     fx.must(&["unit", "start", "U-1"]);
@@ -222,9 +218,7 @@ fn bf_next_parks_an_idle_unit_by_itself() {
 
 #[test]
 fn a_reviewer_cannot_pass_a_unit_with_open_findings() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "built"]);
     let dir = tempfile::tempdir().unwrap();
@@ -249,8 +243,7 @@ fn a_reviewer_cannot_pass_a_unit_with_open_findings() {
 
 #[test]
 fn the_budget_cap_stops_new_work() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("cap = 0.0", "cap = 1.5");
     fx.start_test_run();
     fx.must(&["unit", "start", "U-1"]);
@@ -269,8 +262,7 @@ fn the_budget_cap_stops_new_work() {
 
 #[test]
 fn doctor_and_perf_run() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let d = fx.must(&["doctor", "--json"]).json();
     assert_eq!(d["ok"], true, "{d}");
     let p = fx.must(&["doctor", "--perf", "--json"]).json();

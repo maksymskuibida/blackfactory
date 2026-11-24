@@ -60,6 +60,12 @@ The files the acceptance changes that the template had committed (the policy, an
 A test about `bf init`, project ids, the key, the policy's acceptance or the first events of the log, or one that fails on a copy, uses `Fx::new_real()`, `Fx::with_checks_real()` or `Fx::workspace_real(..)` (each with a `_with` form for the switch).
 Edit `common/mod.rs` and every template is built again, since its text is part of the key.
 
+`Fx::tiny_project()` and `Fx::tiny_run()` (each with a `_with` form for the switch and a `_sandboxed` form) copy two more templates of the same store: one built by `Fx::new()` and `tiny()`, one by `Fx::new()`, `tiny()` and `start_test_run()`, through those same calls.
+A test whose first steps are those calls uses them; a test that does anything between `Fx::new()` and `tiny()` keeps the calls.
+The tests of record puts and of the test-mode grant (`e2e`, `flow`, `run_questions`, and the grant and run-start tests of `attacks`, `behaviour` and `hardening`) keep calling `tiny()` and `start_test_run()` on a fresh fixture.
+Every fixture repository has git's automatic maintenance switched off (`gc.auto = 0`), so no detached `git gc` writes in a build folder while it is copied.
+On a copied run the policy's acceptance lands in the records commit, and the run's own changes stay uncommitted, as after the calls.
+
 ## Measured times
 
 Same machine, whole `bf` package, tests already built (336 tests including the library's own):

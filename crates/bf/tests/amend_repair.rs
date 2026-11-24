@@ -29,8 +29,7 @@ fn narrow_all(fx: &Fx, opened: &serde_json::Value) {
 
 #[test]
 fn a_repair_naming_a_requirement_is_refused_by_name() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(
         &fx,
         "component",
@@ -49,8 +48,7 @@ fn a_repair_naming_a_requirement_is_refused_by_name() {
 
 #[test]
 fn every_kind_of_design_part_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for (kind, id, extra) in [
         ("screen", "S-1", ""),
         ("journey", "J-1", ""),
@@ -75,8 +73,7 @@ fn every_kind_of_design_part_is_refused() {
 
 #[test]
 fn a_repair_is_approved_with_no_stage_sentences_and_no_links() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx
         .must(&["amend", "open", "--repair", "X-1", "--json"])
         .json();
@@ -116,8 +113,7 @@ fn a_repair_is_approved_with_no_stage_sentences_and_no_links() {
 
 #[test]
 fn the_same_change_without_the_mark_still_needs_the_stages() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx.must(&["amend", "open", "X-1", "--json"]).json();
     narrow_all(&fx, &opened);
     fx.human("Yes, approve the new command.");
@@ -136,8 +132,7 @@ fn the_same_change_without_the_mark_still_needs_the_stages() {
 
 #[test]
 fn a_repair_cannot_be_revised_to_hold_a_design_part() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     let o = fx.refused(&["amend", "revise", "X-1", "R-1"]);
     assert!(o.stderr.contains("R-1"), "{}", o.stderr);
@@ -148,8 +143,7 @@ fn a_repair_cannot_be_revised_to_hold_a_design_part() {
 
 #[test]
 fn the_amendment_page_says_which_amendments_are_repairs() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     let v = fx.must(&["view", "run", "--json"]).json();
     let secs = v["sections"].as_array().unwrap();

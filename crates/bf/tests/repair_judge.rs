@@ -462,8 +462,7 @@ fn repair_judge_a_second_token_and_a_token_after_a_verdict_are_refused() {
 
 #[test]
 fn repair_judge_the_switch_off_refuses_the_token() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("repair_judge = true", "repair_judge = false");
     fx.start_test_run();
     let opened = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
@@ -636,9 +635,7 @@ fn repair_judge_a_go_outside_the_limits_is_refused_naming_each_limit() {
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     refused_naming(&fx, &aid, "go", &["X-12"]);
     // A checkpoint operation: U-2 and its check go onto a new checkpoint.
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["amend", "open", "--repair", "K-1", "--json"]).json();
     fx.must(&["amend", "checkpoint", "after", "K-1", "U-2"]);
     let aid = o["amend"].as_str().unwrap().to_string();

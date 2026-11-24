@@ -27,8 +27,7 @@ fn put_check(fx: &Fx, text: &str) -> Out {
 
 /// U-1 with the checks X-1 and X-4.
 fn two_checks() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = put_check(&fx, X4);
     assert_eq!(o.code, 0, "{}", o.all());
     fx.commit_all("x4");

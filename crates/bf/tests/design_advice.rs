@@ -100,9 +100,7 @@ mod design_advice {
 
     #[test]
     fn a_workers_question_has_a_page_only_when_one_was_recorded_for_its_unit() {
-        let fx = Fx::new();
-        fx.tiny();
-        fx.start_test_run();
+        let fx = Fx::tiny_run();
         fx.must(&["ask", "--unit", "U-1", "--title", "Which tone?"]);
         page(&fx, "questions-idea");
         let n = fx.must(&["next", "--json"]).json();

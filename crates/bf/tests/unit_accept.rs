@@ -17,9 +17,7 @@ fn finding(fx: &Fx, id: &str, severity: &str) {
 
 /// U-1 started, its review listed F-1 and F-2 and parked; F-3 is a finding of U-1 in the records only.
 fn parked() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     finding(&fx, "F-1", "high");
     finding(&fx, "F-2", "low");
@@ -86,9 +84,7 @@ fn a_high_and_a_low_finding_accepted_in_one_message_land_the_unit_with_no_new_ro
 
 #[test]
 fn words_written_before_the_park_are_refused() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     finding(&fx, "F-1", "high");
     fx.human(WORDS);
@@ -179,9 +175,7 @@ fn an_accept_naming_only_records_only_findings_is_refused_before_anything_is_wri
 
 #[test]
 fn a_unit_that_is_not_parked_has_nothing_to_accept() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.human(WORDS);
     let o = fx.refused(&["unit", "accept", "U-1", "F-1", "--quote", WORDS]);

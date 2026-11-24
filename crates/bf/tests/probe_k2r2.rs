@@ -93,9 +93,7 @@ fn finding(fx: &Fx, id: &str, severity: &str) {
 
 #[test]
 fn probe_k2r2_accepting_findings_of_a_unit_parked_while_fixing_does_not_make_it_reviewed() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     finding(&fx, "F-1", "high");
     let p = fx.project();

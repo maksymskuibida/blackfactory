@@ -34,9 +34,7 @@ fn put_x(fx: &Fx, text: &str) -> Out {
 }
 
 fn start() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -76,8 +74,7 @@ fn approve_repair(fx: &Fx, n: &str, text: &str) {
 
 /// U-1 with two checks, X-1 and X-4, started and ready for work.
 fn two_checks() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let f = fx.root.join("x4.toml");
     fs::write(&f, "id=\"X-4\"\nkind=\"check\"\ntitle=\"Folder\"\nhow=\"command\"\ncommand=\"test -d src\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n").unwrap();
     let o = fx.bf(&["record", "put", "check", "--file", f.to_str().unwrap()]);
@@ -252,9 +249,7 @@ fn q2_a_withdrawn_amendment_leaves_no_force_to_its_changes() {
 }
 
 fn built_both() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit(
         "U-1",
         "src/hello.txt",

@@ -151,9 +151,7 @@ fn every_listed_read_exits_zero_prints_json_and_changes_nothing() {
         reads.len() >= 3 + 8,
         "reads.ts lists the three fixed reads and every page kind: {reads:?}"
     );
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let before = fx.must(&["status", "--json"]).json()["events"].clone();
     assert!(before.as_u64().unwrap() > 0);
     for args in &reads {

@@ -50,6 +50,26 @@ fn private_store(dir: &Path, ident: &str) -> TemplateStore {
     TemplateStore::at(dir, ident)
 }
 
+/// The fixture of a kind made by a real `bf init` and the helper calls in this test.
+fn real_of(kind: &Kind) -> Fx {
+    match kind {
+        Kind::New => Fx::new_real_with(Switch::Off),
+        Kind::WithChecks => Fx::with_checks_real_with(Switch::Off),
+        Kind::Workspace(_) => Fx::workspace_real_with(&["app"], Switch::Off),
+        Kind::Tiny => {
+            let fx = Fx::new_real_with(Switch::Off);
+            fx.tiny();
+            fx
+        }
+        Kind::TinyRun => {
+            let fx = Fx::new_real_with(Switch::Off);
+            fx.tiny();
+            fx.start_test_run();
+            fx
+        }
+    }
+}
+
 fn template_names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
         .unwrap()
@@ -67,6 +87,8 @@ fn a_copied_project_verifies_and_holds_no_path_of_its_build_folder() {
         Kind::New,
         Kind::WithChecks,
         Kind::Workspace(vec!["app".into()]),
+        Kind::Tiny,
+        Kind::TinyRun,
     ] {
         let (fx, build) = TemplateStore::shared().fixture(&kind, Switch::Off);
         assert!(
@@ -79,11 +101,7 @@ fn a_copied_project_verifies_and_holds_no_path_of_its_build_folder() {
             "the copy lies in the build folder"
         );
         fx.must(&["log", "--verify"]);
-        let real = match &kind {
-            Kind::New => Fx::new_real_with(Switch::Off),
-            Kind::WithChecks => Fx::with_checks_real_with(Switch::Off),
-            Kind::Workspace(_) => Fx::workspace_real_with(&["app"], Switch::Off),
-        };
+        let real = real_of(&kind);
         let d_copy = fx.bf(&["doctor"]);
         let d_real = real.bf(&["doctor"]);
         assert_eq!(
@@ -124,13 +142,11 @@ fn a_copy_has_the_git_tree_of_a_real_init() {
         Kind::New,
         Kind::WithChecks,
         Kind::Workspace(vec!["app".into()]),
+        Kind::Tiny,
+        Kind::TinyRun,
     ] {
         let (copy, _) = TemplateStore::shared().fixture(&kind, Switch::Off);
-        let real = match &kind {
-            Kind::New => Fx::new_real_with(Switch::Off),
-            Kind::WithChecks => Fx::with_checks_real_with(Switch::Off),
-            Kind::Workspace(_) => Fx::workspace_real_with(&["app"], Switch::Off),
-        };
+        let real = real_of(&kind);
         assert_eq!(status(&copy), status(&real), "{kind:?}");
     }
 }
@@ -342,6 +358,231 @@ fn a_real_fixture_still_runs_bf_init() {
     let fx = Fx::new_real();
     let o = fx.must(&["log", "--json"]);
     assert!(o.stdout.contains("project.init"), "{}", o.stdout);
+}
+
+/// A text with the fixture's own folder taken out.
+fn pathless(fx: &Fx, text: &str) -> String {
+    let top = fx.root.parent().unwrap().to_string_lossy().to_string();
+    text.replace(&top, "@FIXTURE@")
+}
+
+/// What the engine says of a fixture's design: every record as `bf record get` gives it, the plan
+/// check's code and words, and `bf status`, each with the fixture's folder taken out.
+fn design_view(fx: &Fx) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    let list = fx.must(&["record", "list", "--json"]).json();
+    v.push(("record list".into(), pathless(fx, &list.to_string())));
+    for r in list.as_array().unwrap() {
+        let id = r["id"].as_str().unwrap();
+        let o = fx.must(&["record", "get", id, "--json"]);
+        v.push((format!("record {id}"), pathless(fx, &o.stdout)));
+    }
+    let o = fx.bf(&["plan", "check"]);
+    v.push((
+        "plan check".into(),
+        format!("{}\n{}", o.code, pathless(fx, &o.all())),
+    ));
+    let o = fx.must(&["status", "--json"]);
+    v.push(("status".into(), pathless(fx, &o.stdout)));
+    v
+}
+
+/// The views of a copy and of a fixture built by the calls agree field by field.
+fn assert_same_view(what: &str, copy: &Fx, real: &Fx) {
+    let (a, b) = (design_view(copy), design_view(real));
+    assert_eq!(
+        a.iter().map(|x| &x.0).collect::<Vec<_>>(),
+        b.iter().map(|x| &x.0).collect::<Vec<_>>(),
+        "{what}: the records differ"
+    );
+    for ((name, x), (_, y)) in a.iter().zip(b.iter()) {
+        match (
+            serde_json::from_str::<serde_json::Value>(x),
+            serde_json::from_str::<serde_json::Value>(y),
+        ) {
+            (Ok(jx), Ok(jy)) => assert_json_fields(&format!("{what}: {name}"), "", &jx, &jy),
+            _ => assert_eq!(x, y, "{what}: {name} differs"),
+        }
+    }
+}
+
+/// Two JSON values agree field by field; the path of the first that differs is named.
+fn assert_json_fields(what: &str, at: &str, a: &serde_json::Value, b: &serde_json::Value) {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            let kx: Vec<&String> = x.keys().collect();
+            let ky: Vec<&String> = y.keys().collect();
+            assert_eq!(kx, ky, "{what}: the fields at `{at}` differ");
+            for (k, vx) in x {
+                assert_json_fields(what, &format!("{at}.{k}"), vx, &y[k]);
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            assert_eq!(x.len(), y.len(), "{what}: the length of `{at}` differs");
+            for (i, (vx, vy)) in x.iter().zip(y.iter()).enumerate() {
+                assert_json_fields(what, &format!("{at}[{i}]"), vx, vy);
+            }
+        }
+        (Value::String(x), Value::String(y)) if x != y => assert_eq!(
+            unstamped(x),
+            unstamped(y),
+            "{what}: `{at}` differs beyond its times and commit ids"
+        ),
+        _ => assert_eq!(a, b, "{what}: `{at}` differs"),
+    }
+}
+
+/// A text with its times (`2026-01-02T03:04:05Z`) and git commit ids (seven or more lowercase hex
+/// digits) taken out: two builds by the same calls differ in nothing else, since they run at other
+/// moments and git hashes the commit time.
+fn unstamped(s: &str) -> String {
+    let b = s.as_bytes();
+    let is_time = |i: usize| {
+        let shape = b"dddd-dd-ddTdd:dd:ddZ";
+        i + shape.len() <= b.len()
+            && shape.iter().enumerate().all(|(k, &c)| {
+                let x = b[i + k];
+                if c == b'd' {
+                    x.is_ascii_digit()
+                } else {
+                    x == c
+                }
+            })
+    };
+    let hex = |c: u8| c.is_ascii_digit() || (b'a'..=b'f').contains(&c);
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if is_time(i) {
+            out.extend_from_slice(b"@TIME@");
+            i += 20;
+            continue;
+        }
+        let at_word_start = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        if at_word_start && hex(b[i]) {
+            let mut j = i;
+            while j < b.len() && hex(b[j]) {
+                j += 1;
+            }
+            let ends_word = j == b.len() || !b[j].is_ascii_alphanumeric();
+            if ends_word && j - i >= 7 && b[i..j].iter().any(|c| c.is_ascii_digit()) {
+                out.extend_from_slice(b"@COMMIT@");
+                i = j;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn a_copied_tiny_project_equals_one_built_by_the_calls() {
+    let copy = Fx::tiny_project_with(Switch::Off);
+    let real = Fx::new_with(Switch::Off);
+    real.tiny();
+    copy.must(&["log", "--verify"]);
+    assert_same_view("tiny project", &copy, &real);
+    let ids = |fx: &Fx| {
+        let l = fx.must(&["record", "list", "--json"]).json();
+        l.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(ids(&copy).contains(&"X-3".to_string()), "{:?}", ids(&copy));
+}
+
+#[test]
+fn a_copied_tiny_run_equals_one_built_by_the_calls() {
+    let copy = Fx::tiny_run_with(Switch::Off);
+    let real = Fx::new_with(Switch::Off);
+    real.tiny();
+    real.start_test_run();
+    copy.must(&["log", "--verify"]);
+    assert_same_view("tiny run", &copy, &real);
+    let st = copy.must(&["status", "--json"]).json();
+    assert_eq!(st["test_mode"], "granted");
+    assert_eq!(st["run"], "run-1");
+}
+
+/// F-582: the tiny templates put their records once, so a fresh fixture still pins what `bf record
+/// put` requires of a record: a requirement without a title is refused, names the missing field and is
+/// not kept, and the same record with a title is taken.
+#[test]
+fn a_record_put_without_a_title_is_refused_on_a_fresh_fixture() {
+    let fx = Fx::new_with(Switch::Off);
+    let untitled = "id=\"R-1\"\nkind=\"requirement\"\nacceptance=[\"src/hello.txt exists\"]\n";
+    let o = fx.put("requirement", untitled);
+    assert_eq!(o.code, 2, "a record without a title was taken: {}", o.all());
+    assert!(
+        o.stderr.contains("missing required field `title`"),
+        "{}",
+        o.stderr
+    );
+    assert_ne!(fx.bf(&["record", "get", "R-1", "--json"]).code, 0);
+    let o = fx.put(
+        "requirement",
+        &format!("{untitled}title=\"A greeting exists\"\n"),
+    );
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["record", "get", "R-1", "--json"]);
+}
+
+#[test]
+fn the_tiny_kinds_have_their_own_keys() {
+    let s = TemplateStore::shared();
+    let keys = [
+        s.key(&Kind::New, Switch::Off),
+        s.key(&Kind::Tiny, Switch::Off),
+        s.key(&Kind::Tiny, Switch::All),
+        s.key(&Kind::TinyRun, Switch::Off),
+        s.key(&Kind::TinyRun, Switch::All),
+    ];
+    for (i, a) in keys.iter().enumerate() {
+        for b in &keys[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+}
+
+#[test]
+fn a_tiny_template_is_built_once_per_key_in_its_store() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let s = private_store(dir.path(), &binary_identity());
+    let (a, _) = s.fixture(&Kind::Tiny, Switch::Off);
+    let (b, _) = s.fixture(&Kind::TinyRun, Switch::Off);
+    a.must(&["log", "--verify"]);
+    b.must(&["log", "--verify"]);
+    let mut want = vec![
+        s.key(&Kind::Tiny, Switch::Off),
+        s.key(&Kind::TinyRun, Switch::Off),
+    ];
+    want.sort();
+    assert_eq!(template_names(dir.path()), want);
+    // No build folder is left in the store.
+    for e in fs::read_dir(dir.path()).unwrap().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        assert!(!n.contains(".partial-"), "a build folder is left: {n}");
+    }
+}
+
+#[test]
+fn the_tiny_kinds_follow_the_switch_given_for_one_fixture() {
+    let want = expected_on();
+    assert_eq!(receipt_sandbox(&Fx::tiny_project_with(Switch::Off)), "none");
+    assert_eq!(receipt_sandbox(&Fx::tiny_project_with(Switch::All)), want);
+    assert_eq!(receipt_sandbox(&Fx::tiny_run_with(Switch::Off)), "none");
+    assert_eq!(receipt_sandbox(&Fx::tiny_run_with(Switch::All)), want);
+}
+
+#[test]
+fn required_sandbox_is_met_for_tiny() {
+    require_sandbox_from_env(&Fx::tiny_project());
+    require_sandbox_from_env(&Fx::tiny_run());
 }
 
 #[test]

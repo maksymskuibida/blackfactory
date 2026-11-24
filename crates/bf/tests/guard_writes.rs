@@ -28,9 +28,7 @@ fn decision(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
 }
 
 fn setup() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     (fx, wc)

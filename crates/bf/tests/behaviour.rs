@@ -384,9 +384,7 @@ fn a_failed_check_is_recorded_the_same_way_and_never_counts_as_proof() {
 
 #[test]
 fn findings_can_be_piped_in() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "built"]);
     let json = r#"[{"title":"Hello is spelled wrong","severity":"medium","where":"src/hello.txt:1","action":"Fix the spelling"}]"#;
@@ -529,9 +527,7 @@ fn the_brief_does_not_forbid_the_folder_the_builder_works_in() {
 
 #[test]
 fn starting_a_unit_in_flight_resumes_it_and_help_works_everywhere() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "built"]);
     let f = serde_json::json!([{"title": "t"}]).to_string();
@@ -582,9 +578,7 @@ fn needs_you_is_set_only_where_the_human_is_waited_for() {
         assert_eq!(r["needs_you"], false, "nothing is marked: {r}");
     }
     // A parked unit does wait for the human.
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "blocked"]);
     let r = fx.must(&["view", "run"]).json();
@@ -678,9 +672,7 @@ fn the_plan_gate_shows_what_is_being_approved() {
 
 #[test]
 fn a_worker_may_file_an_open_finding_for_a_unit_in_review_and_nothing_more() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     let d = tempfile::tempdir().unwrap();

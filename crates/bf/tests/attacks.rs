@@ -42,9 +42,7 @@ fn t3_ledger_will_not_close_with_an_unlinked_id() {
 
 #[test]
 fn t3_ledger_closes_only_after_every_part_has_a_receipt() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -78,9 +76,7 @@ fn t3_ledger_closes_only_after_every_part_has_a_receipt() {
 
 #[test]
 fn t4_checkpoint_with_a_missing_receipt_will_not_close() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -121,9 +117,7 @@ fn t4_checkpoint_with_a_missing_receipt_will_not_close() {
 
 #[test]
 fn t4_an_approved_amendment_can_stand_in_for_a_receipt() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -210,9 +204,7 @@ fn first_receipt(fx: &Fx) -> (std::path::PathBuf, String) {
 
 #[test]
 fn t5_a_hand_written_receipt_is_rejected() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -256,9 +248,7 @@ fn t5_a_hand_written_receipt_is_rejected() {
 
 #[test]
 fn t5_a_receipt_for_other_content_is_rejected() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -383,9 +373,7 @@ fn t9_a_simulated_approval_outside_a_granted_run_satisfies_nothing() {
 
 #[test]
 fn t9_a_run_with_simulated_approvals_cannot_land_on_main() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",

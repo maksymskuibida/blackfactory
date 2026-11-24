@@ -570,9 +570,7 @@ fn decision_by_process(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
 
 /// A project whose two units have landed, so checkpoint K-1's working copy exists.
 fn checkpoint_place() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -587,9 +585,7 @@ fn checkpoint_place() -> (Fx, PathBuf) {
 
 /// A project with unit U-1 started: its working copy is where the `Wc` rows run.
 fn unit_place() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     (fx, wc)
@@ -812,8 +808,7 @@ fn strings(v: &[&str]) -> Vec<String> {
 /// and a folder unpacked into one is judged by the folder.
 #[test]
 fn a_file_put_into_the_folder_of_a_protected_file_is_judged_where_it_lands() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let _ = std::fs::create_dir_all(fx.root.join(".claude"));
     let refused = strings(&[
         "cp /tmp/settings.json .claude/",
@@ -867,8 +862,7 @@ fn a_file_put_into_the_folder_of_a_protected_file_is_judged_where_it_lands() {
 /// code that can write them is refused at both.
 #[test]
 fn a_filtered_find_handing_matches_to_reading_code_gets_one_answer_at_every_depth() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -962,8 +956,7 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
         "refused",
     );
     // From the main checkout the protected files stay out of reach whatever the option words are.
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -994,8 +987,7 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
 /// Z-4: honest commands from the main checkout that touch nothing protected pass.
 #[test]
 fn honest_cleaning_and_unstaging_from_the_main_checkout_pass() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -1093,8 +1085,7 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
 /// one that opens it for writing stays refused.
 #[test]
 fn an_interpreter_reading_a_record_by_its_absolute_path_passes() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let root = fx.root.to_string_lossy().to_string();
     let rec = format!("{root}/factory/records/R-1.toml");
     let passed = vec![
@@ -1133,8 +1124,7 @@ fn an_interpreter_reading_a_record_by_its_absolute_path_passes() {
 /// A filtered `find` that hands its matches to code that writes them is a delete of the matches.
 #[test]
 fn a_filtered_find_that_hands_matches_to_writing_code_is_judged_as_a_delete() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,

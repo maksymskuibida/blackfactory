@@ -29,8 +29,7 @@ fn amendments(fx: &Fx) -> Vec<serde_json::Value> {
 
 #[test]
 fn opening_a_second_amendment_is_refused_and_names_the_open_one() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     // Same records or other records: either way it is refused.
     for ids in [["R-2"], ["R-1"]] {
@@ -44,8 +43,7 @@ fn opening_a_second_amendment_is_refused_and_names_the_open_one() {
 
 #[test]
 fn revising_changes_the_records_and_keeps_the_id() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     let o = fx.must(&["amend", "revise", "R-1", "--json"]).json();
     assert_eq!(o["amend"], "A-1");
@@ -60,15 +58,13 @@ fn revising_changes_the_records_and_keeps_the_id() {
 
 #[test]
 fn revising_without_an_open_amendment_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.refused(&["amend", "revise", "R-1"]);
 }
 
 #[test]
 fn a_revised_amendment_needs_a_human_message_after_the_revision() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // U-19: both sets cover every stage and link their requirement, so only the revision stops approval.
     for (k, t) in [
         ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
@@ -105,8 +101,7 @@ fn a_revised_amendment_needs_a_human_message_after_the_revision() {
 
 #[test]
 fn withdrawing_makes_room_for_a_new_amendment() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     fx.refused(&["amend", "open", "R-1"]);
     fx.must(&["amend", "withdraw", "A-1", "--reason", "wrong records"]);
@@ -131,8 +126,7 @@ fn put_decision(fx: &Fx, id: &str, stage: &str) {
 /// while the amendment waits is shown as new with every field.
 #[test]
 fn amend_one_open_a_named_record_with_no_content_blocks_narrow_and_approve() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_decision(&fx, "D-91", "ui");
     put_decision(&fx, "D-92", "plan");
     let opened = fx
@@ -182,9 +176,7 @@ fn amend_one_open_a_named_record_with_no_content_blocks_narrow_and_approve() {
 /// refusal says where new records are named.
 #[test]
 fn amend_one_open_a_new_record_after_the_approval_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     let f = fx.root.join("x.toml");
     fs::write(
@@ -223,8 +215,7 @@ fn amend_one_open_a_new_record_after_the_approval_is_refused() {
 /// R-43: the refusal of narrowing for an added ID points to revise.
 #[test]
 fn amend_one_open_narrowing_cannot_add_an_id_and_points_to_revise() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
     let mut keep = opened["impact_ids"].as_array().unwrap().clone();
     keep.push(serde_json::json!("R-1"));
@@ -241,8 +232,7 @@ fn amend_one_open_narrowing_cannot_add_an_id_and_points_to_revise() {
 /// R-52, S-26: `bf log --tail` prints the amendment events with the ids of their records.
 #[test]
 fn amend_one_open_the_log_leaves_record_contents_out_of_amendment_events() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_decision(&fx, "D-91", "ui");
     put_decision(&fx, "D-92", "plan");
     let o = fx.put("component", NEW_C);
@@ -299,9 +289,7 @@ fn amend_one_open_the_log_leaves_record_contents_out_of_amendment_events() {
 /// content that may be put again.
 #[test]
 fn amend_one_open_a_log_with_a_record_bound_after_its_approval_replays_the_same() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     let opened = fx.must(&["amend", "revise", "X-1", "--json"]).json();
     narrow_all(&fx, "A-1", &opened);
@@ -351,8 +339,7 @@ fn amend_one_open_a_log_with_a_record_bound_after_its_approval_replays_the_same(
 /// log and on the run page, and `--json` leaves the contents out as well.
 #[test]
 fn amend_one_open_a_narrowing_with_long_reasons_stays_within_the_line_limit() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_decision(&fx, "D-91", "ui");
     put_decision(&fx, "D-92", "plan");
     let o = fx.put("component", NEW_C);

@@ -27,9 +27,7 @@ fn get(fx: &Fx, id: &str) -> Value {
 
 #[test]
 fn amend_withdraw_puts_two_changed_records_back_and_takes_out_the_added_one() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let (x1, x2) = (get(&fx, "X-1"), get(&fx, "X-2"));
     fx.must(&["amend", "open", "--repair", "X-1", "X-2", "X-4"]);
     put_file(
@@ -61,8 +59,7 @@ fn amend_withdraw_puts_two_changed_records_back_and_takes_out_the_added_one() {
 
 #[test]
 fn amend_withdraw_of_an_amendment_that_changed_nothing_says_so() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     let o = fx.must(&["amend", "withdraw", "A-1", "--reason", "changed my mind"]);
     assert!(o.stdout.contains("A-1"), "{}", o.stdout);
@@ -72,9 +69,7 @@ fn amend_withdraw_of_an_amendment_that_changed_nothing_says_so() {
 /// step that waits for an approval.
 #[test]
 fn amend_withdraw_draft_refusal_without_an_amendment_waits_for_nothing() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     // A change by hand after an amendment named the record: no amendment is open, none can approve it.
     fx.must(&["amend", "open", "--repair", "X-1"]);
     fx.must(&["amend", "withdraw", "A-1", "--reason", "not needed"]);
@@ -108,9 +103,7 @@ fn amend_withdraw_draft_refusal_without_an_amendment_waits_for_nothing() {
 /// the record in the open one.
 #[test]
 fn amend_withdraw_draft_refusal_with_another_amendment_open_names_revise() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     fx.must(&["amend", "withdraw", "A-1", "--reason", "not needed"]);
     let f = fx.root.join("factory/records/X-1.toml");
@@ -140,9 +133,7 @@ fn amend_withdraw_draft_refusal_with_another_amendment_open_names_revise() {
 /// `bf log` leaves that content out of the event's line.
 #[test]
 fn amend_withdraw_before_narrowing_keeps_the_removed_content_in_the_log() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["amend", "open", "--repair", "X-1", "X-4"]);
     put_file(
         &fx,
@@ -173,9 +164,7 @@ fn amend_withdraw_before_narrowing_keeps_the_removed_content_in_the_log() {
 /// With an amendment open the same refusal names it.
 #[test]
 fn amend_withdraw_draft_refusal_with_an_amendment_names_it() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["amend", "open", "--repair", "X-1"]);
     put_file(
         &fx,
@@ -201,9 +190,7 @@ fn amend_withdraw_draft_refusal_with_an_amendment_names_it() {
 /// names the steps that work and never says the human has not approved.
 #[test]
 fn amend_withdraw_checkpoint_gap_note_names_steps_without_an_approval_to_wait_for() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     fx.must_in(

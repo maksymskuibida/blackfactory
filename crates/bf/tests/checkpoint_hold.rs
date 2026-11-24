@@ -716,9 +716,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_parked() {
 // Old logs: a run with the checkpoint review off writes no hold event that matters and replays clean.
 #[test]
 fn a_run_with_the_checkpoint_review_off_has_no_ignored_event() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     let o = fx.bf(&["log", "--verify"]);

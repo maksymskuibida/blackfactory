@@ -12,8 +12,7 @@ mod questions {
 
     #[test]
     fn eight_questions_asked_together_are_all_kept() {
-        let fx = Fx::new();
-        fx.tiny();
+        let fx = Fx::tiny_project();
         let mut handles = Vec::new();
         for i in 0..8 {
             let root = fx.root.clone();

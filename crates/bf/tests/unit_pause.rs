@@ -8,8 +8,7 @@ use std::time::Duration;
 
 /// A project whose idle limit is zero, with a run and U-1 at work.
 fn at_work() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("idle_minutes = 60", "idle_minutes = 0");
     fx.start_test_run();
     fx.must(&["unit", "start", "U-1"]);
@@ -177,9 +176,7 @@ fn start_long_ago(fx: &Fx, unit: &str) {
 
 #[test]
 fn the_answer_to_a_question_restarts_the_clock() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     start_long_ago(&fx, "U-1");
     // The idle limit is the policy's 60 minutes and the unit has been silent far longer.
     assert_eq!(parked_now(&fx), 1);

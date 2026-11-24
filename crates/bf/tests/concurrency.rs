@@ -242,8 +242,7 @@ fn findings_filed_at_the_same_moment_each_keep_their_own_number() {
 
 #[test]
 fn role_tokens_issued_at_the_same_moment_are_all_kept() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let p = fx.project();
     let hs: Vec<_> = (0..8)
         .map(|i| {
