@@ -15,7 +15,9 @@ E_PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbi
 E_CARGO="${CARGO_HOME:-$HOME/.cargo}"
 E_RUSTUP="${RUSTUP_HOME:-$HOME/.rustup}"
 E_TMP=$(getconf DARWIN_USER_TEMP_DIR)
-ENVTXT="PATH=$E_PATH HOME=$HOME CARGO_HOME=$E_CARGO RUSTUP_HOME=$E_RUSTUP TMPDIR=$E_TMP"
+# the recorded environment holds no home path: the home folder is written as $HOME
+homefree() { case "$1" in "$HOME") printf '%s' '$HOME' ;; "$HOME"/*) printf '%s' '$HOME'"${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
+ENVTXT="PATH=\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HOME=\$HOME CARGO_HOME=$(homefree "$E_CARGO") RUSTUP_HOME=$(homefree "$E_RUSTUP") TMPDIR=DARWIN_USER_TEMP_DIR"
 
 # untimed command under the fixed environment
 cleanenv() {
