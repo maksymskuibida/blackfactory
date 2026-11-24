@@ -6,7 +6,7 @@ use common::*;
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A `cargo` that fails `clippy` while a file still holds the word `bad`, and names the lines in clippy's form.
 const FAKE_CARGO: &str = "#!/bin/sh\n\
@@ -36,12 +36,33 @@ fn plan(fx: &Fx) {
     fx.commit_all("records");
 }
 
+/// The folder of a fake `cargo` with the given text: one folder per text, the same for every test and
+/// every build of a state, so the policy that names it holds no path of a build folder, which the copy of
+/// a state removes (D-140). Written to a file of its own and renamed, so a test that runs it never sees a
+/// half-written script.
+fn fake_bin(script: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    script.hash(&mut h);
+    // Not in the store of states, which removes every folder of another test program.
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("bf-fakebin")
+        .join(format!("{:016x}", h.finish()));
+    fs::create_dir_all(&dir).unwrap();
+    let dir = fs::canonicalize(&dir).unwrap();
+    let cargo = dir.join("cargo");
+    if fs::read_to_string(&cargo).ok().as_deref() != Some(script) {
+        let tmp = tempfile::NamedTempFile::new_in(&dir).unwrap();
+        fs::write(tmp.path(), script).unwrap();
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        tmp.persist(&cargo).unwrap();
+    }
+    dir
+}
+
 /// A lint run that fails in the checkpoint's working copy, and the fix it opens.
 fn failed_lint(fx: &Fx) -> PathBuf {
-    let bin = fx.root.parent().unwrap().join("fakebin");
-    fs::create_dir_all(&bin).unwrap();
-    fs::write(bin.join("cargo"), FAKE_CARGO).unwrap();
-    fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = fake_bin(FAKE_CARGO);
     fx.set_policy(
         "/usr/bin:/bin:/usr/sbin:/sbin",
         &format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
@@ -79,6 +100,22 @@ fn failed_lint(fx: &Fx) -> PathBuf {
     let o = fx.bf_in(&k, &["evidence", "run", "X-2", "--", "cargo", "clippy"]);
     assert!(!o.all().is_empty());
     k
+}
+
+/// The state of the lint tests: the plan, the unit landed and the lint check failed in the checkpoint's
+/// working copy, built once by those calls and copied per test (D-140).
+fn lint_state(fx: &Fx) {
+    plan(fx);
+    failed_lint(fx);
+}
+
+const LINT: &str = "ckfix_reopen::lint";
+
+/// The same state as `plan` and `failed_lint`, copied; gives the checkpoint's working copy.
+fn lint_copy() -> (Fx, PathBuf) {
+    let fx = Fx::state_copy(LINT, lint_state);
+    let k = fx.work("K-1");
+    (fx, k)
 }
 
 fn commit(k: &std::path::Path) {
@@ -121,9 +158,7 @@ fn ckfix_reopen_an_aborted_fix_of_a_failed_check_opens_again_with_open() {
 
 #[test]
 fn ckfix_reopen_refuses_when_no_check_failed() {
-    let fx = Fx::new();
-    plan(&fx);
-    let k = failed_lint(&fx);
+    let (fx, k) = lint_copy();
     fx.must(&["next", "--json"]);
     fs::write(k.join("src/a.txt"), "good\n").unwrap();
     fs::write(k.join("src/b.txt"), "good\n").unwrap();
@@ -136,9 +171,7 @@ fn ckfix_reopen_refuses_when_no_check_failed() {
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_changes_only_the_named_lines_needs_no_review_round() {
-    let fx = Fx::new();
-    plan(&fx);
-    let k = failed_lint(&fx);
+    let (fx, k) = lint_copy();
     fx.must(&["next", "--json"]);
     // The file the lint output names but the unit never had: no grant is needed.
     fs::write(k.join("src/a.txt"), "good first\nkeep\n").unwrap();
@@ -159,9 +192,7 @@ fn ckfix_reopen_a_lint_fix_that_changes_only_the_named_lines_needs_no_review_rou
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_changes_another_line_goes_to_review() {
-    let fx = Fx::new();
-    plan(&fx);
-    let k = failed_lint(&fx);
+    let (fx, k) = lint_copy();
     fx.must(&["next", "--json"]);
     fs::write(k.join("src/a.txt"), "good first\nkept\n").unwrap();
     fs::write(k.join("src/b.txt"), "good one\n").unwrap();
@@ -174,9 +205,7 @@ fn ckfix_reopen_a_lint_fix_that_changes_another_line_goes_to_review() {
 
 #[test]
 fn ckfix_reopen_the_guard_lets_a_lint_fix_write_the_named_file_and_no_other() {
-    let fx = Fx::new();
-    plan(&fx);
-    let _k = failed_lint(&fx);
+    let (fx, _k) = lint_copy();
     fx.must(&["next", "--json"]);
     let may = fx.must(&["next", "--json"]).json()["directives"][0]["may_change"].to_string();
     assert!(
@@ -249,13 +278,9 @@ fn land(fx: &Fx, cargo: Option<&str>) -> PathBuf {
 
 /// `review` switches the checkpoint review on for the run.
 fn land_ex(fx: &Fx, cargo: Option<&str>, review: bool) -> PathBuf {
-    let bin = fx.root.parent().unwrap().join("fakebin");
-    fs::create_dir_all(&bin).unwrap();
     let mut path = format!("{}:{SYS}", rustfmt_dir());
     if let Some(c) = cargo {
-        fs::write(bin.join("cargo"), c).unwrap();
-        fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
-        path = format!("{}:{path}", bin.display());
+        path = format!("{}:{path}", fake_bin(c).display());
     }
     fx.set_policy(SYS, &path);
     if review {
@@ -532,19 +557,82 @@ if [ -n \"$n\" ]; then\n\
 fi\n\
 exit 0\n";
 
-fn lint_only_fix(fx: &Fx, cargo: &str, files: &[(&str, &str)]) -> PathBuf {
+/// The unit landed with `src/lib.rs` failing the lint check, and the check run in the checkpoint's working
+/// copy, which opens the fix.
+fn lint_only_state(fx: &Fx) {
     plan_checks(fx, &[("X-2", "cargo clippy")]);
-    base_files(fx, files);
-    let k = land(fx, Some(cargo));
+    base_files(fx, &[("src/lib.rs", LIB_BAD)]);
+    let k = land(fx, Some(CARGO_K1));
     fx.bf_in(&k, &["evidence", "run", "X-2", "--", "cargo", "clippy"]);
+}
+
+const LINT_ONLY: &str = "ckfix_reopen::lint_only";
+
+/// `lint_only_state` copied (D-140), and the fix handed out by `bf next`; gives the checkpoint's working
+/// copy.
+fn lint_only_fix() -> (Fx, PathBuf) {
+    let fx = Fx::state_copy(LINT_ONLY, lint_only_state);
     fx.must(&["next", "--json"]);
-    k
+    let k = fx.work("K-1");
+    (fx, k)
+}
+
+/// The states of this file, each built once by those calls and copied per test (D-140).
+const STATES: [(&str, Build); 2] = [(LINT, lint_state), (LINT_ONLY, lint_only_state)];
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: each state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    for (name, build) in STATES {
+        require_sandbox_from_env(&Fx::state_copy(name, build));
+    }
+}
+
+/// `fixture_state_copy`: a copy of each state of this file passes the canary (in `state_copy`) and fixes
+/// or reopens as the same state built through the full `bf` calls in the test does.
+pub(crate) fn copies_behave_as_their_sources() {
+    // The lint state reopens: `bf next` opens the fix, an abort, then the fix opened again for the failed
+    // check.
+    let reopen = |fx: &Fx| -> (String, Value) {
+        let n = fx.must(&["next", "--json"]).json();
+        assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
+        fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+        assert!(open_phase(fx).is_null());
+        let o = fx.must(&["checkpoint", "fix", "K-1", "--open"]);
+        (o.stdout, open_phase(fx))
+    };
+    let src = Fx::new();
+    lint_state(&src);
+    let (src_out, src_phase) = reopen(&src);
+    let (fx, _k) = lint_copy();
+    let (out, phase) = reopen(&fx);
+    assert_eq!(phase, "fix");
+    assert_eq!(phase, src_phase);
+    assert!(out.contains("X-2") && src_out.contains("X-2"), "{out}");
+    fx.must(&["log", "--verify"]);
+    // The lint-only state fixes: the named line changed, the fix is done with no review round.
+    let fix = |fx: &Fx, k: &Path| -> Value {
+        fs::write(k.join("src/lib.rs"), LIB_GOOD).unwrap();
+        commit(k);
+        let o = built(fx, k);
+        assert_eq!(o.code, 0, "{}", o.all());
+        o.json()["phase"].clone()
+    };
+    let src = Fx::new();
+    lint_only_state(&src);
+    src.must(&["next", "--json"]);
+    let src_phase = fix(&src, &src.work("K-1"));
+    let (fx, k) = lint_only_fix();
+    let phase = fix(&fx, &k);
+    assert_eq!(phase, "done");
+    assert_eq!(phase, src_phase);
+    assert!(open_phase(&fx).is_null() && open_phase(&src).is_null());
+    fx.must(&["log", "--verify"]);
 }
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_inserts_a_function_beside_the_named_line_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     fs::write(
         k.join("src/lib.rs"),
         format!("{LIB_GOOD}pub fn extra() -> u32 {{\n    7\n}}\n"),
@@ -558,8 +646,7 @@ fn ckfix_reopen_a_lint_fix_that_inserts_a_function_beside_the_named_line_goes_to
 
 #[test]
 fn ckfix_reopen_a_pure_insertion_next_to_the_named_line_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     // The named line stays as it is for the checker's grep, so insert directly after it and fix it after.
     let text = "pub fn f(x: Option<u32>) -> bool {\n    x.is_some_and(|v| v > 1)\n    // extra\n    // lines\n}\n";
     fs::write(k.join("src/lib.rs"), text).unwrap();
@@ -571,8 +658,7 @@ fn ckfix_reopen_a_pure_insertion_next_to_the_named_line_goes_to_review() {
 
 #[test]
 fn ckfix_reopen_a_named_line_rewritten_as_more_lines_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     let text =
         "pub fn f(x: Option<u32>) -> bool {\n    let y = x;\n    y.is_some_and(|v| v > 1)\n}\n";
     fs::write(k.join("src/lib.rs"), text).unwrap();
@@ -584,8 +670,7 @@ fn ckfix_reopen_a_named_line_rewritten_as_more_lines_goes_to_review() {
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_also_makes_the_file_executable_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     fs::write(k.join("src/lib.rs"), LIB_GOOD).unwrap();
     fs::set_permissions(k.join("src/lib.rs"), fs::Permissions::from_mode(0o755)).unwrap();
     commit(&k);
@@ -596,8 +681,7 @@ fn ckfix_reopen_a_lint_fix_that_also_makes_the_file_executable_goes_to_review() 
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_turns_the_named_file_into_a_binary_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     fs::write(k.join("src/lib.rs"), b"\0\x01\x02 binary\0").unwrap();
     commit(&k);
     let o = built(&fx, &k);
@@ -744,8 +828,7 @@ fn ckfix_reopen_a_format_fix_that_also_makes_the_formatted_file_executable_goes_
 
 #[test]
 fn ckfix_reopen_a_lint_fix_that_also_makes_another_file_executable_goes_to_review() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     fs::write(k.join("src/lib.rs"), LIB_GOOD).unwrap();
     // A file of the unit's list: its only change is the mode.
     fs::set_permissions(k.join("src/a.txt"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -757,8 +840,7 @@ fn ckfix_reopen_a_lint_fix_that_also_makes_another_file_executable_goes_to_revie
 
 #[test]
 fn ckfix_reopen_the_page_says_no_review_for_a_fix_rebuilt_lint_only_after_a_findings_round() {
-    let fx = Fx::new();
-    let k = lint_only_fix(&fx, CARGO_K1, &[("src/lib.rs", LIB_BAD)]);
+    let (fx, k) = lint_only_fix();
     fs::write(
         k.join("src/lib.rs"),
         format!("{LIB_GOOD}pub fn extra() -> u32 {{\n    7\n}}\n"),

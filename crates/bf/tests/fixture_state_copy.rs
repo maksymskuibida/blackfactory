@@ -267,4 +267,32 @@ fn required_sandbox_is_met_for_state_copy() {
     require_sandbox_from_env(&fx);
     crate::checkpoint_hold::require_sandbox_for_states();
     crate::checkpoint_decision_window::require_sandbox_for_states();
+    crate::ckfix_reopen::require_sandbox_for_states();
+    crate::checkpoint_findings_hold::require_sandbox_for_states();
+    crate::repair_judge::require_sandbox_for_states();
+    crate::wave_check::require_sandbox_for_states();
+}
+
+// U-123 (D-140): each state of the four converted files, copied, passes the canary and lands, fixes or
+// reopens as the same state built through the full `bf` calls does. Each file holds its own comparison,
+// since its build functions take its own `Fx`.
+
+#[test]
+fn the_ckfix_reopen_states_copied_fix_and_reopen_as_their_sources() {
+    crate::ckfix_reopen::copies_behave_as_their_sources();
+}
+
+#[test]
+fn the_checkpoint_findings_hold_states_copied_fix_and_reopen_as_their_sources() {
+    crate::checkpoint_findings_hold::copies_behave_as_their_sources();
+}
+
+#[test]
+fn the_repair_judge_state_copied_is_approved_by_a_go_as_its_source() {
+    crate::repair_judge::copies_behave_as_their_sources();
+}
+
+#[test]
+fn the_wave_check_states_copied_land_and_fix_as_their_sources() {
+    crate::wave_check::copies_behave_as_their_sources();
 }
