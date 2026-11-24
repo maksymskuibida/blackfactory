@@ -10,7 +10,7 @@ use common::*;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Place {
     Root,
     Wc,
@@ -533,12 +533,9 @@ fn table() -> Vec<Case> {
     ]
 }
 
-fn decision(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
-    let payload =
-        json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd.to_string_lossy()});
-    let o = fx.bf_stdin(cwd, &["guard"], &payload.to_string());
-    assert_eq!(o.code, 0, "{}", o.all());
-    match o.stdout.trim() {
+/// The answer in the guard's output: the decision and its reason (`abstain` when it says nothing).
+fn read_decision(stdout: &str) -> (String, String) {
+    match stdout.trim() {
         "" | "{}" => ("abstain".into(), String::new()),
         s => {
             let v: Value = serde_json::from_str(s).unwrap();
@@ -552,6 +549,23 @@ fn decision(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
             )
         }
     }
+}
+
+fn payload(cwd: &Path, cmd: &str) -> String {
+    json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd.to_string_lossy()})
+        .to_string()
+}
+
+/// The guard's answer to a command, judged by the library function the `bf guard` process calls.
+fn decision(_fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
+    read_decision(&bf::guard::run_hook(&payload(cwd, cmd), cwd, None))
+}
+
+/// The same answer through the `bf guard` process: the end-to-end case of a row.
+fn decision_by_process(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
+    let o = fx.bf_stdin(cwd, &["guard"], &payload(cwd, cmd));
+    assert_eq!(o.code, 0, "{}", o.all());
+    read_decision(&o.stdout)
 }
 
 /// A project whose two units have landed, so checkpoint K-1's working copy exists.
@@ -586,6 +600,8 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
     let (fx, wc) = unit_place();
     let (fx2, cpwc) = checkpoint_place();
     let mut wrong = Vec::new();
+    // The first two rows of each place and answer also run through the `bf guard` process.
+    let mut by_process: std::collections::HashMap<(Place, bool), usize> = Default::default();
     for case in table() {
         let (f, cwd) = match case.place {
             Root => (&fx, fx.root.clone()),
@@ -593,6 +609,14 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
             Cpwc => (&fx2, cpwc.clone()),
         };
         let (d, why) = decision(f, &cwd, case.cmd);
+        let mut process_row = None;
+        let n = by_process
+            .entry((case.place, case.want == Refused))
+            .or_default();
+        if case.waits.is_none() && *n < 2 {
+            *n += 1;
+            process_row = Some(decision_by_process(f, &cwd, case.cmd));
+        }
         let got = if d == "deny" { Refused } else { Passed };
         // A waiting row is held to the answer it has today (refused); once its unit lands, the row
         // loses its `waits` and is held to the answer it wants.
@@ -601,16 +625,22 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
         } else {
             case.want
         };
-        if got != expect {
-            wrong.push(format!(
-                "#{} ({:?}) wanted {:?}, got {:?}: {}\n    {}",
-                case.n,
-                case.place,
-                case.want,
-                got,
-                case.cmd.replace('\n', "\\n"),
-                why.lines().next().unwrap_or("")
-            ));
+        let mut answers = vec![("library", got, why)];
+        if let Some((pd, pwhy)) = process_row {
+            answers.push(("process", if pd == "deny" { Refused } else { Passed }, pwhy));
+        }
+        for (how, got, why) in answers {
+            if got != expect {
+                wrong.push(format!(
+                    "#{} ({:?}, {how}) wanted {:?}, got {:?}: {}\n    {}",
+                    case.n,
+                    case.place,
+                    case.want,
+                    got,
+                    case.cmd.replace('\n', "\\n"),
+                    why.lines().next().unwrap_or("")
+                ));
+            }
         }
     }
     assert!(wrong.is_empty(), "wrong answers:\n{}", wrong.join("\n"));
@@ -670,6 +700,10 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         };
         let (d, why) = decision(&fx, &cwd, cmd);
         assert_ne!(d, "deny", "should pass: {cmd}\n{why}");
+        if std::ptr::eq(cmd, &passes[0].1) {
+            let (d, why) = decision_by_process(&fx, &cwd, cmd);
+            assert_ne!(d, "deny", "should pass by process: {cmd}\n{why}");
+        }
     }
     let refuses: &[(Place, &str)] = &[
         // A file outside the unit's list is a file of its copy; a protected one is not.
@@ -722,6 +756,10 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         };
         let (d, _) = decision(&fx, &cwd, cmd);
         assert_eq!(d, "deny", "should be refused: {cmd}");
+        if std::ptr::eq(cmd, &refuses[0].1) {
+            let (d, _) = decision_by_process(&fx, &cwd, cmd);
+            assert_eq!(d, "deny", "should be refused by process: {cmd}");
+        }
     }
 }
 
@@ -1041,7 +1079,12 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
     check_rows(
         &fx,
         &wc,
-        &strings(&["git restore --staged .", "git checkout -- .", "git revert HEAD", "git stash pop"]),
+        &strings(&[
+            "git restore --staged .",
+            "git checkout -- .",
+            "git revert HEAD",
+            "git stash pop",
+        ]),
         "refused",
     );
 }
