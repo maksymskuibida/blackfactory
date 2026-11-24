@@ -35,6 +35,9 @@ pub struct Fx {
     pub root: PathBuf,
     /// Base of the per-project state folders (the sealing key and the log head live below it).
     pub state_base: PathBuf,
+    /// A copied lifecycle state's own transcript folder, inside the state's shared transcript root
+    /// (see `Fx::state_copy`); None for every other fixture, whose transcripts lie beside the project.
+    tr: Option<TempDir>,
 }
 
 pub fn bin() -> &'static str {
@@ -116,6 +119,14 @@ pub fn receipt_sandbox(fx: &Fx) -> String {
         fx.set_policy("tokens = true", "tokens = false");
     }
     let workspace = fx.root.join("factory/workspace.toml").exists();
+    let started = |u: &str| {
+        bf::events::replay(&fx.project())
+            .map(|s| s.units.contains_key(u))
+            .unwrap_or(false)
+    };
+    if !workspace && fx.must(&["status", "--json"]).json()["run"].is_string() && started("U-1") {
+        return receipt_sandbox_in_copy(fx);
+    }
     if !workspace && fx.must(&["status", "--json"]).json()["run"].is_string() {
         let wc = PathBuf::from(
             fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
@@ -177,8 +188,74 @@ pub fn receipt_sandbox(fx: &Fx) -> String {
     receipt_sandbox_of(fx, "X-900")
 }
 
+/// `receipt_sandbox` on a run whose units are already at work or landed (a lifecycle state, see
+/// `Fx::state_copy`): a command check of a unit whose working copy is there runs in it, or else a command
+/// check of a checkpoint whose working copy is there runs in that, each with its record's own command.
+/// The check may fail; its receipt still says how it ran.
+fn receipt_sandbox_in_copy(fx: &Fx) -> String {
+    let checks = fx
+        .must(&["record", "list", "--kind", "check", "--json"])
+        .json();
+    let checks = checks.as_array().cloned().unwrap_or_default();
+    let words = |c: &serde_json::Value| -> Vec<String> {
+        c["command"]
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect()
+    };
+    let run = |dir: &Path, id: &str, unit: Option<&str>, cmd: Vec<String>| {
+        let mut a: Vec<&str> = vec!["evidence", "run", id];
+        if let Some(u) = unit {
+            a.extend(["--unit", u]);
+        }
+        let count = || bf::evidence::load_receipts(&fx.project()).unwrap().len();
+        let n = count();
+        let mut b = a.clone();
+        b.push("--");
+        b.extend(cmd.iter().map(|s| s.as_str()));
+        let mut o = fx.bf_in(dir, &b);
+        // A check that already ran on this content runs again only as a stated repeat.
+        if let Some(at) = o.stderr.split("--attempt ").nth(1) {
+            let at: String = at.chars().take_while(|c| c.is_ascii_digit()).collect();
+            a.extend(["--attempt", &at, "--reason", "sandbox probe", "--"]);
+            a.extend(cmd.iter().map(|s| s.as_str()));
+            o = fx.bf_in(dir, &a);
+        }
+        assert!(count() > n, "the check left no receipt: {}", o.all());
+        receipt_sandbox_of(fx, id)
+    };
+    for c in &checks {
+        let (Some(u), Some(id)) = (c["unit"].as_str(), c["id"].as_str()) else {
+            continue;
+        };
+        if c["how"] == "command" && fx.work(u).is_dir() {
+            return run(&fx.work(u), id, Some(u), words(c));
+        }
+    }
+    let cps = fx
+        .must(&["record", "list", "--kind", "checkpoint", "--json"])
+        .json();
+    for k in cps.as_array().cloned().unwrap_or_default() {
+        let kid = k["id"].as_str().unwrap_or("");
+        if !fx.work(kid).is_dir() {
+            continue;
+        }
+        for id in k["checks"].as_array().cloned().unwrap_or_default() {
+            if let Some(c) = checks
+                .iter()
+                .find(|c| c["id"] == id && c["how"] == "command")
+            {
+                return run(&fx.work(kid), id.as_str().unwrap(), None, words(c));
+            }
+        }
+    }
+    panic!("no working copy of this run has a command check to run")
+}
+
 /// The `sandbox` value of the last receipt of a check.
-fn receipt_sandbox_of(fx: &Fx, check: &str) -> String {
+pub fn receipt_sandbox_of(fx: &Fx, check: &str) -> String {
     let rcs = bf::evidence::load_receipts(&fx.project()).unwrap();
     let rc = rcs
         .iter()
@@ -433,11 +510,17 @@ impl TemplateStore {
     /// The key of a template: the binary identity, the text of this file, the constructor's kind and
     /// its policy text (the sandbox setting included). The name starts with the identity's own part.
     pub fn key(&self, kind: &Kind, sw: Switch) -> String {
+        self.key_named(&kind.name(), sw)
+    }
+
+    /// The key of a template made by the named builder: a constructor's kind, or a lifecycle state's
+    /// build function (`state:<name>`).
+    pub fn key_named(&self, name: &str, sw: Switch) -> String {
         let pol = fixture_policy(true, sw == Switch::All, TR_PLACEHOLDER);
         let k = sha_hex(&[
             self.ident.as_bytes(),
             COMMON_TEXT.as_bytes(),
-            kind.name().as_bytes(),
+            name.as_bytes(),
             pol.as_bytes(),
         ]);
         format!("{}-{}", self.ident_prefix(), &k[..24])
@@ -470,8 +553,9 @@ impl TemplateStore {
         Some(tmp)
     }
 
-    /// Build the key's template; the caller holds the key's build lock.
-    fn build(&self, key: &str, kind: &Kind, sw: Switch) {
+    /// Build the key's template with `make`; the caller holds the key's build lock. The build folder
+    /// is removed once the template is taken, unless `keep` (a test-only form) leaves it on disk.
+    fn build(&self, key: &str, make: &dyn Fn() -> Fx, keep: bool) {
         // A temporary folder left by a builder that died.
         let partial_prefix = format!("{key}.partial-");
         for e in fs::read_dir(&self.dir).unwrap().flatten() {
@@ -479,20 +563,35 @@ impl TemplateStore {
                 let _ = fs::remove_dir_all(e.path());
             }
         }
-        let fx = kind.build_real(sw);
+        let fx = make();
         run_pause(&BUILD_PAUSE);
-        let Fx { _tmp, scratch, .. } = fx;
+        let Fx {
+            _tmp, scratch, tr, ..
+        } = fx;
         let build_dir = fs::canonicalize(_tmp.path()).unwrap();
         let partial = self
             .dir
             .join(format!("{partial_prefix}{}", std::process::id()));
         copy_tree(&build_dir, &partial);
+        drop(tr);
+        if keep {
+            drop(scratch);
+            let _ = _tmp.keep();
+            self.put_in_place(key, &partial);
+            return;
+        }
         _tmp.close().unwrap();
         drop(scratch);
         assert!(!build_dir.exists(), "the build folder is still there");
+        self.put_in_place(key, &partial);
+    }
+
+    /// Move a finished template into place, holding the store lock exclusive for the rename only, and
+    /// remove the templates of another binary.
+    fn put_in_place(&self, key: &str, partial: &Path) {
         {
             let _x = Flock::take(&self.lock_path(), true);
-            fs::rename(&partial, self.dir.join(key)).unwrap();
+            fs::rename(partial, self.dir.join(key)).unwrap();
         }
         self.remove_other_binaries();
     }
@@ -514,27 +613,34 @@ impl TemplateStore {
         }
     }
 
+    /// A copy of the key's template in a new temporary folder, built first by `make` if the store does
+    /// not hold it: one builder per key under the key's own build lock, outside the store lock.
+    fn copy_out(&self, key: &str, make: &dyn Fn() -> Fx, keep: bool) -> TempDir {
+        fs::create_dir_all(&self.dir).unwrap();
+        loop {
+            if let Some(t) = self.try_copy(key) {
+                return t;
+            }
+            let _b = Flock::take(&self.dir.join(format!("{key}.build.lock")), true);
+            if self.dir.join(key).is_dir() {
+                continue;
+            }
+            self.build(key, make, keep);
+        }
+    }
+
     /// A fixture copied from the key's template, built first if the store does not hold it. Also
     /// gives the build folder the template was made in (it no longer exists).
     pub fn fixture(&self, kind: &Kind, sw: Switch) -> (Fx, PathBuf) {
-        fs::create_dir_all(&self.dir).unwrap();
         let key = self.key(kind, sw);
-        let tmp = loop {
-            if let Some(t) = self.try_copy(&key) {
-                break t;
-            }
-            let _b = Flock::take(&self.dir.join(format!("{key}.build.lock")), true);
-            if self.dir.join(&key).is_dir() {
-                continue;
-            }
-            self.build(&key, kind, sw);
-        };
+        let tmp = self.copy_out(&key, &|| kind.build_real(sw), false);
         let base = fs::canonicalize(tmp.path()).unwrap();
         let fx = Fx {
             _tmp: tmp,
             scratch: TempDir::new().unwrap(),
             root: base.join(kind.top()),
             state_base: base.join("state"),
+            tr: None,
         };
         let old = fx.adopt_copy();
         (fx, old)
@@ -546,6 +652,12 @@ impl Fx {
     /// is changed to this copy's and accepted through the engine with the human's words, and the
     /// last commit (`bf init`, or the tiny project's records) takes it. Returns the build folder.
     fn adopt_copy(&self) -> PathBuf {
+        self.retarget_transcripts(&self.transcript_root())
+    }
+
+    /// Point the policy's transcript root at `root`, the human's way, and amend the last commit with
+    /// it (see `adopt_copy`). Returns the folder the old root lay in.
+    fn retarget_transcripts(&self, root: &Path) -> PathBuf {
         let pol = fs::read_to_string(self.root.join("factory/policy.toml")).unwrap();
         let old_line = pol
             .lines()
@@ -557,10 +669,7 @@ impl Fx {
             .unwrap()
             .to_string();
         let build_dir = Path::new(&old_tr).parent().unwrap().to_path_buf();
-        let new_line = format!(
-            "transcript_root = {:?}",
-            self.transcript_root().to_string_lossy()
-        );
+        let new_line = format!("transcript_root = {:?}", root.to_string_lossy());
         // The files the acceptance changes that were clean in the template (the policy, and the log
         // where the template had committed it) join the commit of `bf init`, so the copy's tree is
         // as clean or as changed as a real init's.
@@ -577,6 +686,333 @@ impl Fx {
         git(&self.root, &args);
         git(&self.root, &["commit", "-q", "--amend", "--no-edit"]);
         build_dir
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Lifecycle states (D-140, F-3): `Fx::state_copy` builds a state of a run (units started, built,
+// landed) once per test binary and key by a build function of the test file, and copies it per test.
+// The copies live in a store of their own, keyed by the test program's identity as well, since the
+// build functions live there.
+
+/// The identity of this test program, read with one `stat`, like the `bf` binary's.
+pub fn test_identity() -> String {
+    use std::os::unix::fs::MetadataExt;
+    let exe = std::env::current_exe().expect("the test program's path");
+    let m = fs::metadata(&exe).expect("stat the test program");
+    format!(
+        "{}|{}|{}.{}|{}",
+        exe.display(),
+        m.len(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ino()
+    )
+}
+
+/// How a state is copied. The plain forms use `StateOpts::default()`: repair, canary, build folder
+/// removed. The others are for the copy's own tests.
+#[derive(Clone, Copy, Debug)]
+pub struct StateOpts {
+    /// Run `git worktree repair` after the copy.
+    pub repair: bool,
+    /// Run the path and order canary after the copy, and fail the test on any finding.
+    pub canary: bool,
+    /// Keep the build folder on disk (test only; it is built under a key of its own).
+    pub keep_build: bool,
+}
+
+impl Default for StateOpts {
+    fn default() -> StateOpts {
+        StateOpts {
+            repair: true,
+            canary: true,
+            keep_build: false,
+        }
+    }
+}
+
+/// A build function of a lifecycle state.
+pub type Build = fn(&Fx);
+
+/// The file of a stored state that names its build folder; the copy reads it and removes it.
+const BUILD_PATH_FILE: &str = "build.path";
+
+impl TemplateStore {
+    /// The store every lifecycle state uses: `target/tmp/bf-fixture-states`, for the current `bf`
+    /// binary and the current test program.
+    pub fn states() -> TemplateStore {
+        TemplateStore {
+            dir: Path::new(env!("CARGO_TARGET_TMPDIR")).join("bf-fixture-states"),
+            ident: format!("{}|{}", binary_identity(), test_identity()),
+        }
+    }
+}
+
+/// Copy every file of one folder into another (one level).
+fn copy_files(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).into_iter().flatten().flatten() {
+        if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+    }
+}
+
+/// Every file of a tree, never following links, never entering a folder named in `skip`.
+fn files_under(dir: &Path, skip: &[&str], out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        let p = e.path();
+        if ft.is_dir() {
+            if !skip.iter().any(|s| e.file_name() == *s) {
+                files_under(&p, skip, out);
+            }
+        } else if ft.is_file() {
+            out.push(p);
+        }
+    }
+}
+
+/// The working copies (git worktrees) of a copied state: every `.git` file under the main checkout.
+fn worktree_paths(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    files_under(root, &[".git"], &mut files);
+    let mut wts: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|p| p.file_name().map(|n| n == ".git").unwrap_or(false))
+        .map(|p| p.parent().unwrap().to_path_buf())
+        .collect();
+    wts.sort();
+    wts
+}
+
+/// The path a `.git` file or a `gitdir` file names, made absolute against the folder it lies in.
+fn named_path(file: &Path) -> PathBuf {
+    let t = fs::read_to_string(file).unwrap_or_default();
+    let t = t.trim();
+    let t = t.strip_prefix("gitdir: ").unwrap_or(t);
+    let p = Path::new(t);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        file.parent().unwrap().join(p)
+    }
+}
+
+/// The path and order canary of a copied state: what it finds, one line each; empty when the copy is
+/// sound. `git worktree list` names only paths inside the copy; every `.git` file of a working copy
+/// and every `gitdir` file under `.git/worktrees` points inside it; `bf log --verify` passes; and no
+/// file holds the build folder's path, except the sealed log, its head and the receipts, which keep
+/// it as history.
+pub fn state_canary(fx: &Fx, build_dir: &Path) -> Vec<String> {
+    let base = fs::canonicalize(fx.root.parent().unwrap()).unwrap();
+    let mut found = Vec::new();
+    let o = Command::new("git")
+        .arg("-C")
+        .arg(&fx.root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    if !o.status.success() {
+        found.push(format!(
+            "worktree: git worktree list failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        ));
+    }
+    for l in String::from_utf8_lossy(&o.stdout).lines() {
+        if let Some(p) = l.strip_prefix("worktree ") {
+            if !Path::new(p).starts_with(&base) {
+                found.push(format!("worktree: git worktree list names {p}"));
+            }
+        }
+    }
+    for wt in worktree_paths(&fx.root) {
+        let g = named_path(&wt.join(".git"));
+        if !g.starts_with(&base) {
+            found.push(format!(
+                "worktree: {} points at {}",
+                wt.join(".git").display(),
+                g.display()
+            ));
+        }
+    }
+    for e in fs::read_dir(fx.root.join(".git/worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let f = e.path().join("gitdir");
+        let g = named_path(&f);
+        if !g.starts_with(&base) {
+            found.push(format!(
+                "worktree: {} points at {}",
+                f.display(),
+                g.display()
+            ));
+        }
+    }
+    let v = fx.bf(&["log", "--verify"]);
+    if v.code != 0 {
+        found.push(format!("log: bf log --verify failed: {}", v.all()));
+    }
+    // The sealed log and the receipts as each working copy checks them out from a commit are the same
+    // history.
+    let p = fx.project();
+    let mut history = vec![p.log_path(), p.head_path()];
+    let mut receipts = vec![p.receipts_dir()];
+    for wt in worktree_paths(&fx.root) {
+        history.push(wt.join("factory/log/events.jsonl"));
+        receipts.push(wt.join("factory/receipts"));
+    }
+    let mut needles = vec![build_dir.to_string_lossy().to_string()];
+    if let Ok(short) = build_dir.strip_prefix("/private") {
+        needles.push(Path::new("/").join(short).to_string_lossy().to_string());
+    }
+    let mut files = Vec::new();
+    files_under(&base, &[], &mut files);
+    for f in files {
+        if history.contains(&f) || receipts.iter().any(|r| f.starts_with(r)) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&f) else { continue };
+        if needles
+            .iter()
+            .any(|n| bytes.windows(n.len()).any(|w| w == n.as_bytes()))
+        {
+            found.push(format!(
+                "path: {} holds the build folder's path",
+                f.display()
+            ));
+        }
+    }
+    found
+}
+
+impl Fx {
+    /// A lifecycle state built once per test program and key by `build` on `Fx::new()`, copied for this
+    /// test, repaired and checked by the canary (`state_canary`). `name` names the build function and is
+    /// part of the key; the sandbox follows `BF_TEST_SANDBOX`, like `Fx::new()`.
+    pub fn state_copy(name: &str, build: fn(&Fx)) -> Fx {
+        Fx::state_copy_with(name, sandbox_switch(), build)
+    }
+
+    /// `state_copy` with the sandbox switch given for this state (part of its key).
+    pub fn state_copy_with(name: &str, sw: Switch, build: fn(&Fx)) -> Fx {
+        Fx::state_copy_in(
+            &TemplateStore::states(),
+            name,
+            sw,
+            build,
+            StateOpts::default(),
+        )
+        .0
+    }
+
+    /// The general form: a state of `store`, copied as `opts` says. Also gives the build folder.
+    ///
+    /// The build starts from `Fx::new_with(sw)` and first points the policy's transcript root at a
+    /// folder of the store that outlives the build (`<key>.transcripts`), since the root is in the
+    /// policy every working copy checks out; each copy then writes its transcript in a folder of its
+    /// own below it. The build folder is copied into the store and removed, so every absolute path a
+    /// copy still holds names a folder that no longer exists. After the copy, `git worktree repair`
+    /// runs with every working copy's path, `bf init` writes the signed guard table again (it touches
+    /// nothing else in an initialised project), and the canary runs.
+    pub fn state_copy_in(
+        store: &TemplateStore,
+        name: &str,
+        sw: Switch,
+        build: fn(&Fx),
+        opts: StateOpts,
+    ) -> (Fx, PathBuf) {
+        let kept = if opts.keep_build { ":kept" } else { "" };
+        let key = store.key_named(&format!("state:{name}{kept}"), sw);
+        let tr_root = store.dir.join(format!("{key}.transcripts"));
+        fs::create_dir_all(&tr_root).unwrap();
+        let tr_root = fs::canonicalize(&tr_root).unwrap();
+        let make = || {
+            let mut fx = Fx::new_with(sw);
+            fx.tr = Some(TempDir::new_in(&tr_root).unwrap());
+            fx.retarget_transcripts(&tr_root);
+            build(&fx);
+            let base = fs::canonicalize(fx.root.parent().unwrap()).unwrap();
+            copy_files(&fx.transcript_root(), &base.join("transcripts"));
+            fs::write(
+                base.join(BUILD_PATH_FILE),
+                base.to_string_lossy().as_bytes(),
+            )
+            .unwrap();
+            fx
+        };
+        let tmp = store.copy_out(&key, &make, opts.keep_build);
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let build_dir = PathBuf::from(fs::read_to_string(base.join(BUILD_PATH_FILE)).unwrap());
+        fs::remove_file(base.join(BUILD_PATH_FILE)).unwrap();
+        let tr = TempDir::new_in(&tr_root).unwrap();
+        copy_files(&base.join("transcripts"), tr.path());
+        let fx = Fx {
+            _tmp: tmp,
+            scratch: TempDir::new().unwrap(),
+            root: base.join("proj"),
+            state_base: base.join("state"),
+            tr: Some(tr),
+        };
+        if opts.repair {
+            fx.repair_worktrees();
+        }
+        fx.must(&["init"]);
+        fx.rewrite_unit_briefs(&build_dir);
+        if opts.canary {
+            let found = state_canary(&fx, &build_dir);
+            assert!(
+                found.is_empty(),
+                "the copy of state `{name}` fails the canary:\n{}",
+                found.join("\n")
+            );
+        }
+        (fx, build_dir)
+    }
+
+    /// A unit's brief names its working copy's absolute path: each one that names the build folder is
+    /// written again with `bf brief`, the engine command that writes it and nothing else.
+    fn rewrite_unit_briefs(&self, build_dir: &Path) {
+        let old = build_dir.to_string_lossy().to_string();
+        for e in fs::read_dir(self.root.join(".bf/briefs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(stem) = name.strip_suffix(".md") else {
+                continue;
+            };
+            let Some((unit, role)) = stem.rsplit_once('-') else {
+                continue;
+            };
+            if !unit.starts_with("U-")
+                || !fs::read_to_string(e.path())
+                    .unwrap_or_default()
+                    .contains(&old)
+            {
+                continue;
+            }
+            self.must(&["brief", unit, "--role", role]);
+        }
+    }
+
+    /// `git worktree repair` in the main checkout with the path of every working copy.
+    pub fn repair_worktrees(&self) {
+        let wts = worktree_paths(&self.root);
+        if wts.is_empty() {
+            return;
+        }
+        let paths: Vec<String> = wts
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let mut args: Vec<&str> = vec!["worktree", "repair"];
+        args.extend(paths.iter().map(|s| s.as_str()));
+        git(&self.root, &args);
     }
 }
 
@@ -816,6 +1252,7 @@ impl Fx {
             scratch: TempDir::new().unwrap(),
             root,
             state_base,
+            tr: None,
         };
         let o = if workspace {
             fx.bf(&["init", "--workspace", "--name", "ws"])
@@ -1009,7 +1446,10 @@ impl Fx {
 
     /// Where the fixture's policy says the harness keeps transcripts.
     pub fn transcript_root(&self) -> PathBuf {
-        self.state_base.parent().unwrap().join("transcripts")
+        match &self.tr {
+            Some(t) => fs::canonicalize(t.path()).unwrap(),
+            None => self.state_base.parent().unwrap().join("transcripts"),
+        }
     }
 
     /// Change the policy the way the human does: edit the file, say so in chat, accept it.
