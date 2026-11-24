@@ -365,7 +365,7 @@ fn unit_in_code(fx: &Fx) {
 
 #[test]
 fn a_code_repository_inside_the_workspace_is_excluded_locally_and_never_committed_into_it() {
-    let fx = Fx::workspace(&["app"]);
+    let fx = Fx::workspace_real(&["app"]);
     let code = nested_repo(&fx, &[]);
     let o = fx.must(&["repo", "add", "code", "code", "--json"]).json();
     assert_eq!(o["excluded"][0], "/code/", "{o}");

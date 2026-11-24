@@ -39,7 +39,7 @@ fn started_unit(fx: &Fx) -> PathBuf {
 
 #[test]
 fn a_policy_edited_by_hand_stops_every_command_until_the_human_accepts_it() {
-    let fx = Fx::new();
+    let fx = Fx::new_real();
     fx.tiny();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
@@ -369,7 +369,7 @@ fn sandbox_active(fx: &Fx) -> bool {
 
 #[test]
 fn a_check_cannot_read_the_key_or_write_the_records_but_an_ordinary_script_passes() {
-    let fx = Fx::sandboxed();
+    let fx = Fx::new_real_with(Switch::All);
     fx.tiny();
     let key = fx.state_dir().join("key");
     let secret = fs::read_to_string(&key).unwrap();

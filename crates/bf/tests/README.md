@@ -49,6 +49,17 @@ test or the extended suite while building a unit.
 A test that needs the sandbox uses `Fx::sandboxed()`, `Fx::with_checks_sandboxed()`, `Fx::workspace_sandboxed(..)` or `Fx::shipped()`, which always have it on.
 A test that asserts how a receipt ran fixes the switch with `Fx::new_with(Switch::Off)` (or `Switch::All`) instead of reading the environment.
 
+## Fixtures are copied from templates
+
+`Fx::new()`, `Fx::with_checks()`, `Fx::workspace(..)` and their `_with` and sandboxed forms copy a project built once by a real `git init` and `bf init`.
+The templates live in `target/tmp/bf-fixture-templates`, one per key: the `bf` binary's identity (one `stat`), the text of `common/mod.rs`, the constructor's kind and its policy, the sandbox switch included.
+A copy holds the store's lock shared; only putting a finished template in place and removing a template of another binary hold it exclusive, and one key is built by one test under that key's own build lock.
+The build folder is removed after the template is taken, so a copy holds no path of it outside the log, its head, the receipts and the guard table; the copy's policy names its own transcript folder and is accepted through the engine with the human's words.
+A copy's log therefore holds the events of that acceptance more than a real init's: the human's turn (`human.turn`), the session note it brings (`absent.session`, where none was recorded yet) and `policy.accept`.
+The files the acceptance changes that the template had committed (the policy, and for `with_checks` the log) join the commit of `bf init`, so a copy's git tree is as clean or as changed as a real init's.
+A test about `bf init`, project ids, the key, the policy's acceptance or the first events of the log, or one that fails on a copy, uses `Fx::new_real()`, `Fx::with_checks_real()` or `Fx::workspace_real(..)` (each with a `_with` form for the switch).
+Edit `common/mod.rs` and every template is built again, since its text is part of the key.
+
 ## Measured times
 
 Same machine, whole `bf` package, tests already built (336 tests including the library's own):

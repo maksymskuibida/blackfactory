@@ -53,7 +53,7 @@ fn bf_policy_prints_the_advising_entry() {
 
 #[test]
 fn a_model_named_outright_is_printed_and_changes_only_when_the_human_accepts() {
-    let fx = Fx::new();
+    let fx = Fx::new_real();
     let pol = fx.root.join("factory/policy.toml");
     let t = fs::read_to_string(&pol).unwrap();
     fs::write(
