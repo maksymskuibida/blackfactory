@@ -1548,8 +1548,8 @@ impl Project {
             "command_tools": self.policy.guard.command_tools,
             "input_tools": self.policy.guard.input_tools,
             "absent": match state.as_ref() {
-                Some(s) => json!({"on": crate::absent::is_on(s), "returning": s.absent.returning.keys().collect::<Vec<_>>()}),
-                None => json!({"on": false, "returning": Vec::<String>::new()}),
+                Some(s) => json!({"on": crate::absent::is_on(s), "returning": s.absent.returning.keys().collect::<Vec<_>>(), "deny_tools": self.policy.absent.deny_tools}),
+                None => json!({"on": false, "returning": Vec::<String>::new(), "deny_tools": self.policy.absent.deny_tools}),
             },
             "transcript_root": self.transcript_root(),
             "gen": gen,

@@ -10,7 +10,14 @@ pub(crate) fn cmd_policy(args: &Args) -> R<()> {
     match args.pos.get(1).map(|x| x.as_str()) {
         Some("accept") => {
             let v = gates::accept_policy(&p, args.flag("quote").unwrap_or(""))?;
-            out(args, &v, || "policy accepted".to_string());
+            out(args, &v, || {
+                let mut t = "policy accepted".to_string();
+                if v["reinstall_hook"].as_bool() == Some(true) {
+                    t.push('\n');
+                    t.push_str(&crate::strings::t("guard_absent.policy.reinstall", &[]));
+                }
+                t
+            });
         }
         Some("diff") => {
             let d = gates::policy_diff(&p);
