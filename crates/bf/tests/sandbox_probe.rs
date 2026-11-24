@@ -34,7 +34,7 @@ fn run_counted(fx: &Fx, args: &[&str], name: &str) -> (Out, usize) {
 
 #[test]
 fn record_list_starts_no_probe() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     let (o, n) = run_counted(&fx, &["record", "list", "--json"], "list");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -43,7 +43,7 @@ fn record_list_starts_no_probe() {
 
 #[test]
 fn checks_propose_starts_no_probe() {
-    let fx = Fx::with_checks();
+    let fx = Fx::with_checks_sandboxed();
     let (o, n) = run_counted(&fx, &["checks", "propose", "--scope", "default"], "propose");
     assert_eq!(o.code, 0, "{}", o.all());
     assert_eq!(n, 0, "`bf checks propose` started the sandbox probe");
@@ -51,7 +51,7 @@ fn checks_propose_starts_no_probe() {
 
 #[test]
 fn a_command_that_runs_git_starts_exactly_one_probe() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let (o, n) = run_counted(&fx, &["status", "--json"], "status");
     assert_eq!(o.code, 0, "{}", o.all());
     assert!(o.json()["main"]["tip"].as_str().unwrap().len() >= 40);
@@ -60,7 +60,7 @@ fn a_command_that_runs_git_starts_exactly_one_probe() {
 
 #[test]
 fn a_command_that_runs_git_with_the_sandbox_off_starts_no_probe() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.set_policy("sandbox = true", "sandbox = false");
     let (o, n) = run_counted(&fx, &["status", "--json"], "status-off");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -77,7 +77,7 @@ fn sandbox_line(text: &str) -> String {
 
 #[test]
 fn doctor_prints_the_same_with_the_probe_taken_or_not() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     // Not yet taken: the doctor's process asks the sandbox first at its own sandbox line.
     let (first, n) = run_counted(&fx, &["doctor"], "doctor");
     assert_eq!(n, 1, "`bf doctor` asks the sandbox once");
@@ -180,7 +180,7 @@ fn git_runs_under_the_sandbox_when_the_policy_asks() {
         // Inside the engine's sandbox the engine's own git runs unsandboxed, and says so. The denied
         // write is proven only by a run outside it, and the receipt tells which: a run of X-205 whose
         // receipt says `sandbox = "sandbox-exec"` took this branch and did not check the denied write.
-        let fx = Fx::new();
+        let fx = Fx::sandboxed();
         let doctor = fx.must(&["doctor"]).all();
         assert!(sandbox_line(&doctor).contains("WITHOUT"), "{doctor}");
         eprintln!(
@@ -188,7 +188,7 @@ fn git_runs_under_the_sandbox_when_the_policy_asks() {
         );
         return;
     }
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let log = writing_git(&fx);
     let o = fx.must(&["status", "--json"]);
     assert!(o.json()["main"]["tip"].as_str().unwrap().len() >= 40);
@@ -202,7 +202,7 @@ fn git_runs_under_the_sandbox_when_the_policy_asks() {
 
 #[test]
 fn git_runs_outside_the_sandbox_when_the_policy_turns_it_off() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let log = writing_git(&fx);
     fx.set_policy("sandbox = true", "sandbox = false");
     fs::write(&log, "").unwrap();

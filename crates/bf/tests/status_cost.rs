@@ -58,7 +58,7 @@ fn count_through_policy(fx: &Fx) -> PathBuf {
 
 #[test]
 fn status_makes_at_most_two_git_calls_on_a_project_without_a_checkpoint_branch() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let log = count_through_policy(&fx);
     fs::write(&log, "").unwrap();
     let o = fx.must(&["status", "--json"]);

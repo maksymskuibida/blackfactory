@@ -43,6 +43,12 @@ with `timing_`, or `.config/nextest.toml` names it (both the default filter and 
 override). That file is the one place that says which tests are timing tests. Never run a timing
 test or the extended suite while building a unit.
 
+## The sandbox in fixtures
+
+`Fx::new()`, `Fx::with_checks()` and `Fx::workspace(..)` run the engine with the sandbox off, unless `BF_TEST_SANDBOX=all` is set, which turns it on in every fixture.
+A test that needs the sandbox uses `Fx::sandboxed()`, `Fx::with_checks_sandboxed()`, `Fx::workspace_sandboxed(..)` or `Fx::shipped()`, which always have it on.
+A test that asserts how a receipt ran fixes the switch with `Fx::new_with(Switch::Off)` (or `Switch::All`) instead of reading the environment.
+
 ## Measured times
 
 Same machine, whole `bf` package, tests already built (336 tests including the library's own):
