@@ -1,0 +1,59 @@
+command = "cargo nextest run --package=bf --profile extended --no-fail-fast"
+profile = "extended"
+env = "PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HOME=$HOME CARGO_HOME=$HOME/.cargo RUSTUP_HOME=$HOME/.rustup TMPDIR=DARWIN_USER_TEMP_DIR"
+cores = 12
+machine = "Mac15,7"
+os = "27.0.1"
+cargo_version = "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)"
+nextest_version = "cargo-nextest 0.9.152 (26ebeda79 2026-11-13)"
+commit = "36509eca8cadebae5342e31ebbf570185cbb2a29"
+date = "2026-11-24T00:07:16Z"
+load_before = 2.91
+wall_seconds = 375.96
+cpu_seconds = 2787.42
+serial_seconds = 55.95
+sandbox_probe = true
+sandbox_nested = true
+tests = 1494
+tests_run = 1494
+asserts = 5888
+suite_passed = true
+[[runs]]
+load_before = 2.99
+load_after = 16.99
+wall_seconds = 417.17
+cpu_seconds = 2931.38
+user_seconds = 1765.53
+sys_seconds = 1165.85
+exit = 0
+tests_run = 1494
+tests_passed = 1494
+serial_seconds = 58.51
+sandbox_probe = true
+sandbox_nested = true
+[[runs]]
+load_before = 2.81
+load_after = 16.79
+wall_seconds = 375.96
+cpu_seconds = 2787.42
+user_seconds = 1672.37
+sys_seconds = 1115.05
+exit = 0
+tests_run = 1494
+tests_passed = 1494
+serial_seconds = 55.95
+sandbox_probe = true
+sandbox_nested = true
+[[runs]]
+load_before = 2.91
+load_after = 17.74
+wall_seconds = 367.92
+cpu_seconds = 2764.05
+user_seconds = 1655.27
+sys_seconds = 1108.78
+exit = 0
+tests_run = 1494
+tests_passed = 1494
+serial_seconds = 54.57
+sandbox_probe = true
+sandbox_nested = true
