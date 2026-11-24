@@ -5,8 +5,23 @@
 mod common;
 use common::Fx;
 use std::fs;
-use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+/// Set the stored record's modified time `back` seconds before now (or `ahead` after), so the
+/// comparison of the file's time against the turn's second is met without waiting.
+fn backdate(fx: &Fx, id: &str) {
+    shift(fx, id, SystemTime::now() - Duration::from_secs(2));
+}
+
+fn shift(fx: &Fx, id: &str, t: SystemTime) {
+    let f = fx.project().record_path(id).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(f)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+}
 
 fn legal(id: &str, title: &str, outcome: &str) -> String {
     format!(
@@ -39,7 +54,7 @@ fn accepting_a_legal_record_appends_an_event_with_the_record_the_message_and_the
         put_legal(&fx, &legal("L-1", "Cookie notice", "open"), None).code,
         0
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Fine, I accept the cookie notice risk as it is.");
     let o = put_legal(
         &fx,
@@ -70,7 +85,8 @@ fn the_message_that_accepted_one_record_cannot_accept_another() {
     for (id, t) in [("L-1", "One"), ("L-2", "Two")] {
         assert_eq!(put_legal(&fx, &legal(id, t, "open"), None).code, 0);
     }
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
+    backdate(&fx, "L-2");
     fx.human("I accept both of them, go ahead.");
     let o = put_legal(&fx, &legal("L-1", "One", "accepted"), Some("I accept both"));
     assert_eq!(o.code, 0, "{}", o.all());
@@ -94,7 +110,7 @@ fn a_message_in_the_same_second_as_the_change_does_not_count() {
         put_legal(&fx, &legal("L-1", "Cookie notice", "open"), None).code,
         0
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("I accept the cookie notice risk.");
     // The change follows at once, in the same whole second as the message.
     assert_eq!(
@@ -116,9 +132,8 @@ fn a_message_from_before_the_latest_change_of_the_record_does_not_count() {
         put_legal(&fx, &legal("L-1", "Cookie notice", "open"), None).code,
         0
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("I accept the cookie notice risk.");
-    sleep(Duration::from_millis(1100));
     // The record changes after the human spoke: they did not see this.
     assert_eq!(
         put_legal(
@@ -129,6 +144,8 @@ fn a_message_from_before_the_latest_change_of_the_record_does_not_count() {
         .code,
         0
     );
+    // Its file time is later than the message's second.
+    shift(&fx, "L-1", SystemTime::now() + Duration::from_secs(2));
     let o = put_legal(
         &fx,
         &legal("L-1", "Cookie notice and tracking", "accepted"),
@@ -136,7 +153,7 @@ fn a_message_from_before_the_latest_change_of_the_record_does_not_count() {
     );
     assert_eq!(o.code, 2, "{}", o.all());
     // After the change, a new message does.
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Yes, I accept the cookie notice and tracking risk.");
     let o = put_legal(
         &fx,
@@ -161,7 +178,7 @@ fn the_put_that_accepts_cannot_also_change_what_is_accepted() {
         None,
     );
     assert_eq!(o.code, 0, "{}", o.all());
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Fine, I accept the notice risk as it is.");
     let o = put_legal(
         &fx,
@@ -188,7 +205,7 @@ fn an_accepted_record_that_changes_goes_back_to_open() {
         &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
         None,
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Fine, I accept the notice risk as it is.");
     let o = put_legal(
         &fx,
@@ -210,7 +227,6 @@ fn an_accepted_record_that_changes_goes_back_to_open() {
 fn a_new_record_cannot_be_created_as_accepted() {
     let fx = Fx::new();
     fx.human("I accept the risk, go on.");
-    sleep(Duration::from_millis(1100));
     let o = put_legal(
         &fx,
         &legal_full(
@@ -233,7 +249,7 @@ fn the_put_that_resets_an_accepted_record_says_so() {
         &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
         None,
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Fine, I accept the notice risk as it is.");
     let o = put_legal(
         &fx,
@@ -263,7 +279,7 @@ fn the_json_of_the_put_says_the_record_went_back_to_open() {
         &legal_full("L-1", "Notice", "One sentence is missing.", "open"),
         None,
     );
-    sleep(Duration::from_millis(1100));
+    backdate(&fx, "L-1");
     fx.human("Fine, I accept the notice risk as it is.");
     put_legal(
         &fx,

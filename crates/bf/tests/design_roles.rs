@@ -232,7 +232,6 @@ fn the_markets_statement_belongs_to_the_architecture_stage() {
     );
     assert_eq!(o.code, 0, "{}", o.all());
     // The threat model stands once the security expert has reported after the last threat change.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     let o = fx.bf(&[
         "report",
         "design",
