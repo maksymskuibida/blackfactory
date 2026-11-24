@@ -77,14 +77,53 @@ fn adapter_data(manifest: &Path, out_dir: &Path) {
     for k in [
         "subagent_fields",
         "programs",
+        "packages",
         "absent_commands",
         "nested_forms",
         "ask_modes",
     ] {
         writeln!(out, "    {k}: &{:?},", list_of(k)).unwrap();
     }
+    for k in ["plan_tools", "access_tools"] {
+        writeln!(out, "    {k}: &{:?},", list_of(k)).unwrap();
+    }
+    for k in ["question_tools", "command_tools", "input_tools"] {
+        out.push_str(&format!("    {k}: &[\n"));
+        for (tool, field) in tool_fields_of(&table, k) {
+            writeln!(
+                out,
+                "        ToolField {{ tool: {tool:?}, field: {field:?} }},"
+            )
+            .unwrap();
+        }
+        out.push_str("    ],\n");
+    }
     out.push_str("};\n");
     std::fs::write(out_dir.join("adapter_data.rs"), out).unwrap();
+}
+
+/// A list of tools of `adapter.toml`: each a table with `tool` and an optional `field`.
+fn tool_fields_of(table: &toml::Table, k: &str) -> Vec<(String, String)> {
+    let items: Vec<(String, String)> = table
+        .get(k)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_table())
+                .filter_map(|t| {
+                    let tool = t.get("tool")?.as_str()?.to_string();
+                    let field = t.get("field").and_then(|f| f.as_str()).unwrap_or("");
+                    (!tool.is_empty()).then(|| (tool, field.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if items.is_empty() {
+        fail(format!(
+            "adapter.toml: key `{k}` is missing or has no tools"
+        ));
+    }
+    items
 }
 
 fn test_modules(manifest: &Path, out_dir: &Path) {

@@ -569,6 +569,9 @@ fn land_merge_a_turn_does_not_open_while_a_sync_or_a_fix_of_the_checkpoint_is_op
         park_seq: 0,
         floor: 0,
         failed: vec![],
+        unblocks: 0,
+        block_seq: 0,
+        wait_seq: 0,
     });
     assert_eq!(bf::run::open_reason(&p, &st, "K-1"), Some("sync"));
     assert_eq!(bf::run::open_reason(&p, &st, "K-2"), None);

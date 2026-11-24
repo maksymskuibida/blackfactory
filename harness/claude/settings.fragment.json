@@ -8,7 +8,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob|AskUserQuestion|mcp__ccd_turn__wrap_up|EnterPlanMode|ExitPlanMode|mcp__computer-use__request_access|mcp__computer-use__request_full_control|mcp__computer-use__request_teach_access|mcp__ccd_directory__request_directory|mcp__terminal__run_in_terminal|mcp__computer-use__type|mcp__computer-use__app_type|mcp__computer-use__app_batch|mcp__computer-use__computer_batch|mcp__computer-use__teach_batch|mcp__computer-use__write_clipboard|mcp__ccd_session_mgmt__send_message|mcp__ccd_session__start_session|mcp__ccd_session__spawn_task|mcp__ccd_session__hand_off_to_session",
         "hooks": [
           {
             "type": "command",

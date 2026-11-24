@@ -135,7 +135,7 @@ impl Old {
         let f = self.root.join("narrow.json");
         fs::write(
             &f,
-            json!({"amend": aid, "keep": keep, "waive": []}).to_string(),
+            json!({"amend": aid, "keep": open_only(&json!(keep)), "waive": [], "reasons": landed_reasons()}).to_string(),
         )
         .unwrap();
         self.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
@@ -161,6 +161,23 @@ impl Old {
     }
 }
 
+/// The units the old project landed in its closed first checkpoint stay out of a narrowing: an
+/// approved amendment never sends one of them back to work (D-112).
+fn open_only(ids: &serde_json::Value) -> Vec<serde_json::Value> {
+    ids.as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|x| !["U-1", "U-2"].contains(&x.as_str().unwrap_or("")))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn landed_reasons() -> serde_json::Value {
+    serde_json::json!({"U-1": "landed in a closed checkpoint", "U-2": "landed in a closed checkpoint"})
+}
+
 #[test]
 fn repair_judge_the_a8_repair_is_a_go_on_an_old_project_and_leaves_no_problem() {
     let p = Old::new();
@@ -183,7 +200,7 @@ fn repair_judge_the_a8_repair_is_a_go_on_an_old_project_and_leaves_no_problem() 
     let f = p.root.join("narrow.json");
     fs::write(
         &f,
-        json!({"amend": "A-2", "keep": opened["impact_ids"], "waive": []}).to_string(),
+        json!({"amend": "A-2", "keep": open_only(&opened["impact_ids"]), "waive": [], "reasons": landed_reasons()}).to_string(),
     )
     .unwrap();
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
@@ -233,7 +250,7 @@ fn repair_judge_a_human_approval_that_adds_a_plan_problem_is_refused() {
     let f = p.root.join("narrow.json");
     fs::write(
         &f,
-        json!({"amend": "A-1", "keep": opened["impact_ids"], "waive": []}).to_string(),
+        json!({"amend": "A-1", "keep": open_only(&opened["impact_ids"]), "waive": [], "reasons": landed_reasons()}).to_string(),
     )
     .unwrap();
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
@@ -254,7 +271,7 @@ fn repair_judge_a_human_approval_that_adds_a_plan_problem_through_a_handoff_is_r
     let f = p.root.join("narrow.json");
     fs::write(
         &f,
-        json!({"amend": "A-1", "keep": opened["impact_ids"], "waive": []}).to_string(),
+        json!({"amend": "A-1", "keep": open_only(&opened["impact_ids"]), "waive": [], "reasons": landed_reasons()}).to_string(),
     )
     .unwrap();
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
@@ -508,7 +525,7 @@ fn repair_judge_the_switch_off_refuses_the_token() {
     fx.start_test_run();
     let opened = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
     let f = fx.root.join("narrow.json");
-    fs::write(&f, json!({"amend": "A-1", "keep": opened["impact_ids"], "waive": []}).to_string()).unwrap();
+    fs::write(&f, json!({"amend": "A-1", "keep": open_only(&opened["impact_ids"]), "waive": [], "reasons": landed_reasons()}).to_string()).unwrap();
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     let o = fx.refused(&["roles", "token", "A-1", "judge"]);
     assert!(o.stderr.contains("repair_judge"), "{}", o.stderr);
@@ -854,7 +871,7 @@ fn repair_judge_a_landed_units_record_is_refused() {
     let f = p.root.join("narrow.json");
     fs::write(
         &f,
-        json!({"amend": "A-1", "keep": opened["impact_ids"], "waive": []}).to_string(),
+        json!({"amend": "A-1", "keep": open_only(&opened["impact_ids"]), "waive": [], "reasons": landed_reasons()}).to_string(),
     )
     .unwrap();
     p.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);

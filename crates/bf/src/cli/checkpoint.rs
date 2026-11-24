@@ -30,6 +30,16 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
     }
     if args.pos.get(1).map(|x| x.as_str()) == Some("sync") {
         let k = args.pos_at(2, "a checkpoint ID")?;
+        if args.has("unblock") {
+            let v = run::sync_unblock(
+                &p,
+                k,
+                args.flag("judgment").unwrap_or(""),
+                args.flag("reason").unwrap_or(""),
+            )?;
+            out(args, &v, || v["line"].as_str().unwrap_or("").to_string());
+            return Ok(());
+        }
         let v = run::checkpoint_sync(
             &p,
             k,
@@ -245,6 +255,13 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
     }
     if args.pos.get(1).map(|x| x.as_str()) == Some("review") {
         let k = args.pos_at(2, "a checkpoint ID")?;
+        if args.has("ask") && !args.has("release") && !args.has("abort") {
+            let v = crate::ckreview::ask(&p, k, args.flag("quote").unwrap_or(""))?;
+            out(args, &v, || {
+                crate::strings::t("ck_recovery.ask.done", &[("k", k)])
+            });
+            return Ok(());
+        }
         if args.has("abort") && !args.has("release") {
             let v = crate::ckreview::abort(&p, k, args.flag("quote").unwrap_or(""))?;
             out(args, &v, || {

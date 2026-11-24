@@ -246,6 +246,12 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 "files": sync_files(so),
                 "commands": [format!("bf brief {k} --role reviewer")],
                 "abort_command": format!("bf checkpoint sync {k} --abort")}),
+            "blocked" => match super::sync_release::directive(p, &st, so, &mut waiting) {
+                Some(d) => d,
+                None => {
+                    return Ok(json!({"run": run, "directives": directives, "waiting": waiting}))
+                }
+            },
             _ => json!({"role": "human", "action": "decide-sync", "checkpoint": k,
                 "note": format!("The sync of {k} is parked ({}). The human says whether to try again (`bf checkpoint sync {k} --release --quote \"<their words>\"`) or to go back (`bf checkpoint sync {k} --abort`).", so.reason),
                 "release_command": format!("bf checkpoint sync {k} --release --quote \"<the human's words>\""),
@@ -705,6 +711,49 @@ pub fn next(p: &Project) -> R<Value> {
             }
         }
     }
+    if crate::absent::is_on(&st) {
+        for d in v["directives"].as_array_mut().into_iter().flatten() {
+            if d["role"] == "human" {
+                d["waits"] = json!(true);
+            }
+        }
+        let waits_at = if !can_start {
+            v["directives"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|d| d["role"] == "human" && d["info"] != true)
+                .map(|d| {
+                    let target = [
+                        "unit",
+                        "checkpoint",
+                        "gate",
+                        "amendment",
+                        "question",
+                        "gate_kind",
+                    ]
+                    .iter()
+                    .find_map(|k| d[*k].as_str().filter(|x| !x.is_empty()))
+                    .unwrap_or("");
+                    format!("{} {}", d["action"].as_str().unwrap_or(""), target)
+                        .trim()
+                        .to_string()
+                })
+        } else {
+            None
+        };
+        if let Some(step) = &waits_at {
+            v["human_absent_waits_at"] = json!(step);
+        }
+        let a = &st.absent;
+        v["human_absent"] = json!({
+            "since": a.since,
+            "session": a.session,
+            "returning": a.returning.keys().collect::<Vec<_>>(),
+            "instruction": crate::absent::instruction(),
+            "waits_at": waits_at,
+        });
+    }
     v["main_ahead"] = json!(main_ahead(p, &st, &pl));
     v["human_turns_note"] = json!(st.human_turns_note().unwrap_or_default());
     if let Some(n) = st.human_turns_note() {
@@ -712,7 +761,13 @@ pub fn next(p: &Project) -> R<Value> {
     }
     v["can_start"] = json!(can_start);
     v["human_needed"] = json!(human_needed);
-    v["idle_reason"] = reason;
+    v["idle_reason"] = match v["human_absent_waits_at"].as_str() {
+        Some(step) if human_needed && !can_start => json!(crate::strings::t(
+            "absent_briefs.next.waits_at",
+            &[("step", step)]
+        )),
+        _ => reason,
+    };
     Ok(v)
 }
 

@@ -6,6 +6,8 @@
 //! outside the working copy in use, and the network. Where `sandbox-exec` is missing or refuses to
 //! run, the child runs without it and the receipt says so.
 
+pub mod compile_cache;
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -113,6 +115,12 @@ pub fn check_profile(
         ));
     }
     p
+}
+
+/// The denial of the whole compile cache folder (R-76): reads and writes, by its literal path, which
+/// goes after every other rule of a check's profile while the setting is on.
+pub fn cache_denial(top: &str) -> String {
+    format!("(deny file-read* file-write* (subpath {}))\n", q(top))
 }
 
 /// What a command in the checkpoint reviewer's copy may not do beyond a check (TH-16): move a branch or

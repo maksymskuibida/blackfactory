@@ -1,0 +1,62 @@
+# Strings of the guard's rules of the human-absent flag (R-74, D-96, U-69): the refusals of the tools
+# that ask the human, of the hook commands and of the harness's own program. The `steps` of a refusal
+# are one step to a line.
+
+"guard_absent.question.refused" = "ask the human a question with `{tool}`"
+"guard_absent.question.because" = "the human-absent flag is on, so nothing in this run may wait for an answer; the engine answers no to a question and the run goes on"
+"guard_absent.question.steps" = """
+Take the path that needs no decision of the human.
+If there is none, record the question with `bf ask`, report blocked and stop, so that other work goes on.
+Note anything for the human's return in your report.
+"""
+"guard_absent.question.worked" = "The call is made without a question, and nothing waits for the human."
+
+"guard_absent.plan.refused" = "enter or leave plan mode with `{tool}`"
+"guard_absent.plan.because" = "the human-absent flag is on, and leaving plan mode waits for the human's approval, which no one is there to give"
+"guard_absent.plan.steps" = """
+Go on with the work without plan mode.
+If the work needs the human's decision, record the question with `bf ask`, report blocked and stop.
+"""
+"guard_absent.plan.worked" = "The work goes on without waiting for an approval."
+
+"guard_absent.access.refused" = "ask for access with `{tool}`"
+"guard_absent.access.because" = "the human-absent flag is on, and a request for access to the computer, an app or a folder waits for the human, who is away"
+"guard_absent.access.steps" = """
+Do the work with the access you have.
+If it cannot be done without more access, record the need with `bf ask`, report blocked and stop.
+"""
+"guard_absent.access.worked" = "The work goes on without a request for access."
+
+"guard_absent.deny_tools.refused" = "call `{tool}`"
+"guard_absent.deny_tools.because" = "the human-absent flag is on, and the policy names this tool as one that a run must not call while the human is away"
+"guard_absent.deny_tools.steps" = """
+Take the path that needs no such tool.
+If there is none, record the need with `bf ask`, report blocked and stop.
+"""
+"guard_absent.deny_tools.worked" = "The work goes on without this tool."
+
+"guard_absent.typed.refused" = "type the human-absent command with `{tool}`"
+"guard_absent.typed.because" = "the command that sets or ends the human-absent flag is the human's own word; the hook cannot tell text that an agent types into an app or sends to a session from the human's"
+"guard_absent.typed.steps" = """
+Leave the flag alone.
+Ask the human in chat to type the command themselves.
+"""
+"guard_absent.typed.worked" = "No text of the call holds the command."
+
+"guard_absent.harness.refused" = "run the harness's own program from a shell"
+"guard_absent.harness.because" = "a session started from a shell is a session that this run's guard does not cover, and it could be made to type the human's command; no agent or session may start the harness this way"
+"guard_absent.harness.steps" = """
+Do the work in this session, or with the agents the conductor starts.
+If it needs another session, report blocked with the reason in the note.
+"""
+"guard_absent.harness.worked" = "The command line starts none of the harness's programs."
+
+"guard_absent.hook.refused" = "run `bf hook`"
+"guard_absent.hook.because" = "only the harness runs the hook commands; an agent that could run one could write the human's word into the run's log"
+"guard_absent.hook.steps" = """
+Ask the human in chat for their decision.
+The hook records their message by itself.
+"""
+"guard_absent.hook.worked" = "`bf log --tail 3` shows nothing that you wrote as the human's."
+
+"guard_absent.policy.reinstall" = "The policy's lists of tools changed (`absent.deny_tools`, `guard.command_tools` or `guard.input_tools`). The tool hook's matcher takes them in only when the human runs `harness/claude/install.sh` again for this project; until then the guard does not see calls of the tools that are new."

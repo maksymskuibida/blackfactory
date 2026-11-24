@@ -117,8 +117,6 @@ fn a_parked_syncs_release_takes_only_words_written_after_the_park() {
             "builder",
             "--result",
             "blocked",
-            "--note",
-            "I cannot tell which line is right",
         ],
     );
     assert_eq!(sync_phase(&fx)["phase"], "parked", "{}", sync_phase(&fx));

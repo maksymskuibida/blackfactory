@@ -606,7 +606,8 @@ pub struct SyncRepo {
 pub struct SyncOpen {
     pub checkpoint: String,
     pub repos: Vec<SyncRepo>,
-    /// `resolve` (a builder works), `review` (a reviewer judges) or `parked` (the human decides).
+    /// `resolve` (a builder works), `review` (a reviewer judges), `blocked` (the conductor judges the
+    /// resolver's reason, U-103) or `parked` (the human decides).
     pub phase: String,
     pub rounds: u32,
     pub reason: String,
@@ -618,6 +619,12 @@ pub struct SyncOpen {
     pub floor: u64,
     /// The checkpoint checks that failed on the joined content when the sync opened.
     pub failed: Vec<Value>,
+    /// How many times the conductor put the resolver back to work since the human's last own act (U-103).
+    pub unblocks: u32,
+    /// The seq of the resolver's blocked report that left the sync in `blocked`; 0 while it is not.
+    pub block_seq: u64,
+    /// The seq of the conductor's `wait` judgment of that blocked report; 0 with none.
+    pub wait_seq: u64,
 }
 
 /// A checkpoint fix that was aborted.
@@ -1024,6 +1031,8 @@ pub struct State {
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
+    /// Checkpoint -> the reviews of a parked checkpoint the human asked for in their own words (D-26).
+    pub ck_asks: BTreeMap<String, u32>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -1054,6 +1063,8 @@ pub struct State {
     /// The sessions the log marks as started by another session, and every session the hook has seen.
     pub absent_nested: std::collections::BTreeSet<String>,
     pub absent_known: std::collections::BTreeSet<String>,
+    /// The repairs the judge approved while the run's human-absent flag was on (D-97).
+    pub judged_absent: std::collections::BTreeSet<String>,
 }
 
 impl State {
@@ -1355,7 +1366,11 @@ fn open_blocking_checkpoints(
 /// end of a hold) or record a sync resolved by hand (the later of its opening and the latest end). Words
 /// written before it cannot decide. The commands and the replay both use it.
 pub fn sync_bound(st: &State, so: &SyncOpen, release: bool) -> u64 {
-    let from = if release { so.park_seq } else { so.open_seq };
+    let from = if release {
+        so.park_seq.max(so.wait_seq)
+    } else {
+        so.open_seq
+    };
     from.max(st.ck_end_seq)
 }
 
@@ -2029,6 +2044,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     park_seq: 0,
                     floor: ev["receipt_floor"].as_u64().unwrap_or(0),
                     failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    unblocks: 0,
+                    block_seq: 0,
+                    wait_seq: 0,
                 });
             }
             "checkpoint.sync.built" => {
@@ -2052,6 +2070,26 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.phase = "parked".into();
                     o.park_seq = seq;
                     o.reason = sv("reason");
+                }
+            }
+            "checkpoint.sync.block" => {
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.phase = "blocked".into();
+                    o.block_seq = seq;
+                    o.wait_seq = 0;
+                    o.reason = sv("reason");
+                }
+            }
+            "checkpoint.sync.unblock" => {
+                if let Some(o) = st.sync_open.as_mut().filter(|o| o.phase == "blocked") {
+                    if sv("judgment") == "fixed" {
+                        o.phase = "resolve".into();
+                        o.unblocks += 1;
+                        o.reason.clear();
+                        o.wait_seq = 0;
+                    } else {
+                        o.wait_seq = seq;
+                    }
                 }
             }
             "checkpoint.sync.release" => {
@@ -2079,6 +2117,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.sync_open.as_mut() {
                     o.phase = "resolve".into();
                     o.rounds = 0;
+                    o.unblocks = 0;
                     o.reason.clear();
                 }
             }
@@ -2723,7 +2762,45 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ev["after_round"].as_u64().unwrap_or(0) as u32,
                 );
             }
+            "checkpoint.review.ask" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let base = round_report_seq(
+                    &st,
+                    &sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: another review was asked for while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: another review was asked for with no valid human turn and quote, or words written before the bound"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                *st.ck_asks.entry(sv("checkpoint")).or_insert(0) += 1;
+            }
             "checkpoint.review.done" => {
+                if ev["supersedes"].as_bool().unwrap_or(false) {
+                    let (k, n) = (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32);
+                    ck_rounds.retain(|(c, r), _| !(*c == k && *r < n));
+                }
                 // A round the human ended in their own words uses those words up.
                 if ev["aborted_by_human"].as_bool().unwrap_or(false) {
                     if let Some(i) = turn_ix.get(&ev["turn"].as_u64().unwrap_or(0)) {
@@ -3201,6 +3278,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         a.judged = true;
                         a.seen = false;
                         st.judged_unseen.push(id.clone());
+                        if st.absent.on {
+                            st.judged_absent.insert(id.clone());
+                        }
                     }
                     if let Some(c) = ev.get("content").and_then(|c| c.as_object()) {
                         let m: BTreeMap<String, Value> =

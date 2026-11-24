@@ -32,6 +32,30 @@ fn status_text(v: &Value) -> String {
             "BROKEN"
         }
     );
+    if v["absent"]["on"] == true {
+        let a = &v["absent"];
+        let list = a["returning"]
+            .as_array()
+            .map(|x| {
+                x.iter()
+                    .filter_map(|y| y.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|x| !x.is_empty())
+            .unwrap_or_else(|| crate::strings::t("absent_briefs.status.none", &[]));
+        t.push_str(&format!(
+            "{}\n",
+            crate::strings::t(
+                "absent_briefs.status.line",
+                &[
+                    ("since", a["since"].as_str().unwrap_or("")),
+                    ("session", a["session"].as_str().unwrap_or("")),
+                    ("sessions", &list),
+                ]
+            )
+        ));
+    }
     if let Some(n) = v["main"]["note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
     }
@@ -55,6 +79,11 @@ fn status_text(v: &Value) -> String {
             m["checkpoint"].as_str().unwrap_or(""),
             m["checkpoint"].as_str().unwrap_or(""),
         ));
+    }
+    for c in v["checkpoint_reviews"].as_array().into_iter().flatten() {
+        if let Some(l) = c["recovery_line"].as_str().filter(|l| !l.is_empty()) {
+            t.push_str(&format!("{l}\n"));
+        }
     }
     for pg in v["pages"].as_array().into_iter().flatten() {
         t.push_str(&format!(

@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod absent;
+
 pub struct Decision {
     /// True when nothing in the table forbids the call.
     pub allow: bool,
@@ -1497,19 +1499,27 @@ fn interpreter_paths(p: &crate::shellparse::Parsed, args: &[String]) -> Vec<Stri
 /// system call, a process start or a shell-out that holds the engine's name and `human-turn`; the
 /// phrase in a string that is only printed is not.
 fn code_calls_human_turn(code: &str) -> bool {
-    // A comment line is not code.
-    let code: String = code
-        .lines()
+    let code = without_comment_lines(code);
+    // The engine's name in any case (`BF` opens the same file on a volume that ignores case).
+    if !code.contains("human-turn") || !code.to_ascii_lowercase().contains("bf") {
+        return false;
+    }
+    code_has_call(&code)
+}
+
+/// Code without its comment lines: a comment line is not code.
+fn without_comment_lines(code: &str) -> String {
+    code.lines()
         .filter(|l| {
             let l = l.trim_start();
             !(l.starts_with('#') || l.starts_with("//"))
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    // The engine's name in any case (`BF` opens the same file on a volume that ignores case).
-    if !code.contains("human-turn") || !code.to_ascii_lowercase().contains("bf") {
-        return false;
-    }
+        .join("\n")
+}
+
+/// Does code hold a system call, a process start or a shell-out?
+fn code_has_call(code: &str) -> bool {
     const CALLS: &[&str] = &[
         "system",
         "popen",
@@ -1535,12 +1545,12 @@ fn code_calls_human_turn(code: &str) -> bool {
     if CALLS.iter().any(|c| code.contains(c)) || code.contains("proc_open") {
         return true;
     }
-    pipe_open_calls(&code)
+    pipe_open_calls(code)
 }
 
-/// The string literals of code, without their quotes, with the text just before and after each.
-fn string_literals(code: &str) -> Vec<(String, String, String)> {
-    let c: Vec<char> = code.chars().collect();
+/// The string literals of code as (text, index of the opening quote, index just past the closing
+/// quote), counted in characters.
+fn literal_spans(c: &[char]) -> Vec<(String, usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < c.len() {
@@ -1548,9 +1558,7 @@ fn string_literals(code: &str) -> Vec<(String, String, String)> {
             let q = c[i];
             if let Some(e) = c[i + 1..].iter().position(|x| *x == q) {
                 let lit: String = c[i + 1..i + 1 + e].iter().collect();
-                let before: String = c[..i].iter().collect();
-                let after: String = c[i + 2 + e..].iter().collect();
-                out.push((lit, before, after));
+                out.push((lit, i, i + 2 + e));
                 i += e + 2;
                 continue;
             }
@@ -1558,6 +1566,15 @@ fn string_literals(code: &str) -> Vec<(String, String, String)> {
         i += 1;
     }
     out
+}
+
+/// The string literals of code, without their quotes, with the text just before and after each.
+fn string_literals(code: &str) -> Vec<(String, String, String)> {
+    let c: Vec<char> = code.chars().collect();
+    literal_spans(&c)
+        .into_iter()
+        .map(|(lit, s, e)| (lit, c[..s].iter().collect(), c[e..].iter().collect()))
+        .collect()
 }
 
 /// The first string literal inside the call that ends just before `.method`: `Path('a')` in
@@ -2059,7 +2076,8 @@ fn made_literals(code: &str) -> Vec<String> {
 /// A program started without a call word: a pipe open (a string that starts or ends with `|` given
 /// to `open`, the `-|` and `|-` modes) and the pipe forms of awk (`"cmd" | getline`, `print | "cmd"`).
 fn pipe_open_calls(code: &str) -> bool {
-    let lits = string_literals(code);
+    let c: Vec<char> = code.chars().collect();
+    let lits = literal_spans(&c);
     if code.contains("open")
         && lits
             .iter()
@@ -2067,15 +2085,22 @@ fn pipe_open_calls(code: &str) -> bool {
     {
         return true;
     }
-    lits.iter().any(|(l, before, after)| {
+    lits.iter().any(|(l, s, e)| {
         let t = l.trim();
         if !(l.contains("human-turn") && l.to_ascii_lowercase().contains("bf")) {
             return false;
         }
         t.starts_with('|')
             || t.ends_with('|')
-            || before.trim_end().ends_with('|')
-            || after.trim_start().starts_with('|')
+            || c[..*s]
+                .iter()
+                .rev()
+                .find(|x| !x.is_whitespace())
+                .is_some_and(|x| *x == '|')
+            || c[*e..]
+                .iter()
+                .find(|x| !x.is_whitespace())
+                .is_some_and(|x| *x == '|')
     })
 }
 
@@ -4909,13 +4934,18 @@ const DATA_PROGRAMS: &[&str] = &[
 /// Does a command hold the engine's name followed later by the word `human-turn`, as separate words,
 /// where the program is not one that only prints text? The engine's name may be a variable.
 fn names_human_turn_call(words: &[String]) -> bool {
+    names_bf_word_call(words, "human-turn")
+}
+
+/// The same for any word of the engine's command line: the engine's name followed later by `word`.
+fn names_bf_word_call(words: &[String], word: &str) -> bool {
     let Some(i) = crate::shellparse::program_index(words) else {
         return false;
     };
     if DATA_PROGRAMS.contains(&basename(&words[i])) {
         return false;
     }
-    let Some(h) = words.iter().rposition(|w| w == "human-turn") else {
+    let Some(h) = words.iter().rposition(|w| w == word) else {
         return false;
     };
     words[i..h]
@@ -5041,6 +5071,10 @@ fn is_unblock_call(c: &crate::shellparse::Call) -> bool {
     let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
     (plain.first().map(|x| x.as_str()) == Some("unit")
         && plain.get(1).map(|x| x.as_str()) == Some("unblock"))
+        // `bf checkpoint sync <K> --unblock` is the conductor's own step too (U-103).
+        || (plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("sync")
+            && c.words.iter().any(|w| w == "--unblock" || w.starts_with("--unblock=")))
         || (plain.iter().any(|x| x == "unit")
             && (c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))))
 }
@@ -5653,6 +5687,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
     {
         return human_turn_denial();
     }
+    if let Some(d) = absent::shell_denial(cmd) {
+        return d;
+    }
     for c in &calls {
         if let Some(d) = judge_call(c) {
             return d;
@@ -5928,6 +5965,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                     if code_calls_human_turn(&code) {
                         return human_turn_denial();
+                    }
+                    if let Some(d) = absent::code_denial(&code) {
+                        return d;
                     }
                     // A path the code opens for writing is a write like any other: the protected places
                     // and, in a unit's working copy, the unit's file scope judge it.
@@ -6472,6 +6512,9 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
         if let Some(d) = unblock_denial(agent_type(input), ti["command"].as_str().unwrap_or("")) {
             return d;
         }
+    }
+    if let Some(d) = absent::judge(input, table) {
+        return d;
     }
     match tool {
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {

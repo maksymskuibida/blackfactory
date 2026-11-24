@@ -24,6 +24,9 @@ subagent_fields = ["agent_id", "agent_type", "parent_tool_use_id", "subagent", "
 # The programs that are the harness itself.
 programs = ["claude"]
 
+# The package names under which the harness is started through a package runner or a script path.
+packages = ["@anthropic-ai/claude-code"]
+
 # The folder of the harness's transcripts.
 transcript_dir = "~/.claude/projects"
 
@@ -39,3 +42,43 @@ nested_forms = [
 
 # The permission modes of the harness in which a tool asks the human before it runs.
 ask_modes = ["default", "plan", "acceptEdits"]
+
+# The tools that ask the human a question (R-74, D-96): each with the input field that makes a call of
+# it a question; a tool with no field asks whenever it is called. The desktop app's next-step box asks
+# only when its `ask` field is set.
+question_tools = [
+  { tool = "AskUserQuestion" },
+  { tool = "mcp__ccd_turn__wrap_up", field = "ask" },
+]
+
+# The tools that enter or leave plan mode: leaving it waits for the human's approval.
+plan_tools = ["EnterPlanMode", "ExitPlanMode"]
+
+# The tools that ask the human for access to the computer, to an app or to a folder.
+access_tools = [
+  "mcp__computer-use__request_access",
+  "mcp__computer-use__request_full_control",
+  "mcp__computer-use__request_teach_access",
+  "mcp__ccd_directory__request_directory",
+]
+
+# The tools that run a command line or a script, each with the input field that carries it (a tool
+# with no field: every text of its input). The guard judges the text as it judges a shell command.
+command_tools = [
+  { tool = "mcp__terminal__run_in_terminal", field = "command" },
+]
+
+# The tools that type into an app or send a message to a session, or start one. The guard refuses a
+# call whose text holds a command form of the human-absent flag. Each text of the input counts.
+input_tools = [
+  { tool = "mcp__computer-use__type" },
+  { tool = "mcp__computer-use__app_type" },
+  { tool = "mcp__computer-use__app_batch" },
+  { tool = "mcp__computer-use__computer_batch" },
+  { tool = "mcp__computer-use__teach_batch" },
+  { tool = "mcp__computer-use__write_clipboard" },
+  { tool = "mcp__ccd_session_mgmt__send_message" },
+  { tool = "mcp__ccd_session__start_session" },
+  { tool = "mcp__ccd_session__spawn_task" },
+  { tool = "mcp__ccd_session__hand_off_to_session" },
+]
