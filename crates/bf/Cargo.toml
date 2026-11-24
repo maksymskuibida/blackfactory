@@ -24,6 +24,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "bf"
 path = "src/main.rs"
+test = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
