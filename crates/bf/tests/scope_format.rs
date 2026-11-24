@@ -145,7 +145,10 @@ fn refuses_when_the_formatter_is_missing_or_inside_the_project() {
     let bin = wc.join("bin");
     let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     fs::set_permissions(bin.join("rustfmt"), mode).unwrap();
-    fx.set_policy(&rustfmt_dir(), &bin.to_string_lossy());
+    fx.set_policy(
+        &format!("{}:{PATH}", rustfmt_dir()),
+        &format!("{}:{PATH}", bin.to_string_lossy()),
+    );
     refused(&fx, &["src/f.rs"], "inside the project folder");
 }
 
