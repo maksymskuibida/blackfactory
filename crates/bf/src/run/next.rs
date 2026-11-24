@@ -711,6 +711,49 @@ pub fn next(p: &Project) -> R<Value> {
             }
         }
     }
+    if crate::absent::is_on(&st) {
+        for d in v["directives"].as_array_mut().into_iter().flatten() {
+            if d["role"] == "human" {
+                d["waits"] = json!(true);
+            }
+        }
+        let waits_at = if !can_start {
+            v["directives"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|d| d["role"] == "human" && d["info"] != true)
+                .map(|d| {
+                    let target = [
+                        "unit",
+                        "checkpoint",
+                        "gate",
+                        "amendment",
+                        "question",
+                        "gate_kind",
+                    ]
+                    .iter()
+                    .find_map(|k| d[*k].as_str().filter(|x| !x.is_empty()))
+                    .unwrap_or("");
+                    format!("{} {}", d["action"].as_str().unwrap_or(""), target)
+                        .trim()
+                        .to_string()
+                })
+        } else {
+            None
+        };
+        if let Some(step) = &waits_at {
+            v["human_absent_waits_at"] = json!(step);
+        }
+        let a = &st.absent;
+        v["human_absent"] = json!({
+            "since": a.since,
+            "session": a.session,
+            "returning": a.returning.keys().collect::<Vec<_>>(),
+            "instruction": crate::absent::instruction(),
+            "waits_at": waits_at,
+        });
+    }
     v["main_ahead"] = json!(main_ahead(p, &st, &pl));
     v["human_turns_note"] = json!(st.human_turns_note().unwrap_or_default());
     if let Some(n) = st.human_turns_note() {
@@ -718,7 +761,13 @@ pub fn next(p: &Project) -> R<Value> {
     }
     v["can_start"] = json!(can_start);
     v["human_needed"] = json!(human_needed);
-    v["idle_reason"] = reason;
+    v["idle_reason"] = match v["human_absent_waits_at"].as_str() {
+        Some(step) if human_needed && !can_start => json!(crate::strings::t(
+            "absent_briefs.next.waits_at",
+            &[("step", step)]
+        )),
+        _ => reason,
+    };
     Ok(v)
 }
 

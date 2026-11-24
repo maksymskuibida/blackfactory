@@ -1063,6 +1063,8 @@ pub struct State {
     /// The sessions the log marks as started by another session, and every session the hook has seen.
     pub absent_nested: std::collections::BTreeSet<String>,
     pub absent_known: std::collections::BTreeSet<String>,
+    /// The repairs the judge approved while the run's human-absent flag was on (D-97).
+    pub judged_absent: std::collections::BTreeSet<String>,
 }
 
 impl State {
@@ -3276,6 +3278,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         a.judged = true;
                         a.seen = false;
                         st.judged_unseen.push(id.clone());
+                        if st.absent.on {
+                            st.judged_absent.insert(id.clone());
+                        }
                     }
                     if let Some(c) = ev.get("content").and_then(|c| c.as_object()) {
                         let m: BTreeMap<String, Value> =
