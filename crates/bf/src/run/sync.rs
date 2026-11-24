@@ -651,6 +651,10 @@ fn finish_sync(
         "checkpoint": so.checkpoint, "repos": repos,
         "reopen_checks": reopen_checks, "receipt_floor": so.floor,
     });
+    let extra = sync_extra_files(p, so);
+    if !extra.is_empty() {
+        ev["extra_files"] = json!(extra);
+    }
     match human {
         Some((turn, quote)) => {
             ev["turn"] = json!(turn);
@@ -718,34 +722,48 @@ fn sync_problems(p: &Project, so: &events::SyncOpen) -> R<Vec<String>> {
                 &r.main[..r.main.len().min(10)]
             ));
         }
-        if !merging && !r.before.is_empty() {
-            // Only the conflicted files may differ from what git's own merge produced.
-            if let Ok(o) = gitx::run(
-                &wt,
-                &["merge-tree", "--write-tree", &r.before, &r.main],
-                &[],
-            ) {
-                if let Some(tree) = o
-                    .stdout
-                    .lines()
-                    .next()
-                    .filter(|t| t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()))
-                {
-                    let diff =
-                        gitx::must(&wt, &["diff", "--name-only", tree, "HEAD"]).unwrap_or_default();
-                    for f in diff.lines() {
-                        if !r.allowed.iter().any(|g| util::path_matches(g, f)) {
-                            out.push(format!(
-                                "{}: {f} was changed but is not a file either side changed (nor a new test file beside one)",
-                                r.repo
-                            ));
-                        }
-                    }
-                }
+    }
+    Ok(out)
+}
+
+/// The files the resolution changed that neither side changed (nor a new test file beside one), compared
+/// with git's own automatic merge. The list of files is a recommendation (D-115, F-382): they are not
+/// refused, and the sync's event names them (U-103).
+fn sync_extra_files(p: &Project, so: &events::SyncOpen) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in &so.repos {
+        let Ok(wt) = sync_wt(p, &so.checkpoint, &r.repo) else {
+            continue;
+        };
+        let merging = gitx::run(&wt, &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &[])
+            .map(|o| o.ok)
+            .unwrap_or(false);
+        if merging || r.before.is_empty() {
+            continue;
+        }
+        let Ok(o) = gitx::run(
+            &wt,
+            &["merge-tree", "--write-tree", &r.before, &r.main],
+            &[],
+        ) else {
+            continue;
+        };
+        let Some(tree) = o
+            .stdout
+            .lines()
+            .next()
+            .filter(|t| t.len() >= 40 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        else {
+            continue;
+        };
+        let diff = gitx::must(&wt, &["diff", "--name-only", tree, "HEAD"]).unwrap_or_default();
+        for f in diff.lines() {
+            if !r.allowed.iter().any(|g| util::path_matches(g, f)) {
+                out.push(format!("{}: {f}", r.repo));
             }
         }
     }
-    Ok(out)
+    out
 }
 
 fn sync_abort(p: &Project, st: &State, k: &str) -> R<Value> {
@@ -780,7 +798,7 @@ fn sync_release(p: &Project, st: &State, k: &str, quote: &str) -> R<Value> {
             "`bf status` shows no open sync.",
         ));
     };
-    if so.phase != "parked" {
+    if so.phase != "parked" && !sync_release::wait_stalled(p, st, &so) {
         return Err(refuse(
             format!("release the sync of {k}"),
             format!("it is `{}`, not parked", so.phase),
@@ -871,6 +889,14 @@ fn sync_turn(st: &State, bound: u64, what: &str, quote: &str) -> R<(u64, String)
     events::pick_turn(st, bound, events::Decide::Approve, quote)
 }
 
+/// `bf checkpoint sync <K> --unblock --judgment fixed|wait --reason "<why>"` (U-103).
+pub fn sync_unblock(p: &Project, k: &str, judgment: &str, reason: &str) -> R<Value> {
+    let _lock = crate::lock::engine(p, &format!("judge the blocked sync of {k}"))?;
+    let st = events::require_chain(p)?;
+    need_run(&st)?;
+    sync_release::unblock(p, &st, k, judgment, reason)
+}
+
 /// `bf report <K>` while a sync is open: the resolver says built or blocked; the reviewer says findings
 /// or clean.
 pub fn sync_report(
@@ -896,6 +922,12 @@ pub fn sync_report(
     let expected = match so.phase.as_str() {
         "resolve" => "builder",
         "review" => "reviewer",
+        "blocked" => {
+            return Err(crate::refusal::from_key(
+                "sync_release.report.blocked",
+                &[("k", k)],
+            ))
+        }
         _ => {
             return Err(refuse(
                 format!("report on the sync of {k}"),
@@ -923,11 +955,8 @@ pub fn sync_report(
     }
     let pl = plan::load(p)?;
     match (so.phase.as_str(), result) {
-        ("resolve", "blocked") => {
-            events::append(p, "checkpoint.sync.park", json!({"checkpoint": k, "reason": if note.is_empty() { "the resolver is blocked" } else { note }}))?;
-            p.write_guard()?;
-            Ok(json!({"checkpoint": k, "phase": "parked"}))
-        }
+        ("resolve", "blocked") => sync_release::resolver_blocked(p, &so, note),
+        ("review", "blocked") => sync_release::park(p, k, note),
         ("resolve", "built" | "fixed") => {
             let problems = sync_problems(p, &so)?;
             if !problems.is_empty() {
@@ -973,10 +1002,15 @@ pub fn sync_report(
             if untouched {
                 return finish_sync(p, &pl, &so, None);
             }
-            events::append(p, "checkpoint.sync.built", json!({"checkpoint": k}))?;
+            let mut ev = json!({"checkpoint": k});
+            let extra = sync_extra_files(p, &so);
+            if !extra.is_empty() {
+                ev["extra_files"] = json!(extra);
+            }
+            events::append(p, "checkpoint.sync.built", ev)?;
             p.write_guard()?;
             let skipped = skipped_k_checks(p, &pl, k)?;
-            Ok(json!({"checkpoint": k, "phase": "review", "skipped_checks": skipped}))
+            Ok(json!({"checkpoint": k, "phase": "review", "skipped_checks": skipped, "extra_files": extra}))
         }
         ("review", "findings") => {
             let listed: Vec<Value> = findings

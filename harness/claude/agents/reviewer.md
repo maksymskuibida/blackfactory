@@ -46,6 +46,10 @@ The brief of a checkpoint review holds the whole diff, the brief of every unit o
 
 For the review of a sync: list which checks the sync ran and on which content, with `bf evidence verify --checkpoint <K>` (its `sync:` rows), and confirm they are the brief's sync checks, passing on the current content. A sync check missing or failing there is a finding.
 
+## A run the shell cuts
+
+Run `bf evidence run` as one foreground shell call with the shell's longest time limit (ten minutes). A heavy check may wait for a place and says so. A call the shell cuts left no receipt and freed its place: it is neither a failed check, a blocked report nor an unreachable mark. Run the same command again, which takes a new place at the back of the queue. Report blocked, with that reason, only after two cuts in a row of a run that printed no waiting line, since then the suite itself ran past ten minutes.
+
 ## Worker rules
 
 - Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.

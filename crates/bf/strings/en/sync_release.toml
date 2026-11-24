@@ -1,0 +1,29 @@
+# Strings of the conductor's release of a blocked sync of the main branch (D-117, U-103):
+# `bf checkpoint sync <K> --unblock`, the directive and the waiting line of `bf next`, and the refusals.
+
+"sync_release.park.default" = "the resolver is blocked"
+
+"sync_release.report.blocked.refused" = "report on the sync of {k}"
+"sync_release.report.blocked.because" = "the resolver's blocked report is with the conductor, who judges it"
+"sync_release.report.blocked.do_this.1" = "Stop: `bf next` gives the conductor the directive `judge-sync-block`, and the resolver a new turn if it is released."
+"sync_release.report.blocked.worked_when" = "`bf status` shows the sync back in `resolve`."
+
+"sync_release.unblock.refused" = "judge the blocked sync of {k}"
+"sync_release.unblock.worked" = "`bf next` shows the sync of {k} with its resolver again, waiting, or with the human."
+"sync_release.unblock.none.because" = "no sync of {k} is open"
+"sync_release.unblock.none.step" = "`bf status` shows an open sync when there is one."
+"sync_release.unblock.phase.because" = "the sync of {k} is `{phase}`, not blocked by its resolver's stated reason"
+"sync_release.unblock.phase.step" = "`bf next` shows what the sync waits for."
+"sync_release.unblock.reason.because" = "`--reason` is empty: the conductor's judgment is logged in its own words"
+"sync_release.unblock.reason.step" = "Run `bf checkpoint sync {k} --unblock --judgment fixed|wait --reason \"<your judgment in plain words>\"`."
+"sync_release.unblock.judgment.because" = "`--judgment` is `{judgment}`: it is `fixed` or `wait`"
+"sync_release.unblock.judgment.step" = "Give `--judgment fixed` to put the resolver back to work, or `--judgment wait` to wait for the next landing."
+
+"sync_release.next.note" = "The resolver of the sync of {k} reported blocked: {reason}. Check it against `bf status` and `bf log`. The resolver can be put back to work {left} more time(s) before the human is asked."
+"sync_release.next.cmd.fixed" = "bf checkpoint sync {k} --unblock --judgment fixed --reason \"<why the reason no longer holds>\""
+"sync_release.next.cmd.wait" = "bf checkpoint sync {k} --unblock --judgment wait --reason \"<what it waits for>\""
+"sync_release.next.wait.line" = "{k}: the sync waits for a landing or an approved amendment ({why}); the resolver said: {reason}"
+"sync_release.next.stalled.note" = "The sync of {k} is blocked ({reason}), the conductor judged that it waits ({why}), and no unit is left that could end the wait. The human says whether to try again (`bf checkpoint sync {k} --release --quote \"<their words>\"`) or to go back (`bf checkpoint sync {k} --abort`)."
+
+"sync_release.out.fixed" = "the resolver of the sync of {k} is back at work; release {n} of {limit}"
+"sync_release.out.wait" = "the sync of {k} waits until a unit lands or an amendment is approved"

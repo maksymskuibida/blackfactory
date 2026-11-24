@@ -5041,6 +5041,10 @@ fn is_unblock_call(c: &crate::shellparse::Call) -> bool {
     let plain = crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
     (plain.first().map(|x| x.as_str()) == Some("unit")
         && plain.get(1).map(|x| x.as_str()) == Some("unblock"))
+        // `bf checkpoint sync <K> --unblock` is the conductor's own step too (U-103).
+        || (plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("sync")
+            && c.words.iter().any(|w| w == "--unblock" || w.starts_with("--unblock=")))
         || (plain.iter().any(|x| x == "unit")
             && (c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))))
 }

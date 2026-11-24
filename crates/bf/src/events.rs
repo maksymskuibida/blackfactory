@@ -606,7 +606,8 @@ pub struct SyncRepo {
 pub struct SyncOpen {
     pub checkpoint: String,
     pub repos: Vec<SyncRepo>,
-    /// `resolve` (a builder works), `review` (a reviewer judges) or `parked` (the human decides).
+    /// `resolve` (a builder works), `review` (a reviewer judges), `blocked` (the conductor judges the
+    /// resolver's reason, U-103) or `parked` (the human decides).
     pub phase: String,
     pub rounds: u32,
     pub reason: String,
@@ -618,6 +619,12 @@ pub struct SyncOpen {
     pub floor: u64,
     /// The checkpoint checks that failed on the joined content when the sync opened.
     pub failed: Vec<Value>,
+    /// How many times the conductor put the resolver back to work since the human's last own act (U-103).
+    pub unblocks: u32,
+    /// The seq of the resolver's blocked report that left the sync in `blocked`; 0 while it is not.
+    pub block_seq: u64,
+    /// The seq of the conductor's `wait` judgment of that blocked report; 0 with none.
+    pub wait_seq: u64,
 }
 
 /// A checkpoint fix that was aborted.
@@ -1355,7 +1362,11 @@ fn open_blocking_checkpoints(
 /// end of a hold) or record a sync resolved by hand (the later of its opening and the latest end). Words
 /// written before it cannot decide. The commands and the replay both use it.
 pub fn sync_bound(st: &State, so: &SyncOpen, release: bool) -> u64 {
-    let from = if release { so.park_seq } else { so.open_seq };
+    let from = if release {
+        so.park_seq.max(so.wait_seq)
+    } else {
+        so.open_seq
+    };
     from.max(st.ck_end_seq)
 }
 
@@ -2029,6 +2040,9 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     park_seq: 0,
                     floor: ev["receipt_floor"].as_u64().unwrap_or(0),
                     failed: ev["failed"].as_array().cloned().unwrap_or_default(),
+                    unblocks: 0,
+                    block_seq: 0,
+                    wait_seq: 0,
                 });
             }
             "checkpoint.sync.built" => {
@@ -2052,6 +2066,26 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     o.phase = "parked".into();
                     o.park_seq = seq;
                     o.reason = sv("reason");
+                }
+            }
+            "checkpoint.sync.block" => {
+                if let Some(o) = st.sync_open.as_mut() {
+                    o.phase = "blocked".into();
+                    o.block_seq = seq;
+                    o.wait_seq = 0;
+                    o.reason = sv("reason");
+                }
+            }
+            "checkpoint.sync.unblock" => {
+                if let Some(o) = st.sync_open.as_mut().filter(|o| o.phase == "blocked") {
+                    if sv("judgment") == "fixed" {
+                        o.phase = "resolve".into();
+                        o.unblocks += 1;
+                        o.reason.clear();
+                        o.wait_seq = 0;
+                    } else {
+                        o.wait_seq = seq;
+                    }
                 }
             }
             "checkpoint.sync.release" => {
@@ -2079,6 +2113,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 if let Some(o) = st.sync_open.as_mut() {
                     o.phase = "resolve".into();
                     o.rounds = 0;
+                    o.unblocks = 0;
                     o.reason.clear();
                 }
             }

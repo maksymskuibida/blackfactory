@@ -23,6 +23,10 @@ You check that what was designed is what got built. Your prompt gives a brief pa
 6. Your last message lists every ID with its outcome and one sentence of evidence. Never turn unreachable into met. `bf report` is for units, not checkpoints.
 7. If a `bf` command refuses, follow the numbered steps in the refusal.
 
+## A run the shell cuts
+
+Run `bf evidence run` as one foreground shell call with the shell's longest time limit (ten minutes). A heavy check may wait for a place and says so. A call the shell cuts left no receipt and freed its place: it is neither a failed check, a blocked report nor an unreachable mark. Run the same command again, which takes a new place at the back of the queue. Report blocked, with that reason, only after two cuts in a row of a run that printed no waiting line, since then the suite itself ran past ten minutes.
+
 ## Worker rules
 
 - Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.

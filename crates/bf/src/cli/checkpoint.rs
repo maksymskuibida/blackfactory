@@ -30,6 +30,16 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
     }
     if args.pos.get(1).map(|x| x.as_str()) == Some("sync") {
         let k = args.pos_at(2, "a checkpoint ID")?;
+        if args.has("unblock") {
+            let v = run::sync_unblock(
+                &p,
+                k,
+                args.flag("judgment").unwrap_or(""),
+                args.flag("reason").unwrap_or(""),
+            )?;
+            out(args, &v, || v["line"].as_str().unwrap_or("").to_string());
+            return Ok(());
+        }
         let v = run::checkpoint_sync(
             &p,
             k,
