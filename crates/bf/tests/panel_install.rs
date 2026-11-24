@@ -128,6 +128,8 @@ fn installs_into(h: &Harness, root: &Path, args: &[&str]) {
     let f = panel_dir(root).join("hooks/hooks.json");
     let original = fs::read_to_string(&f).unwrap();
     fs::write(&f, "changed\n").unwrap();
+    // A file the panel no longer has is named and left.
+    fs::write(panel_dir(root).join("old.txt"), "x").unwrap();
     let o3 = install(h, args, root);
     assert_eq!(o3.code, 0, "{}", o3.all());
     assert!(o3
@@ -139,10 +141,7 @@ fn installs_into(h: &Harness, root: &Path, args: &[&str]) {
         "changed\n"
     );
 
-    // A file the panel no longer has is named and left.
-    fs::write(panel_dir(root).join("old.txt"), "x").unwrap();
-    let o4 = install(h, args, root);
-    assert!(o4.stdout.contains("old.txt"), "{}", o4.all());
+    assert!(o3.stdout.contains("old.txt"), "{}", o3.all());
     assert!(panel_dir(root).join("old.txt").is_file());
 }
 
@@ -248,7 +247,9 @@ fn a_change_in_another_copy_of_the_harness_does_not_reach_the_installs() {
 fn the_script_each_test_runs_lies_under_its_temporary_folder() {
     let h = Harness::new();
     assert!(h.script().starts_with(&h.root));
-    assert!(h.script().starts_with(h._tmp.path().canonicalize().unwrap()));
+    assert!(h
+        .script()
+        .starts_with(h._tmp.path().canonicalize().unwrap()));
     assert!(!h.script().starts_with(env!("CARGO_MANIFEST_DIR")));
     assert!(h.root.join("views/templates/page.html").is_file());
 }
@@ -301,4 +302,48 @@ fn the_guard_refuses_writes_into_the_installed_panel_and_allows_reading() {
         json!({"command": "cat .claude/skills/factory-panel/hooks/hooks.json"}),
     );
     assert_ne!(d, "deny", "{why}");
+}
+
+/// D-140: the installer renders all worker-rules files in one python3 call; the installed tree and the
+/// standard output are the same as those of the installer before that change, kept as a fixture copy.
+#[test]
+fn the_batch_render_installs_the_same_tree_and_prints_the_same_output_as_the_per_file_render() {
+    let old = Harness::new();
+    let new = Harness::new();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/install_before_batch_render.sh");
+    fs::copy(&fixture, old.script()).unwrap();
+    let (_t1, p_old) = project();
+    let (_t2, p_new) = project();
+    let o_old = install(&old, &[], &p_old);
+    let o_new = install(&new, &[], &p_new);
+    assert_eq!(o_old.code, 0, "{}", o_old.all());
+    assert_eq!(o_new.code, 0, "{}", o_new.all());
+    let norm = |o: &Out, p: &Path| {
+        // The project and the state folder both lie under the project's parent folder.
+        o.stdout
+            .replace(p.parent().unwrap().to_str().unwrap(), "<tmp>")
+    };
+    assert_eq!(norm(&o_old, &p_old), norm(&o_new, &p_new));
+    assert_eq!(o_old.stderr, o_new.stderr);
+    let root = |p: &Path| p.join(".claude");
+    let (a, b) = (files_below(&root(&p_old)), files_below(&root(&p_new)));
+    assert_eq!(a, b);
+    assert!(a.iter().any(|f| f.starts_with("agents/")), "{a:?}");
+    for f in &a {
+        let mut x = fs::read(root(&p_old).join(f)).unwrap();
+        let mut y = fs::read(root(&p_new).join(f)).unwrap();
+        if f == "settings.json" {
+            // It names the state folder, which lies under each project's own parent folder.
+            let cut = |b: Vec<u8>, p: &Path| {
+                String::from_utf8(b)
+                    .unwrap()
+                    .replace(p.parent().unwrap().to_str().unwrap(), "<tmp>")
+                    .into_bytes()
+            };
+            x = cut(x, &p_old);
+            y = cut(y, &p_new);
+        }
+        assert!(x == y, "installed file differs: {f}");
+    }
 }

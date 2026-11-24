@@ -142,13 +142,19 @@ install_file() {
   changed=1
 }
 
-# render_rules <relative path below harness/claude> <source> <output>: write the source with the bullets of its
-# "## Worker rules" section (or "## Worker rules of the conductor") taken from worker-rules.toml, the rows that name the file.
-# A line of prose in that section is kept after the bullets.
-render_rules() {
-  python3 - "$here/worker-rules.toml" "$1" "$2" "$3" <<'PYR'
+# render_all <output folder> <relative path below harness/claude> <source> ... : write each source to its output file,
+# in one python3 call, with the bullets of its "## Worker rules" section (or "## Worker rules of the conductor") taken
+# from worker-rules.toml, the rows that name the file. A line of prose in that section is kept after the bullets.
+# The output file of a source is named by the relative path with "/" turned into "__" (written into the output folder).
+render_all() {
+  local outdir="$1"
+  shift
+  [ $# -gt 0 ] || return 0
+  python3 - "$here/worker-rules.toml" "$outdir" "$@" <<'PYR'
 import sys, json, re
-data, rel, src, out = sys.argv[1:5]
+data = sys.argv[1]
+outdir = sys.argv[2]
+jobs = [sys.argv[i:i + 2] for i in range(3, len(sys.argv), 2)]
 # worker-rules.toml has a fixed shape: [[rule]] tables of key = "string" and key = ["string", ...] (an array may span
 # lines), plus # comment lines. Read it with the standard library only, so that Python 3.9 works.
 def value(v):
@@ -176,30 +182,32 @@ for raw in open(data).read().split("\n"):
         pending = [k, v]
     else:
         cur[k] = value(v)
-bullets = ["- " + r["text"] for r in rules if rel in r["files"]]
-lines = open(src).read().split("\n")
-res, i = [], 0
-while i < len(lines):
-    line = lines[i]
-    res.append(line)
-    i += 1
-    if line in ("## Worker rules", "## Worker rules of the conductor"):
-        j = i
-        while j < len(lines) and not lines[j].startswith("## "):
-            j += 1
-        prose = [l for l in lines[i:j] if l.strip() and not l.startswith("- ")]
-        res.append("")
-        res.extend(bullets)
-        if prose:
+for rel, src in jobs:
+    out = outdir + "/" + rel.replace("/", "__")
+    bullets = ["- " + r["text"] for r in rules if rel in r["files"]]
+    lines = open(src).read().split("\n")
+    res, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        res.append(line)
+        i += 1
+        if line in ("## Worker rules", "## Worker rules of the conductor"):
+            j = i
+            while j < len(lines) and not lines[j].startswith("## "):
+                j += 1
+            prose = [l for l in lines[i:j] if l.strip() and not l.startswith("- ")]
             res.append("")
-            res.extend(prose)
-        res.append("")
-        i = j
-text = "\n".join(res)
-if not text.endswith("\n"):
-    text += "\n"
-text = text.replace("\n\n\n", "\n\n")
-open(out, "w").write(text)
+            res.extend(bullets)
+            if prose:
+                res.append("")
+                res.extend(prose)
+            res.append("")
+            i = j
+    text = "\n".join(res)
+    if not text.endswith("\n"):
+        text += "\n"
+    text = text.replace("\n\n\n", "\n\n")
+    open(out, "w").write(text)
 PYR
 }
 
@@ -207,6 +215,14 @@ rendered="$(mktemp -d)"
 trap 'rm -rf "$rendered"' EXIT
 
 echo "Installing into $project ($mode)"
+# Render every file that carries worker rules (the skill and the role files) in one python3 call.
+render_args=()
+[ -f "$here/skills/factory/SKILL.md" ] && render_args+=("skills/factory/SKILL.md" "$here/skills/factory/SKILL.md")
+for a in "$here"/agents/*.md; do
+  [ -f "$a" ] || break
+  render_args+=("agents/$(basename "$a")" "$a")
+done
+render_all "$rendered" ${render_args[@]+"${render_args[@]}"}
 # The conductor's skill and the reference files beside it: every .md file of skills/factory/.
 for s in "$here"/skills/factory/*.md; do
   if [ ! -f "$s" ]; then
@@ -215,8 +231,7 @@ for s in "$here"/skills/factory/*.md; do
     break
   fi
   if [ "$(basename "$s")" = "SKILL.md" ]; then
-    render_rules "skills/factory/SKILL.md" "$s" "$rendered/SKILL.md"
-    install_file "$rendered/SKILL.md" "$project/.claude/skills/factory/SKILL.md"
+    install_file "$rendered/skills__factory__SKILL.md" "$project/.claude/skills/factory/SKILL.md"
   else
     install_file "$s" "$project/.claude/skills/factory/$(basename "$s")"
   fi
@@ -231,8 +246,7 @@ for a in "$here"/agents/*.md; do
   fi
   agent_names="$agent_names$(basename "$a")
 "
-  render_rules "agents/$(basename "$a")" "$a" "$rendered/$(basename "$a")"
-  install_file "$rendered/$(basename "$a")" "$project/.claude/agents/$(basename "$a")"
+  install_file "$rendered/agents__$(basename "$a")" "$project/.claude/agents/$(basename "$a")"
 done
 # A role file the project holds that the harness no longer has (for example one that was renamed) is named and left.
 if [ -d "$project/.claude/agents" ]; then
