@@ -183,8 +183,410 @@ pub fn require_sandbox_from_env(fx: &Fx) {
     );
 }
 
+// ---------------------------------------------------------------------------------------------------
+// The template store (D-140): `Fx::new`, `Fx::with_checks`, `Fx::workspace` and their forms copy a
+// project built once per key by a real `git init` and `bf init`, instead of running them every time.
+
+/// The text of this file, hashed from memory into every template key.
+const COMMON_TEXT: &str = include_str!("mod.rs");
+
+/// The stand-in for the transcript root in the policy text a key is taken from: the real root names
+/// the build folder, which differs for every build.
+const TR_PLACEHOLDER: &str = "@TRANSCRIPT_ROOT@";
+
+fn sha_hex(parts: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update((p.len() as u64).to_le_bytes());
+        h.update(p);
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The `bf` binary's identity: its path, size, modification time and inode, read with one `stat`.
+/// The binary itself is never read.
+pub fn binary_identity() -> String {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(bin()).expect("stat the bf binary");
+    format!(
+        "{}|{}|{}.{}|{}",
+        bin(),
+        m.len(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ino()
+    )
+}
+
+/// What a template is made by: the constructor's kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// `Fx::new`: named checks off.
+    New,
+    /// `Fx::with_checks`: the catalogue's defaults.
+    WithChecks,
+    /// `Fx::workspace`: a workspace pointing at these sibling repositories, named checks off.
+    Workspace(Vec<String>),
+}
+
+impl Kind {
+    fn name(&self) -> String {
+        match self {
+            Kind::New => "new".into(),
+            Kind::WithChecks => "with_checks".into(),
+            Kind::Workspace(r) => format!("workspace:{}", r.join(",")),
+        }
+    }
+    fn top(&self) -> &'static str {
+        match self {
+            Kind::Workspace(_) => "ws",
+            _ => "proj",
+        }
+    }
+    /// The real build: today's `git init`, `bf init` and the constructor's own steps.
+    fn build_real(&self, sw: Switch) -> Fx {
+        let sandbox = sw == Switch::All;
+        match self {
+            Kind::New => {
+                let fx = Fx::build_with(true, &[], sandbox);
+                fx.checks_all_off();
+                fx
+            }
+            Kind::WithChecks => Fx::build_with(true, &[], sandbox),
+            Kind::Workspace(r) => {
+                let repos: Vec<&str> = r.iter().map(|s| s.as_str()).collect();
+                let fx = Fx::build_with(true, &repos, sandbox);
+                fx.checks_all_off();
+                fx
+            }
+        }
+    }
+}
+
+/// An open lock file held with `flock`; dropping it releases the lock.
+struct Flock(fs::File);
+
+impl Flock {
+    fn take(path: &Path, exclusive: bool) -> Flock {
+        use std::os::unix::io::AsRawFd;
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        let op = if exclusive {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_SH
+        };
+        loop {
+            // SAFETY: the descriptor is open for the life of `f`.
+            if unsafe { libc::flock(f.as_raw_fd(), op) } == 0 {
+                break;
+            }
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                panic!("flock {}: {e}", path.display());
+            }
+        }
+        Flock(f)
+    }
+}
+
+impl Drop for Flock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: the descriptor is still open.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+type Pause = Option<Box<dyn Fn()>>;
+
+thread_local! {
+    static COPY_PAUSE: std::cell::RefCell<Pause> = const { std::cell::RefCell::new(None) };
+    static BUILD_PAUSE: std::cell::RefCell<Pause> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test only: a pause this thread runs inside each copy out of the store, while the copy holds the
+/// store lock.
+pub fn set_copy_pause(p: Pause) {
+    COPY_PAUSE.with(|c| *c.borrow_mut() = p);
+}
+
+/// Test only: a pause this thread runs inside each template build, after the real build and before
+/// the template is put into the store.
+pub fn set_build_pause(p: Pause) {
+    BUILD_PAUSE.with(|c| *c.borrow_mut() = p);
+}
+
+fn run_pause(which: &'static std::thread::LocalKey<std::cell::RefCell<Pause>>) {
+    which.with(|c| {
+        if let Some(f) = c.borrow().as_ref() {
+            f()
+        }
+    });
+}
+
+/// Copy a folder tree, keeping modes and links.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir(to).unwrap_or_else(|e| panic!("create {}: {e}", to.display()));
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let ft = e.file_type().unwrap();
+        let dst = to.join(e.file_name());
+        if ft.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(e.path()).unwrap(), &dst).unwrap();
+        } else if ft.is_dir() {
+            copy_tree(&e.path(), &dst);
+        } else {
+            fs::copy(e.path(), &dst)
+                .unwrap_or_else(|err| panic!("copy {}: {err}", e.path().display()));
+        }
+    }
+    fs::set_permissions(to, fs::metadata(from).unwrap().permissions()).unwrap();
+}
+
+/// A store of templates: a folder and the binary identity its keys are made for.
+pub struct TemplateStore {
+    pub dir: PathBuf,
+    pub ident: String,
+}
+
+impl TemplateStore {
+    /// The store every fixture uses: `target/tmp/bf-fixture-templates`, for the current binary.
+    pub fn shared() -> TemplateStore {
+        TemplateStore {
+            dir: Path::new(env!("CARGO_TARGET_TMPDIR")).join("bf-fixture-templates"),
+            ident: binary_identity(),
+        }
+    }
+
+    /// A store in another folder, for a given binary identity (the store's own tests).
+    pub fn at(dir: &Path, ident: &str) -> TemplateStore {
+        TemplateStore {
+            dir: dir.to_path_buf(),
+            ident: ident.to_string(),
+        }
+    }
+
+    fn ident_prefix(&self) -> String {
+        sha_hex(&[self.ident.as_bytes()])[..12].to_string()
+    }
+
+    /// The key of a template: the binary identity, the text of this file, the constructor's kind and
+    /// its policy text (the sandbox setting included). The name starts with the identity's own part.
+    pub fn key(&self, kind: &Kind, sw: Switch) -> String {
+        let pol = fixture_policy(true, sw == Switch::All, TR_PLACEHOLDER);
+        let k = sha_hex(&[
+            self.ident.as_bytes(),
+            COMMON_TEXT.as_bytes(),
+            kind.name().as_bytes(),
+            pol.as_bytes(),
+        ]);
+        format!("{}-{}", self.ident_prefix(), &k[..24])
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.dir.join("store.lock")
+    }
+
+    /// Copy the template of the key out of the store into a new temporary folder, holding the store
+    /// lock shared. None when the store does not hold the key.
+    fn try_copy(&self, key: &str) -> Option<TempDir> {
+        let _l = Flock::take(&self.lock_path(), false);
+        let tpl = self.dir.join(key);
+        if !tpl.is_dir() {
+            return None;
+        }
+        let tmp = TempDir::new().unwrap();
+        let dst = fs::canonicalize(tmp.path()).unwrap();
+        for e in fs::read_dir(&tpl).unwrap() {
+            let e = e.unwrap();
+            let p = e.path();
+            if e.file_type().unwrap().is_dir() {
+                copy_tree(&p, &dst.join(e.file_name()));
+            } else {
+                fs::copy(&p, dst.join(e.file_name())).unwrap();
+            }
+        }
+        run_pause(&COPY_PAUSE);
+        Some(tmp)
+    }
+
+    /// Build the key's template; the caller holds the key's build lock.
+    fn build(&self, key: &str, kind: &Kind, sw: Switch) {
+        // A temporary folder left by a builder that died.
+        let partial_prefix = format!("{key}.partial-");
+        for e in fs::read_dir(&self.dir).unwrap().flatten() {
+            if e.file_name().to_string_lossy().starts_with(&partial_prefix) {
+                let _ = fs::remove_dir_all(e.path());
+            }
+        }
+        let fx = kind.build_real(sw);
+        run_pause(&BUILD_PAUSE);
+        let Fx { _tmp, scratch, .. } = fx;
+        let build_dir = fs::canonicalize(_tmp.path()).unwrap();
+        let partial = self
+            .dir
+            .join(format!("{partial_prefix}{}", std::process::id()));
+        copy_tree(&build_dir, &partial);
+        _tmp.close().unwrap();
+        drop(scratch);
+        assert!(!build_dir.exists(), "the build folder is still there");
+        {
+            let _x = Flock::take(&self.lock_path(), true);
+            fs::rename(&partial, self.dir.join(key)).unwrap();
+        }
+        self.remove_other_binaries();
+    }
+
+    /// Remove the templates of another binary identity, each with the store lock held exclusive.
+    fn remove_other_binaries(&self) {
+        let mine = format!("{}-", self.ident_prefix());
+        for e in fs::read_dir(&self.dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.contains(".partial-")
+                || name.ends_with(".lock")
+                || name.starts_with(&mine)
+                || !e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            {
+                continue;
+            }
+            let _x = Flock::take(&self.lock_path(), true);
+            let _ = fs::remove_dir_all(e.path());
+        }
+    }
+
+    /// A fixture copied from the key's template, built first if the store does not hold it. Also
+    /// gives the build folder the template was made in (it no longer exists).
+    pub fn fixture(&self, kind: &Kind, sw: Switch) -> (Fx, PathBuf) {
+        fs::create_dir_all(&self.dir).unwrap();
+        let key = self.key(kind, sw);
+        let tmp = loop {
+            if let Some(t) = self.try_copy(&key) {
+                break t;
+            }
+            let _b = Flock::take(&self.dir.join(format!("{key}.build.lock")), true);
+            if self.dir.join(&key).is_dir() {
+                continue;
+            }
+            self.build(&key, kind, sw);
+        };
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let fx = Fx {
+            _tmp: tmp,
+            scratch: TempDir::new().unwrap(),
+            root: base.join(kind.top()),
+            state_base: base.join("state"),
+        };
+        let old = fx.adopt_copy();
+        (fx, old)
+    }
+}
+
 impl Fx {
-    /// A fresh git repository with one commit and `bf init` done.
+    /// The one step a copy needs: its policy names the build folder's transcript root, so the policy
+    /// is changed to this copy's and accepted through the engine with the human's words, and the
+    /// commit of `bf init` takes it. Returns the build folder.
+    fn adopt_copy(&self) -> PathBuf {
+        let pol = fs::read_to_string(self.root.join("factory/policy.toml")).unwrap();
+        let old_line = pol
+            .lines()
+            .find(|l| l.starts_with("transcript_root = "))
+            .expect("the template's policy names no transcript root")
+            .to_string();
+        let old_tr: String = toml::from_str::<toml::Table>(&old_line).unwrap()["transcript_root"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let build_dir = Path::new(&old_tr).parent().unwrap().to_path_buf();
+        let new_line = format!(
+            "transcript_root = {:?}",
+            self.transcript_root().to_string_lossy()
+        );
+        // The files the acceptance changes that were clean in the template (the policy, and the log
+        // where the template had committed it) join the commit of `bf init`, so the copy's tree is
+        // as clean or as changed as a real init's.
+        let before = dirty_paths(&self.root);
+        self.set_policy(&old_line, &new_line);
+        let mut add: Vec<String> = vec!["factory/policy.toml".into()];
+        add.extend(
+            dirty_paths(&self.root)
+                .into_iter()
+                .filter(|p| !before.contains(p) && p != "factory/policy.toml"),
+        );
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(add.iter().map(|s| s.as_str()));
+        git(&self.root, &args);
+        git(&self.root, &["commit", "-q", "--amend", "--no-edit"]);
+        build_dir
+    }
+}
+
+/// The paths `git status` names as changed or new in a checkout.
+fn dirty_paths(dir: &Path) -> Vec<String> {
+    let o = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git status failed");
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.len() > 3)
+        .map(|l| l[3..].to_string())
+        .collect()
+}
+
+/// The fixture's policy: a fixed PATH, no role tokens when `tokens_off` (the token tests turn them
+/// on), the sandbox as the switch says, and the given transcript root.
+fn fixture_policy(tokens_off: bool, sandbox: bool, tr_root: &str) -> String {
+    let git_bin = [
+        "/opt/homebrew/bin/git",
+        "/usr/local/bin/git",
+        "/usr/bin/git",
+    ]
+    .iter()
+    .find(|g| Path::new(g).exists())
+    .unwrap_or(&"/usr/bin/git");
+    bf::store::default_policy_text("/usr/bin:/bin:/usr/sbin:/sbin", git_bin)
+        .replace(
+            "tokens = true",
+            if tokens_off {
+                "tokens = false"
+            } else {
+                "tokens = true"
+            },
+        )
+        .replace(
+            "in_order = true",
+            if tokens_off {
+                "in_order = false"
+            } else {
+                "in_order = true"
+            },
+        )
+        .replace(
+            "sandbox = true",
+            if sandbox {
+                "sandbox = true"
+            } else {
+                "sandbox = false"
+            },
+        )
+        .replace(
+            "transcript_root = \"~/.claude/projects\"",
+            &format!("transcript_root = {tr_root:?}"),
+        )
+}
+
+impl Fx {
+    /// A fresh git repository with one commit and `bf init` done, copied from a template (D-140).
     /// Every named check is switched off for the project: these fixtures exercise the engine's other
     /// rules. `with_checks` keeps the defaults. The sandbox follows `BF_TEST_SANDBOX` (off unless `all`).
     pub fn new() -> Fx {
@@ -193,9 +595,38 @@ impl Fx {
 
     /// The same as `new`, with the sandbox switch given for this fixture instead of the environment's.
     pub fn new_with(sw: Switch) -> Fx {
-        let fx = Fx::build_with(true, &[], sw == Switch::All);
-        fx.checks_all_off();
-        fx
+        TemplateStore::shared().fixture(&Kind::New, sw).0
+    }
+
+    /// The same as `new`, made by a real `git init` and `bf init` in this test: for the tests about
+    /// init, project ids, the key, the policy's acceptance and the first events of the log.
+    pub fn new_real() -> Fx {
+        Fx::new_real_with(sandbox_switch())
+    }
+
+    /// `new_real` with the sandbox switch given for this fixture.
+    pub fn new_real_with(sw: Switch) -> Fx {
+        Kind::New.build_real(sw)
+    }
+
+    /// `with_checks` made by a real `bf init` in this test.
+    pub fn with_checks_real() -> Fx {
+        Kind::WithChecks.build_real(sandbox_switch())
+    }
+
+    /// `with_checks_real` with the sandbox switch given for this fixture.
+    pub fn with_checks_real_with(sw: Switch) -> Fx {
+        Kind::WithChecks.build_real(sw)
+    }
+
+    /// `workspace` made by a real `bf init --workspace` in this test.
+    pub fn workspace_real(repos: &[&str]) -> Fx {
+        Fx::workspace_real_with(repos, sandbox_switch())
+    }
+
+    /// `workspace_real` with the sandbox switch given for this fixture.
+    pub fn workspace_real_with(repos: &[&str], sw: Switch) -> Fx {
+        Kind::Workspace(repos.iter().map(|s| s.to_string()).collect()).build_real(sw)
     }
 
     /// The same as `new`, with the sandbox always on: for the tests that exercise it.
@@ -211,7 +642,7 @@ impl Fx {
 
     /// `with_checks` with the sandbox switch given for this fixture.
     pub fn with_checks_with(sw: Switch) -> Fx {
-        Fx::build_with(true, &[], sw == Switch::All)
+        TemplateStore::shared().fixture(&Kind::WithChecks, sw).0
     }
 
     /// `with_checks` with the sandbox always on.
@@ -243,9 +674,8 @@ impl Fx {
 
     /// `workspace` with the sandbox switch given for this fixture.
     pub fn workspace_with(repos: &[&str], sw: Switch) -> Fx {
-        let fx = Fx::build_with(true, repos, sw == Switch::All);
-        fx.checks_all_off();
-        fx
+        let kind = Kind::Workspace(repos.iter().map(|s| s.to_string()).collect());
+        TemplateStore::shared().fixture(&kind, sw).0
     }
 
     /// `workspace` with the sandbox always on.
@@ -284,45 +714,8 @@ impl Fx {
         let state_base = root.parent().unwrap().join("state");
         let tr_root = root.parent().unwrap().join("transcripts");
         fs::create_dir_all(&tr_root).unwrap();
-        // The fixture's policy: a fixed PATH, no role tokens (the token tests turn them on), the
-        // sandbox as the switch says, and a transcript root inside the temporary folder. `bf init` keeps a policy that is already there.
-        let git_bin = [
-            "/opt/homebrew/bin/git",
-            "/usr/local/bin/git",
-            "/usr/bin/git",
-        ]
-        .iter()
-        .find(|g| Path::new(g).exists())
-        .unwrap_or(&"/usr/bin/git");
-        let pol = bf::store::default_policy_text("/usr/bin:/bin:/usr/sbin:/sbin", git_bin)
-            .replace(
-                "tokens = true",
-                if tokens_off {
-                    "tokens = false"
-                } else {
-                    "tokens = true"
-                },
-            )
-            .replace(
-                "in_order = true",
-                if tokens_off {
-                    "in_order = false"
-                } else {
-                    "in_order = true"
-                },
-            )
-            .replace(
-                "sandbox = true",
-                if sandbox {
-                    "sandbox = true"
-                } else {
-                    "sandbox = false"
-                },
-            )
-            .replace(
-                "transcript_root = \"~/.claude/projects\"",
-                &format!("transcript_root = {:?}", tr_root.to_string_lossy()),
-            );
+        // A transcript root inside the temporary folder. `bf init` keeps a policy that is already there.
+        let pol = fixture_policy(tokens_off, sandbox, &tr_root.to_string_lossy());
         fs::create_dir_all(root.join("factory")).unwrap();
         fs::write(root.join("factory/policy.toml"), pol).unwrap();
         let fx = Fx {

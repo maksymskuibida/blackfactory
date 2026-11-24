@@ -296,7 +296,7 @@ fn the_hook_payload_must_be_complete_and_the_transcript_is_noted() {
 
 #[test]
 fn the_key_is_not_in_the_project_tree_and_the_state_folder_is_off_limits() {
-    let fx = Fx::sandboxed();
+    let fx = Fx::new_real_with(Switch::All);
     fx.tiny();
     assert!(
         !fx.root.join(".bf/key").exists(),

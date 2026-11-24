@@ -180,7 +180,7 @@ fn t8_the_engine_has_no_network_code() {
 
 #[test]
 fn init_is_idempotent_and_ignores_the_derived_folder() {
-    let fx = Fx::new();
+    let fx = Fx::new_real();
     let gi = fs::read_to_string(fx.root.join(".gitignore")).unwrap();
     assert_eq!(gi.lines().filter(|l| l.trim() == ".bf/").count(), 1);
     let o = fx.must(&["init"]);
