@@ -4,9 +4,9 @@
 mod common;
 use bf::plan::targets::{read_command, Read};
 use common::*;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
-use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -33,7 +33,10 @@ fn assert_plan_ok(o: &Out, ctx: &str) {
     let all = o.all();
     assert_eq!(o.code, 0, "{ctx}: {all}");
     assert!(!all.contains("refused:"), "{ctx}: {all}");
-    assert!(all.lines().any(|l| l.starts_with("plan ok:")), "{ctx}: {all}");
+    assert!(
+        all.lines().any(|l| l.starts_with("plan ok:")),
+        "{ctx}: {all}"
+    );
 }
 
 fn check_with(command: &str) -> String {
@@ -49,7 +52,14 @@ fn fresh(command: &str) -> String {
     let tmp = tempfile::TempDir::new().unwrap();
     let f = tmp.path().join("check.toml");
     fs::write(&f, check_with(command)).unwrap();
-    fx.must(&["record", "put", "check", "--file", f.to_str().unwrap(), "--replace"]);
+    fx.must(&[
+        "record",
+        "put",
+        "check",
+        "--file",
+        f.to_str().unwrap(),
+        "--replace",
+    ]);
     fx.bf(&["plan", "check"]).all()
 }
 
@@ -83,15 +93,26 @@ fn plan_targets_a_missing_test_target_is_a_problem() {
 
 #[test]
 fn plan_targets_a_listed_target_and_a_real_filter_pass() {
+    // The judging of a command against the package is the library's; the cases of a missing target and of a
+    // filter that matches nothing still run `bf plan check` end to end.
+    let tmp = tempfile::TempDir::new().unwrap();
+    package(tmp.path());
     for c in [
         "cargo test --test all",
         "cargo nextest run --package=demo account_home::",
         "cargo nextest run --package=demo inner_part::",
         "cargo test --lib",
     ] {
-        let out = fresh(c);
-        assert!(!out.contains("problem(s)"), "{c}: {out}");
+        let check = json!({"id": "X-1", "command": c});
+        let found = bf::plan::targets::misses(tmp.path(), &check, &[]);
+        assert!(found.is_empty(), "{c}: {found:?}");
     }
+    // A negative control: the package was read, so a target it does not list is a miss.
+    let check = json!({"id": "X-1", "command": "cargo test --test nothing_here"});
+    assert!(
+        !bf::plan::targets::misses(tmp.path(), &check, &[]).is_empty(),
+        "the package was not found in the folder"
+    );
 }
 
 #[test]
@@ -103,10 +124,8 @@ fn plan_targets_a_filter_that_matches_nothing_is_a_problem() {
 
 #[test]
 fn plan_targets_another_program_is_not_judged() {
-    let out = fresh("test -f --test nothing_here::");
-    assert!(!out.contains("problem(s)"), "{out}");
+    assert!(read_command(&words("test -f --test nothing_here::")).is_none());
 }
-
 
 struct Old {
     _tmp: tempfile::TempDir,
@@ -237,7 +256,11 @@ fn plan_targets_a_check_of_an_older_plan_is_a_note() {
     assert!(rec.contains("test -f src/hello.txt"), "{rec}");
     fs::write(
         &file,
-        rec.replacen("test -f src/hello.txt", "cargo test --test harness_worker_rules", 1),
+        rec.replacen(
+            "test -f src/hello.txt",
+            "cargo test --test harness_worker_rules",
+            1,
+        ),
     )
     .unwrap();
     let out = p.run(&["plan", "check"]).1;

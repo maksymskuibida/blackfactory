@@ -26,28 +26,69 @@ fn samples() -> Vec<PathBuf> {
     v
 }
 
-/// Draw one sample through the template; the drawn tree as JSON.
-fn draw(sample: &Path) -> Value {
+/// Runs `render_dom.js` once per sample inside one node process, each in its own function scope, and
+/// prints one result per sample: its tree, or the error that stopped it.
+const DRIVER: &str = r#"
+const fs = require('fs');
+const [tpl, dom, ...samples] = process.argv.slice(1);
+const src = fs.readFileSync(dom, 'utf8').replace(/^#!.*\n/, '');
+const results = samples.map(sample => {
+  let out = '', err = '';
+  const fake = {
+    argv: ['node', dom, tpl, sample],
+    stdout: { write: s => { out += s; } },
+    exit: c => { throw new Error('exit ' + c + ' ' + err); },
+  };
+  const con = Object.assign(Object.create(console), { error: (...a) => { err += a.join(' '); } });
+  try {
+    new Function('require', 'process', 'console', src)(require, fake, con);
+    return { sample, result: JSON.parse(out) };
+  } catch (e) {
+    return { sample, error: String(e && e.stack || e) + ' ' + err };
+  }
+});
+process.stdout.write(JSON.stringify(results));
+"#;
+
+/// Draw samples through the template with one run of node; each sample's drawn tree as JSON, in order.
+/// A sample that did not draw fails with its own name.
+fn draw_many(samples: &[PathBuf]) -> Vec<Value> {
     let out = Command::new("node")
-        .arg(views().join("dev/render_dom.js"))
+        .arg("-e")
+        .arg(DRIVER)
         .arg(views().join("templates/page.html"))
-        .arg(sample)
+        .arg(views().join("dev/render_dom.js"))
+        .args(samples)
         .output()
         .expect("node is needed to draw the samples through the template");
     assert!(
         out.status.success(),
-        "{}: the template did not draw: {}",
-        sample.display(),
+        "the samples were not drawn: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(
-        v["errors"].as_array().unwrap().is_empty(),
-        "{}: script errors {}",
-        sample.display(),
-        v["errors"]
-    );
-    v
+    let all: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(all.len(), samples.len());
+    all.into_iter()
+        .zip(samples)
+        .map(|(r, sample)| {
+            if let Some(e) = r["error"].as_str() {
+                panic!("{}: the template did not draw: {e}", sample.display());
+            }
+            let v = r["result"].clone();
+            assert!(
+                v["errors"].as_array().unwrap().is_empty(),
+                "{}: script errors {}",
+                sample.display(),
+                v["errors"]
+            );
+            v
+        })
+        .collect()
+}
+
+/// Draw one sample through the template; the drawn tree as JSON.
+fn draw(sample: &Path) -> Value {
+    draw_many(&[sample.to_path_buf()]).remove(0)
 }
 
 // ---- the tree
@@ -392,9 +433,10 @@ fn every_sample_is_drawn_and_passes_the_accessibility_standard() {
     let t = tokens();
     let rules = rules();
     let mut total_contrast = 0;
-    for s in samples() {
+    let all_samples = samples();
+    let drawn = draw_many(&all_samples);
+    for (s, v) in all_samples.iter().zip(drawn) {
         let name = s.file_name().unwrap().to_string_lossy().to_string();
-        let v = draw(&s);
         let root = &v["tree"];
         let all = elements(root);
 
