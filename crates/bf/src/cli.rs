@@ -251,8 +251,59 @@ fn seam_stats() {
     let _ = fs::write(path, v.to_string());
 }
 
+/// The briefs folder's files with their modified time and size, before a command runs.
+type BriefSnap = HashMap<PathBuf, (Option<std::time::SystemTime>, u64)>;
+
+fn brief_snapshot(dir: &Path) -> BriefSnap {
+    let mut m = HashMap::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            if let Ok(md) = e.metadata() {
+                m.insert(path, (md.modified().ok(), md.len()));
+            }
+        }
+    }
+    m
+}
+
+/// Runs a command; while the run's human-absent flag is on after it, each brief the command wrote
+/// carries the engine's instruction (R-74). The hook commands are left alone.
+fn dispatch_stamped(args: &Args) -> R<()> {
+    let cmd = args.pos.first().map(|x| x.as_str()).unwrap_or("");
+    if matches!(
+        cmd,
+        "" | "guard" | "human-turn" | "init" | "help" | "version"
+    ) {
+        return dispatch(args);
+    }
+    let Ok(p) = Project::discover(&start_dir(args)) else {
+        return dispatch(args);
+    };
+    let dir = p.briefs_dir();
+    let before = brief_snapshot(&dir);
+    let r = dispatch(args);
+    let after = brief_snapshot(&dir);
+    let wrote: Vec<PathBuf> = after
+        .iter()
+        .filter(|(k, v)| before.get(*k) != Some(v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    if !wrote.is_empty() {
+        if let Ok(st) = events::replay(&p) {
+            if crate::absent::is_on(&st) {
+                let _ = crate::absent::stamp_briefs(&wrote);
+            }
+        }
+    }
+    r
+}
+
 fn run_command(args: &Args, json_mode: bool) -> i32 {
-    match dispatch(args) {
+    match dispatch_stamped(args) {
         Ok(()) => 0,
         Err(Fail::Refused(r)) => {
             // The hook commands must never block the human's prompt with exit 2.

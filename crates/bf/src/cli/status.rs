@@ -32,6 +32,30 @@ fn status_text(v: &Value) -> String {
             "BROKEN"
         }
     );
+    if v["absent"]["on"] == true {
+        let a = &v["absent"];
+        let list = a["returning"]
+            .as_array()
+            .map(|x| {
+                x.iter()
+                    .filter_map(|y| y.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|x| !x.is_empty())
+            .unwrap_or_else(|| crate::strings::t("absent_briefs.status.none", &[]));
+        t.push_str(&format!(
+            "{}\n",
+            crate::strings::t(
+                "absent_briefs.status.line",
+                &[
+                    ("since", a["since"].as_str().unwrap_or("")),
+                    ("session", a["session"].as_str().unwrap_or("")),
+                    ("sessions", &list),
+                ]
+            )
+        ));
+    }
     if let Some(n) = v["main"]["note"].as_str().filter(|n| !n.is_empty()) {
         t.push_str(&format!("note: {n}\n"));
     }

@@ -1,0 +1,19 @@
+# The human-absent flag in the briefs and where the conductor and the human look (R-74, R-72, D-97, U-71).
+
+"absent_briefs.begin" = "<!-- bf:human-absent:begin -->"
+"absent_briefs.end" = "<!-- bf:human-absent:end -->"
+"absent_briefs.title" = "The human is absent (engine instruction)"
+"absent_briefs.instruction" = "Work up to the next human stop without waiting for anyone.\nAsk nothing that waits for an answer.\nTake the path that needs no decision of the human; if there is none, record the question with `bf ask`, report blocked and stop, so that other work goes on.\nChange no design record and propose no design change; note it for the human's return.\nAsk for no access, permission or sign-in."
+
+"absent_briefs.next.waits_at" = "only steps of the human are left; the run waits at {step}"
+"absent_briefs.next.line" = "human absent since {since} (set in session {session}); {instruction}"
+"absent_briefs.next.returning" = "the flag is returning in: {sessions}"
+"absent_briefs.next.waits" = "(waits for the human)"
+
+"absent_briefs.status.line" = "human absent: since {since}, set in session {session}; returning in: {sessions}"
+"absent_briefs.status.none" = "no session"
+
+"absent_briefs.view.row_title" = "Human-absent flag"
+"absent_briefs.view.row_body" = "On since {since}, set in session {session}; returning in: {sessions}."
+"absent_briefs.view.hint" = "Shown while the flag is on"
+"absent_briefs.view.judged_mark" = "judged while the human was absent"

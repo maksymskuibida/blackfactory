@@ -359,6 +359,7 @@ pub fn on_turn(p: &Project, payload: &Value, recorded: bool, turn_ev: &Value) ->
                 json!({"session": session, "by": "message", "turn": tseq}),
             )?;
             wrote = true;
+            clear_briefs(p)?;
             say.human.push(t("absent.release.human", &[]));
             say.conductor.push(t("absent.release.conductor", &[]));
         } else {
@@ -369,6 +370,64 @@ pub fn on_turn(p: &Project, payload: &Value, recorded: bool, turn_ev: &Value) ->
         p.write_guard()?;
     }
     Ok(say)
+}
+
+/// The engine's instruction for the briefs, as the marked block that goes on top of a brief.
+pub fn brief_block() -> String {
+    format!(
+        "{}\n## {}\n\n{}\n{}\n\n",
+        t("absent_briefs.begin", &[]),
+        t("absent_briefs.title", &[]),
+        t("absent_briefs.instruction", &[]),
+        t("absent_briefs.end", &[])
+    )
+}
+
+/// The instruction alone, for `bf next`.
+pub fn instruction() -> String {
+    t("absent_briefs.instruction", &[])
+}
+
+/// Puts the block at the top of each named brief that lacks it (R-74). Nothing else of a brief changes.
+pub fn stamp_briefs(paths: &[std::path::PathBuf]) -> R<()> {
+    let begin = t("absent_briefs.begin", &[]);
+    let block = brief_block();
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if text.contains(&begin) {
+            continue;
+        }
+        crate::util::atomic_write(path, format!("{block}{text}").as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Takes the block out of every brief of the run: the brief is as it was written.
+pub fn clear_briefs(p: &Project) -> R<()> {
+    let begin = t("absent_briefs.begin", &[]);
+    let end = t("absent_briefs.end", &[]);
+    let Ok(rd) = std::fs::read_dir(p.briefs_dir()) else {
+        return Ok(());
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !text.starts_with(&begin) {
+            continue;
+        }
+        let Some(at) = text.find(&end) else { continue };
+        let rest = &text[at + end.len()..];
+        let rest = rest.strip_prefix("\n\n").unwrap_or(rest);
+        crate::util::atomic_write(&path, rest.as_bytes())?;
+    }
+    Ok(())
 }
 
 /// The flag as data, for `bf absent status`.

@@ -711,6 +711,14 @@ fn judged_section(st: &State) -> Value {
                 &[("reasons", &reasons)],
             )));
         }
+        let title = if st.judged_absent.contains(&a.id) {
+            format!(
+                "{title} ({})",
+                crate::strings::t("absent_briefs.view.judged_mark", &[])
+            )
+        } else {
+            title
+        };
         rows.push(json!({"id": a.id, "title": title, "needs_you": true, "body": body}));
     }
     json!({"id": "judged-repairs", "title": crate::strings::t("pages.k2.judged.title", &[]),
@@ -1306,6 +1314,25 @@ fn run_view(p: &Project, st: &State) -> R<Value> {
     ];
     if let Some(r) = run {
         secs.push(json!({"id": "checks-run", "title": format!("Checks: {}", r.id), "hint": "The choice in force for this run", "open": false, "blocks": [], "rows": check_rows(&r.checks_off)}));
+    }
+    if st.absent.on {
+        let list = st
+            .absent
+            .returning
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let list = if list.is_empty() {
+            crate::strings::t("absent_briefs.status.none", &[])
+        } else {
+            list
+        };
+        secs.push(json!({"id": "human-absent", "title": crate::strings::t("absent_briefs.view.row_title", &[]),
+            "hint": crate::strings::t("absent_briefs.view.hint", &[]), "open": true, "blocks": [],
+            "rows": [{"id": "human-absent-flag", "title": crate::strings::t("absent_briefs.view.row_title", &[]), "needs_you": false,
+                "body": [text(&crate::strings::t("absent_briefs.view.row_body",
+                    &[("since", &st.absent.since), ("session", &st.absent.session), ("sessions", &list)]))]}]}));
     }
     secs.push(judged_section(st));
     secs.push(policy_section(p));

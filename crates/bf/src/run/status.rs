@@ -129,6 +129,7 @@ pub fn status(p: &Project) -> R<Value> {
             "next": "bf next gives the directive",
         })),
         "pages": pages_json(&st),
+        "absent": crate::absent::status_json(&st),
         "human_turns_note": st.human_turns_note().unwrap_or_default(),
         "skipped_gates": st.skipped.iter().map(|(k, q, _)| json!({"gate": k, "quote": q})).collect::<Vec<_>>(),
         "policy": format!("{:?}", p.policy_state),
