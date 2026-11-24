@@ -19,7 +19,7 @@ fn named_by(entry: &str, tool: &str) -> bool {
     !e.is_empty() && tool.starts_with(e)
 }
 
-fn policy_list<'a>(v: &'a Value) -> impl Iterator<Item = &'a str> {
+fn policy_list(v: &Value) -> impl Iterator<Item = &str> {
     v.as_array()
         .into_iter()
         .flatten()
@@ -256,7 +256,44 @@ fn shell_calls_human_turn(cmd: &str) -> bool {
 /// name, since the default macOS volume opens `/usr/local/bin/Claude` as `claude`.
 fn is_harness_program(w: &str) -> bool {
     let b = super::basename(w.strip_prefix('=').unwrap_or(w));
-    DATA.programs.iter().any(|p| b.eq_ignore_ascii_case(p))
+    DATA.programs.iter().any(|p| b.eq_ignore_ascii_case(p)) || is_harness_package(w)
+}
+
+/// Does the word name the harness's package, with or without a version (`pkg@latest`)?
+fn is_harness_package(w: &str) -> bool {
+    DATA.packages
+        .iter()
+        .any(|p| w == *p || w.strip_prefix(p).is_some_and(|r| r.starts_with('@')))
+}
+
+/// Does a word of a script path run inside the harness's package (`.../node_modules/pkg/cli.js`, `$(npm root -g)/pkg/cli.js`)?
+fn in_harness_package(w: &str) -> bool {
+    DATA.packages.iter().any(|p| w.contains(&format!("/{p}/")))
+}
+
+/// The shell lines an `osascript` call hands to a shell: the quoted text after `do shell script`.
+fn osascript_lines(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in args {
+        let mut rest = a.as_str();
+        while let Some(i) = rest.find("do shell script") {
+            rest = &rest[i + "do shell script".len()..];
+            let r = rest.trim_start();
+            if let Some(q) = r.strip_prefix('"') {
+                let mut line = String::new();
+                let mut it = q.chars();
+                while let Some(c) = it.next() {
+                    match c {
+                        '\\' => line.extend(it.next()),
+                        '"' => break,
+                        c => line.push(c),
+                    }
+                }
+                out.push(line);
+            }
+        }
+    }
+    out
 }
 
 /// Programs that run the program they are given: the first plain word after their own options.
@@ -264,7 +301,7 @@ const RUNNERS: &[&str] = &["npx", "bunx", "pnpx", "xargs", "nohup", "doas"];
 /// Package tools whose `exec` or `dlx` runs a program.
 const PACKAGE_RUNNERS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
 
-fn first_plain<'a>(args: &'a [String]) -> Option<&'a String> {
+fn first_plain(args: &[String]) -> Option<&String> {
     args.iter().find(|a| !a.starts_with('-'))
 }
 
@@ -286,6 +323,21 @@ fn starts_harness(words: &[String], vars: &[HashMap<String, String>]) -> bool {
         return true;
     }
     let base = super::basename(prog);
+    if matches!(base, "node" | "nodejs" | "bun" | "deno")
+        && args.iter().any(|a| in_harness_package(a))
+    {
+        return true;
+    }
+    if base == "osascript" {
+        let hit = osascript_lines(args).iter().any(|l| {
+            let parsed = crate::shellparse::commands(l);
+            let v = super::var_readings(&super::assigned_vars(&parsed));
+            parsed.iter().any(|p| starts_harness(&p.words, &v))
+        });
+        if hit {
+            return true;
+        }
+    }
     if RUNNERS.contains(&base) && first_plain(args).is_some_and(|a| named(a)) {
         return true;
     }
@@ -339,10 +391,9 @@ fn literal_starts_harness(code: &str) -> bool {
         if !matches!(c[i], '"' | '\'' | '`') {
             return false;
         }
-        let rest: String = c[i + 1..].iter().collect();
-        let first: String = rest
-            .trim_start()
-            .chars()
+        let first: String = c[i + 1..]
+            .iter()
+            .skip_while(|x| x.is_whitespace())
             .take_while(|x| !x.is_whitespace() && !matches!(x, '"' | '\'' | '`' | ',' | ']' | ')'))
             .collect();
         !first.is_empty() && is_harness_program(&first)

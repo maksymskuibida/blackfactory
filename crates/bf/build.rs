@@ -77,6 +77,7 @@ fn adapter_data(manifest: &Path, out_dir: &Path) {
     for k in [
         "subagent_fields",
         "programs",
+        "packages",
         "absent_commands",
         "nested_forms",
         "ask_modes",

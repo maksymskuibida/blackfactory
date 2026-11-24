@@ -24,6 +24,9 @@ subagent_fields = ["agent_id", "agent_type", "parent_tool_use_id", "subagent", "
 # The programs that are the harness itself.
 programs = ["claude"]
 
+# The package names under which the harness is started through a package runner or a script path.
+packages = ["@anthropic-ai/claude-code"]
+
 # The folder of the harness's transcripts.
 transcript_dir = "~/.claude/projects"
 

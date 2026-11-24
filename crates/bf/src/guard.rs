@@ -1548,9 +1548,9 @@ fn code_has_call(code: &str) -> bool {
     pipe_open_calls(code)
 }
 
-/// The string literals of code, without their quotes, with the text just before and after each.
-fn string_literals(code: &str) -> Vec<(String, String, String)> {
-    let c: Vec<char> = code.chars().collect();
+/// The string literals of code as (text, index of the opening quote, index just past the closing
+/// quote), counted in characters.
+fn literal_spans(c: &[char]) -> Vec<(String, usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < c.len() {
@@ -1558,9 +1558,7 @@ fn string_literals(code: &str) -> Vec<(String, String, String)> {
             let q = c[i];
             if let Some(e) = c[i + 1..].iter().position(|x| *x == q) {
                 let lit: String = c[i + 1..i + 1 + e].iter().collect();
-                let before: String = c[..i].iter().collect();
-                let after: String = c[i + 2 + e..].iter().collect();
-                out.push((lit, before, after));
+                out.push((lit, i, i + 2 + e));
                 i += e + 2;
                 continue;
             }
@@ -1568,6 +1566,15 @@ fn string_literals(code: &str) -> Vec<(String, String, String)> {
         i += 1;
     }
     out
+}
+
+/// The string literals of code, without their quotes, with the text just before and after each.
+fn string_literals(code: &str) -> Vec<(String, String, String)> {
+    let c: Vec<char> = code.chars().collect();
+    literal_spans(&c)
+        .into_iter()
+        .map(|(lit, s, e)| (lit, c[..s].iter().collect(), c[e..].iter().collect()))
+        .collect()
 }
 
 /// The first string literal inside the call that ends just before `.method`: `Path('a')` in
@@ -2069,7 +2076,8 @@ fn made_literals(code: &str) -> Vec<String> {
 /// A program started without a call word: a pipe open (a string that starts or ends with `|` given
 /// to `open`, the `-|` and `|-` modes) and the pipe forms of awk (`"cmd" | getline`, `print | "cmd"`).
 fn pipe_open_calls(code: &str) -> bool {
-    let lits = string_literals(code);
+    let c: Vec<char> = code.chars().collect();
+    let lits = literal_spans(&c);
     if code.contains("open")
         && lits
             .iter()
@@ -2077,15 +2085,22 @@ fn pipe_open_calls(code: &str) -> bool {
     {
         return true;
     }
-    lits.iter().any(|(l, before, after)| {
+    lits.iter().any(|(l, s, e)| {
         let t = l.trim();
         if !(l.contains("human-turn") && l.to_ascii_lowercase().contains("bf")) {
             return false;
         }
         t.starts_with('|')
             || t.ends_with('|')
-            || before.trim_end().ends_with('|')
-            || after.trim_start().starts_with('|')
+            || c[..*s]
+                .iter()
+                .rev()
+                .find(|x| !x.is_whitespace())
+                .is_some_and(|x| *x == '|')
+            || c[*e..]
+                .iter()
+                .find(|x| !x.is_whitespace())
+                .is_some_and(|x| *x == '|')
     })
 }
 

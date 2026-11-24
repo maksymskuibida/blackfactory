@@ -430,3 +430,22 @@ fn accepting_a_policy_that_changes_the_tool_lists_says_to_run_the_installer_agai
     let o = fx.must(&["policy", "accept", "--quote", "I accept the new policy"]);
     assert!(!o.all().contains("install.sh"), "{}", o.all());
 }
+
+#[test]
+fn the_harness_is_refused_through_its_package_a_script_path_or_osascript() {
+    for on in [true, false] {
+        let tab = table(on, &[]);
+        for cmd in [
+            "npx @anthropic-ai/claude-code -p x",
+            "npx -y @anthropic-ai/claude-code -p x",
+            "bunx @anthropic-ai/claude-code -p x",
+            "npm exec @anthropic-ai/claude-code -- -p x",
+            "node /opt/lib/node_modules/@anthropic-ai/claude-code/cli.js -p x",
+            "node \"$(npm root -g)/@anthropic-ai/claude-code/cli.js\" -p x",
+            "osascript -e 'do shell script \"claude -p x\"'",
+        ] {
+            let r = refusal(&tab, "Bash", json!({"command": cmd}), Some("builder"));
+            assert!(r.contains("harness"), "{cmd}: {r}");
+        }
+    }
+}

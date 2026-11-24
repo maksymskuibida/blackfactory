@@ -396,7 +396,7 @@ pub fn stamp_briefs(paths: &[std::path::PathBuf]) -> R<()> {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        if text.contains(&begin) {
+        if text.starts_with(&begin) {
             continue;
         }
         crate::util::atomic_write(path, format!("{block}{text}").as_bytes())?;
@@ -419,13 +419,24 @@ pub fn clear_briefs(p: &Project) -> R<()> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if !text.starts_with(&begin) {
+        if !text.contains(&begin) {
             continue;
         }
-        let Some(at) = text.find(&end) else { continue };
-        let rest = &text[at + end.len()..];
-        let rest = rest.strip_prefix("\n\n").unwrap_or(rest);
-        crate::util::atomic_write(&path, rest.as_bytes())?;
+        // Every block goes, the one at the top and the ones a brief embeds from other briefs.
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(s) = rest.find(&begin) {
+            out.push_str(&rest[..s]);
+            let after = &rest[s..];
+            let Some(at) = after.find(&end) else {
+                rest = after;
+                break;
+            };
+            let tail = &after[at + end.len()..];
+            rest = tail.strip_prefix("\n\n").unwrap_or(tail);
+        }
+        out.push_str(rest);
+        crate::util::atomic_write(&path, out.as_bytes())?;
     }
     Ok(())
 }

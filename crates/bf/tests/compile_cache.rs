@@ -355,14 +355,13 @@ fn a_checkpoint_copy_whose_cargo_config_names_a_wrapper_never_runs_it() {
             .unwrap();
             let script = format!(
                 "export PATH={dir}:$PATH; cd tiny && {cargo} build --offline --quiet --target-dir {t} >{log} 2>&1; echo built=$?\n\
-                 test -e {m} && echo fake=ran || echo fake=none\n\
+                 test -e {program}.ran && echo fake=ran || echo fake=none\n\
                  cat {u}/entry >/dev/null 2>&1; echo read=$?\n\
                  echo planted > {u}/new 2>/dev/null; echo write=$?\n",
                 dir = cargo.parent().unwrap().display(),
                 cargo = cargo.display(),
                 log = home.join("cargo.log").display(),
                 t = target.display(),
-                m = format!("{program}.ran"),
                 u = units.display()
             );
             fs::write(fx.root.join("probe.sh"), script).unwrap();

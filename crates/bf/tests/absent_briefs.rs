@@ -61,8 +61,15 @@ fn next_and_status_show_the_flag() {
     fx.must(&["ask", "--unit", "U-2", "--title", "Which greeting?"]);
     let n = fx.must(&["next", "--json"]).json();
     assert_eq!(n["human_absent"]["session"], "s1");
-    assert!(n["directives"].as_array().unwrap().iter().any(|d| d["role"] == "human"));
-    assert!(n["human_absent"]["instruction"].as_str().unwrap().contains("bf ask"));
+    assert!(n["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["role"] == "human"));
+    assert!(n["human_absent"]["instruction"]
+        .as_str()
+        .unwrap()
+        .contains("bf ask"));
     assert!(n["directives"]
         .as_array()
         .unwrap()
@@ -91,11 +98,24 @@ fn only_a_checkpoint_step_left_names_where_the_run_waits() {
     .unwrap();
     fx.commit_all("a checkpoint with a human step");
     fx.start_test_run();
-    fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
+    fx.build_unit(
+        "U-1",
+        "src/hello.txt",
+        "X-1",
+        &["test", "-f", "src/hello.txt"],
+    );
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     fx.must_in(
         &fx.work("K-1"),
-        &["evidence", "run", "X-3", "--", "ls", "src/hello.txt", "src/bye.txt"],
+        &[
+            "evidence",
+            "run",
+            "X-3",
+            "--",
+            "ls",
+            "src/hello.txt",
+            "src/bye.txt",
+        ],
     );
     say(&fx, "s1", CMD);
     let n = fx.must(&["next", "--json"]).json();
@@ -111,7 +131,30 @@ fn only_a_checkpoint_step_left_names_where_the_run_waits() {
     }
     let at = n["human_absent"]["waits_at"].as_str().unwrap_or("");
     assert!(at.contains("K-1"), "{at}");
-    assert!(n["idle_reason"].as_str().unwrap().contains("only steps of the human"));
+    assert!(n["idle_reason"]
+        .as_str()
+        .unwrap()
+        .contains("only steps of the human"));
     let text = fx.must(&["next"]).all();
     assert!(text.contains("only steps of the human"), "{text}");
+}
+
+#[test]
+fn a_brief_that_embeds_a_stamped_brief_is_stamped_at_its_top() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("K-1-reviewer.md");
+    let body = format!(
+        "# Brief: K-1 as reviewer\n\n## The brief of every unit\n\n{}# Brief: U-1 as builder\n",
+        bf::absent::brief_block()
+    );
+    fs::write(&path, &body).unwrap();
+    bf::absent::stamp_briefs(std::slice::from_ref(&path)).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        text.starts_with(&bf::strings::t("absent_briefs.begin", &[])),
+        "{text}"
+    );
+    // A second stamp leaves a brief that starts with a block alone.
+    bf::absent::stamp_briefs(std::slice::from_ref(&path)).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
 }

@@ -26,6 +26,8 @@ pub struct Data {
     pub subagent_fields: &'static [&'static str],
     /// The programs that are the harness itself.
     pub programs: &'static [&'static str],
+    /// The package names under which the harness starts through a runner or a script path.
+    pub packages: &'static [&'static str],
     /// The folder of the transcripts.
     pub transcript_dir: &'static str,
     /// The forms of the command that sets the human-absent flag (R-72); the first is the one named.
