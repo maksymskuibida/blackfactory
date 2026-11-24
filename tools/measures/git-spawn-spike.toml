@@ -1,0 +1,148 @@
+# U-126 spike record (D-140). Measurement only. Each number says whether it is measured or estimated.
+commit = "1f7d8f6"
+date = "2026-11-24T01:31:41Z"
+machine = "Mac15,7, 12 cores"
+git_program = "/usr/bin/git (the xcrun shim, Apple Git 2.54)"
+real_git_program = "xcrun -f git (Apple Git, no shim), also tried"
+calls_per_variant = 1000
+load_before = 2.78
+load_after = 8.65
+load_before_kind = "measured (micro run)"
+
+recommendation = "no-go"
+recommendation_read_only = "no-go"
+recommendation_env_cure = "go: name the real git path (no xcrun shim) in the policy, by amendment"
+
+# micro: git CPU seconds per call, and opendirectoryd CPU seconds per 1000 calls (all measured)
+odd_cpu_per_1000_plain = 0.92
+odd_cpu_per_1000_env = 0.07
+odd_cpu_per_1000_plain_kind = "measured: plain, one at a time, shim git"
+odd_cpu_per_1000_env_kind = "measured: plain, one at a time, no shim, HOME, NOSYSTEM and identity all set"
+git_cpu_per_call_plain_seq = 0.0112
+git_cpu_per_call_plain_par12 = 0.0162
+git_cpu_per_call_sandbox_seq = 0.0179
+git_cpu_per_call_sandbox_par12 = 0.0274
+odd_cpu_per_1000_sandbox_seq = 1.06
+odd_cpu_per_1000_sandbox_par12 = 0.74
+# environment-only cures, plain one at a time: git CPU per call, odd CPU per 1000
+cure_home_cpu_per_call = 0.0104
+cure_home_odd_per_1000 = 0.90
+cure_nosystem_cpu_per_call = 0.0104
+cure_nosystem_odd_per_1000 = 0.98
+cure_ident_cpu_per_call = 0.0105
+cure_ident_odd_per_1000 = 0.98
+cure_noxcrun_cpu_per_call = 0.0050
+cure_noxcrun_odd_per_1000 = 0.00
+cure_all_cpu_per_call = 0.0041
+cure_all_odd_per_1000 = 0.07
+cure_noxcrun_sandbox_seq_cpu_per_call = 0.0123
+cure_noxcrun_sandbox_par12_cpu_per_call = 0.0173
+cure_kind = "measured"
+
+# lifecycle: measured by the human running `sh tools/spike/git-spawns.sh lifecycle` (load 2.02)
+lifecycle_load_before = 2.02
+lifecycle_git_starts = 72
+lifecycle_git_starts_kind = "measured: logging wrapper as the project's git"
+lifecycle_start_git_starts = 11
+lifecycle_evidence_git_starts = 8
+lifecycle_report_builder_git_starts = 4
+lifecycle_report_reviewer_git_starts = 5
+lifecycle_land_git_starts = 44
+lifecycle_steps_kind = "measured"
+lifecycle_odd_cpu_total = 0.07
+lifecycle_odd_cpu_kind = "measured: opendirectoryd CPU seconds across the lifecycle (start 0.01, evidence 0.01, builder report 0.01, reviewer report 0.00, land 0.04)"
+lifecycle_sandbox_starts = 72
+lifecycle_sandbox_starts_kind = "derived: one sandbox-exec per git call under the sandbox; no wrapper can sit before sandbox-exec"
+lifecycle_git_cpu_seconds = 1.3
+lifecycle_git_cpu_kind = "estimated: 72 starts times 0.0179 s measured under the sandbox"
+lifecycle_noxcrun_saving_seconds = 0.4
+lifecycle_noxcrun_saving_kind = "estimated: 72 times (0.0179 - 0.0123), both measured per call"
+
+# suite: measured by the human running `sh tools/spike/git-spawns.sh suite` (load 2.41 before, 25.22 after)
+suite_load_before = 2.41
+suite_load_after = 25.22
+suite_exit = 0
+suite_git_peak = 3
+
+suite_git_mean = 0.08
+suite_sandbox_peak = 0
+suite_sandbox_mean = 0.00
+suite_samples = 737
+suite_wall_seconds = 444.21
+suite_cpu_seconds = 2958.11
+suite_odd_cpu_seconds = 94.16
+suite_measured_kind = "measured"
+suite_git_starts_seen = 53
+suite_git_starts_seen_kind = "measured lower bound: distinct git pids the 0.5 s sampler saw"
+suite_git_starts = 2500
+suite_git_starts_kind = "estimated: mean 0.08 running times 444 s of wall time is about 35 git-seconds, divided by about 0.015 s of life per call; order of magnitude only"
+suite_git_cpu_seconds = 45
+suite_git_cpu_kind = "estimated: starts times about 0.018 s"
+suite_git_cpu_share = 0.015
+suite_git_cpu_share_kind = "estimated: 45 of 2958"
+suite_odd_cpu_share = 0.032
+suite_odd_cpu_share_kind = "measured: 94.16 of 2958.11"
+suite_odd_cpu_from_git_seconds = 2.5
+suite_odd_cpu_from_git_kind = "estimated: 2500 starts times 0.001 s (micro, measured per call)"
+suite_noxcrun_saving_seconds = 14
+suite_noxcrun_saving_kind = "estimated: starts times 0.0056"
+
+# read-only variant (content hashes, rev-list --count, for-each-ref, show-ref)
+read_only_share_lifecycle = 0.5
+read_only_share_lifecycle_calls = 36
+read_only_share_lifecycle_kind = "estimated: the logging wrapper counts calls, not their arguments, so the split by kind was not measured; 36 of 72 is an assumption"
+read_only_share_suite = 0.5
+read_only_share_suite_kind = "estimated: the same assumed share"
+read_only_saving_lifecycle_seconds = 0.65
+read_only_saving_suite_seconds = 22
+read_only_saving_kind = "estimated upper bounds: removed calls times 0.018 s"
+
+# every micro variant of the 1000-call run: git CPU per call and opendirectoryd CPU per 1000 calls (measured)
+micro_plain_seq_base_cpu_per_call = 0.0112
+micro_plain_seq_base_odd_cpu_per_1000 = 0.92
+micro_plain_seq_home_cpu_per_call = 0.0104
+micro_plain_seq_home_odd_cpu_per_1000 = 0.90
+micro_plain_seq_nosystem_cpu_per_call = 0.0104
+micro_plain_seq_nosystem_odd_cpu_per_1000 = 0.98
+micro_plain_seq_ident_cpu_per_call = 0.0105
+micro_plain_seq_ident_odd_cpu_per_1000 = 0.98
+micro_plain_seq_noxcrun_cpu_per_call = 0.0050
+micro_plain_seq_noxcrun_odd_cpu_per_1000 = 0.00
+micro_plain_seq_all_cpu_per_call = 0.0041
+micro_plain_seq_all_odd_cpu_per_1000 = 0.07
+micro_plain_par12_base_cpu_per_call = 0.0162
+micro_plain_par12_base_odd_cpu_per_1000 = 0.63
+micro_plain_par12_home_cpu_per_call = 0.0167
+micro_plain_par12_home_odd_cpu_per_1000 = 0.64
+micro_plain_par12_nosystem_cpu_per_call = 0.0165
+micro_plain_par12_nosystem_odd_cpu_per_1000 = 0.62
+micro_plain_par12_ident_cpu_per_call = 0.0163
+micro_plain_par12_ident_odd_cpu_per_1000 = 0.62
+micro_plain_par12_noxcrun_cpu_per_call = 0.0069
+micro_plain_par12_noxcrun_odd_cpu_per_1000 = 0.00
+micro_plain_par12_all_cpu_per_call = 0.0066
+micro_plain_par12_all_odd_cpu_per_1000 = 0.07
+micro_sbx_seq_base_cpu_per_call = 0.0179
+micro_sbx_seq_base_odd_cpu_per_1000 = 1.06
+micro_sbx_seq_home_cpu_per_call = 0.0168
+micro_sbx_seq_home_odd_cpu_per_1000 = 0.99
+micro_sbx_seq_nosystem_cpu_per_call = 0.0171
+micro_sbx_seq_nosystem_odd_cpu_per_1000 = 1.02
+micro_sbx_seq_ident_cpu_per_call = 0.0175
+micro_sbx_seq_ident_odd_cpu_per_1000 = 1.07
+micro_sbx_seq_noxcrun_cpu_per_call = 0.0123
+micro_sbx_seq_noxcrun_odd_cpu_per_1000 = 0.19
+micro_sbx_seq_all_cpu_per_call = 0.0107
+micro_sbx_seq_all_odd_cpu_per_1000 = 0.16
+micro_sbx_par12_base_cpu_per_call = 0.0274
+micro_sbx_par12_base_odd_cpu_per_1000 = 0.74
+micro_sbx_par12_home_cpu_per_call = 0.0275
+micro_sbx_par12_home_odd_cpu_per_1000 = 0.83
+micro_sbx_par12_nosystem_cpu_per_call = 0.0277
+micro_sbx_par12_nosystem_odd_cpu_per_1000 = 0.79
+micro_sbx_par12_ident_cpu_per_call = 0.0272
+micro_sbx_par12_ident_odd_cpu_per_1000 = 0.72
+micro_sbx_par12_noxcrun_cpu_per_call = 0.0173
+micro_sbx_par12_noxcrun_odd_cpu_per_1000 = 0.03
+micro_sbx_par12_all_cpu_per_call = 0.0173
+micro_sbx_par12_all_odd_cpu_per_1000 = 0.07
