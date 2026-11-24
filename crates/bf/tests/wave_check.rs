@@ -409,12 +409,30 @@ fn start_slow_step(fx: &Fx) -> std::process::Child {
     panic!("the wave check did not start");
 }
 
+/// The file the slow wave check waits for: the test creates it when it is done with the running state.
+fn go_file(fx: &Fx) -> std::path::PathBuf {
+    fx.state_base.join("go")
+}
+
+fn release_slow_step(fx: &Fx) {
+    std::fs::write(go_file(fx), "go\n").unwrap();
+}
+
 fn slow_plan(fx: &Fx) {
-    // The wave check takes a few seconds; the checkpoint check stays as it is.
+    // The wave check runs until the test releases it; the checkpoint check stays as it is.
     plan(fx, false);
+    // It polls every 0.05 seconds for the file `go` and gives up after 200 polls (10 seconds).
+    std::fs::write(
+        fx.root.join("slow.sh"),
+        format!(
+            "i=0\nwhile [ ! -e '{}' ]; do\n  i=$((i+1))\n  if [ $i -gt 200 ]; then exit 1; fi\n  sleep 0.05\ndone\n",
+            go_file(fx).display()
+        ),
+    )
+    .unwrap();
     let r = fx.put(
         "check",
-        "id=\"X-9\"\nkind=\"check\"\ntitle=\"slow wave\"\nhow=\"command\"\ncommand=\"sleep 3\"\nproves=[]\nscope=\"wave\"\n",
+        "id=\"X-9\"\nkind=\"check\"\ntitle=\"slow wave\"\nhow=\"command\"\ncommand=\"sh slow.sh\"\nproves=[]\nscope=\"wave\"\n",
     );
     assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     fx.commit_all("slow wave check");
@@ -438,6 +456,7 @@ fn the_next_waves_units_are_offered_while_a_wave_check_still_runs() {
     review_second(&fx);
     let o = fx.refused(&["unit", "land", "U-2"]);
     assert!(o.stderr.contains("still running"), "{}", o.stderr);
+    release_slow_step(&fx);
     assert!(child.wait().unwrap().success());
     assert_eq!(wave_state(&fx, "K-1", 1), "passed");
     fx.must(&["unit", "land", "U-2"]);
@@ -458,6 +477,7 @@ fn timing_the_next_command_is_not_held_by_a_running_wave_check() {
         "the next command waited for the wave check: {:?}",
         t.elapsed()
     );
+    release_slow_step(&fx);
     assert!(child.wait().unwrap().success());
 }
 

@@ -6,8 +6,6 @@ mod common;
 use common::Fx;
 use serde_json::{json, Value};
 use std::fs;
-use std::thread::sleep;
-use std::time::Duration;
 
 fn source() -> Value {
     json!({"url": "https://example.org/law", "title": "The act", "read_on": "2026-11-01",
@@ -158,7 +156,6 @@ fn a_marked_finding_holds_the_close_until_the_human_answers_after_their_own_mess
     let o = fx.refused(&["run", "stop"]);
     assert!(o.stderr.contains("L-1"), "{}", o.stderr);
 
-    sleep(Duration::from_millis(1100));
     fx.human("I read the finding.");
     // Answering "not yet" does not acknowledge.
     let o = ack(&fx, &qid, "B");
@@ -170,7 +167,6 @@ fn a_marked_finding_holds_the_close_until_the_human_answers_after_their_own_mess
     let q2 = fx.must(&["legal", "questions", "--json"]).json();
     let qid2 = q2["asked"][0]["question"].as_str().unwrap().to_string();
     assert_ne!(qid, qid2);
-    sleep(Duration::from_millis(1100));
     fx.human("Yes, I acknowledge it.");
     assert_eq!(ack(&fx, &qid2, "A").code, 0);
     assert!(bf::legal::unacknowledged(&fx.project()).unwrap().is_empty());
@@ -217,7 +213,6 @@ fn an_unmarked_finding_never_holds_the_close_and_a_changed_one_must_be_asked_aga
     fx.must(&["legal", "finding", &file(&fx, "b.json", &finding(true))]);
     let q = fx.must(&["legal", "questions", "--json"]).json();
     let qid = q["asked"][0]["question"].as_str().unwrap().to_string();
-    sleep(Duration::from_millis(1100));
     fx.human("Acknowledged.");
     assert_eq!(ack(&fx, &qid, "A").code, 0);
     assert!(bf::legal::unacknowledged(&fx.project()).unwrap().is_empty());

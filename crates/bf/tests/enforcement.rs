@@ -25,7 +25,6 @@ fn revise(fx: &Fx, kind: &str, text: &str) {
 
 /// The security expert reports on the threat model at the design stage, a second after the last change.
 fn expert_reports(fx: &Fx) {
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     let o = fx.bf(&[
         "report",
         "design",
@@ -64,7 +63,6 @@ fn only_on(fx: &Fx, keep: &[&str]) {
     fx.human("Yes, switch the others off.");
     fx.must(&["checks", "set", "--quote", "switch the others off"]);
 }
-
 
 // ---- R-5: the design gates ----
 
@@ -190,7 +188,6 @@ fn a_change_to_a_threat_needs_a_newer_report_of_the_security_expert() {
     fx.put("threat", THREAT);
     expert_reports(&fx);
     // The threat changes after the report: the report is older than the change.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     revise(
         &fx,
         "threat",
@@ -210,7 +207,6 @@ fn a_report_of_the_security_expert_stays_good_when_only_the_threat_files_times_m
     fx.put("threat", THREAT);
     expert_reports(&fx);
     // A fresh clone or a branch switch rewrites the file with the same content a second later.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     revise(&fx, "threat", THREAT);
     fx.must(&["gate", "open", "architecture"]);
 }
@@ -690,7 +686,13 @@ fn a_legal_records_acceptance_is_reserved_for_the_human() {
     )
     .unwrap();
     fx.must(&["record", "put", "legal", "--file", open.to_str().unwrap()]);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // The record's file time goes 2 seconds back, so the human's message below falls after it.
+    fs::File::options()
+        .write(true)
+        .open(fx.project().record_path("L-1").unwrap())
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2))
+        .unwrap();
     // No human message at all: refused.
     fx.refused(&[
         "record",

@@ -381,8 +381,15 @@ fn runner_one_run_two_heavy_checks_at_a_limit_of_one_do_not_overlap_and_the_seco
         &[settings, heavy_check("X-2", "h1.sh"), heavy_check("X-3", "h2.sh")],
         "",
     );
-    fs::write(s.wc.join("h1.sh"), "sleep 2\n").unwrap();
-    fs::write(s.wc.join("h2.sh"), "sleep 2\n").unwrap();
+    // Each script waits for the file `go` (polled every 0.05 seconds, 200 polls at most). The file
+    // lives beside the state, outside the working copy, so creating it changes no tracked file.
+    let go = s.fx.state_base.join("go");
+    let poll = format!(
+        "i=0\nwhile [ ! -e '{}' ]; do\n  i=$((i+1))\n  if [ $i -gt 200 ]; then exit 1; fi\n  sleep 0.05\ndone\n",
+        go.display()
+    );
+    fs::write(s.wc.join("h1.sh"), &poll).unwrap();
+    fs::write(s.wc.join("h2.sh"), &poll).unwrap();
     let spawn = |check: &str, script: &str| {
         Command::new(bin())
             .env("BF_STATE_HOME", &s.fx.state_base)
@@ -397,10 +404,21 @@ fn runner_one_run_two_heavy_checks_at_a_limit_of_one_do_not_overlap_and_the_seco
     let a = spawn("X-2", "h1.sh");
     // The first one holds the place before the second starts: its place file exists.
     let places = s.fx.state_base.join("places");
+    let mut polls = 0;
     while !places.join("place-1").exists() {
-        std::thread::yield_now();
+        polls += 1;
+        assert!(polls < 2000, "the first check never took its place");
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let b = spawn("X-3", "h2.sh");
+    // Release both once the second has been seen waiting for the place.
+    let mut polls = 0;
+    while log_count(&s.fx, "evidence.wait") < 1 {
+        polls += 1;
+        assert!(polls < 1000, "the second check never waited for a place");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    fs::write(&go, "go\n").unwrap();
     let (a, b) = (a.wait_with_output().unwrap(), b.wait_with_output().unwrap());
     assert_eq!(a.status.code(), Some(0), "{}", String::from_utf8_lossy(&a.stderr));
     assert_eq!(b.status.code(), Some(0), "{}", String::from_utf8_lossy(&b.stderr));

@@ -6,8 +6,6 @@ use common::Fx;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
-use std::thread::sleep;
-use std::time::Duration;
 
 /// q1: `bf scan licences --check <ID>` must not prove a check whose command is not that scan.
 #[test]
@@ -98,7 +96,6 @@ fn q2_a_changed_legal_finding_needs_its_acknowledgement_again() {
     fx.must(&["legal", "finding", &file(&fx, "f.json", &f)]);
     let q = fx.must(&["legal", "questions", "--json"]).json();
     let qid = q["asked"][0]["question"].as_str().unwrap().to_string();
-    sleep(Duration::from_millis(1100));
     fx.human("Yes, I acknowledge it.");
     fx.must(&["answer", &qid, "--file", &file(&fx, "a.json", &json!({"choice": "A"}))]);
     assert!(bf::legal::unacknowledged(&fx.project()).unwrap().is_empty());

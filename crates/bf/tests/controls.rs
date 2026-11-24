@@ -482,7 +482,6 @@ fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_info
     );
     fx.must(&["evidence", "run", "X-5", "--", "true"]);
     // A version manager rehashes its shims: the folder changes, the check still runs.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(extra_dir.join("shim"), "#!/bin/sh\nexit 0\n").unwrap();
     let o = fx.must(&[
         "evidence",
