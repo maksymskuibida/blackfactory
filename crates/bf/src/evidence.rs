@@ -481,7 +481,7 @@ fn attached_record(p: &Project, check_id: &str, unit: Option<&str>) -> R<Value> 
     let pl = crate::plan::load(p)?;
     match crate::checks::attached_by_id(p, &pl, &st, u, check_id) {
         Some(a) => Ok(json!({"id": check_id, "kind": "check", "how": "command",
-            "command": a.command, "heavy": a.heavy})),
+            "command": a.command, "heavy": a.heavy, "scope": "unit"})),
         None => Err(refuse(
             format!("run evidence for {check_id}"),
             format!(
@@ -765,6 +765,7 @@ pub fn run_with(
     let pending = p
         .receipts_dir()
         .join(format!(".output-{}.txt", std::process::id()));
+    let cache_note = crate::sandbox::compile_cache::receipt_note(p, s(&chk, "scope"), unit, &top);
     let (exit, tail, out_hash, total, sandboxed) =
         exec_capture_keep(p, &top, argv, tail_bytes, Some(&pending), limit)?;
     drop(_place);
@@ -810,6 +811,7 @@ pub fn run_with(
         "program": CHECK_SHELL,
         "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
         "program_note": program_note.clone().unwrap_or_default(),
+        "compile_cache_note": cache_note,
         "exit": exit,
         "content_hash": before,
         "output_hash": out_hash,
@@ -1430,6 +1432,18 @@ pub const CHECK_ENV: &[&str] = &[
 ];
 pub const CHECK_SHELL: &str = "/bin/sh";
 
+/// A name a check never gets from the caller or the policy's `env` list: a compile cache wrapper or an
+/// sccache setting (R-76). The engine sets the two wrapper variables itself.
+pub(crate) fn wrapper_name(k: &str) -> bool {
+    matches!(
+        k,
+        "CARGO_BUILD_RUSTC_WRAPPER"
+            | "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"
+            | "RUSTC_WRAPPER"
+            | "RUSTC_WORKSPACE_WRAPPER"
+    ) || k.starts_with("SCCACHE_")
+}
+
 pub(crate) fn exec_capture(
     p: &Project,
     dir: &Path,
@@ -1464,8 +1478,9 @@ pub(crate) fn exec_capture_keep(
         .map(|a| shell_quote(a))
         .collect::<Vec<_>>()
         .join(" ");
-    // Under the sandbox where there is one: the check reaches neither the state folder nor the network,
-    // and writes only inside its working copy.
+    // Under the sandbox where there is one. The profile is a deny list: it keeps the check out of the
+    // named folders (the state folder, the compile cache) and the network, and it does not confine
+    // writes to the working copy.
     let sandboxed = p.policy.exec.sandbox && crate::sandbox::available();
     let mut cmd = if sandboxed {
         let repo_paths = p
@@ -1484,6 +1499,8 @@ pub(crate) fn exec_capture_keep(
         if crate::sandbox::is_review_copy(&p.work_dir(), dir) {
             profile = crate::sandbox::review_profile(&profile, &repo_paths);
         }
+        // R-76: with the setting on, the cache folder is denied after every other rule.
+        profile.push_str(&crate::sandbox::compile_cache::profile_denial(p));
         crate::sandbox::command(&profile, CHECK_SHELL)
     } else {
         Command::new(CHECK_SHELL)
@@ -1506,10 +1523,17 @@ pub(crate) fn exec_capture_keep(
         .copied()
         .chain(p.policy.exec.env.iter().map(|s| s.as_str()))
     {
+        if wrapper_name(k) {
+            continue;
+        }
         if let Some(v) = std::env::var_os(k) {
             cmd.env(k, v);
         }
     }
+    // R-76: no caller's wrapper and no cargo config bring a compile cache into a run; both wrapper
+    // variables are empty, which makes cargo ignore a wrapper that a `.cargo/config.toml` names.
+    cmd.env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "");
     // After the loop, so whatever the policy lists, the account's home is what the check sees.
     crate::session::home::set_env(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {

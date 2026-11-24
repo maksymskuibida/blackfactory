@@ -1,0 +1,13 @@
+# Strings of the group `compile_cache`: keys are quoted and flat, `"cli.compile_cache.some.key" = "text"`.
+"cli.policy.compile_cache.comment" = "The absolute path of the sccache program. It shares compiled code between the working copies of units and their builders only. Empty means off."
+"cli.compile_cache.off.program" = "no compile cache: `{program}` is not the absolute path of an executable file"
+"cli.compile_cache.off.sandbox" = "no compile cache: the sandbox is off or not available here"
+"cli.compile_cache.off.scope" = "no compile cache: only a check of scope unit in its unit's own working copy uses it"
+"cli.compile_cache.off.home" = "no compile cache: the account's home folder was not found"
+"cli.compile_cache.off.project_id" = "no compile cache: the project id `{id}` is not 16 hex digits"
+"cli.compile_cache.off.intents" = "no compile cache: the workspace holds {count} intents and the cache is on only for exactly one"
+"cli.compile_cache.off.part_link" = "no compile cache: `{path}` is a link"
+"cli.compile_cache.off.part_not_folder" = "no compile cache: `{path}` is not a folder"
+"cli.compile_cache.off.part_owner" = "no compile cache: `{path}` is not owned by this account"
+"cli.compile_cache.off.part_open" = "no compile cache: `{path}` could not be made or opened"
+"cli.compile_cache.off.part_name" = "no compile cache: `{part}` is not a usable folder name"
