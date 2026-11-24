@@ -358,28 +358,13 @@ fn content_hash_with(top: &Path, exclude_factory: bool) -> R<String> {
             "--".into(),
         ];
         rm.extend(OS_JUNK_GLOBS.iter().map(|g| format!(":(glob){g}")));
+        if exclude_factory {
+            rm.push("factory".into());
+            rm.push(".bf".into());
+        }
         let o = run_owned(top, &rm, &envs)?;
         if !o.ok {
             return Err(err(format!("git rm --cached failed: {}", o.stderr)));
-        }
-        if exclude_factory {
-            let o = run(
-                top,
-                &[
-                    "rm",
-                    "-r",
-                    "--cached",
-                    "-q",
-                    "--ignore-unmatch",
-                    "--",
-                    "factory",
-                    ".bf",
-                ],
-                &envs,
-            )?;
-            if !o.ok {
-                return Err(err(format!("git rm --cached failed: {}", o.stderr)));
-            }
         }
         let o = run(top, &["write-tree"], &envs)?;
         if !o.ok {

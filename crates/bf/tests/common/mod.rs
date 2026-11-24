@@ -143,9 +143,9 @@ impl Fx {
         // The fixture's policy: a fixed PATH, no role tokens (the token tests turn them on), and a
         // transcript root inside the temporary folder. `bf init` keeps a policy that is already there.
         let git_bin = [
-            "/usr/bin/git",
             "/opt/homebrew/bin/git",
             "/usr/local/bin/git",
+            "/usr/bin/git",
         ]
         .iter()
         .find(|g| Path::new(g).exists())
