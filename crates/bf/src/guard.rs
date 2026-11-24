@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod absent;
+
 pub struct Decision {
     /// True when nothing in the table forbids the call.
     pub allow: bool,
@@ -1497,19 +1499,27 @@ fn interpreter_paths(p: &crate::shellparse::Parsed, args: &[String]) -> Vec<Stri
 /// system call, a process start or a shell-out that holds the engine's name and `human-turn`; the
 /// phrase in a string that is only printed is not.
 fn code_calls_human_turn(code: &str) -> bool {
-    // A comment line is not code.
-    let code: String = code
-        .lines()
+    let code = without_comment_lines(code);
+    // The engine's name in any case (`BF` opens the same file on a volume that ignores case).
+    if !code.contains("human-turn") || !code.to_ascii_lowercase().contains("bf") {
+        return false;
+    }
+    code_has_call(&code)
+}
+
+/// Code without its comment lines: a comment line is not code.
+fn without_comment_lines(code: &str) -> String {
+    code.lines()
         .filter(|l| {
             let l = l.trim_start();
             !(l.starts_with('#') || l.starts_with("//"))
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    // The engine's name in any case (`BF` opens the same file on a volume that ignores case).
-    if !code.contains("human-turn") || !code.to_ascii_lowercase().contains("bf") {
-        return false;
-    }
+        .join("\n")
+}
+
+/// Does code hold a system call, a process start or a shell-out?
+fn code_has_call(code: &str) -> bool {
     const CALLS: &[&str] = &[
         "system",
         "popen",
@@ -1535,7 +1545,7 @@ fn code_calls_human_turn(code: &str) -> bool {
     if CALLS.iter().any(|c| code.contains(c)) || code.contains("proc_open") {
         return true;
     }
-    pipe_open_calls(&code)
+    pipe_open_calls(code)
 }
 
 /// The string literals of code, without their quotes, with the text just before and after each.
@@ -4909,13 +4919,18 @@ const DATA_PROGRAMS: &[&str] = &[
 /// Does a command hold the engine's name followed later by the word `human-turn`, as separate words,
 /// where the program is not one that only prints text? The engine's name may be a variable.
 fn names_human_turn_call(words: &[String]) -> bool {
+    names_bf_word_call(words, "human-turn")
+}
+
+/// The same for any word of the engine's command line: the engine's name followed later by `word`.
+fn names_bf_word_call(words: &[String], word: &str) -> bool {
     let Some(i) = crate::shellparse::program_index(words) else {
         return false;
     };
     if DATA_PROGRAMS.contains(&basename(&words[i])) {
         return false;
     }
-    let Some(h) = words.iter().rposition(|w| w == "human-turn") else {
+    let Some(h) = words.iter().rposition(|w| w == word) else {
         return false;
     };
     words[i..h]
@@ -5657,6 +5672,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
     {
         return human_turn_denial();
     }
+    if let Some(d) = absent::shell_denial(cmd) {
+        return d;
+    }
     for c in &calls {
         if let Some(d) = judge_call(c) {
             return d;
@@ -5932,6 +5950,9 @@ fn check_bash(table: &Value, cwd: &str, cmd: &str) -> Decision {
                     }
                     if code_calls_human_turn(&code) {
                         return human_turn_denial();
+                    }
+                    if let Some(d) = absent::code_denial(&code) {
+                        return d;
                     }
                     // A path the code opens for writing is a write like any other: the protected places
                     // and, in a unit's working copy, the unit's file scope judge it.
@@ -6476,6 +6497,9 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
         if let Some(d) = unblock_denial(agent_type(input), ti["command"].as_str().unwrap_or("")) {
             return d;
         }
+    }
+    if let Some(d) = absent::judge(input, table) {
+        return d;
     }
     match tool {
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {

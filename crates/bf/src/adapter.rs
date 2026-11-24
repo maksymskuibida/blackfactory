@@ -1,6 +1,13 @@
 //! The harness adapter data (component: the harness adapter, C-24): what the engine knows of the
 //! harness, compiled into the binary by `build.rs` from `harness/claude/adapter.toml`.
 
+/// A tool of the harness and the input field that carries its text; an empty field means every text
+/// of the tool's input.
+pub struct ToolField {
+    pub tool: &'static str,
+    pub field: &'static str,
+}
+
 /// The adapter data of one harness. A path that starts with `~/` is under the account's home
 /// (`session::home::resolve_tilde`).
 pub struct Data {
@@ -27,6 +34,16 @@ pub struct Data {
     pub nested_forms: &'static [&'static str],
     /// The permission modes in which a tool asks before it runs.
     pub ask_modes: &'static [&'static str],
+    /// The tools that plan mode is entered or left with (R-74).
+    pub plan_tools: &'static [&'static str],
+    /// The tools that ask the human for access.
+    pub access_tools: &'static [&'static str],
+    /// The tools that ask the human a question, each with the field that makes a call a question.
+    pub question_tools: &'static [ToolField],
+    /// The tools that run a command line or a script, each with the field that carries it.
+    pub command_tools: &'static [ToolField],
+    /// The tools that type into an app or send a message to a session.
+    pub input_tools: &'static [ToolField],
 }
 
 include!(concat!(env!("OUT_DIR"), "/adapter_data.rs"));

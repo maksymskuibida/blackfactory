@@ -2232,9 +2232,27 @@ pub fn accept_policy(p: &Project, quote: &str) -> R<Value> {
             "`bf policy accept` prints the new hash.",
         ));
     }
-    let old = std::fs::read(p.accepted_policy_path())
-        .map(|b| util::sha256_hex(&b))
-        .unwrap_or_default();
+    let old_bytes = std::fs::read(p.accepted_policy_path()).unwrap_or_default();
+    let old = if old_bytes.is_empty() {
+        String::new()
+    } else {
+        util::sha256_hex(&old_bytes)
+    };
+    // The tools the policy names reach the tool hook only through its matcher, which `install.sh`
+    // writes (R-74): a change of those lists means the human runs the installer again.
+    let tool_lists = |text: &str| {
+        toml::from_str::<crate::store::Policy>(text)
+            .map(|pol| {
+                (
+                    pol.absent.deny_tools,
+                    pol.guard.command_tools,
+                    pol.guard.input_tools,
+                )
+            })
+            .unwrap_or_default()
+    };
+    let tools_changed = tool_lists(&String::from_utf8_lossy(&old_bytes))
+        != tool_lists(&String::from_utf8_lossy(&disk));
     let new = util::sha256_hex(&disk);
     events::append(
         p,
@@ -2243,7 +2261,7 @@ pub fn accept_policy(p: &Project, quote: &str) -> R<Value> {
     )?;
     p.store_accepted_policy()?;
     p.write_guard()?;
-    Ok(json!({"accepted": true, "old": old, "new": new}))
+    Ok(json!({"accepted": true, "old": old, "new": new, "reinstall_hook": tools_changed}))
 }
 
 /// The lines that differ between the accepted policy and the file on disk, for the human to read.
