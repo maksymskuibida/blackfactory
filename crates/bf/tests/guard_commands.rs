@@ -74,9 +74,7 @@ fn a_made_up_command_is_still_refused() {
 
 #[test]
 fn a_working_copy_may_not_run_the_new_commands() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     for c in [

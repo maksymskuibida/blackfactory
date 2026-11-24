@@ -41,9 +41,7 @@ fn lines(fx: &Fx, id: &str) -> Vec<String> {
 }
 
 fn opened() -> (Fx, Vec<String>) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx
         .must(&["amend", "open", "--repair", "U-1", "--json"])
         .json();

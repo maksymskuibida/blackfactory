@@ -30,9 +30,7 @@ fn bash(fx: &Fx, cwd: &Path, cmd: &str) -> String {
 }
 
 fn unit_place() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     (fx, wc)
@@ -274,8 +272,7 @@ fn a_unit_does_not_write_into_a_checkpoint_copy_and_a_parked_copy_refuses_every_
 
 #[test]
 fn the_state_folder_the_panel_the_briefs_the_table_and_extra_paths_stay_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("protected_extra = []", "protected_extra = [\"secrets/\"]");
     fx.start_test_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
@@ -397,8 +394,7 @@ fn a_patch_is_refused_unless_it_only_reads_and_git_environment_variables_are_ref
 
 #[test]
 fn a_protected_path_is_refused_in_any_case_even_below_a_folder_that_does_not_exist() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("protected_extra = []", "protected_extra = [\"secrets/\"]");
     fx.start_test_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
@@ -550,8 +546,7 @@ fn a_link_in_the_copy_is_followed_before_a_dotdot_is_taken() {
 
 #[test]
 fn a_folder_that_holds_a_protected_place_of_the_copy_cannot_be_removed_moved_or_replaced() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("protected_extra = []", "protected_extra = [\"config/prod.toml\"]");
     fx.start_test_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
@@ -693,9 +688,7 @@ fn git_options_are_taken_by_exact_name_and_git_grep_is_out() {
 
 #[test]
 fn a_case_variant_of_a_protected_folder_is_covered_by_every_writer() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("evil")).unwrap();
@@ -733,9 +726,7 @@ fn a_case_variant_of_a_protected_folder_is_covered_by_every_writer() {
 
 #[test]
 fn every_writer_is_held_to_the_cover_check_of_a_protected_folder() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("evil")).unwrap();

@@ -355,9 +355,7 @@ fn the_key_is_not_in_the_project_tree_and_the_state_folder_is_off_limits() {
 
 #[test]
 fn a_rolled_back_log_is_refused_whatever_way_it_was_rolled_back() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "blocked"]);
     let log = fx.root.join("factory/log/events.jsonl");
@@ -557,9 +555,7 @@ fn git_variables_from_the_caller_cannot_move_the_content_hash() {
 
 #[test]
 fn a_check_record_edited_after_the_plan_gate_is_noticed_and_its_receipts_stop_counting() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let wc = started_unit(&fx);
     fs::create_dir_all(wc.join("src")).unwrap();
     // The code is broken (the file the check wants is missing); the agent edits the check to look at a
@@ -604,9 +600,7 @@ fn a_check_record_edited_after_the_plan_gate_is_noticed_and_its_receipts_stop_co
 
 #[test]
 fn the_plan_is_frozen_once_its_gate_is_approved() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let new_unit = "id=\"U-9\"\nkind=\"unit\"\ntitle=\"Anything\"\ndelivers=[\"R-1\"]\nfiles=[\"**\"]\ncheckpoint=\"K-1\"\n";
     let o = fx.put("unit", new_unit);
     assert_eq!(
@@ -693,9 +687,7 @@ fn token_for(fx: &Fx, unit: &str, role: &str) -> String {
 
 #[test]
 fn a_builder_cannot_pass_its_own_review() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     tokens_on(&fx);
     let bt = token_for(&fx, "U-1", "builder");
     let wc = started_unit(&fx);
@@ -757,9 +749,7 @@ fn a_builder_cannot_pass_its_own_review() {
 
 #[test]
 fn without_the_hook_the_engine_still_refuses_what_a_worker_may_not_do() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let wc = started_unit(&fx);
     let d = tempfile::tempdir().unwrap();
     let w = d.path().join("w.toml");
@@ -808,9 +798,7 @@ fn without_the_hook_the_engine_still_refuses_what_a_worker_may_not_do() {
 
 #[test]
 fn the_guard_denies_what_the_reviewer_got_through() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let wc = started_unit(&fx);
     let root = fx.root.to_string_lossy().to_string();
     let deny = |cwd: &Path, tool: &str, input: Value| {
@@ -963,9 +951,7 @@ fn a_missing_empty_unsigned_or_planted_table_denies_instead_of_allowing() {
 
 #[test]
 fn work_from_a_test_run_that_reaches_main_by_git_is_refused_by_the_engine() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -1003,9 +989,7 @@ fn work_from_a_test_run_that_reaches_main_by_git_is_refused_by_the_engine() {
     assert_eq!(fx.bf(&["ledger", "check"]).code, 2);
 
     // The same for a unit that never landed.
-    let fx = Fx::sandboxed();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let wc = started_unit(&fx);
     fs::create_dir_all(wc.join("src")).unwrap();
     fs::write(wc.join("src/hello.txt"), "never reviewed\n").unwrap();

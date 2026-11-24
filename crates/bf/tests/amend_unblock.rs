@@ -34,10 +34,7 @@ fn approve(fx: &Fx, ids: &[&str]) -> Value {
 }
 
 fn run_with_two_units() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
-    fx
+    Fx::tiny_run()
 }
 
 fn state(fx: &Fx, unit: &str) -> bf::events::UnitSt {

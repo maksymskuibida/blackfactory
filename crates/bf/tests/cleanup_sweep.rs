@@ -9,9 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 fn fixture() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fs::write(fx.root.join(".gitignore"), "target/\n.bf/\n").unwrap();
     fx.commit_all("ignore the build folder");
     fx

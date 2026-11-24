@@ -9,8 +9,7 @@ use std::path::PathBuf;
 /// The tiny project with a second checkpoint of one more unit, so a unit can be running while the first
 /// checkpoint closes.
 fn fixture() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for (k, t) in [
         ("requirement", "id=\"R-3\"\nkind=\"requirement\"\ntitle=\"A third message\"\nacceptance=[\"src/third.txt exists\"]\n"),
         ("unit", "id=\"U-3\"\nkind=\"unit\"\ntitle=\"Third\"\ndelivers=[\"R-3\"]\nfiles=[\"src/third.txt\"]\ncheckpoint=\"K-2\"\nestimate=1\n"),

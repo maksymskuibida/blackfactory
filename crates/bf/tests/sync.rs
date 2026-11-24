@@ -949,8 +949,7 @@ fn abort_after_a_failed_check_restores_the_earlier_tip_and_the_sync_that_passes_
 /// A sync runs only the checks that are switched on, and says which it left out.
 #[test]
 fn a_sync_leaves_out_a_switched_off_check_and_says_so() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // A checkpoint check that is named, so it is switched off, whose command fails.
     let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
     let f = fx.root.join("x3.toml");
@@ -998,8 +997,7 @@ fn a_sync_leaves_out_a_switched_off_check_and_says_so() {
 /// The resolver's brief lists only the checks the sync will run.
 #[test]
 fn the_resolvers_brief_leaves_out_a_switched_off_check() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
     let f = fx.root.join("x3.toml");
     fs::write(&f, x3).unwrap();
@@ -1138,9 +1136,7 @@ fn a_failing_check_every_unit_is_held_to_opens_the_repair_and_the_refusal_names_
 /// Units that share no command: the sync runs the checkpoint's own command checks, as before.
 #[test]
 fn a_checkpoint_whose_units_share_no_command_is_synced_with_its_own_checks() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit(
         "U-1",
         "src/hello.txt",

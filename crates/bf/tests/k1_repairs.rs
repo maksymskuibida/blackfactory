@@ -21,8 +21,7 @@ fn narrow(fx: &Fx, body: serde_json::Value) {
 
 #[test]
 fn withdrawing_needs_a_reason_and_keeps_it() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     let o = fx.refused(&["amend", "withdraw", "A-1"]);
     assert!(o.stderr.contains("reason"), "{}", o.stderr);
@@ -37,8 +36,7 @@ fn withdrawing_needs_a_reason_and_keeps_it() {
 
 #[test]
 fn a_withdrawn_amendment_cannot_be_approved() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
     narrow(
         &fx,
@@ -51,8 +49,7 @@ fn a_withdrawn_amendment_cannot_be_approved() {
 
 #[test]
 fn narrow_without_a_name_takes_the_open_amendment_after_a_revision() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // U-19: both sets cover every stage and link their requirement.
     for (k, t) in [
         ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
@@ -79,8 +76,7 @@ fn narrow_without_a_name_takes_the_open_amendment_after_a_revision() {
 
 #[test]
 fn a_message_before_the_latest_narrowing_does_not_approve() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
     fx.human("Yes, approve the amendment.");
     narrow(
@@ -98,8 +94,7 @@ fn a_message_before_the_latest_narrowing_does_not_approve() {
 
 #[test]
 fn replay_ignores_an_approval_cited_before_the_latest_narrowing() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let opened = fx.must(&["amend", "open", "R-2", "--json"]).json();
     fx.human("Yes, approve the amendment.");
     narrow(

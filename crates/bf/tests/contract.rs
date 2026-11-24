@@ -122,8 +122,7 @@ fn every_view_kind_validates_against_the_contract() {
 fn render_with_the_real_template_keeps_valid_json_and_sets_the_title() {
     let tpl = real_template();
     assert!(tpl.exists(), "views/templates/page.html is missing");
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for (kind, id) in [
         ("index", None),
         ("plan", None),

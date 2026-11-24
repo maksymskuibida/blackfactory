@@ -34,8 +34,7 @@ fn run_counted(fx: &Fx, args: &[&str], name: &str) -> (Out, usize) {
 
 #[test]
 fn record_list_starts_no_probe() {
-    let fx = Fx::sandboxed();
-    fx.tiny();
+    let fx = Fx::tiny_project_sandboxed();
     let (o, n) = run_counted(&fx, &["record", "list", "--json"], "list");
     assert_eq!(o.code, 0, "{}", o.all());
     assert_eq!(n, 0, "`bf record list` started the sandbox probe");

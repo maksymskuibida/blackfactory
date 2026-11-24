@@ -10,8 +10,7 @@ use std::path::PathBuf;
 /// q1: `bf scan licences --check <ID>` must not prove a check whose command is not that scan.
 #[test]
 fn q1_a_scan_named_for_another_check_proves_nothing() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // A check of U-1 that can never pass.
     let o = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"Never\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -116,8 +115,7 @@ fn q2_a_changed_legal_finding_needs_its_acknowledgement_again() {
 /// q4: `bf preset fill` writes its draft only where a draft may go, never over a protected file.
 #[test]
 fn q4_a_preset_draft_is_not_written_over_a_record_or_the_hook_settings() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"Never\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n");
     assert_eq!(o.code, 0, "{}", o.all());
     fx.commit_all("x9");

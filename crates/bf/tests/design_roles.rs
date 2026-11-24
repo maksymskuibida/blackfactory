@@ -70,8 +70,7 @@ fn a_design_role_reports_outside_a_run_and_the_token_is_spent() {
 
 #[test]
 fn a_role_works_only_at_its_stage() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // Built-stage roles have no design-stage subject (the UI/UX verifier works at both).
     for role in ["security-auditor", "legal-auditor"] {
         assert!(
@@ -99,8 +98,7 @@ fn a_role_works_only_at_its_stage() {
 
 #[test]
 fn a_token_ends_with_the_run_it_was_issued_in() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("tokens = false", "tokens = true");
     let before_run = token(&fx, "design", "lawyer");
     fx.start_test_run();

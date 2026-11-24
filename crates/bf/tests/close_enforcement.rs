@@ -80,9 +80,7 @@ fn a_built_check_must_be_listed_by_the_last_checkpoint() {
 
 #[test]
 fn a_check_switched_on_is_refused_when_the_frozen_plan_cannot_meet_it() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     // The plan is frozen and has no check record for the secret scan.
     let o = fx.refused(&["checks", "propose", "secret-scan=on", "--scope", "run"]);
     assert!(
@@ -209,9 +207,7 @@ fn a_scan_cannot_be_settled_by_a_human_step_or_an_agents_word() {
 
 #[test]
 fn a_design_check_switched_on_after_its_gate_is_refused_when_its_product_is_missing() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["gate", "open", "architecture"]);
     fx.must(&["gate", "approve", "architecture", "--simulated"]);
     let o = fx.refused(&["checks", "propose", "threat-model=on", "--scope", "run"]);
@@ -224,8 +220,7 @@ fn a_design_check_switched_on_after_its_gate_is_refused_when_its_product_is_miss
 
 #[test]
 fn the_close_summary_names_the_ids_whose_checks_were_off() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let x3 = "id=\"X-3\"\nkind=\"check\"\ntitle=\"Both files\"\nhow=\"command\"\ncommand=\"ls src/hello.txt src/bye.txt\"\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nscope=\"checkpoint\"\nnamed=\"accessibility\"\n";
     let f = fx.root.join("x3.toml");
     fs::write(&f, x3).unwrap();

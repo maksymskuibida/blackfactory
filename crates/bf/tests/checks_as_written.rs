@@ -52,8 +52,7 @@ fn a_command_with_an_operator_or_a_quote_is_a_plan_problem_naming_the_check_the_
         ("command=\"ls src > out.txt\"", ">"),
         ("command=\"sh -c 'test -f a'\"", "'test"),
     ] {
-        let fx = Fx::new();
-        fx.tiny();
+        let fx = Fx::tiny_project();
         put_check(&fx, "X-3", line, "checkpoint", "");
         let o = fx.refused(&["plan", "check"]);
         let e = &o.stderr;
@@ -67,8 +66,7 @@ fn a_command_with_an_operator_or_a_quote_is_a_plan_problem_naming_the_check_the_
 
 #[test]
 fn a_list_form_command_with_a_quoted_argument_and_one_program_checks_are_not_problems() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_check(
         &fx,
         "X-3",
@@ -81,8 +79,7 @@ fn a_list_form_command_with_a_quoted_argument_and_one_program_checks_are_not_pro
 
 #[test]
 fn evidence_run_refuses_a_check_joined_by_and_and_writes_no_receipt() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_check(&fx, "X-3", "command=\"true && false\"", "checkpoint", "");
     let before = receipt_files(&fx);
     let o = fx.refused(&["evidence", "run", "X-3", "--", "true", "&&", "false"]);
@@ -101,8 +98,7 @@ fn evidence_run_refuses_a_check_joined_by_and_and_writes_no_receipt() {
 
 #[test]
 fn an_override_of_the_unit_checks_or_the_wave_checks_joined_by_and_and_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     let o = fx.refused(&[
         "checks",
@@ -127,8 +123,7 @@ fn an_override_of_the_unit_checks_or_the_wave_checks_joined_by_and_and_is_refuse
 
 #[test]
 fn a_wave_override_with_a_quoted_argument_is_stored_as_words_and_passes() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     fx.must(&[
         "checks",
@@ -315,8 +310,7 @@ fn a_probe_command_with_a_quote_is_refused_with_the_form_a_probe_takes_and_the_s
 
 #[test]
 fn a_handoff_proved_by_a_unit_check_that_failed_and_then_passed_shows_its_receipt() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let marker_dir = tempfile::tempdir().unwrap();
     let marker = marker_dir.path().join("marker");
     put_check(
@@ -405,14 +399,12 @@ fn an_operator_joined_to_a_word_is_a_plan_problem_and_an_honest_word_is_not() {
         ("command=\"sleep 1&\"", "1&"),
         ("command=\"cargo test 2>/dev/null\"", "2>/dev/null"),
     ] {
-        let fx = Fx::new();
-        fx.tiny();
+        let fx = Fx::tiny_project();
         put_check(&fx, "X-3", line, "checkpoint", "");
         let o = fx.refused(&["plan", "check"]);
         assert!(o.stderr.contains(&format!("`{word}`")), "{}", o.stderr);
     }
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_check(
         &fx,
         "X-3",
@@ -425,8 +417,7 @@ fn an_operator_joined_to_a_word_is_a_plan_problem_and_an_honest_word_is_not() {
 
 #[test]
 fn an_unquoted_backtick_or_substitution_in_an_override_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     let o = fx.refused(&["checks", "unit", "propose", "override", "lint=echo $(x)"]);
     assert!(
