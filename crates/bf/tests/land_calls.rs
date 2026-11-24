@@ -140,7 +140,7 @@ struct Landing {
 
 /// `during`, when given, runs while the landing holds just before it takes the engine lock.
 fn land(setup: fn(&Fx), memo: bool, during: Option<fn(&Fx)>) -> Landing {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let log = count_through_policy(&fx);
     setup(&fx);
     let events_before = events(&fx).len();

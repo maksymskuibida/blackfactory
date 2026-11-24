@@ -369,7 +369,7 @@ fn sandbox_active(fx: &Fx) -> bool {
 
 #[test]
 fn a_check_cannot_read_the_key_or_write_the_records_but_an_ordinary_script_passes() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     let key = fx.state_dir().join("key");
     let secret = fs::read_to_string(&key).unwrap();
@@ -419,7 +419,7 @@ fn a_check_cannot_read_the_key_or_write_the_records_but_an_ordinary_script_passe
 
 #[test]
 fn the_sandbox_costs_a_little_and_the_policy_can_switch_it_off() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.put(
         "requirement",
         "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\n",

@@ -65,20 +65,158 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// The fixture's sandbox switch: `All` writes `sandbox = true` into the fixture's policy, `Off` writes
+/// `sandbox = false`. The plain constructors take it from `BF_TEST_SANDBOX` (see `sandbox_switch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    All,
+    Off,
+}
+
+/// The switch the environment gives: `All` when `BF_TEST_SANDBOX` is `all`, `Off` otherwise. The one
+/// place the variable is read.
+pub fn sandbox_switch() -> Switch {
+    if std::env::var("BF_TEST_SANDBOX").as_deref() == Ok("all") {
+        Switch::All
+    } else {
+        Switch::Off
+    }
+}
+
+/// Does `sandbox-exec` run here, from this test process? The same probe the engine runs, so an engine
+/// started by the test sees the same answer. False on a system without it, and on macOS inside a
+/// sandbox where a nested one does not start (a check the engine runs).
+pub fn sandbox_probe() -> bool {
+    cfg!(target_os = "macos")
+        && Path::new("/usr/bin/sandbox-exec").exists()
+        && Command::new("/usr/bin/sandbox-exec")
+            .args([
+                "-p",
+                "(version 1)(allow default)(deny network*)",
+                "/usr/bin/true",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+}
+
+/// Run one passing check in the fixture through the engine and give its receipt's `sandbox` value
+/// (`sandbox-exec` or `none`). Adds records of its own. In a project the check runs in the main
+/// checkout; in a workspace, whose main folder holds no code, it runs in a unit's working copy of a
+/// test run. A fixture with role tokens on (`shipped`) has them switched off first, the human's way,
+/// so the records can be put; the sandbox line of its policy stays as it is.
+pub fn receipt_sandbox(fx: &Fx) -> String {
+    let pol = fs::read_to_string(fx.root.join("factory/policy.toml")).unwrap();
+    if pol.contains("tokens = true") {
+        fx.set_policy("tokens = true", "tokens = false");
+    }
+    let workspace = fx.root.join("factory/workspace.toml").exists();
+    let mut recs: Vec<(&str, &str)> = vec![
+        ("requirement", "id=\"R-900\"\nkind=\"requirement\"\ntitle=\"sandbox probe\"\n"),
+        ("check", "id=\"X-900\"\nkind=\"check\"\ntitle=\"true\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-900\"]\nscope=\"checkpoint\"\n"),
+    ];
+    if workspace {
+        recs = vec![
+            ("requirement", "id=\"R-900\"\nkind=\"requirement\"\ntitle=\"sandbox probe\"\n"),
+            ("unit", "id=\"U-900\"\nkind=\"unit\"\ntitle=\"Probe\"\ndelivers=[\"R-900\"]\nfiles=[\"src/probe.txt\"]\ncheckpoint=\"K-900\"\nestimate=1\n"),
+            ("check", "id=\"X-900\"\nkind=\"check\"\ntitle=\"true\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-900\"]\nscope=\"unit\"\nunit=\"U-900\"\n"),
+            ("check", "id=\"X-901\"\nkind=\"check\"\ntitle=\"true again\"\nhow=\"command\"\ncommand=\"true\"\nproves=[\"R-900\"]\nscope=\"checkpoint\"\n"),
+            ("checkpoint", "id=\"K-900\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"Probe\"\nafter=[\"U-900\"]\nproves=[\"R-900\"]\nchecks=[\"X-901\"]\n"),
+        ];
+    }
+    for (k, t) in recs {
+        let o = fx.put(k, t);
+        assert_eq!(o.code, 0, "{}", o.all());
+    }
+    fx.commit_all("sandbox probe check");
+    let o = if workspace {
+        fx.start_test_run();
+        let wc = PathBuf::from(
+            fx.must(&["unit", "start", "U-900", "--json"]).json()["working_copy"]
+                .as_str()
+                .unwrap(),
+        );
+        fx.bf_in(
+            &wc,
+            &["evidence", "run", "X-900", "--unit", "U-900", "--", "true"],
+        )
+    } else {
+        fx.bf(&["evidence", "run", "X-900", "--", "true"])
+    };
+    assert_eq!(o.code, 0, "{}", o.all());
+    let rcs = bf::evidence::load_receipts(&fx.project()).unwrap();
+    let rc = rcs
+        .iter()
+        .rev()
+        .find(|r| r.check() == "X-900")
+        .expect("no receipt for the probe check");
+    rc.v["sandbox"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the receipt names no sandbox: {}", rc.v))
+        .to_string()
+}
+
+/// On macOS with `BF_TEST_SANDBOX_REQUIRE=1`, fail (never skip) unless the environment's switch is
+/// `all`, the probe succeeds, and a check's receipt on `fx` says `sandbox-exec`. Without the variable,
+/// or on another system, it asserts nothing.
+pub fn require_sandbox_from_env(fx: &Fx) {
+    if !cfg!(target_os = "macos") || std::env::var("BF_TEST_SANDBOX_REQUIRE").as_deref() != Ok("1")
+    {
+        return;
+    }
+    assert_eq!(
+        sandbox_switch(),
+        Switch::All,
+        "BF_TEST_SANDBOX_REQUIRE=1 needs BF_TEST_SANDBOX=all"
+    );
+    assert!(
+        sandbox_probe(),
+        "BF_TEST_SANDBOX_REQUIRE=1: sandbox-exec does not start here, so the sandbox is not met"
+    );
+    let s = receipt_sandbox(fx);
+    assert_eq!(
+        s, "sandbox-exec",
+        "BF_TEST_SANDBOX_REQUIRE=1: the check ran without the sandbox"
+    );
+}
+
 impl Fx {
     /// A fresh git repository with one commit and `bf init` done.
     /// Every named check is switched off for the project: these fixtures exercise the engine's other
-    /// rules. `with_checks` keeps the defaults.
+    /// rules. `with_checks` keeps the defaults. The sandbox follows `BF_TEST_SANDBOX` (off unless `all`).
     pub fn new() -> Fx {
-        let fx = Fx::build(true);
+        Fx::new_with(sandbox_switch())
+    }
+
+    /// The same as `new`, with the sandbox switch given for this fixture instead of the environment's.
+    pub fn new_with(sw: Switch) -> Fx {
+        let fx = Fx::build_with(true, &[], sw == Switch::All);
         fx.checks_all_off();
         fx
+    }
+
+    /// The same as `new`, with the sandbox always on: for the tests that exercise it.
+    pub fn sandboxed() -> Fx {
+        Fx::new_with(Switch::All)
     }
 
     /// The same as `new`, with the catalogue's defaults: every named check required, and nothing
     /// decided by the human yet (`checks_decided_as_default` decides it).
     pub fn with_checks() -> Fx {
-        Fx::build(true)
+        Fx::with_checks_with(sandbox_switch())
+    }
+
+    /// `with_checks` with the sandbox switch given for this fixture.
+    pub fn with_checks_with(sw: Switch) -> Fx {
+        Fx::build_with(true, &[], sw == Switch::All)
+    }
+
+    /// `with_checks` with the sandbox always on.
+    pub fn with_checks_sandboxed() -> Fx {
+        Fx::with_checks_with(Switch::All)
     }
 
     /// Decide the project default as the catalogue has it (nothing switched off), the way the human
@@ -89,24 +227,30 @@ impl Fx {
         self.must(&["checks", "set", "--quote", "keep every check on"]);
     }
 
-    /// The same, with the shipped policy as it is: role tokens on. Only the PATH, the git program
-    /// and the transcript folder (which must live inside the temporary folder) differ.
+    /// The same, with the shipped policy as it is: role tokens on and the sandbox on. Only the PATH,
+    /// the git program and the transcript folder (which must live inside the temporary folder) differ.
     pub fn shipped() -> Fx {
-        let fx = Fx::build(false);
+        let fx = Fx::build_with(false, &[], true);
         fx.checks_all_off();
         fx
-    }
-
-    fn build(tokens_off: bool) -> Fx {
-        Fx::build_with(tokens_off, &[])
     }
 
     /// A workspace (its own git repository, with `bf init --workspace` done) that points at the named
     /// code repositories, each a sibling folder with one commit and a README.
     pub fn workspace(repos: &[&str]) -> Fx {
-        let fx = Fx::build_with(true, repos);
+        Fx::workspace_with(repos, sandbox_switch())
+    }
+
+    /// `workspace` with the sandbox switch given for this fixture.
+    pub fn workspace_with(repos: &[&str], sw: Switch) -> Fx {
+        let fx = Fx::build_with(true, repos, sw == Switch::All);
         fx.checks_all_off();
         fx
+    }
+
+    /// `workspace` with the sandbox always on.
+    pub fn workspace_sandboxed(repos: &[&str]) -> Fx {
+        Fx::workspace_with(repos, Switch::All)
     }
 
     /// The main checkout of a code repository made by `workspace`.
@@ -114,7 +258,7 @@ impl Fx {
         self.root.parent().unwrap().join(name)
     }
 
-    fn build_with(tokens_off: bool, repos: &[&str]) -> Fx {
+    fn build_with(tokens_off: bool, repos: &[&str], sandbox: bool) -> Fx {
         let workspace = !repos.is_empty();
         let tmp = TempDir::new().unwrap();
         let root =
@@ -140,8 +284,8 @@ impl Fx {
         let state_base = root.parent().unwrap().join("state");
         let tr_root = root.parent().unwrap().join("transcripts");
         fs::create_dir_all(&tr_root).unwrap();
-        // The fixture's policy: a fixed PATH, no role tokens (the token tests turn them on), and a
-        // transcript root inside the temporary folder. `bf init` keeps a policy that is already there.
+        // The fixture's policy: a fixed PATH, no role tokens (the token tests turn them on), the
+        // sandbox as the switch says, and a transcript root inside the temporary folder. `bf init` keeps a policy that is already there.
         let git_bin = [
             "/opt/homebrew/bin/git",
             "/usr/local/bin/git",
@@ -165,6 +309,14 @@ impl Fx {
                     "in_order = false"
                 } else {
                     "in_order = true"
+                },
+            )
+            .replace(
+                "sandbox = true",
+                if sandbox {
+                    "sandbox = true"
+                } else {
+                    "sandbox = false"
                 },
             )
             .replace(
