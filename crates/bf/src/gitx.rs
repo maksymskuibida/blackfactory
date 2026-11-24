@@ -13,13 +13,43 @@ pub struct Out {
     pub stderr: String,
 }
 
-/// The git program and the PATH to give it, from the policy (captured at `bf init`).
-static GIT_CFG: std::sync::Mutex<Option<(String, String, Option<String>)>> =
-    std::sync::Mutex::new(None);
+/// What git runs with, from the policy (captured at `bf init`): the program, the PATH to give it, and
+/// what its sandbox profile is built from.
+#[derive(Clone, Default)]
+struct GitCfg {
+    git: String,
+    path: String,
+    /// The policy asks for the sandbox.
+    sandbox: bool,
+    /// The state folder with symlinks resolved.
+    state_dir: String,
+    /// The project root.
+    root: String,
+}
 
-/// The git program, the PATH to give it, and the sandbox profile to run it under (if any).
-pub fn configure(git: &str, path: &str, profile: Option<String>) {
-    *GIT_CFG.lock().unwrap() = Some((git.to_string(), path.to_string(), profile));
+static GIT_CFG: std::sync::Mutex<Option<GitCfg>> = std::sync::Mutex::new(None);
+
+/// The git program, the PATH to give it, and what the sandbox profile is built from: whether the
+/// policy asks for the sandbox, the resolved state folder and the root. Whether the sandbox works is
+/// asked only at the first git call that runs, never here.
+pub fn configure(git: &str, path: &str, sandbox: bool, state_dir: &str, root: &str) {
+    *GIT_CFG.lock().unwrap() = Some(GitCfg {
+        git: git.to_string(),
+        path: path.to_string(),
+        sandbox,
+        state_dir: state_dir.to_string(),
+        root: root.to_string(),
+    });
+}
+
+/// The profile a git call runs under, if any. Asks `sandbox::available()` (once per process) only
+/// when the policy asks for the sandbox.
+fn profile_of(cfg: &GitCfg) -> Option<String> {
+    if cfg.sandbox && crate::sandbox::available() {
+        Some(crate::sandbox::git_profile(&cfg.state_dir, &cfg.root))
+    } else {
+        None
+    }
 }
 
 pub fn run(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> R<Out> {
@@ -32,11 +62,9 @@ pub fn run_net(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> R<Out> {
 }
 
 fn run_with(dir: &Path, args: &[&str], envs: &[(&str, &str)], net: bool) -> R<Out> {
-    let (prog, path, profile) = GIT_CFG
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(|| (String::new(), String::new(), None));
+    let cfg = GIT_CFG.lock().unwrap().clone().unwrap_or_default();
+    let profile = profile_of(&cfg);
+    let (prog, path) = (cfg.git, cfg.path);
     let profile = if net {
         profile.map(|p| crate::sandbox::allow_network(&p))
     } else {

@@ -12,10 +12,12 @@ use std::sync::OnceLock;
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// Does `sandbox-exec` exist and run a trivial command under a profile? Checked once per process.
+/// Does `sandbox-exec` exist and run a trivial command under a profile? Checked once per process, and
+/// only when a git call or a check needs the answer (a process that runs neither starts no probe).
 pub fn available() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
+        note_probe();
         cfg!(target_os = "macos")
             && Path::new(SANDBOX_EXEC).exists()
             && Command::new(SANDBOX_EXEC)
@@ -32,6 +34,25 @@ pub fn available() -> bool {
                 .unwrap_or(false)
     })
 }
+
+/// A test build appends one line to the file `BF_TEST_PROBE_LOG` names each time it starts the probe,
+/// so a test can count probes (C-3). A release build has no such seam.
+#[cfg(feature = "test_seam")]
+fn note_probe() {
+    use std::io::Write;
+    if let Some(f) = std::env::var_os("BF_TEST_PROBE_LOG") {
+        if let Ok(mut h) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(f)
+        {
+            let _ = writeln!(h, "probe {}", std::process::id());
+        }
+    }
+}
+
+#[cfg(not(feature = "test_seam"))]
+fn note_probe() {}
 
 fn q(p: &str) -> String {
     format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\""))
