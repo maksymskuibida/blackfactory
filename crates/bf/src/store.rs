@@ -106,6 +106,8 @@ git = {git}
 sandbox = true        # run checks and git under sandbox-exec where it works (macOS); see `bf doctor`
 network = false       # true lets checks reach the network under the sandbox
 env = []              # extra environment variable names a check may see, e.g. ["JAVA_HOME"]
+# {cc_comment}
+compile_cache = ""
 
 [guard]
 allow = "abstain"     # "abstain" prints {{}} and leaves the decision to the harness's own prompts; "allow" approves
@@ -113,6 +115,7 @@ protected_extra = []  # more paths agents may not write
 "#,
         path = toml::Value::String(exec_path.to_string()),
         git = toml::Value::String(git.to_string()),
+        cc_comment = crate::strings::t("cli.policy.compile_cache.comment", &[]),
         approve = toml::Value::Array(
             DEFAULT_APPROVAL
                 .iter()
@@ -563,6 +566,8 @@ pub struct ExecPol {
     pub network: bool,
     /// More environment variable names a check may see, beyond the short built-in list.
     pub env: Vec<String>,
+    /// The absolute path of the sccache program, or empty for no shared compile cache (R-76).
+    pub compile_cache: String,
 }
 impl Default for ExecPol {
     fn default() -> Self {
@@ -572,6 +577,7 @@ impl Default for ExecPol {
             sandbox: true,
             network: false,
             env: Vec::new(),
+            compile_cache: String::new(),
         }
     }
 }
@@ -1548,8 +1554,8 @@ impl Project {
             "command_tools": self.policy.guard.command_tools,
             "input_tools": self.policy.guard.input_tools,
             "absent": match state.as_ref() {
-                Some(s) => json!({"on": crate::absent::is_on(s), "returning": s.absent.returning.keys().collect::<Vec<_>>()}),
-                None => json!({"on": false, "returning": Vec::<String>::new()}),
+                Some(s) => json!({"on": crate::absent::is_on(s), "returning": s.absent.returning.keys().collect::<Vec<_>>(), "deny_tools": self.policy.absent.deny_tools}),
+                None => json!({"on": false, "returning": Vec::<String>::new(), "deny_tools": self.policy.absent.deny_tools}),
             },
             "transcript_root": self.transcript_root(),
             "gen": gen,

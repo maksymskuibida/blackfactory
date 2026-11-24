@@ -1036,21 +1036,29 @@ pub fn edit_of(p: &Project, st: &State, ops: &[Value]) -> R<Edit> {
 /// The plan problems the result has that the plan on disk does not.
 /// The units the approval of `a` would send back to work count as not landed on the result's side.
 pub fn result_problems(p: &Project, a: &Amend, e: &Edit) -> R<Vec<String>> {
-    let base = crate::plan::load(p)?;
+    // The plan in force before the narrowing is the one to compare with: a check the amendment changed
+    // counts as new for the test-target judge, and a problem it adds is the amendment's own (FU-35).
+    let mut before = crate::gates::before_plan(p, a)?;
+    let base = crate::plan::problems_of_edited(
+        p,
+        &before,
+        before.units.clone(),
+        before.checkpoints.clone(),
+        before.checks.clone(),
+        &[],
+    )?;
+    before.handoffs = crate::plan::load(p)?.handoffs;
     let st = crate::events::replay(p)?;
     let reopened = crate::gates::reopen_units_of(&e.units, &st, a);
     let after = crate::plan::problems_of_edited(
         p,
-        &base,
+        &before,
         e.units.clone(),
         e.cps.clone(),
         e.checks.clone(),
         &reopened,
     )?;
-    Ok(after
-        .into_iter()
-        .filter(|x| !base.problems.contains(x))
-        .collect())
+    Ok(after.into_iter().filter(|x| !base.contains(x)).collect())
 }
 
 /// Refuse approval when the plan check finds a problem in what the operations would leave.

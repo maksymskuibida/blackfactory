@@ -1,0 +1,9 @@
+# Strings of the group `closed_stays`: keys are quoted and flat, `"cli.closed_stays.some.key" = "text"`.
+# A closed checkpoint stays closed: the refusal of an amendment that would send its landed units back to work (D-112).
+"cli.closed_stays.narrow_refused" = "narrow {amend}"
+"cli.closed_stays.approve_refused" = "approve {amend}"
+"cli.closed_stays.because" = "the kept set would send {count} landed unit(s) of a closed checkpoint back to work, and a closed checkpoint stays closed: {units}"
+"cli.closed_stays.unit_line" = "{unit} (in the closed checkpoint {checkpoint})"
+"cli.closed_stays.do_this.1" = "Leave {units} out of the kept set, with a reason for each, and put the changed work in a new unit of an open checkpoint."
+"cli.closed_stays.do_this.2" = "Narrow {amend} again with `bf amend narrow --file <f>`."
+"cli.closed_stays.worked_when" = "The command no longer names a unit of a closed checkpoint."

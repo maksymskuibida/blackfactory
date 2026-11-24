@@ -243,12 +243,7 @@ fn an_approved_amendment_reopens_what_it_touches_and_nothing_else() {
             "src/b.txt",
         ],
     );
-    fx.must(&["checkpoint", "close", "K-2"]);
-    assert_eq!(
-        fx.bf(&["ledger", "check"]).code,
-        0,
-        "closed before the amendment"
-    );
+    // K-2 stays open: an approved amendment re-opens an open checkpoint, never a closed one (D-112).
     // The human changes R-2 only.
     let imp = fx
         .must(&["amend", "open", "R-2", "C-9", "D-91", "D-92", "--json"])

@@ -327,6 +327,37 @@ for tool in ("Read", "Edit"):
     if rule not in wanted_deny:
         wanted_deny.append(rule)
 
+# The tools the project's policy names (absent.deny_tools, guard.command_tools, guard.input_tools) are
+# judged by the guard, so the tool hook's matcher must take them in (R-74): each name or prefix is added.
+def policy_tools():
+    path = os.path.join(project, "factory", "policy.toml")
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            pol = tomllib.load(f)
+    except Exception:
+        return []
+    names = []
+    for sect, k in (("absent", "deny_tools"), ("guard", "command_tools"), ("guard", "input_tools")):
+        v = pol.get(sect, {}).get(k, [])
+        if isinstance(v, list):
+            names += [n.strip().rstrip("*") for n in v if isinstance(n, str) and n.strip().rstrip("*")]
+    return names
+
+import re
+extra = policy_tools()
+if extra:
+    for entries in frag.get("hooks", {}).values():
+        for entry in entries:
+            m = entry.get("matcher")
+            if m and "Bash" in m.split("|"):
+                have = m.split("|")
+                for n in extra:
+                    pat = re.escape(n) + ".*"
+                    if pat not in have:
+                        have.append(pat)
+                entry["matcher"] = "|".join(have)
+
 settings = {}
 existed = os.path.exists(settings_path)
 if existed:

@@ -63,6 +63,23 @@ fn fresh(command: &str) -> String {
     fx.bf(&["plan", "check"]).all()
 }
 
+/// The units the old project landed in its closed first checkpoint stay out of a narrowing: an
+/// approved amendment never sends one of them back to work (D-112).
+fn open_only(ids: &serde_json::Value) -> Vec<serde_json::Value> {
+    ids.as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|x| !["U-1", "U-2"].contains(&x.as_str().unwrap_or("")))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn landed_reasons() -> serde_json::Value {
+    serde_json::json!({"U-1": "landed in a closed checkpoint", "U-2": "landed in a closed checkpoint"})
+}
+
 #[test]
 fn plan_targets_reads_a_command() {
     let r = read_command(&words(
@@ -237,7 +254,7 @@ impl Old {
         let f = self.root.join("narrow.json");
         fs::write(
             &f,
-            json!({"amend": aid, "keep": keep, "waive": []}).to_string(),
+            json!({"amend": aid, "keep": open_only(&json!(keep)), "waive": [], "reasons": landed_reasons()}).to_string(),
         )
         .unwrap();
         self.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);

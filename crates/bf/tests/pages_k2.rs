@@ -435,7 +435,11 @@ fn the_amendment_page_shows_tests_beside_changed_files_and_judges_a_new_unit_as_
     let f = old.root.join("narrow.json");
     fs::write(
         &f,
-        json!({"amend": "A-1", "keep": opened["impact_ids"], "waive": []}).to_string(),
+        json!({"amend": "A-1", "waive": [],
+               "keep": opened["impact_ids"].as_array().unwrap().iter()
+                   .filter(|x| !["U-1", "U-2"].contains(&x.as_str().unwrap())).collect::<Vec<_>>(),
+               "reasons": {"U-1": "landed in a closed checkpoint", "U-2": "landed in a closed checkpoint"}})
+        .to_string(),
     )
     .unwrap();
     old.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);

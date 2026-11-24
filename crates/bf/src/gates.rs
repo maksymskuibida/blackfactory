@@ -1874,6 +1874,11 @@ pub fn amend_narrow(p: &Project, file: &Value) -> R<Value> {
             strings::t("cli.amend.narrow.problems.worked_when", &[]),
         ));
     }
+    // A closed checkpoint stays closed: the kept set sends none of its landed units back to work.
+    let mut narrowed = a.clone();
+    narrowed.keep = keep.clone();
+    narrowed.waive = waive.clone();
+    refuse_if_closed_units_reopen(p, &st, &narrowed, "cli.closed_stays.narrow_refused")?;
     // The records of the set as the human reads them now: approval is refused if they change later.
     // Everything that differs from the last approved content, kept records included, is stored with
     // the narrowing; the page shows that list and the fingerprint covers exactly it.
@@ -1934,6 +1939,11 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
     let a = a.unwrap();
     approval_checks(p, &st, a, last_change, true)?;
     let edit = approval_edit_of(p, &st, a)?;
+    let cps = match &edit {
+        Some(e) => e.cps.clone(),
+        None => plan::load(p)?.checkpoints,
+    };
+    let closed_kept = closed_kept_of(&st, a, &cps);
     let unblocked = finish_approval(
         p,
         &st,
@@ -1941,7 +1951,10 @@ pub fn amend_approve(p: &Project, arg: Option<&str>, quote: &str) -> R<Value> {
         edit,
         json!({"turn": seq, "quote": quote.trim(), "tests_rule": true}),
     )?;
-    Ok(json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked}))
+    Ok(
+        json!({"amend": aid, "approved": true, "turn": seq, "unblocked": unblocked,
+        "closed_kept": closed_kept}),
+    )
 }
 
 /// The checks every approval passes, the human's and the judge's (R-69): the stage coverage (a plan
@@ -1970,13 +1983,16 @@ pub(crate) fn approval_checks(
     if let Some(e) = last_change {
         crate::amend::refuse_if_changed_since_narrowing(p, a, e)?;
     }
-    // The checkpoint operations: the plan they leave must pass the plan check before approval (R-64).
+    // A closed checkpoint stays closed: no landed unit of one goes back to work (D-112).
+    refuse_if_closed_units_reopen(p, st, a, "cli.closed_stays.approve_refused")?;
+    // The plan the amendment leaves, with its checkpoint operations if it has any, must pass the plan
+    // check at every approval (R-64, FU-35).
     if !a.ops.is_empty() {
         let e = crate::amend::edit_of(p, st, &a.ops)?;
-        crate::amend::refuse_if_result_breaks_plan(p, a, &e)?;
-        return Ok(());
+        return crate::amend::refuse_if_result_breaks_plan(p, a, &e);
     }
-    // Any other approval: the plan it leaves has no problem that the plan in force has not (R-69).
+    // Any other approval: the plan it leaves has no problem that the plan in force has not, a check it
+    // changed by `bf record put` counting as new for the test-target judge (R-69).
     let added = new_plan_problems(p, a, marker)?;
     if !added.is_empty() {
         let aid = &a.id;
@@ -2002,7 +2018,9 @@ pub(crate) fn approval_checks(
             strings::t("cli.amend.adds_problem.worked_when", &[]),
         ));
     }
-    Ok(())
+    // And the plan the amendment leaves passes the plan check, as with checkpoint operations (FU-35).
+    let e = crate::amend::edit_of(p, st, &a.ops)?;
+    crate::amend::refuse_if_result_breaks_plan(p, a, &e)
 }
 
 /// Refuse while an ID the amendment names has no record (the judge's approval, as the human's).
@@ -2023,11 +2041,10 @@ pub(crate) fn approval_edit_of(
     }
 }
 
-/// The plan problems an approval of `a` (one with no checkpoint operation) would add: those of the plan
-/// on disk now (the records of the narrowing as they stand, with the approval's effect on which units
-/// count as new for the tests rule) that the plan in force before the narrowing did not have.
-pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) -> R<Vec<String>> {
-    let now = plan::load(p)?;
+/// The plan in force before the narrowing of `a`: the plan on disk with each record the amendment
+/// changed put back as it was approved (a new record removed), A
+/// check the amendment changed counts as new against it.
+pub(crate) fn before_plan(p: &Project, a: &events::Amend) -> R<plan::Plan> {
     let mut before = plan::load(p)?;
     for c in &a.changes {
         let rec = if c["record"].is_null() {
@@ -2048,6 +2065,15 @@ pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) ->
             list.push(c["was"].clone());
         }
     }
+    Ok(before)
+}
+
+/// The plan problems an approval of `a` (one with no checkpoint operation) would add: those of the plan
+/// on disk now (the records of the narrowing as they stand, with the approval's effect on which units
+/// count as new for the tests rule) that the plan in force before the narrowing did not have.
+pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) -> R<Vec<String>> {
+    let now = plan::load(p)?;
+    let mut before = before_plan(p, a)?;
     let base: Vec<String> = plan::problems_of_edited(
         p,
         &before,
@@ -2090,6 +2116,112 @@ pub(crate) fn new_plan_problems(p: &Project, a: &events::Amend, marker: bool) ->
         &reopened,
     )?;
     Ok(after.into_iter().filter(|x| !base.contains(x)).collect())
+}
+
+/// The landed units of closed checkpoints that an approval of `a` would send back to work, each with
+/// its checkpoint, from the plan the amendment leaves (its checkpoint operations applied).
+pub(crate) fn closed_units_sent_back(
+    p: &Project,
+    st: &State,
+    a: &events::Amend,
+) -> R<Vec<(String, String)>> {
+    if st.closed.is_empty() {
+        return Ok(vec![]);
+    }
+    let (units, cps) = if a.ops.is_empty() {
+        let pl = plan::load(p)?;
+        (pl.units, pl.checkpoints)
+    } else {
+        let e = crate::amend::edit_of(p, st, &a.ops)?;
+        (e.units, e.cps)
+    };
+    let mut out = vec![];
+    for uid in reopen_units_of(&units, st, a) {
+        let own = units
+            .iter()
+            .find(|u| s(u, "id") == uid)
+            .map(|u| s(u, "checkpoint").to_string())
+            .unwrap_or_default();
+        let k = if st.closed.contains_key(&own) {
+            Some(own)
+        } else {
+            cps.iter()
+                .find(|k| st.closed.contains_key(s(k, "id")) && str_list(k, "after").contains(&uid))
+                .map(|k| s(k, "id").to_string())
+        };
+        if let Some(k) = k {
+            if st.units.get(&uid).is_some_and(|u| u.state == "landed") {
+                out.push((uid, k));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Refuse, naming each unit, an amendment whose kept set would send a landed unit of a closed
+/// checkpoint back to work. `what_key` is the key of the refused command.
+pub(crate) fn refuse_if_closed_units_reopen(
+    p: &Project,
+    st: &State,
+    a: &events::Amend,
+    what_key: &str,
+) -> R<()> {
+    let sent = closed_units_sent_back(p, st, a)?;
+    if sent.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = sent
+        .iter()
+        .map(|(u, k)| {
+            strings::t(
+                "cli.closed_stays.unit_line",
+                &[("unit", u), ("checkpoint", k)],
+            )
+        })
+        .collect();
+    let names: Vec<String> = sent.iter().map(|(u, _)| u.clone()).collect();
+    Err(refuse_owned(
+        strings::t(what_key, &[("amend", &a.id)]),
+        strings::t(
+            "cli.closed_stays.because",
+            &[
+                ("count", &sent.len().to_string()),
+                ("units", &lines.join("; ")),
+            ],
+        ),
+        vec![
+            strings::t(
+                "cli.closed_stays.do_this.1",
+                &[("units", &names.join(", "))],
+            ),
+            strings::t("cli.closed_stays.do_this.2", &[("amend", &a.id)]),
+        ],
+        strings::t("cli.closed_stays.worked_when", &[]),
+    ))
+}
+
+/// The closed checkpoints that prove an ID the approval of `a` changes, each with those IDs: they keep
+/// their earlier proof, and the approval records them as `closed_kept`.
+pub(crate) fn closed_kept_of(st: &State, a: &events::Amend, cps: &[Value]) -> Vec<Value> {
+    let changed: Vec<String> = a
+        .keep
+        .iter()
+        .chain(a.ids.iter())
+        .filter(|i| !a.waive.contains(i))
+        .cloned()
+        .collect();
+    cps.iter()
+        .filter(|k| st.closed.contains_key(s(k, "id")))
+        .filter_map(|k| {
+            let mut ids: Vec<String> = str_list(k, "proves")
+                .into_iter()
+                .filter(|i| changed.contains(i))
+                .collect();
+            ids.sort();
+            ids.dedup();
+            (!ids.is_empty()).then(|| json!({"checkpoint": s(k, "id"), "ids": ids}))
+        })
+        .collect()
 }
 
 /// The units an approval of `a` sends back to work, from the units of the plan it leaves: the one
@@ -2137,9 +2269,13 @@ pub(crate) fn finish_approval(
         .cloned()
         .collect();
     let reopen_units: Vec<String> = reopen_units_of(&pl.units, st, a);
+    // A closed checkpoint stays closed: it is never in the list, its checks' receipts keep counting,
+    // and what it proves that changed is recorded as kept (D-112).
+    let closed_kept = closed_kept_of(st, a, &pl.checkpoints);
     let reopen_checkpoints: Vec<String> = pl
         .checkpoints
         .iter()
+        .filter(|k| !st.closed.contains_key(s(k, "id")))
         .filter(|k| {
             str_list(k, "proves").iter().any(|i| changed.contains(i))
                 || str_list(k, "after")
@@ -2162,6 +2298,23 @@ pub(crate) fn finish_approval(
         })
         .map(|c| s(c, "id").to_string())
         .collect();
+    // The checks of a closed checkpoint, and those of its units, are never re-opened, even when an open
+    // checkpoint that is re-opened lists them as well: their receipts keep counting for the closed one.
+    let closed_cps: Vec<&Value> = pl
+        .checkpoints
+        .iter()
+        .filter(|k| st.closed.contains_key(s(k, "id")))
+        .collect();
+    reopen_checks.retain(|cid| {
+        !closed_cps.iter().any(|k| {
+            str_list(k, "checks").contains(cid)
+                || pl
+                    .checks
+                    .iter()
+                    .find(|c| s(c, "id") == cid)
+                    .is_some_and(|c| str_list(k, "after").contains(&s(c, "unit").to_string()))
+        })
+    });
     reopen_checks.sort();
     reopen_checks.dedup();
     let receipt_floor = crate::evidence::highest_receipt_number(p);
@@ -2190,7 +2343,8 @@ pub(crate) fn finish_approval(
     }
     let mut data = json!({"amend": aid, "content": content,
                "reopen_units": reopen_units, "reopen_checkpoints": reopen_checkpoints,
-               "reopen_checks": reopen_checks, "receipt_floor": receipt_floor,
+               "reopen_checks": reopen_checks, "closed_kept": closed_kept,
+               "receipt_floor": receipt_floor,
                "renamed": edit.as_ref().map(|e| e.renames.clone()).unwrap_or_default()});
     crate::scope::merge_fields(&mut data, who);
     let unblocked = extra.get("unblock_units").cloned().unwrap_or(json!([]));
@@ -2232,9 +2386,27 @@ pub fn accept_policy(p: &Project, quote: &str) -> R<Value> {
             "`bf policy accept` prints the new hash.",
         ));
     }
-    let old = std::fs::read(p.accepted_policy_path())
-        .map(|b| util::sha256_hex(&b))
-        .unwrap_or_default();
+    let old_bytes = std::fs::read(p.accepted_policy_path()).unwrap_or_default();
+    let old = if old_bytes.is_empty() {
+        String::new()
+    } else {
+        util::sha256_hex(&old_bytes)
+    };
+    // The tools the policy names reach the tool hook only through its matcher, which `install.sh`
+    // writes (R-74): a change of those lists means the human runs the installer again.
+    let tool_lists = |text: &str| {
+        toml::from_str::<crate::store::Policy>(text)
+            .map(|pol| {
+                (
+                    pol.absent.deny_tools,
+                    pol.guard.command_tools,
+                    pol.guard.input_tools,
+                )
+            })
+            .unwrap_or_default()
+    };
+    let tools_changed = tool_lists(&String::from_utf8_lossy(&old_bytes))
+        != tool_lists(&String::from_utf8_lossy(&disk));
     let new = util::sha256_hex(&disk);
     events::append(
         p,
@@ -2243,7 +2415,7 @@ pub fn accept_policy(p: &Project, quote: &str) -> R<Value> {
     )?;
     p.store_accepted_policy()?;
     p.write_guard()?;
-    Ok(json!({"accepted": true, "old": old, "new": new}))
+    Ok(json!({"accepted": true, "old": old, "new": new, "reinstall_hook": tools_changed}))
 }
 
 /// The lines that differ between the accepted policy and the file on disk, for the human to read.
