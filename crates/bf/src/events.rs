@@ -1024,6 +1024,8 @@ pub struct State {
     /// Checkpoint ->the review round the human released it at: reviews before it no longer count towards
     /// the number of reviews a checkpoint may have.
     pub ck_review_floor: BTreeMap<String, u32>,
+    /// Checkpoint -> the reviews of a parked checkpoint the human asked for in their own words (D-26).
+    pub ck_asks: BTreeMap<String, u32>,
     /// Events that were well-formed but not valid, e.g. a simulated approval outside a test run.
     pub ignored: Vec<String>,
     pub last_at: String,
@@ -2723,7 +2725,45 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     ev["after_round"].as_u64().unwrap_or(0) as u32,
                 );
             }
+            "checkpoint.review.ask" => {
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let base = round_report_seq(
+                    &st,
+                    &sv("checkpoint"),
+                    ev["after_round"].as_u64().unwrap_or(0) as u32,
+                );
+                let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: another review was asked for while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: another review was asked for with no valid human turn and quote, or words written before the bound"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                *st.ck_asks.entry(sv("checkpoint")).or_insert(0) += 1;
+            }
             "checkpoint.review.done" => {
+                if ev["supersedes"].as_bool().unwrap_or(false) {
+                    let (k, n) = (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32);
+                    ck_rounds.retain(|(c, r), _| !(*c == k && *r < n));
+                }
                 // A round the human ended in their own words uses those words up.
                 if ev["aborted_by_human"].as_bool().unwrap_or(false) {
                     if let Some(i) = turn_ix.get(&ev["turn"].as_u64().unwrap_or(0)) {
