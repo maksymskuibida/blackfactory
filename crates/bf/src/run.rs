@@ -26,6 +26,7 @@ mod report;
 mod roles;
 mod status;
 mod sync;
+pub(crate) mod sync_release;
 mod tokens;
 pub mod unblock;
 mod unit;

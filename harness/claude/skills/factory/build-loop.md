@@ -45,6 +45,7 @@ Do not retell a worker's report in the line. Read every state from the engine (`
 
 ## Engine steps
 
+- A run the shell cuts: run `bf unit land` as one foreground shell call with the shell's longest time limit (ten minutes). It may wait for a place and says so. A call the shell cuts left no receipt and freed its place; it is not a refusal and not a failed check. Run the same command again, which takes a new place at the back of the queue. Treat it as blocked, with that reason, only after two cuts in a row of a run that printed no waiting line, since then the suite itself ran past ten minutes.
 - Land: a refusal about receipts means the work changed after the checks ran. Follow the steps; `bf next` names the re-run.
 - While a checkpoint fix or sync runs the checkpoint's checks, other engine commands wait; one refused after its wait is run again when the checks end.
 - A reviewed unit whose checkpoint has a sync, a fix or a review round open, or another landing turn running, gets no `land` directive: `bf next` lists it under `waiting` with the reason, and offers `land` again when that ends. Nothing is asked of the human.
@@ -60,6 +61,7 @@ Do not retell a worker's report in the line. Read every state from the engine (`
   - Fixed: `bf unit unblock <U> --why "<what is now fixed, in plain words>"`
   - Not fixed yet: `bf unit unblock <U> --wait --why "<why it must wait>"`
   - Only the human can end it: `bf unit unblock <U> --human --why "<why>"`
+- `judge-sync-block`: the resolver of a sync of the main branch reported `blocked` with a reason. Check it against `bf status` and `bf log`, as for `judge-block`. Do not ask the human. Fixed: `bf checkpoint sync <K> --unblock --judgment fixed --reason "<why>"` (the resolver gets a new turn, at most three times until the human releases the sync). Not yet: `--judgment wait`, offered again after the next landing.
 - `answer-question`: a worker asked the human something. Show the question and its options in chat. When the human answers, write `{"choice": "<key>", "note": "<text>"}` to `.bf/drafts/` and run `bf answer <Q> --file <a.json>`. Only that unit waits; the rest goes on.
 - `main_ahead` in `bf status --json` or `bf next --json` (information, not a directive): tell the human in one line that the main branch has work the run lacks and can be taken in at a quiet point. Never do it unasked.
 - Budget: when the engine refuses new work at the cap, tell the human the spend and the cap, and stop.

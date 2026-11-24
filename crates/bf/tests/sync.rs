@@ -478,26 +478,18 @@ fn walk_resolve(fx: &Fx, code: &Path) {
     fs::write(k.join("src/sneaky.txt"), "not asked for\n").unwrap();
     git(&k, &["add", "-A"]);
     git(&k, &["commit", "-q", "-m", "resolve, and more"]);
-    let o = fx.bf_in(
-        &k,
-        &[
-            "report", "K-1", "--role", "builder", "--result", "built", "--token", &token,
-        ],
-    );
-    assert_eq!(o.code, 2, "{}", o.all());
-    assert!(
-        o.stderr
-            .contains("src/sneaky.txt was changed but is not a file either side changed"),
-        "{}",
-        o.stderr
-    );
-    git(&k, &["rm", "-q", "src/sneaky.txt"]);
-    git(&k, &["commit", "-q", "-m", "take the extra file out"]);
+    // The list is a recommendation: the report is taken and the sync's event names the file.
     fx.must_in(
         &k,
         &[
             "report", "K-1", "--role", "builder", "--result", "built", "--token", &token,
         ],
+    );
+    assert!(
+        fs::read_to_string(fx.project().log_path())
+            .unwrap()
+            .contains("src/sneaky.txt"),
+        "the event names the file"
     );
     // The review: the reviewer's brief shows the resolution against both sides; a finding sends it back.
     let d = directive(fx, "review-sync");
@@ -650,8 +642,6 @@ fn abort_puts_the_checkpoint_back_exactly_and_a_parked_sync_waits_for_the_human(
             "builder",
             "--result",
             "blocked",
-            "--note",
-            "I cannot tell which line is right",
         ],
     );
     let d = directive(&fx, "decide-sync");
@@ -814,24 +804,11 @@ fn walk_repair(fx: &Fx, code: &Path) {
         ),
         "deny"
     );
-    // Done outside the guard, a change to a file neither side changed is refused at the report.
+    // Done outside the guard, a change to a file neither side changed is taken, and named.
     fs::remove_file(k.join("src/banned.txt")).unwrap();
     fs::write(k.join("src/other.txt"), "not asked for\n").unwrap();
     git(&k, &["add", "-A"]);
     git(&k, &["commit", "-q", "-m", "repair, and more"]);
-    let o = fx.bf_in(
-        &k,
-        &["report", "K-1", "--role", "builder", "--result", "built"],
-    );
-    assert_eq!(o.code, 2, "{}", o.all());
-    assert!(
-        o.stderr
-            .contains("src/other.txt was changed but is not a file either side changed"),
-        "{}",
-        o.stderr
-    );
-    git(&k, &["rm", "-q", "src/other.txt"]);
-    git(&k, &["commit", "-q", "-m", "only the repair"]);
     // The repair holds: the engine runs the checks through itself, then the reviewer sees the whole fix.
     fx.must_in(
         &k,

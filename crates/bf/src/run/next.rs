@@ -246,6 +246,12 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 "files": sync_files(so),
                 "commands": [format!("bf brief {k} --role reviewer")],
                 "abort_command": format!("bf checkpoint sync {k} --abort")}),
+            "blocked" => match super::sync_release::directive(p, &st, so, &mut waiting) {
+                Some(d) => d,
+                None => {
+                    return Ok(json!({"run": run, "directives": directives, "waiting": waiting}))
+                }
+            },
             _ => json!({"role": "human", "action": "decide-sync", "checkpoint": k,
                 "note": format!("The sync of {k} is parked ({}). The human says whether to try again (`bf checkpoint sync {k} --release --quote \"<their words>\"`) or to go back (`bf checkpoint sync {k} --abort`).", so.reason),
                 "release_command": format!("bf checkpoint sync {k} --release --quote \"<the human's words>\""),

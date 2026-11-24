@@ -78,6 +78,7 @@ const VALUE_FLAGS: &[&str] = &[
     "context",
     "options",
     "reason",
+    "judgment",
     "why",
     "scope",
     "quote",

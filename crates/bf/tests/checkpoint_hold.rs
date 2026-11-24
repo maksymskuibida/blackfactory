@@ -762,6 +762,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("decide-checkpoint-fix", "asking"),
     ("decide-low-findings", "asking"),
     ("decide-sync", "holding:Sync"),
+    ("judge-sync-block", "holding:Sync"),
     ("resolve-sync", "holding:Sync"),
     ("review-sync", "holding:Sync"),
     ("fix-checkpoint", "holding:Fix"),
@@ -1199,7 +1200,7 @@ fn scenario(action: &str) -> Fx {
             }
             fx
         }
-        "resolve-sync" | "review-sync" | "decide-sync" => {
+        "resolve-sync" | "review-sync" | "decide-sync" | "judge-sync-block" => {
             let fx = setup(PASS);
             if action == "decide-sync" {
                 fx.set_policy("max_rounds = 3", "max_rounds = 1");
@@ -1217,7 +1218,11 @@ fn scenario(action: &str) -> Fx {
                     assert_eq!(o.code, 0, "{}", o.all());
                 }
                 "decide-sync" => {
-                    let o = fx.bf_stdin(&k, &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "I cannot tell which line is right"], "");
+                    let o = fx.bf_stdin(&k, &["report", "K-1", "--role", "builder", "--result", "blocked"], "");
+                    assert_eq!(o.code, 0, "{}", o.all());
+                }
+                "judge-sync-block" => {
+                    let o = fx.bf_stdin(&k, &["report", "K-1", "--role", "builder", "--result", "blocked", "--note", "which line is right"], "");
                     assert_eq!(o.code, 0, "{}", o.all());
                 }
                 _ => {}
@@ -1356,7 +1361,7 @@ fn check_row(action: &str) {
 
 /// The rows that have a test of their own below; every holding and asking row of the table must be here.
 const ROW_TESTS: &[&str] = &[
-    "decide-checkpoint-review", "decide-checkpoint-fix", "decide-low-findings", "decide-sync", "resolve-sync", "review-sync",
+    "decide-checkpoint-review", "decide-checkpoint-fix", "decide-low-findings", "decide-sync", "judge-sync-block", "resolve-sync", "review-sync",
     "fix-checkpoint", "review-checkpoint-fix", "fix-wave", "review-wave-fix", "plan-gap", "decide-check", "answer-question",
     "decide-wave-check", "decide-gate", "open-gate", "add-records",
     "go-on-checkpoint-fix",
@@ -1375,6 +1380,7 @@ row_test!(row_decide_checkpoint_review_asks, "decide-checkpoint-review");
 row_test!(row_decide_checkpoint_fix_asks, "decide-checkpoint-fix");
 row_test!(row_decide_low_findings_asks, "decide-low-findings");
 row_test!(row_decide_sync_holds, "decide-sync");
+row_test!(row_judge_sync_block_holds, "judge-sync-block");
 row_test!(row_resolve_sync_holds, "resolve-sync");
 row_test!(row_review_sync_holds, "review-sync");
 row_test!(row_fix_checkpoint_holds, "fix-checkpoint");
