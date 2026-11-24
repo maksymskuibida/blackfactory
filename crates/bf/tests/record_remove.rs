@@ -16,8 +16,7 @@ const K1_OLD: &str = "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\
 
 /// The tiny project with a third unit that only a check and the checkpoint name, in an approved plan.
 fn project() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for (k, t) in [("unit", U3), ("check", X4)] {
         assert_eq!(fx.put(k, t).code, 0);
     }

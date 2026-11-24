@@ -108,8 +108,7 @@ fn a_refusal_in_a_working_copy_names_the_scan_form() {
 }
 
 fn drafts_setup() -> (Fx, String) {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fs::write(fx.root.join("v.json"), "{}").unwrap();
     fs::create_dir_all(fx.root.join("presets")).unwrap();
     fs::write(

@@ -129,8 +129,7 @@ fn a_builder_in_a_workspace_cannot_reach_a_code_repositorys_git_folder() {
 
 #[test]
 fn copying_a_record_out_by_its_absolute_path_is_a_read() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let r = fx.root.display().to_string();
     for cmd in [
         format!("python3 -c \"import shutil; shutil.copy('{r}/factory/records/R-1.toml', '/tmp/r1.toml')\""),
@@ -171,8 +170,7 @@ fn copying_a_record_out_by_its_absolute_path_is_a_read() {
 /// their owners (`File`, `FileUtils`); a key or a method of the same name on anything else passes.
 #[test]
 fn ruby_deleting_through_a_file_object_a_read_returns_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let r = fx.root.display().to_string();
     for cmd in [
         format!("ruby -e \"File.delete(File.open('{r}/factory/policy.toml'))\""),
@@ -201,8 +199,7 @@ fn ruby_deleting_through_a_file_object_a_read_returns_is_refused() {
 /// F-106: the path is a relative literal held in a variable, and the delete names only the variable.
 #[test]
 fn a_delete_through_a_variable_that_holds_a_relative_path_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for cmd in [
         "ruby -e \"f=File.open('factory/policy.toml'); File.delete(f)\"",
         "ruby -e \"require 'fileutils'; f=File.open('factory/records/R-1.toml'); FileUtils.rm_f(f)\"",
@@ -247,8 +244,7 @@ fn a_delete_through_a_variable_is_held_to_the_file_scope_in_a_working_copy() {
 /// F-111, F-113: node deletes by `unlinkSync` and the promise forms, and writes through a variable.
 #[test]
 fn node_unlink_and_writes_through_a_variable_are_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for cmd in [
         "node -e \"const fs=require('fs'); let p='factory/policy.toml'; fs.unlinkSync(p)\"",
         "node -e \"const p='factory/policy.toml'; require('fs').rmdirSync(p)\"",
@@ -308,8 +304,7 @@ fn a_printed_word_next_to_a_delete_is_not_a_write() {
 /// F-119: copies and opens for writing whose destination is a variable.
 #[test]
 fn copies_and_opens_through_a_variable_are_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for cmd in [
         "node -e \"const fs=require('fs'); const p='factory/policy.toml'; fs.copyFileSync('/tmp/x', p)\"",
         "node -e \"const fs=require('fs'); const p='factory/policy.toml'; fs.openSync(p,'w')\"",
@@ -362,8 +357,7 @@ fn a_printed_word_with_a_period_and_a_joined_path_pass_in_a_working_copy() {
 /// F-107: the other call forms on the owners.
 #[test]
 fn other_ruby_call_forms_of_a_file_delete_are_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let r = fx.root.display().to_string();
     for cmd in [
         format!("ruby -e \"f=File.open('{r}/factory/policy.toml'); File::delete(f)\""),
@@ -387,8 +381,7 @@ fn other_ruby_call_forms_of_a_file_delete_are_refused() {
 /// F-109: the words of a call inside a string are data.
 #[test]
 fn a_delete_call_named_in_a_ruby_string_is_not_a_call() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let r = fx.root.display().to_string();
     passes(
         &fx,
@@ -412,8 +405,7 @@ fn a_relative_link_target_is_read_from_the_links_folder() {
 
 #[test]
 fn a_relative_link_made_with_r_reads_its_target_from_the_working_directory() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     std::fs::create_dir_all(fx.root.join("build")).unwrap();
     refused(&fx, &fx.root, "ln -sr factory/records/R-1.toml build/r");
     refused(

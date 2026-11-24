@@ -24,8 +24,7 @@ fn any_clash(fx: &Fx) -> bool {
 
 #[test]
 fn one_checkpoint_different_waves_no_path_is_a_problem() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // U-2 is wave 2 (bye.txt); U-5 is wave 1 and shares bye.txt, with no path to U-2.
     fx.put("unit", &unit("U-5", "src/bye.txt", &[], "K-1"));
     assert!(clash(&fx, "U-2", "U-5"), "{}", fx.bf(&["plan", "check"]).all());
@@ -33,16 +32,14 @@ fn one_checkpoint_different_waves_no_path_is_a_problem() {
 
 #[test]
 fn a_direct_path_orders_the_pair() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.put("unit", &unit("U-5", "src/bye.txt", &["U-2"], "K-1"));
     assert!(!any_clash(&fx), "{}", fx.bf(&["plan", "check"]).all());
 }
 
 #[test]
 fn a_path_through_a_third_unit_orders_the_pair() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.put("unit", &unit("U-3", "src/mid.txt", &["U-2"], "K-1"));
     fx.put("unit", &unit("U-5", "src/bye.txt", &["U-3"], "K-1"));
     assert!(!any_clash(&fx), "{}", fx.bf(&["plan", "check"]).all());
@@ -50,8 +47,7 @@ fn a_path_through_a_third_unit_orders_the_pair() {
 
 #[test]
 fn units_of_different_checkpoints_are_not_compared() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // Same wave as U-1, same file, other checkpoint.
     fx.put("unit", &unit("U-5", "src/hello.txt", &[], "K-2"));
     fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"Five\"\nhow=\"command\"\ncommand=\"test -f src/hello.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-5\"\n");
@@ -63,16 +59,14 @@ fn units_of_different_checkpoints_are_not_compared() {
 
 #[test]
 fn one_checkpoint_one_wave_is_still_a_problem() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.put("unit", &unit("U-5", "src/hello.txt", &[], "K-1"));
     assert!(clash(&fx, "U-1", "U-5"), "{}", fx.bf(&["plan", "check"]).all());
 }
 
 #[test]
 fn the_waves_field_is_unchanged() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let j = fx.bf(&["plan", "check", "--json"]).json();
     assert_eq!(j["waves"], serde_json::json!({"1": ["U-1"], "2": ["U-2"]}), "{j}");
 }
@@ -96,8 +90,7 @@ fn replace(fx: &Fx, kind: &str, text: &str) {
 
 /// A run in which U-1 has landed and U-2 (which waits for it) has not.
 fn run_with_u1_landed() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.checks_all_off();
     fx.start_test_run();
     fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
@@ -129,8 +122,7 @@ fn a_pair_with_a_landed_unit_is_left_out_and_one_with_none_landed_is_not() {
 
 #[test]
 fn a_fixture_with_no_run_compares_every_pair() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // No run has started: U-1 counts as not landed.
     fx.put("unit", &unit("U-5", "src/hello.txt", &[], "K-1"));
     assert!(clash(&fx, "U-1", "U-5"), "{}", fx.bf(&["plan", "check"]).all());
@@ -177,8 +169,7 @@ const K1: &str = "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\nt
 
 /// K-1 holds U-1 (landed), U-2 (waits for U-1) and U-3 (unbuilt, a file of its own, no path to U-1).
 fn run_with_three() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.put("unit", &unit("U-3", "src/three.txt", &[], "K-1"));
     fx.put("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"Three\"\nhow=\"command\"\ncommand=\"test -f src/three.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-3\"\n");
     replace(&fx, "checkpoint", K1);
@@ -250,8 +241,7 @@ fn clash_text(all: &str, a: &str, b: &str) -> bool {
 #[test]
 fn a_checkpoint_operation_beside_a_landed_unit_that_clashes_is_approved() {
     // K-2 holds U-4 and U-5, not started. U-3 of K-1 now shares a file with the landed U-1.
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.put("unit", &unit("U-3", "src/three.txt", &[], "K-1"));
     fx.put("check", "id=\"X-4\"\nkind=\"check\"\ntitle=\"Three\"\nhow=\"command\"\ncommand=\"test -f src/three.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-3\"\n");
     replace(&fx, "checkpoint", K1);

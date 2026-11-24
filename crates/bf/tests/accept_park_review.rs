@@ -27,9 +27,7 @@ fn state_of(fx: &Fx, id: &str) -> String {
 }
 
 fn unit_with_findings(to: &str) -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     finding(&fx, "F-1", "high");
     bf::events::append(

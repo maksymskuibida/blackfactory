@@ -42,8 +42,7 @@ const LINKED_COMPONENT: &str =
 
 #[test]
 fn a_stage_left_out_is_refused_at_approval_and_named() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(&fx, "component", LINKED_COMPONENT);
     not_affected(&fx, "D-91", "ui");
     // requirements: R-2, ui: D-91, architecture: C-9; the plan stage has neither.
@@ -65,8 +64,7 @@ fn a_stage_left_out_is_refused_at_approval_and_named() {
 
 #[test]
 fn every_stage_left_out_is_named() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(
         &fx,
         "requirement",
@@ -95,8 +93,7 @@ fn every_stage_left_out_is_named() {
 
 #[test]
 fn a_record_replaced_after_the_narrowing_is_refused_until_it_is_narrowed_and_read_again() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(&fx, "component", LINKED_COMPONENT);
     not_affected(&fx, "D-91", "ui");
     not_affected(&fx, "D-92", "plan");
@@ -130,8 +127,7 @@ fn a_record_replaced_after_the_narrowing_is_refused_until_it_is_narrowed_and_rea
 
 #[test]
 fn a_requirement_with_no_links_is_refused_by_name() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // R-2 has no links and no design part links to it; every stage is otherwise covered.
     put_ok(
         &fx,
@@ -153,8 +149,7 @@ fn a_requirement_with_no_links_is_refused_by_name() {
 
 #[test]
 fn a_covered_amendment_with_linked_requirements_is_approved_by_one_approval() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(&fx, "component", LINKED_COMPONENT);
     not_affected(&fx, "D-91", "ui");
     not_affected(&fx, "D-92", "plan");
@@ -170,8 +165,7 @@ fn a_covered_amendment_with_linked_requirements_is_approved_by_one_approval() {
 
 #[test]
 fn a_decision_by_the_human_is_no_not_affected_sentence() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(&fx, "component", LINKED_COMPONENT);
     not_affected(&fx, "D-91", "ui");
     put_ok(
@@ -190,8 +184,7 @@ fn a_decision_by_the_human_is_no_not_affected_sentence() {
 
 #[test]
 fn the_view_data_shows_the_four_stages_with_records_or_sentence() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     put_ok(&fx, "component", LINKED_COMPONENT);
     not_affected(&fx, "D-91", "ui");
     fx.must(&["amend", "open", "R-2", "C-9", "D-91"]);
@@ -223,8 +216,7 @@ fn the_view_data_shows_the_four_stages_with_records_or_sentence() {
 
 #[test]
 fn a_finding_with_a_gate_and_no_unit_is_put_and_one_with_neither_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.put(
         "finding",
         "id=\"F-1\"\nkind=\"finding\"\ntitle=\"A requirement is vague\"\ngate=\"requirements\"\n",

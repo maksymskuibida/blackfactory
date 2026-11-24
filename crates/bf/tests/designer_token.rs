@@ -132,8 +132,7 @@ fn the_human_lifts_the_rule_for_one_stage_in_their_words() {
 
 /// The tiny design, put with the rule off, then the rule on.
 fn tiny_with_tokens() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("tokens = false", "tokens = true");
     fx
 }

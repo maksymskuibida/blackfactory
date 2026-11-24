@@ -11,9 +11,7 @@ fn brief_path(fx: &Fx, role: &str) -> PathBuf {
 }
 
 fn started() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx
 }

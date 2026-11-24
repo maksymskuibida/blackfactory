@@ -57,9 +57,7 @@ fn checkpoints_and_idle_runs() {
 
 #[test]
 fn the_engine_prints_the_line_from_the_run() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["progress"]);
     assert_eq!(o.stdout.trim(), "no unit has started");
     fx.build_unit(
@@ -78,9 +76,7 @@ fn the_engine_prints_the_line_from_the_run() {
 
 #[test]
 fn the_round_follows_the_findings() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     fx.must(&["report", "U-1", "--result", "built"]);
     assert_eq!(

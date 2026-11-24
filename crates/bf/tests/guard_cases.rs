@@ -10,7 +10,7 @@ use common::*;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Place {
     Root,
     Wc,
@@ -533,12 +533,9 @@ fn table() -> Vec<Case> {
     ]
 }
 
-fn decision(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
-    let payload =
-        json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd.to_string_lossy()});
-    let o = fx.bf_stdin(cwd, &["guard"], &payload.to_string());
-    assert_eq!(o.code, 0, "{}", o.all());
-    match o.stdout.trim() {
+/// The answer in the guard's output: the decision and its reason (`abstain` when it says nothing).
+fn read_decision(stdout: &str) -> (String, String) {
+    match stdout.trim() {
         "" | "{}" => ("abstain".into(), String::new()),
         s => {
             let v: Value = serde_json::from_str(s).unwrap();
@@ -554,11 +551,26 @@ fn decision(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
     }
 }
 
+fn payload(cwd: &Path, cmd: &str) -> String {
+    json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd.to_string_lossy()})
+        .to_string()
+}
+
+/// The guard's answer to a command, judged by the library function the `bf guard` process calls.
+fn decision(_fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
+    read_decision(&bf::guard::run_hook(&payload(cwd, cmd), cwd, None))
+}
+
+/// The same answer through the `bf guard` process: the end-to-end case of a row.
+fn decision_by_process(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
+    let o = fx.bf_stdin(cwd, &["guard"], &payload(cwd, cmd));
+    assert_eq!(o.code, 0, "{}", o.all());
+    read_decision(&o.stdout)
+}
+
 /// A project whose two units have landed, so checkpoint K-1's working copy exists.
 fn checkpoint_place() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -573,9 +585,7 @@ fn checkpoint_place() -> (Fx, PathBuf) {
 
 /// A project with unit U-1 started: its working copy is where the `Wc` rows run.
 fn unit_place() -> (Fx, PathBuf) {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     (fx, wc)
@@ -586,6 +596,8 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
     let (fx, wc) = unit_place();
     let (fx2, cpwc) = checkpoint_place();
     let mut wrong = Vec::new();
+    // The first two rows of each place and answer also run through the `bf guard` process.
+    let mut by_process: std::collections::HashMap<(Place, bool), usize> = Default::default();
     for case in table() {
         let (f, cwd) = match case.place {
             Root => (&fx, fx.root.clone()),
@@ -593,6 +605,14 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
             Cpwc => (&fx2, cpwc.clone()),
         };
         let (d, why) = decision(f, &cwd, case.cmd);
+        let mut process_row = None;
+        let n = by_process
+            .entry((case.place, case.want == Refused))
+            .or_default();
+        if case.waits.is_none() && *n < 2 {
+            *n += 1;
+            process_row = Some(decision_by_process(f, &cwd, case.cmd));
+        }
         let got = if d == "deny" { Refused } else { Passed };
         // A waiting row is held to the answer it has today (refused); once its unit lands, the row
         // loses its `waits` and is held to the answer it wants.
@@ -601,16 +621,22 @@ fn every_case_the_third_review_measured_wrong_answers_as_expected() {
         } else {
             case.want
         };
-        if got != expect {
-            wrong.push(format!(
-                "#{} ({:?}) wanted {:?}, got {:?}: {}\n    {}",
-                case.n,
-                case.place,
-                case.want,
-                got,
-                case.cmd.replace('\n', "\\n"),
-                why.lines().next().unwrap_or("")
-            ));
+        let mut answers = vec![("library", got, why)];
+        if let Some((pd, pwhy)) = process_row {
+            answers.push(("process", if pd == "deny" { Refused } else { Passed }, pwhy));
+        }
+        for (how, got, why) in answers {
+            if got != expect {
+                wrong.push(format!(
+                    "#{} ({:?}, {how}) wanted {:?}, got {:?}: {}\n    {}",
+                    case.n,
+                    case.place,
+                    case.want,
+                    got,
+                    case.cmd.replace('\n', "\\n"),
+                    why.lines().next().unwrap_or("")
+                ));
+            }
         }
     }
     assert!(wrong.is_empty(), "wrong answers:\n{}", wrong.join("\n"));
@@ -670,6 +696,10 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         };
         let (d, why) = decision(&fx, &cwd, cmd);
         assert_ne!(d, "deny", "should pass: {cmd}\n{why}");
+        if std::ptr::eq(cmd, &passes[0].1) {
+            let (d, why) = decision_by_process(&fx, &cwd, cmd);
+            assert_ne!(d, "deny", "should pass by process: {cmd}\n{why}");
+        }
     }
     let refuses: &[(Place, &str)] = &[
         // A file outside the unit's list is a file of its copy; a protected one is not.
@@ -722,6 +752,10 @@ fn the_honest_neighbours_of_the_cases_still_pass() {
         };
         let (d, _) = decision(&fx, &cwd, cmd);
         assert_eq!(d, "deny", "should be refused: {cmd}");
+        if std::ptr::eq(cmd, &refuses[0].1) {
+            let (d, _) = decision_by_process(&fx, &cwd, cmd);
+            assert_eq!(d, "deny", "should be refused by process: {cmd}");
+        }
     }
 }
 
@@ -774,8 +808,7 @@ fn strings(v: &[&str]) -> Vec<String> {
 /// and a folder unpacked into one is judged by the folder.
 #[test]
 fn a_file_put_into_the_folder_of_a_protected_file_is_judged_where_it_lands() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let _ = std::fs::create_dir_all(fx.root.join(".claude"));
     let refused = strings(&[
         "cp /tmp/settings.json .claude/",
@@ -829,8 +862,7 @@ fn a_file_put_into_the_folder_of_a_protected_file_is_judged_where_it_lands() {
 /// code that can write them is refused at both.
 #[test]
 fn a_filtered_find_handing_matches_to_reading_code_gets_one_answer_at_every_depth() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -924,8 +956,7 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
         "refused",
     );
     // From the main checkout the protected files stay out of reach whatever the option words are.
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -956,8 +987,7 @@ fn the_mode_and_value_words_of_the_writers_are_not_paths() {
 /// Z-4: honest commands from the main checkout that touch nothing protected pass.
 #[test]
 fn honest_cleaning_and_unstaging_from_the_main_checkout_pass() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,
@@ -1041,7 +1071,12 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
     check_rows(
         &fx,
         &wc,
-        &strings(&["git restore --staged .", "git checkout -- .", "git revert HEAD", "git stash pop"]),
+        &strings(&[
+            "git restore --staged .",
+            "git checkout -- .",
+            "git revert HEAD",
+            "git stash pop",
+        ]),
         "refused",
     );
 }
@@ -1050,8 +1085,7 @@ fn the_root_of_a_working_copy_is_judged_like_a_folder() {
 /// one that opens it for writing stays refused.
 #[test]
 fn an_interpreter_reading_a_record_by_its_absolute_path_passes() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let root = fx.root.to_string_lossy().to_string();
     let rec = format!("{root}/factory/records/R-1.toml");
     let passed = vec![
@@ -1090,8 +1124,7 @@ fn an_interpreter_reading_a_record_by_its_absolute_path_passes() {
 /// A filtered `find` that hands its matches to code that writes them is a delete of the matches.
 #[test]
 fn a_filtered_find_that_hands_matches_to_writing_code_is_judged_as_a_delete() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     check_rows(
         &fx,
         &fx.root,

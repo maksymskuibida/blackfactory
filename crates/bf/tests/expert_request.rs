@@ -89,8 +89,7 @@ fn an_ask_gives_the_audit_directive_with_a_token_and_no_review() {
 
 #[test]
 fn an_ask_that_names_no_unit_is_refused() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let f = fx.root.join("ask.toml");
     fs::write(&f, "kind=\"finding\"\ntitle=\"t\"\nasks=\"security\"\n").unwrap();
     let o = fx.bf(&["record", "put", "finding", "--file", f.to_str().unwrap()]);
@@ -121,9 +120,7 @@ fn two_asks_give_one_directive_and_the_report_closes_both() {
 
 #[test]
 fn the_auditor_still_reports_on_a_unit_with_no_ask() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.set_policy("tokens = false", "tokens = true");
     fx.must(&["unit", "start", "U-1"]);
     let t = fx.must(&["roles", "token", "U-1", "security-auditor", "--json"]).json()["token"]

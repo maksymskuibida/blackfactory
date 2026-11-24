@@ -8,20 +8,25 @@ use std::time::Duration;
 
 /// A project whose idle limit is zero, with a run and U-1 at work.
 fn at_work() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("idle_minutes = 60", "idle_minutes = 0");
     fx.start_test_run();
     fx.must(&["unit", "start", "U-1"]);
     fx
 }
 
+/// Only `bf next` reads the real clock, so the one test that goes through it still waits.
 fn wait_a_while() {
     std::thread::sleep(Duration::from_millis(1100));
 }
 
+/// The idle check judged two seconds from now, with the clock handed to the library.
+fn later() -> u64 {
+    bf::util::now_secs() + 2
+}
+
 fn stuck(fx: &Fx) -> serde_json::Value {
-    fx.must(&["stuck", "--dry-run", "--json"]).json()
+    bf::run::stuck_at(&fx.project(), true, later()).unwrap()
 }
 
 fn parked_now(fx: &Fx) -> usize {
@@ -76,13 +81,11 @@ fn a_paused_unit_is_not_parked_and_gets_no_directive() {
 fn after_a_resume_the_unit_is_parked_again() {
     let fx = at_work();
     fx.must(&["unit", "pause", "U-1"]);
-    wait_a_while();
     assert_eq!(parked_now(&fx), 0);
     let o = fx.must(&["unit", "resume", "U-1", "--json"]).json();
     assert!(o["line"].as_str().unwrap().contains("U-1"));
-    wait_a_while();
     assert_eq!(parked_now(&fx), 1);
-    fx.must(&["stuck"]);
+    bf::run::stuck_at(&fx.project(), false, later()).unwrap();
     assert_eq!(state_of(&fx, "U-1"), "parked");
 }
 
@@ -90,14 +93,12 @@ fn after_a_resume_the_unit_is_parked_again() {
 fn a_unit_with_an_open_question_is_not_parked() {
     let fx = at_work();
     fx.must(&["ask", "--unit", "U-1", "--title", "Which colour?"]);
-    wait_a_while();
     assert_eq!(parked_now(&fx), 0);
 }
 
 #[test]
 fn a_unit_named_by_an_open_amendment_is_not_parked() {
     let fx = at_work();
-    wait_a_while();
     assert_eq!(parked_now(&fx), 1);
     fx.must(&["amend", "open", "U-1"]);
     assert_eq!(parked_now(&fx), 0);
@@ -175,9 +176,7 @@ fn start_long_ago(fx: &Fx, unit: &str) {
 
 #[test]
 fn the_answer_to_a_question_restarts_the_clock() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     start_long_ago(&fx, "U-1");
     // The idle limit is the policy's 60 minutes and the unit has been silent far longer.
     assert_eq!(parked_now(&fx), 1);

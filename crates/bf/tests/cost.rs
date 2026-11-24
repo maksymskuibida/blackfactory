@@ -5,9 +5,7 @@ use common::Fx;
 
 #[test]
 fn the_cost_of_a_role_report_counts_in_the_spend() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.must(&["unit", "start", "U-1"]);
     let o = fx.bf(&[
         "report",
@@ -59,8 +57,7 @@ fn the_cost_of_a_role_report_on_the_design_counts_in_the_total() {
 
 #[test]
 fn a_role_report_cost_that_reaches_the_cap_stops_new_work() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("cap = 0.0", "cap = 2.0");
     fx.start_test_run();
     fx.must(&["unit", "start", "U-1"]);

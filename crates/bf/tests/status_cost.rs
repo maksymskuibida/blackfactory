@@ -58,7 +58,7 @@ fn count_through_policy(fx: &Fx) -> PathBuf {
 
 #[test]
 fn status_makes_at_most_two_git_calls_on_a_project_without_a_checkpoint_branch() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let log = count_through_policy(&fx);
     fs::write(&log, "").unwrap();
     let o = fx.must(&["status", "--json"]);
@@ -85,15 +85,13 @@ fn ls_tree_calls(fx: &Fx) -> usize {
 
 #[test]
 fn the_plan_check_runs_no_ls_tree_when_no_check_names_a_target() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     assert_eq!(ls_tree_calls(&fx), 0);
 }
 
 #[test]
 fn the_plan_check_runs_one_ls_tree_when_a_check_names_a_test_target() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"target\"\nhow=\"command\"\ncommand=\"cargo test --test nothing_here\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n");
     assert_eq!(o.code, 0, "{}", o.all());
     fx.commit_all("a check that names a target");

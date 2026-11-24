@@ -179,7 +179,10 @@ pub fn observe_holds(p: &Project) -> R<()> {
             receipts = Some(evidence::load_receipts(p)?);
         }
         let rs = receipts.as_deref().unwrap_or(&[]);
-        let content = p.content_hash(&p.work_dir().join(kid)).unwrap_or_default();
+        // Within a landing the hash comes from its memo when the engine has written nothing in the copy
+        // since (U-118); outside a landing it is taken anew.
+        let content = crate::gitx::workdir_hash_memo(&p.work_dir().join(kid), !p.workspace)
+            .unwrap_or_default();
         let marked: Vec<String> = str_list(k, "checks")
             .into_iter()
             .filter(|c| evidence::standing_unaccepted(&st, rs, kid, c, &content).is_some())

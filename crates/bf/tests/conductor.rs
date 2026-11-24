@@ -8,8 +8,7 @@ use std::fs;
 
 #[test]
 fn next_says_plainly_when_nothing_can_start_and_why() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     // Before the plan gate: only a human directive.
     let n = fx.must(&["next", "--json"]).json();
@@ -47,9 +46,7 @@ fn next_says_plainly_when_nothing_can_start_and_why() {
 
 #[test]
 fn next_reports_a_finished_run() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -85,8 +82,7 @@ fn next_reports_a_finished_run() {
 
 #[test]
 fn a_verifier_can_be_briefed_on_a_checkpoint() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.must(&["brief", "K-1", "--role", "verifier"]);
     let text = fs::read_to_string(o.stdout.trim()).unwrap();
     assert!(
@@ -254,9 +250,7 @@ fn an_idea_is_a_record_kind_and_idea_md_is_shown_at_the_idea_gate() {
 
 #[test]
 fn a_reviewer_with_nothing_to_report_moves_the_unit_on_and_findings_can_be_filed_by_record() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     // Land U-1 properly, then do U-2: the reviewer files a finding as a record, from the unit's own working copy.

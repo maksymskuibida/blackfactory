@@ -39,7 +39,7 @@ fn started_unit(fx: &Fx) -> PathBuf {
 
 #[test]
 fn a_policy_edited_by_hand_stops_every_command_until_the_human_accepts_it() {
-    let fx = Fx::new();
+    let fx = Fx::new_real();
     fx.tiny();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
@@ -236,9 +236,7 @@ fn a_payload_shaped_like_claude_codes_is_recorded_before_the_transcript_has_the_
 
 #[test]
 fn the_guard_reads_bf_calls_literally_and_keeps_agents_out_of_the_transcripts() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let wc = started_unit(&fx);
     let root = fx.root.to_string_lossy().to_string();
     for cmd in [
@@ -369,7 +367,7 @@ fn sandbox_active(fx: &Fx) -> bool {
 
 #[test]
 fn a_check_cannot_read_the_key_or_write_the_records_but_an_ordinary_script_passes() {
-    let fx = Fx::new();
+    let fx = Fx::new_real_with(Switch::All);
     fx.tiny();
     let key = fx.state_dir().join("key");
     let secret = fs::read_to_string(&key).unwrap();
@@ -419,7 +417,7 @@ fn a_check_cannot_read_the_key_or_write_the_records_but_an_ordinary_script_passe
 
 #[test]
 fn the_sandbox_costs_a_little_and_the_policy_can_switch_it_off() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.put(
         "requirement",
         "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"x\"\n",
@@ -482,7 +480,6 @@ fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_info
     );
     fx.must(&["evidence", "run", "X-5", "--", "true"]);
     // A version manager rehashes its shims: the folder changes, the check still runs.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(extra_dir.join("shim"), "#!/bin/sh\nexit 0\n").unwrap();
     let o = fx.must(&[
         "evidence",
@@ -523,8 +520,7 @@ fn a_changed_folder_on_the_check_path_does_not_stop_a_check_and_doctor_only_info
 
 #[test]
 fn bf_next_shows_the_token_of_every_open_directive_every_time() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     // Every ask gives the same token for the same open directive: a conductor that resumes, or a new
@@ -578,9 +574,7 @@ fn bf_next_shows_the_token_of_every_open_directive_every_time() {
 
 #[test]
 fn ordinary_reads_and_git_housekeeping_are_not_refused() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let wc = started_unit(&fx);
     for (cwd, cmd) in [
         (&fx.root, "cat factory/records/R-1.toml 2>/dev/null"),
@@ -640,8 +634,7 @@ fn ordinary_reads_and_git_housekeeping_are_not_refused() {
 
 #[test]
 fn the_state_folder_cannot_be_found_by_its_parent_or_by_variables() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let base = fx.state_base.to_string_lossy().to_string();
     assert_eq!(
         guard_decision(
@@ -676,8 +669,7 @@ fn the_state_folder_cannot_be_found_by_its_parent_or_by_variables() {
 
 #[test]
 fn a_named_project_is_the_only_project_the_guard_looks_at() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // A folder above the project that happens to have a factory/ folder.
     let above = fx.root.parent().unwrap().join("factory");
     fs::create_dir_all(above.join("log")).unwrap();
@@ -709,8 +701,7 @@ fn a_named_project_is_the_only_project_the_guard_looks_at() {
 
 #[test]
 fn an_older_guard_table_put_back_is_not_trusted() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let table = fx.root.join(".bf/guard.json");
     let old = fs::read_to_string(&table).unwrap();
     // A later command writes a newer table.
@@ -753,8 +744,7 @@ fn an_older_guard_table_put_back_is_not_trusted() {
 
 #[test]
 fn one_unreadable_record_file_does_not_break_status_and_is_named() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fs::write(
         fx.root.join("factory/records/R-9.toml"),
         "id = \"R-9\"\nkind = [ this is not toml\n",
@@ -785,8 +775,7 @@ fn one_unreadable_record_file_does_not_break_status_and_is_named() {
 
 #[test]
 fn a_program_replaced_after_the_plan_gate_is_noted_in_the_receipt_and_the_check_still_runs() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let tools = fx.root.parent().unwrap().join("tools");
     fs::create_dir_all(&tools).unwrap();
     let tool = tools.join("checkit");

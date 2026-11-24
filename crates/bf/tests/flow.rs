@@ -1038,7 +1038,8 @@ fn a_unit_brief_quotes_the_text_of_an_other_answer() {
 
 #[test]
 fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
-    let fx = Fx::with_checks();
+    // A real init: a copied template has recorded the human's acceptance of its own policy.
+    let fx = Fx::with_checks_real();
     // A conductor at work (questions asked), and not one message of the human recorded.
     let q = ask_file(
         &fx,
@@ -1113,7 +1114,8 @@ fn a_run_with_no_recorded_human_message_says_so_and_a_normal_run_does_not() {
 
 #[test]
 fn bf_next_carries_the_note_in_its_json_and_on_stderr() {
-    let fx = Fx::with_checks();
+    // A real init: a copied template has recorded the human's acceptance of its own policy.
+    let fx = Fx::with_checks_real();
     // Deciding the checks takes a human message, which this test must not have yet: the run starts
     // on a project with no plan, so there is nothing to check, and nothing the human wrote is recorded.
     fx.must(&["run", "start"]);

@@ -55,12 +55,43 @@ fn start(fx: &Fx) {
     fx.must(&["unit", "land", "U-1"]);
 }
 
-fn setup(x2: &str) -> Fx {
+/// The state every test starts from, built through the full `bf` calls (unit start, evidence run, the
+/// two reports and land): kept by one test so that the path of building it stays covered.
+fn setup_built(x2: &str) -> Fx {
     let fx = Fx::new();
     fx.human(OLD0);
     plan(&fx, x2);
     start(&fx);
     fx
+}
+
+fn pass_state(fx: &Fx) {
+    fx.human(OLD0);
+    plan(fx, PASS);
+    start(fx);
+}
+
+fn grep_state(fx: &Fx) {
+    fx.human(OLD0);
+    plan(fx, GREP);
+    start(fx);
+}
+
+/// The states of this file, each built once by those calls and copied per test (D-140).
+const STATES: [(&str, Build); 2] = [("checkpoint_hold::pass", pass_state), ("checkpoint_hold::grep", grep_state)];
+
+/// The same state as `setup_built`, copied.
+fn setup(x2: &str) -> Fx {
+    let (name, build) = if x2 == PASS { STATES[0] } else { STATES[1] };
+    Fx::state_copy(name, build)
+}
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: each state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    for (name, build) in STATES {
+        require_sandbox_from_env(&Fx::state_copy(name, build));
+    }
 }
 
 fn brief(fx: &Fx) -> Out {
@@ -251,7 +282,7 @@ fn words_written_during_an_open_sync_decide_nothing_during_it_or_after() {
 // No lock: the sync's own abort needs no words, and a message written after it decides.
 #[test]
 fn the_sync_abort_needs_no_words_and_a_new_message_decides() {
-    let fx = setup(PASS);
+    let fx = setup_built(PASS);
     report(&fx, json!([f("high", "the answer is wrong")]));
     abort_fix(&fx);
     open_conflicting_sync(&fx);
@@ -716,9 +747,7 @@ fn a_sync_of_main_is_refused_while_a_checkpoint_fix_is_parked() {
 // Old logs: a run with the checkpoint review off writes no hold event that matters and replays clean.
 #[test]
 fn a_run_with_the_checkpoint_review_off_has_no_ignored_event() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     fx.build_unit("U-1", "src/hello.txt", "X-1", &["test", "-f", "src/hello.txt"]);
     fx.build_unit("U-2", "src/bye.txt", "X-2", &["test", "-f", "src/bye.txt"]);
     let o = fx.bf(&["log", "--verify"]);

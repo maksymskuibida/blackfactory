@@ -65,9 +65,7 @@ fn judge(fx: &Fx, cwd: &Path, cmd: &str) -> (String, String) {
 /// file: the guard refuses the write of a protected path, and the unit does not land on it.
 #[test]
 fn probe_p4b_a_file_list_changed_in_an_unapproved_repair_grants_nothing() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fx.must(&["amend", "open", "--repair", "U-1"]);

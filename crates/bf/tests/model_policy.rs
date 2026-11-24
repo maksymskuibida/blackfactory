@@ -53,7 +53,7 @@ fn bf_policy_prints_the_advising_entry() {
 
 #[test]
 fn a_model_named_outright_is_printed_and_changes_only_when_the_human_accepts() {
-    let fx = Fx::new();
+    let fx = Fx::new_real();
     let pol = fx.root.join("factory/policy.toml");
     let t = fs::read_to_string(&pol).unwrap();
     fs::write(
@@ -71,8 +71,7 @@ fn a_model_named_outright_is_printed_and_changes_only_when_the_human_accepts() {
 
 #[test]
 fn a_builder_and_a_conductor_directive_carry_their_tier_and_effort() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     let d = &directives(&fx)[0];
     assert_eq!(d["role"], "human", "{d}");

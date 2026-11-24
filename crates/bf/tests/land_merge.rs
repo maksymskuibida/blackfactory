@@ -54,12 +54,14 @@ fn plan_full(fx: &Fx, named: bool, list: &[&str], project: Option<&str>) {
     }
     let out = out_dir(fx);
     fs::create_dir_all(&out).unwrap();
+    // The scripts find the out folder from where they run and log the folder's name below `.bf/`, so no
+    // file of the project holds an absolute path (a copied state keeps none of its build folder).
+    let find_out = "case \"$PWD\" in */.bf/work/*) out=\"$PWD/../../../../out\" ;; *) out=\"$PWD/../out\" ;; esac\n";
     let script = format!(
-        "echo \"$PWD\" >> {out}/suite.log\ncase \"$PWD\" in */K-1) ;; *) exit 0 ;; esac\nif [ -f {out}/untrack ] && [ -f src/bad.txt ]; then git rm -q --cached src/a.txt; fi\nif [ -f src/bad.txt ]; then echo \"test land_merge::bad ... FAILED\"; exit 1; fi\nif [ -f {out}/flaky ] && [ ! -f {out}/flaky.done ]; then touch {out}/flaky.done; echo \"test land_merge::flaky ... FAILED\"; exit 1; fi\nexit 0\n",
-        out = out.display()
+        "{find_out}echo \"${{PWD##*/.bf/}}\" >> \"$out/suite.log\"\ncase \"$PWD\" in */K-1) ;; *) exit 0 ;; esac\nif [ -f \"$out/untrack\" ] && [ -f src/bad.txt ]; then git rm -q --cached src/a.txt; fi\nif [ -f src/bad.txt ]; then echo \"test land_merge::bad ... FAILED\"; exit 1; fi\nif [ -f \"$out/flaky\" ] && [ ! -f \"$out/flaky.done\" ]; then touch \"$out/flaky.done\"; echo \"test land_merge::flaky ... FAILED\"; exit 1; fi\nexit 0\n"
     );
     fs::write(fx.root.join("suite.sh"), script).unwrap();
-    fs::write(fx.root.join("other.sh"), format!("echo \"$PWD\" >> {}/other.log\n", out.display())).unwrap();
+    fs::write(fx.root.join("other.sh"), format!("{find_out}echo \"${{PWD##*/.bf/}}\" >> \"$out/other.log\"\n")).unwrap();
     fx.commit_all("records");
     fx.human("yes, make this a test run with simulated approvals");
     fx.must(&["test-mode", "grant", "--quote", "yes, make this a test run with simulated approvals"]);
@@ -126,6 +128,44 @@ fn all_built(fx: &Fx) -> Vec<PathBuf> {
         .collect()
 }
 
+// The states the tests start from, each built once by these calls and copied per test (D-140). The test
+// `land_merge_one_unit_not_behind_lands_on_its_own_receipt_with_no_new_run` builds its state through the
+// full calls, so the path of building it stays covered.
+
+fn planned(fx: &Fx) {
+    plan(fx);
+}
+
+fn named_planned(fx: &Fx) {
+    plan_with(fx, true);
+}
+
+fn one_built(fx: &Fx) {
+    plan(fx);
+    built(fx, "1", "src/a.txt", "one\n");
+}
+
+fn two_built(fx: &Fx) {
+    one_built(fx);
+    built(fx, "2", "src/b.txt", "two\n");
+}
+
+fn three_built(fx: &Fx) {
+    plan(fx);
+    all_built(fx);
+}
+
+fn bad_middle(fx: &Fx) {
+    one_built(fx);
+    built(fx, "2", "src/bad.txt", "bad\n");
+    built(fx, "3", "src/c.txt", "three\n");
+}
+
+/// A copy of one of the states above, with the sandbox on as in `Fx::sandboxed()`.
+fn copy(name: &str, build: fn(&Fx)) -> Fx {
+    Fx::state_copy_with(&format!("land_merge::{name}"), Switch::All, build)
+}
+
 fn state(fx: &Fx, u: &str) -> bf::events::UnitSt {
     bf::events::replay(&fx.project()).unwrap().units[u].clone()
 }
@@ -148,9 +188,8 @@ fn mark(fx: &Fx) -> PathBuf {
 
 #[test]
 fn land_merge_three_clean_units_land_in_one_turn_with_one_run() {
-    let fx = Fx::new();
-    plan(&fx);
-    let wcs = all_built(&fx);
+    let fx = copy("three_built", three_built);
+    let wcs: Vec<PathBuf> = ["U-1", "U-2", "U-3"].iter().map(|u| fx.work(u)).collect();
     // The landing removes the working copies, so their content is read first.
     let before: Vec<String> = wcs.iter().map(|w| fx.project().content_hash(w).unwrap()).collect();
     let o = fx.must(&["unit", "land", "U-2", "--json"]).json();
@@ -184,7 +223,7 @@ fn land_merge_three_clean_units_land_in_one_turn_with_one_run() {
 
 #[test]
 fn land_merge_one_unit_not_behind_lands_on_its_own_receipt_with_no_new_run() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     plan(&fx);
     built(&fx, "1", "src/a.txt", "one\n");
     fx.must(&["unit", "land", "U-1"]);
@@ -195,9 +234,7 @@ fn land_merge_one_unit_not_behind_lands_on_its_own_receipt_with_no_new_run() {
 
 #[test]
 fn land_merge_a_receipt_that_names_the_compile_cache_is_not_used() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
+    let fx = copy("one_built", one_built);
     let p = fx.project();
     let key = bf::evidence::read_key(&p).unwrap();
     for r in bf::evidence::load_receipts(&p).unwrap().into_iter().filter(|r| r.check() == "attached:suite") {
@@ -215,10 +252,7 @@ fn land_merge_a_receipt_that_names_the_compile_cache_is_not_used() {
 
 #[test]
 fn land_merge_a_land_during_a_turn_waits_and_the_turn_keeps_sync_and_fix_out() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
-    built(&fx, "2", "src/b.txt", "two\n");
+    let fx = copy("two_built", two_built);
     let mut child = Command::new(bin())
         .args(["unit", "land", "U-1"])
         .current_dir(&fx.root)
@@ -271,14 +305,11 @@ fn land_merge_a_land_during_a_turn_waits_and_the_turn_keeps_sync_and_fix_out() {
 
 #[test]
 fn land_merge_the_requested_unit_whose_second_merge_fails_is_refused_not_reported_landed() {
-    let fx = Fx::new();
     // On a failing suite in the checkpoint's copy the suite leaves U-1's file behind untracked: the three
     // units fail together, the branch goes back, and U-1's second merge stops on that file with no conflict.
-    plan(&fx);
+    // The suite reads the marker only in the checkpoint's copy, so it is set after the units are built.
+    let fx = copy("bad_middle", bad_middle);
     fs::write(out_dir(&fx).join("untrack"), "").unwrap();
-    built(&fx, "1", "src/a.txt", "one\n");
-    built(&fx, "2", "src/bad.txt", "bad\n");
-    built(&fx, "3", "src/c.txt", "three\n");
     let o = fx.bf(&["unit", "land", "U-1"]);
     assert_eq!(o.code, 2, "{}", o.all());
     assert!(!o.all().contains("landed on its checkpoint branch"), "{}", o.all());
@@ -288,9 +319,7 @@ fn land_merge_the_requested_unit_whose_second_merge_fails_is_refused_not_reporte
 
 #[test]
 fn land_merge_a_sync_holds_the_turn_lock_so_a_land_waits_behind_it() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
+    let fx = copy("one_built", one_built);
     let mut child = Command::new(bin())
         .args(["checkpoint", "sync", "K-1", "--local", "--quote", "x"])
         .current_dir(&fx.root)
@@ -319,9 +348,7 @@ fn land_merge_a_sync_holds_the_turn_lock_so_a_land_waits_behind_it() {
 
 #[test]
 fn land_merge_a_unit_with_an_open_finding_is_left_out() {
-    let fx = Fx::new();
-    plan(&fx);
-    all_built(&fx);
+    let fx = copy("three_built", three_built);
     let o = fx.put("finding", "id=\"F-1\"\nkind=\"finding\"\ntitle=\"t\"\nunit=\"U-2\"\nseverity=\"high\"\naction=\"Change it\"\n");
     assert_eq!(o.code, 0, "{}", o.all());
     let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
@@ -333,11 +360,7 @@ fn land_merge_a_unit_with_an_open_finding_is_left_out() {
 
 #[test]
 fn land_merge_the_unit_whose_merged_content_fails_twice_goes_to_its_builder() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
-    built(&fx, "2", "src/bad.txt", "bad\n");
-    built(&fx, "3", "src/c.txt", "three\n");
+    let fx = copy("bad_middle", bad_middle);
     let o = fx.must(&["unit", "land", "U-1", "--json"]).json();
     assert_eq!(o["landed"], true, "{o}");
     assert_eq!(state(&fx, "U-1").state, "landed");
@@ -360,10 +383,7 @@ fn land_merge_the_unit_whose_merged_content_fails_twice_goes_to_its_builder() {
 
 #[test]
 fn land_merge_a_suite_that_fails_once_lands_the_unit_with_both_receipts_kept() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
-    built(&fx, "2", "src/b.txt", "two\n");
+    let fx = copy("two_built", two_built);
     fs::write(out_dir(&fx).join("flaky"), "").unwrap();
     fx.must(&["unit", "land", "U-1"]);
     assert_eq!(state(&fx, "U-1").state, "landed");
@@ -375,8 +395,7 @@ fn land_merge_a_suite_that_fails_once_lands_the_unit_with_both_receipts_kept() {
 
 #[test]
 fn land_merge_one_unit_that_fails_once_is_run_again_before_it_is_blamed() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = copy("planned", planned);
     // U-2 is cut before U-1 lands, so it is behind and its merged content is new.
     let w2 = PathBuf::from(fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"].as_str().unwrap());
     built(&fx, "1", "src/a.txt", "one\n");
@@ -407,9 +426,7 @@ fn crashed_turn(fx: &Fx) {
 
 #[test]
 fn land_merge_after_a_crash_the_next_landing_puts_back_only_the_turns_own_merges() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
+    let fx = copy("one_built", one_built);
     fx.must(&["unit", "land", "U-1"]);
     // A commit on the checkpoint branch with no mark is the human's.
     commit_in(&fx.work("K-1"), "by_hand.txt");
@@ -432,9 +449,7 @@ fn land_merge_after_a_crash_the_next_landing_puts_back_only_the_turns_own_merges
 
 #[test]
 fn land_merge_a_commit_after_a_fix_with_no_mark_is_kept() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
+    let fx = copy("one_built", one_built);
     fx.must(&["unit", "land", "U-1"]);
     commit_in(&fx.work("K-1"), "by_hand.txt");
     built(&fx, "2", "src/b.txt", "two\n");
@@ -446,10 +461,7 @@ fn land_merge_a_commit_after_a_fix_with_no_mark_is_kept() {
 
 #[test]
 fn land_merge_a_mark_with_a_foreign_commit_above_it_refuses_the_landing() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
-    built(&fx, "2", "src/b.txt", "two\n");
+    let fx = copy("two_built", two_built);
     crashed_turn(&fx);
     let k = fx.work("K-1");
     commit_in(&k, "by_hand.txt");
@@ -480,8 +492,7 @@ fn hold_land(fx: &Fx, unit: &str) -> (std::process::Child, String) {
 
 #[test]
 fn land_merge_a_unit_started_during_a_turn_does_not_hold_a_merge_that_is_put_back() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = copy("planned", planned);
     // U-1 is cut before U-2 lands, so its merged content is new and the suite runs on it.
     let w1 = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
     built(&fx, "2", "src/b.txt", "two\n");
@@ -504,9 +515,7 @@ fn land_merge_a_unit_started_during_a_turn_does_not_hold_a_merge_that_is_put_bac
 
 #[test]
 fn land_merge_a_unit_that_changed_while_the_suite_ran_is_not_landed() {
-    let fx = Fx::new();
-    plan(&fx);
-    built(&fx, "1", "src/a.txt", "one\n");
+    let fx = copy("one_built", one_built);
     let (mut child, _) = hold_land(&fx, "U-1");
     let o = fx.put("finding", "id=\"F-1\"\nkind=\"finding\"\ntitle=\"t\"\nunit=\"U-1\"\nseverity=\"high\"\naction=\"Change it\"\n");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -524,8 +533,7 @@ fn land_merge_a_unit_that_changed_while_the_suite_ran_is_not_landed() {
 
 #[test]
 fn land_merge_the_landing_runs_the_full_suite_when_every_unit_names_its_tests() {
-    let fx = Fx::new();
-    plan_with(&fx, true);
+    let fx = copy("named_planned", named_planned);
     for (n, f) in files() {
         let u = format!("U-{n}");
         let wc = PathBuf::from(fx.must(&["unit", "start", &u, "--json"]).json()["working_copy"].as_str().unwrap());
@@ -546,8 +554,7 @@ fn land_merge_the_landing_runs_the_full_suite_when_every_unit_names_its_tests() 
 
 #[test]
 fn land_merge_a_turn_does_not_open_while_a_sync_or_a_fix_of_the_checkpoint_is_open() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = copy("planned", planned);
     let p = fx.project();
     let mut st = bf::events::replay(&p).unwrap();
     assert_eq!(bf::run::open_reason(&p, &st, "K-1"), None);
@@ -596,8 +603,7 @@ fn land_merge_a_receipt_that_names_the_cache_is_not_reusable_even_when_the_key_m
 
 #[test]
 fn land_merge_the_engines_clean_merge_of_the_judged_content_is_not_a_change() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = copy("planned", planned);
     let w2 = PathBuf::from(fx.must(&["unit", "start", "U-2", "--json"]).json()["working_copy"].as_str().unwrap());
     built(&fx, "1", "src/a.txt", "one\n");
     fx.must(&["unit", "land", "U-1"]);
@@ -616,8 +622,7 @@ fn land_merge_the_engines_clean_merge_of_the_judged_content_is_not_a_change() {
 
 #[test]
 fn land_merge_a_failing_suite_charges_no_unit_outside_the_turn_when_every_unit_names_its_tests() {
-    let fx = Fx::new();
-    plan_with(&fx, true);
+    let fx = copy("named_planned", named_planned);
     // U-4 names no tests and is at work; it has nothing to do with the turn.
     fx.must(&["unit", "start", "U-4"]);
     let w1 = PathBuf::from(fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"].as_str().unwrap());
@@ -654,7 +659,7 @@ fn other_runs(fx: &Fx) -> usize {
 
 #[test]
 fn land_merge_each_suite_entry_of_the_list_runs_its_own_command_at_landing() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     plan_full(&fx, true, &["suite=sh suite.sh", "full-suite=sh other.sh"], None);
     for (n, f) in files() {
         let u = format!("U-{n}");
@@ -676,7 +681,7 @@ fn land_merge_each_suite_entry_of_the_list_runs_its_own_command_at_landing() {
 
 #[test]
 fn land_merge_a_listed_suite_command_with_an_operator_is_refused_for_a_unit_that_names_tests() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     // The project's own list is not screened for operators: its second suite entry holds one.
     plan_full(
         &fx,

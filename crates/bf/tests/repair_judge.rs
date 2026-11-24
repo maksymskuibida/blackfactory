@@ -315,6 +315,48 @@ fn plan_holding(fx: &Fx, held: &str) {
     fx.start_test_run();
 }
 
+/// The state of this file: the plan, the run started and U-6 started, so the state holds working copies
+/// (U-6's and its checkpoint's) that the copy must repair. No test repairs U-6.
+fn planned_state(fx: &Fx) {
+    plan(fx);
+    fx.must(&["unit", "start", "U-6"]);
+}
+
+const PLANNED: &str = "repair_judge::plan";
+
+/// The same state as `Fx::new` and `planned_state`, built once by those calls and copied (D-140).
+fn planned() -> Fx {
+    Fx::state_copy(PLANNED, planned_state)
+}
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: the state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    require_sandbox_from_env(&planned());
+}
+
+/// `fixture_state_copy`: a copy of the state of this file passes the canary (in `state_copy`) and its
+/// repair is approved by a go as in the same state built through the full `bf` calls in the test.
+pub(crate) fn copies_behave_as_their_sources() {
+    let go = |fx: &Fx| -> (String, Value) {
+        let aid = repair(fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
+        let o = turn(fx, &aid, "go");
+        assert_eq!(o.code, 0, "{}", o.all());
+        let j = events(fx).into_iter().rfind(|e| e["kind"] == "amend.judge").unwrap();
+        (status_of(fx, &aid), j["measures"].clone())
+    };
+    let src = Fx::new();
+    planned_state(&src);
+    let (src_status, src_measures) = go(&src);
+    let fx = planned();
+    let (status, measures) = go(&fx);
+    assert_eq!(status, "approved");
+    assert_eq!(status, src_status);
+    assert_eq!(measures, src_measures);
+    fx.must(&["plan", "check"]);
+    fx.must(&["log", "--verify"]);
+}
+
 fn put_replace(fx: &Fx, kind: &str, text: &str) {
     let f = fx.root.join("edit.toml");
     fs::write(&f, text).unwrap();
@@ -420,8 +462,9 @@ fn refused_naming(fx: &Fx, aid: &str, verdict: &str, words: &[&str]) {
 
 #[test]
 fn repair_judge_a_depends_on_repair_is_approved_by_a_go_with_no_human() {
+    // Built through the full `bf` calls, so that the path of building the state stays covered.
     let fx = Fx::new();
-    plan(&fx);
+    planned_state(&fx);
     let aid = repair(&fx, &["U-2"], &[(
         "unit",
         unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5),
@@ -443,15 +486,13 @@ fn repair_judge_a_depends_on_repair_is_approved_by_a_go_with_no_human() {
 
 #[test]
 fn repair_judge_a_second_token_and_a_token_after_a_verdict_are_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     token(&fx, &aid);
     let o = fx.refused(&["roles", "token", &aid, "judge"]);
     assert!(o.stderr.contains("already issued"), "{}", o.stderr);
     // After a verdict on the latest narrowing a token is refused too.
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let o = turn(&fx, &aid, "ask");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -462,8 +503,7 @@ fn repair_judge_a_second_token_and_a_token_after_a_verdict_are_refused() {
 
 #[test]
 fn repair_judge_the_switch_off_refuses_the_token() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("repair_judge = true", "repair_judge = false");
     fx.start_test_run();
     let opened = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
@@ -477,8 +517,7 @@ fn repair_judge_the_switch_off_refuses_the_token() {
 
 #[test]
 fn repair_judge_a_repair_from_a_design_and_an_amendment_with_a_design_part_get_no_token() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let o = fx.must(&["amend", "open", "--repair", "--from-design", "K-1", "U-2", "--json"]).json();
     assert_eq!(o["from_design"], "K-1", "{o}");
     let f = fx.root.join("narrow.json");
@@ -497,8 +536,7 @@ fn repair_judge_a_repair_from_a_design_and_an_amendment_with_a_design_part_get_n
 
 #[test]
 fn repair_judge_a_missing_pass_writes_a_failure_and_no_second_token() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let t = token(&fx, &aid);
     let o = judge(&fx, &aid, &t, "go");
@@ -512,8 +550,7 @@ fn repair_judge_a_missing_pass_writes_a_failure_and_no_second_token() {
 
 #[test]
 fn repair_judge_an_unreadable_verdict_fails_the_turn() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let t = token(&fx, &aid);
     pass(&fx, &aid);
@@ -529,8 +566,7 @@ fn repair_judge_an_unreadable_verdict_fails_the_turn() {
 
 #[test]
 fn repair_judge_an_ask_waits_for_the_human_and_binds_its_records_after_a_withdrawal() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let edit = unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5);
     let aid = repair(&fx, &["U-2"], &[("unit", edit.clone())]);
     let o = turn(&fx, &aid, "ask");
@@ -546,8 +582,7 @@ fn repair_judge_an_ask_waits_for_the_human_and_binds_its_records_after_a_withdra
 
 #[test]
 fn repair_judge_an_ask_is_approved_by_the_human_as_before() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     turn(&fx, &aid, "ask");
     fx.human("Yes, approve it.");
@@ -557,8 +592,7 @@ fn repair_judge_an_ask_is_approved_by_the_human_as_before() {
 
 #[test]
 fn repair_judge_an_approval_written_by_hand_does_not_count() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     bf::events::append(
         &fx.project(),
@@ -586,8 +620,7 @@ fn repair_judge_an_approval_written_by_hand_does_not_count() {
     .unwrap();
     assert_eq!(status_of(&fx, &aid), "open");
     // A go written by hand with no judge token behind it does not count either.
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     let go = bf::events::append(
         &fx.project(),
@@ -613,21 +646,18 @@ fn repair_judge_an_approval_written_by_hand_does_not_count() {
 #[test]
 fn repair_judge_a_go_outside_the_limits_is_refused_naming_each_limit() {
     // A changed check command.
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["X-1"], &[(
         "check",
         "id=\"X-1\"\nkind=\"check\"\ntitle=\"First\"\nhow=\"command\"\ncommand=\"false\"\nproves=[\"R-1\",\"C-1\"]\nscope=\"checkpoint\"\n".into(),
     )]);
     refused_naming(&fx, &aid, "go", &["X-1"]);
     // A moved checkpoint.
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-2", "src/f2.txt", &[], 5))]);
     refused_naming(&fx, &aid, "go", &["`checkpoint`"]);
     // A removed unit check.
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let o = fx.must(&["amend", "open", "--repair", "U-2", "--json"]).json();
     fs::remove_file(fx.root.join("factory/records/X-12.toml")).unwrap();
     let aid = o["amend"].as_str().unwrap().to_string();
@@ -636,9 +666,7 @@ fn repair_judge_a_go_outside_the_limits_is_refused_naming_each_limit() {
     fx.must(&["amend", "narrow", "--file", f.to_str().unwrap()]);
     refused_naming(&fx, &aid, "go", &["X-12"]);
     // A checkpoint operation: U-2 and its check go onto a new checkpoint.
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run();
     let o = fx.must(&["amend", "open", "--repair", "K-1", "--json"]).json();
     fx.must(&["amend", "checkpoint", "after", "K-1", "U-2"]);
     let aid = o["amend"].as_str().unwrap().to_string();
@@ -650,8 +678,7 @@ fn repair_judge_a_go_outside_the_limits_is_refused_naming_each_limit() {
 
 #[test]
 fn repair_judge_a_protected_path_a_later_checkpoint_and_a_removed_dependency_are_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt\", \"crates/bf/src/judge.rs", &[], 5))]);
     refused_naming(&fx, &aid, "go", &["crates/bf/src/judge.rs", "U-2"]);
     fx.must(&["amend", "withdraw", &aid, "--reason", "no"]);
@@ -662,8 +689,7 @@ fn repair_judge_a_protected_path_a_later_checkpoint_and_a_removed_dependency_are
 
 #[test]
 fn repair_judge_a_removed_depends_on_entry_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let a1 = repair(&fx, &["U-2"], &[("unit", unit("U-2", "K-1", "src/f2.txt", &["U-1"], 5))]);
     turn(&fx, &a1, "go");
     assert_eq!(status_of(&fx, &a1), "approved");
@@ -673,8 +699,7 @@ fn repair_judge_a_removed_depends_on_entry_is_refused() {
 
 #[test]
 fn repair_judge_a_fourth_one_unit_wave_in_a_row_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(
         &fx,
         &["U-2", "U-3", "U-4", "U-5"],
@@ -690,8 +715,7 @@ fn repair_judge_a_fourth_one_unit_wave_in_a_row_is_refused() {
 
 #[test]
 fn repair_judge_three_one_unit_waves_are_allowed() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(
         &fx,
         &["U-2", "U-3", "U-4"],
@@ -707,16 +731,14 @@ fn repair_judge_three_one_unit_waves_are_allowed() {
 
 #[test]
 fn repair_judge_a_scope_change_of_forty_percent_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt", &[], 12))]);
     refused_naming(&fx, &aid, "go", &["scope of K-1", "40 percent"]);
 }
 
 #[test]
 fn repair_judge_a_second_repair_of_twenty_percent_counts_the_first_until_it_is_seen() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let a1 = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt", &[], 6))]);
     let o = turn(&fx, &a1, "go");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -726,8 +748,7 @@ fn repair_judge_a_second_repair_of_twenty_percent_counts_the_first_until_it_is_s
 
 #[test]
 fn repair_judge_a_moved_file_counts_both_units_whole() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(
         &fx,
         &["U-1", "U-2"],
@@ -742,8 +763,7 @@ fn repair_judge_a_moved_file_counts_both_units_whole() {
 
 #[test]
 fn repair_judge_a_new_test_file_is_allowed() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/new_one.rs", &[], 5))]);
     let o = turn(&fx, &aid, "go");
     assert_eq!(o.code, 0, "{}", o.all());
@@ -751,6 +771,8 @@ fn repair_judge_a_new_test_file_is_allowed() {
 
 #[test]
 fn repair_judge_an_existing_test_file_given_to_a_unit_is_refused() {
+    // Built through the full `bf` calls with no unit started: the test file is committed on main, and the
+    // copied state's started unit would already have branched its checkpoint off before that commit.
     let fx = Fx::new();
     plan(&fx);
     fs::create_dir_all(fx.root.join("crates/bf/tests")).unwrap();
@@ -763,8 +785,7 @@ fn repair_judge_an_existing_test_file_given_to_a_unit_is_refused() {
 #[test]
 fn repair_judge_a_glob_or_a_folder_under_a_tests_folder_is_refused() {
     for path in ["crates/bf/tests/*.rs", "crates/bf/tests/more/"] {
-        let fx = Fx::new();
-        plan(&fx);
+        let fx = planned();
         let file = format!("src/f1.txt\", \"{path}");
         let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", &file, &[], 5))]);
         refused_naming(&fx, &aid, "go", &[path, "U-1"]);
@@ -797,16 +818,14 @@ fn repair_judge_the_token_guard_roles_and_plan_code_are_protected() {
 
 #[test]
 fn repair_judge_a_glob_under_a_nested_tests_folder_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     let aid = repair(&fx, &["U-1"], &[("unit", unit("U-1", "K-1", "src/f1.txt\", \"crates/bf/tests/sub/*.rs", &[], 5))]);
     refused_naming(&fx, &aid, "go", &["crates/bf/tests/sub/*.rs", "not a new test file"]);
 }
 
 #[test]
 fn repair_judge_a_test_file_that_exists_only_on_the_checkpoint_branch_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
+    let fx = planned();
     // The checkpoint branch holds a test file that main does not.
     fx.must(&["unit", "start", "U-1"]);
     let list = git(&fx.root, &["worktree", "list", "--porcelain"]);

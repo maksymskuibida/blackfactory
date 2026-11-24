@@ -8,10 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn fixture() -> Fx {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
-    fx
+    Fx::tiny_run()
 }
 
 /// Start, build and report a unit; land it and return the output of the landing.
@@ -85,8 +82,7 @@ fn a_landed_copy_with_an_uncommitted_file_is_kept_and_named() {
 #[test]
 fn a_close_removes_the_three_kinds_of_folder_and_a_merge_still_works() {
     // A real run: a run with simulated approvals can never merge onto the main branch.
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["run", "start"]);
     fx.answer_plan_questions();
     fx.must(&["gate", "open", "plan"]);

@@ -10,7 +10,7 @@ use std::fs;
 
 #[test]
 fn t3_ledger_will_not_close_with_an_unlinked_id() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     fx.must(&["ledger", "check", "--plan"]);
     // A new requirement that no unit delivers and no check proves.
@@ -42,9 +42,7 @@ fn t3_ledger_will_not_close_with_an_unlinked_id() {
 
 #[test]
 fn t3_ledger_closes_only_after_every_part_has_a_receipt() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -78,9 +76,7 @@ fn t3_ledger_closes_only_after_every_part_has_a_receipt() {
 
 #[test]
 fn t4_checkpoint_with_a_missing_receipt_will_not_close() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -121,9 +117,7 @@ fn t4_checkpoint_with_a_missing_receipt_will_not_close() {
 
 #[test]
 fn t4_an_approved_amendment_can_stand_in_for_a_receipt() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -210,9 +204,7 @@ fn first_receipt(fx: &Fx) -> (std::path::PathBuf, String) {
 
 #[test]
 fn t5_a_hand_written_receipt_is_rejected() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -256,9 +248,7 @@ fn t5_a_hand_written_receipt_is_rejected() {
 
 #[test]
 fn t5_a_receipt_for_other_content_is_rejected() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     let o = fx.must(&["unit", "start", "U-1", "--json"]);
     let wc = std::path::PathBuf::from(o.json()["working_copy"].as_str().unwrap());
     fs::create_dir_all(wc.join("src")).unwrap();
@@ -322,7 +312,7 @@ fn t5_a_receipt_for_other_content_is_rejected() {
 
 #[test]
 fn t5_a_command_that_changes_the_files_gets_no_receipt() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     fx.put("check", "id=\"X-9\"\nkind=\"check\"\ntitle=\"mutator\"\nhow=\"command\"\ncommand=\"touch generated.txt\"\nproves=[\"R-1\"]\nscope=\"checkpoint\"\n");
     let o = fx.bf(&["evidence", "run", "X-9", "--", "touch", "generated.txt"]);
@@ -343,7 +333,7 @@ fn t5_a_command_that_changes_the_files_gets_no_receipt() {
 
 #[test]
 fn t9_a_simulated_approval_outside_a_granted_run_satisfies_nothing() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     // No grant, no run: the command itself refuses.
     fx.must(&["run", "start"]);
@@ -383,9 +373,7 @@ fn t9_a_simulated_approval_outside_a_granted_run_satisfies_nothing() {
 
 #[test]
 fn t9_a_run_with_simulated_approvals_cannot_land_on_main() {
-    let fx = Fx::new();
-    fx.tiny();
-    fx.start_test_run();
+    let fx = Fx::tiny_run_sandboxed();
     fx.build_unit(
         "U-1",
         "src/hello.txt",
@@ -420,7 +408,7 @@ fn t9_a_run_with_simulated_approvals_cannot_land_on_main() {
 
 #[test]
 fn t9_a_real_run_with_human_approval_can_merge_onto_main() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     fx.must(&["run", "start"]);
     fx.answer_plan_questions();
@@ -468,7 +456,7 @@ fn t9_a_real_run_with_human_approval_can_merge_onto_main() {
 
 #[test]
 fn t13_gate_approve_with_no_human_turn_is_refused() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     fx.must(&["gate", "open", "architecture"]);
     let o = fx.refused(&[
@@ -494,7 +482,7 @@ fn t13_gate_approve_with_no_human_turn_is_refused() {
 
 #[test]
 fn t13_only_a_typed_message_counts() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     fx.human("an early message, before any gate exists");
     fx.must(&["gate", "open", "architecture"]);
@@ -598,7 +586,7 @@ fn t13_only_a_typed_message_counts() {
 
 #[test]
 fn t13_the_human_turn_hook_never_blocks_a_prompt() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     // Exit code 2 from a UserPromptSubmit hook would erase the human's prompt.
     let o = fx.bf_stdin(&fx.root, &["human-turn"], "this is not json");
     assert_eq!(o.code, 1);
@@ -612,7 +600,7 @@ fn t13_the_human_turn_hook_never_blocks_a_prompt() {
 
 #[test]
 fn t13_the_guard_denies_agents_the_command_that_records_a_turn() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     let payload = json!({"tool_name": "Bash", "tool_input": {"command": "echo '{}' | bf human-turn"}, "cwd": fx.root.to_string_lossy()});
     let o = fx.bf_stdin(&fx.root, &["guard"], &payload.to_string());
     assert_eq!(o.code, 0);
@@ -643,7 +631,7 @@ fn bash_decision(fx: &Fx, cmd: &str) -> String {
 
 #[test]
 fn th18_every_form_the_parse_understands_still_reaches_the_protected_paths() {
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     let root = fx.root.display().to_string();
     for cmd in [
@@ -675,7 +663,7 @@ fn th19_a_path_built_at_run_time_is_the_known_gap_and_is_stated() {
     // A script that builds the path from pieces carries no path string: the guard does not see it, and
     // the documentation says so (what the engine does not stop). A path that is named, even with a
     // variable in front of it, is refused.
-    let fx = Fx::new();
+    let fx = Fx::sandboxed();
     fx.tiny();
     assert_ne!(
         bash_decision(&fx, "python3 -c \"open('fac'+'tory/policy.toml','w')\""),

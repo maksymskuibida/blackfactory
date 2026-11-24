@@ -355,12 +355,12 @@ fn why_not(p: &Project, events: &[Value], st: &State, unit: &str) -> (String, St
         return (t("unblock.because.request_open", &v), other);
     }
     match latest_block(events, unit) {
-        Some(e) if s(e, "kind") == "unit.report" && s(e, "result") == "blocked" => {
-            if s(e, "note").trim().is_empty() {
-                (t("unblock.because.no_note", &v), other)
-            } else {
-                (t("unblock.because.look_again", &v), other)
-            }
+        Some(e)
+            if s(e, "kind") == "unit.report"
+                && s(e, "result") == "blocked"
+                && s(e, "note").trim().is_empty() =>
+        {
+            (t("unblock.because.no_note", &v), other)
         }
         _ => {
             let _ = p;

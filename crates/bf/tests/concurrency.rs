@@ -178,7 +178,20 @@ fn a_waiting_command_goes_through_when_the_lock_is_freed() {
     let p = fx.project();
     let held = bf::lock::engine(&p, "hold").unwrap();
     let h = spawn_bf(&fx, args(&["unit", "land", "U-1"]), String::new());
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // The landing takes its checkpoint's turn lock and then waits for the engine lock, so an open
+    // turn shows that the command has reached the wait. Poll for it, for 5 seconds at most.
+    let started = std::time::Instant::now();
+    while !bf::lock::turn_open(&p, "K-1") {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the command never reached the lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !h.is_finished(),
+        "the command finished while the lock was held"
+    );
     drop(held);
     let (code, err) = h.join().unwrap();
     assert_eq!(code, 0, "{err}");
@@ -229,8 +242,7 @@ fn findings_filed_at_the_same_moment_each_keep_their_own_number() {
 
 #[test]
 fn role_tokens_issued_at_the_same_moment_are_all_kept() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let p = fx.project();
     let hs: Vec<_> = (0..8)
         .map(|i| {

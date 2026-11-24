@@ -47,8 +47,7 @@ fn the_roles_are_listed_with_their_limits() {
 
 #[test]
 fn the_engine_writes_a_brief_for_each_role() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     for n in NAMES {
         let subject = if matches!(n, "security-expert" | "lawyer") {
             "design"
@@ -78,8 +77,7 @@ fn the_engine_writes_a_brief_for_each_role() {
 
 #[test]
 fn each_role_gets_its_own_stable_token() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let t1 = fx
         .must(&["roles", "token", "U-1", "security-auditor", "--json"])
         .json()["token"]
@@ -107,8 +105,7 @@ fn each_role_gets_its_own_stable_token() {
 
 #[test]
 fn an_issued_role_token_survives_bf_next_and_reports_once() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     let t = fx
@@ -264,8 +261,7 @@ fn a_legal_put_needs_the_lawyers_or_the_legal_auditors_token() {
 #[test]
 fn a_builder_keeps_its_token_while_its_question_is_open() {
     use std::path::PathBuf;
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.set_policy("tokens = false", "tokens = true");
     fx.start_test_run();
     let wc = PathBuf::from(

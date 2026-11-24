@@ -11,7 +11,6 @@
 "unblock.because.not_report" = "{unit} is blocked by a refused request for files or by a park, not by its builder's own report; those keep their steps"
 "unblock.because.no_note" = "the builder's blocked report of {unit} has no note, so there is no reason to judge"
 "unblock.because.request_open" = "a request for files of {unit} is open; the scope reviewer answers it"
-"unblock.because.look_again" = "{unit} waits for a second look of its builder or for a file a unit beside it holds; the engine gives those steps"
 "unblock.because.no_release" = "{unit} was released by the conductor {used} times already ({releases}); the third step is the human's"
 
 "unblock.step.empty_why" = "Run `bf unit unblock {unit} --why \"<your judgment in plain words>\"`."

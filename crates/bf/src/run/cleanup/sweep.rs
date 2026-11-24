@@ -122,7 +122,9 @@ fn copies_in(root: &Path) -> Vec<PathBuf> {
 fn clean_build(root: &Path, kind: &'static str) -> Vec<Removed> {
     let mut out = Vec::new();
     for dir in copies_in(root) {
-        let Ok(dry) = gitx::run(&dir, &["clean", "-dnX"], &[]) else {
+        // The lines are read by their English `Would remove ` prefix, so git must print them untranslated
+        // whatever message language the engine inherits; `LC_ALL=C` does that (git ignores `LANGUAGE` under `C`).
+        let Ok(dry) = gitx::run(&dir, &["clean", "-dnX"], &[("LC_ALL", "C")]) else {
             continue;
         };
         if !dry.ok {

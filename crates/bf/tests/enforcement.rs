@@ -25,7 +25,6 @@ fn revise(fx: &Fx, kind: &str, text: &str) {
 
 /// The security expert reports on the threat model at the design stage, a second after the last change.
 fn expert_reports(fx: &Fx) {
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     let o = fx.bf(&[
         "report",
         "design",
@@ -64,7 +63,6 @@ fn only_on(fx: &Fx, keep: &[&str]) {
     fx.human("Yes, switch the others off.");
     fx.must(&["checks", "set", "--quote", "switch the others off"]);
 }
-
 
 // ---- R-5: the design gates ----
 
@@ -190,7 +188,6 @@ fn a_change_to_a_threat_needs_a_newer_report_of_the_security_expert() {
     fx.put("threat", THREAT);
     expert_reports(&fx);
     // The threat changes after the report: the report is older than the change.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     revise(
         &fx,
         "threat",
@@ -210,7 +207,6 @@ fn a_report_of_the_security_expert_stays_good_when_only_the_threat_files_times_m
     fx.put("threat", THREAT);
     expert_reports(&fx);
     // A fresh clone or a branch switch rewrites the file with the same content a second later.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     revise(&fx, "threat", THREAT);
     fx.must(&["gate", "open", "architecture"]);
 }
@@ -478,8 +474,7 @@ fn a_checkpoint_has_two_forms_only_and_carry_on_is_gone() {
 
 #[test]
 fn a_record_from_an_earlier_build_that_says_carry_on_is_read_as_a_stop() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let f = fx.root.join("factory/records/K-1.toml");
     let t = fs::read_to_string(&f).unwrap();
     fs::write(
@@ -527,8 +522,7 @@ fn a_record_from_an_earlier_build_that_says_carry_on_is_read_as_a_stop() {
 
 #[test]
 fn the_plan_page_shows_for_every_checkpoint_whether_a_stop_is_proposed_and_why() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let page = fx.must(&["view", "plan"]).json().to_string();
     assert!(page.contains("no stop"), "{page}");
     revise(&fx, "checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\ntitle=\"Both messages\"\nafter=[\"U-1\",\"U-2\"]\nproves=[\"R-1\",\"R-2\",\"C-1\"]\nchecks=[\"X-3\"]\nstop=true\nstop_why=\"The greeting wording is the human's to judge.\"\n");
@@ -542,8 +536,7 @@ fn the_plan_page_shows_for_every_checkpoint_whether_a_stop_is_proposed_and_why()
 
 #[test]
 fn the_human_changes_a_stop_by_rejecting_the_plan_with_their_words_and_the_next_round_shows_it() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let g1 = fx.must(&["gate", "open", "plan"]).stdout.trim().to_string();
     fx.human("Please make the checkpoint stop for me, so I can read the messages. Reject.");
     fx.must(&[
@@ -603,8 +596,7 @@ fn amendment_status(fx: &Fx, id: &str) -> String {
 
 #[test]
 fn an_open_amendment_can_be_withdrawn_and_the_log_keeps_both_facts() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     let o = fx.must(&["amend", "open", "R-2", "--json"]).json();
     assert_eq!(o["amend"], "A-1");
     assert_eq!(amendment_status(&fx, "A-1"), "open");
@@ -635,8 +627,7 @@ fn an_open_amendment_can_be_withdrawn_and_the_log_keeps_both_facts() {
 
 #[test]
 fn an_approved_amendment_cannot_be_withdrawn() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     // U-19: an amendment is approved only when every design stage is covered and its requirement is linked.
     for (k, t) in [
         ("component", "id=\"C-9\"\nkind=\"component\"\ntitle=\"Farewell wording\"\nlinks=[\"R-2\"]\n"),
@@ -659,8 +650,7 @@ fn an_approved_amendment_cannot_be_withdrawn() {
 
 #[test]
 fn a_second_amendment_is_refused_while_one_is_open() {
-    let fx = Fx::new();
-    fx.tiny();
+    let fx = Fx::tiny_project();
     fx.must(&["amend", "open", "R-2"]);
     let o = fx.refused(&["amend", "open", "R-1"]);
     assert!(o.stderr.contains("A-1"), "{}", o.stderr);
@@ -690,7 +680,13 @@ fn a_legal_records_acceptance_is_reserved_for_the_human() {
     )
     .unwrap();
     fx.must(&["record", "put", "legal", "--file", open.to_str().unwrap()]);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // The record's file time goes 2 seconds back, so the human's message below falls after it.
+    fs::File::options()
+        .write(true)
+        .open(fx.project().record_path("L-1").unwrap())
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2))
+        .unwrap();
     // No human message at all: refused.
     fx.refused(&[
         "record",
