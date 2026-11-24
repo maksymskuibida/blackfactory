@@ -52,12 +52,46 @@ fn start(fx: &Fx) {
     fx.must(&["unit", "land", "U-1"]);
 }
 
-fn setup(x2: &str) -> Fx {
+/// The state every test starts from, built through the full `bf` calls (unit start, evidence run, the
+/// two reports and land): kept by one test so that the path of building it stays covered.
+fn setup_built(x2: &str) -> Fx {
     let fx = Fx::new();
     fx.human(OLD0);
     plan(&fx, x2);
     start(&fx);
     fx
+}
+
+fn pass_state(fx: &Fx) {
+    fx.human(OLD0);
+    plan(fx, PASS);
+    start(fx);
+}
+
+fn grep_state(fx: &Fx) {
+    fx.human(OLD0);
+    plan(fx, GREP);
+    start(fx);
+}
+
+/// The states of this file, each built once by those calls and copied per test (D-140).
+const STATES: [(&str, Build); 2] = [
+    ("checkpoint_decision_window::pass", pass_state),
+    ("checkpoint_decision_window::grep", grep_state),
+];
+
+/// The same state as `setup_built`, copied.
+fn setup(x2: &str) -> Fx {
+    let (name, build) = if x2 == PASS { STATES[0] } else { STATES[1] };
+    Fx::state_copy(name, build)
+}
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: each state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    for (name, build) in STATES {
+        require_sandbox_from_env(&Fx::state_copy(name, build));
+    }
 }
 
 fn brief(fx: &Fx) -> Out {
@@ -235,7 +269,7 @@ fn words_written_during_a_low_fix_do_not_accept_the_high_finding() {
 // A fix at work, an abort with no words, and a message written after it decides.
 #[test]
 fn the_abort_needs_no_words_and_a_message_after_it_decides() {
-    let fx = setup(PASS);
+    let fx = setup_built(PASS);
     report(&fx, json!([f("high", "the answer is wrong")]));
     assert_eq!(open_phase(&fx), "fix");
     fx.human(OLD);
