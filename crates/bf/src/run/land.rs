@@ -80,6 +80,8 @@ fn check_state(st: &State, pl: &Plan, unit: &str) -> R<Option<Value>> {
 }
 
 pub fn unit_land(p: &Project, unit: &str) -> R<Value> {
+    // One memo for this call (U-118): see `gitx::memo` for what it keeps and what clears it.
+    let _memo = gitx::memo::begin();
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("land {unit}"))?;
     refuse_if_main_moved(p, &st)?;
@@ -166,9 +168,16 @@ pub(crate) fn hold_point(name: &str, k: &str) {
 }
 
 fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
+    hold_point("land-before-lock", k);
     let eng = lock::engine(p, &format!("land {unit}"))?;
+    // The branches `unit_land` read before the lock may have moved while this landing waited for it:
+    // another process writes them too. The branch reads and counts are read again under the lock.
+    let top = p.work_dir().join(k);
+    gitx::memo::unlocked(&top);
     let st = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st, &format!("land {unit}"))?;
+    // Dropped call (U-118): only the `rev-list --count` between the recorded commit and the main tip,
+    // two commit ids, comes from the memo, since no write changes it.
     refuse_if_main_moved(p, &st)?;
     let run = need_run(&st)?;
     let pl = plan::load(p)?;
@@ -176,7 +185,14 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
         return Ok(v);
     }
     // The unit's own rules come first: a refusal about the unit is more to the point than a wait.
-    ready(p, &st, &pl, &evidence::load_receipts(p)?, unit, true)?;
+    let mut mine = Some(ready(
+        p,
+        &st,
+        &pl,
+        &evidence::load_receipts(p)?,
+        unit,
+        true,
+    )?);
     if let Some(why) = open_reason(p, &st, k) {
         return Ok(
             json!({"unit": unit, "landed": false, "waiting": true, "checkpoint": k,
@@ -198,6 +214,16 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
             left.push((id.to_string(), t("land_merge.left.paused", &[])));
             continue;
         }
+        // Dropped calls (U-118): the unit asked for passed every rule above, under the same engine lock,
+        // on the same log, plan and receipts. Since then the engine committed its copy (which changes no
+        // file, so neither its content hash nor what its review judged) and put back only the
+        // checkpoint's copy, so asking again (its content hash and `git status`) cannot answer otherwise.
+        if id == unit {
+            if let Some(r) = mine.take() {
+                turn.push(r);
+                continue;
+            }
+        }
         match ready(p, &st, &pl, &receipts, id, id == unit) {
             Ok(r) => turn.push(r),
             Err(f) if id == unit => return Err(f),
@@ -208,6 +234,10 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
 
     // The mark: where each checkpoint branch stands and which units the turn holds, before the first merge.
     let mut cps: Vec<(Repo, PathBuf)> = Vec::new();
+    // Dropped calls (U-118): the `show-ref` of the main branch and of the checkpoint branch in
+    // `ensure_checkpoint_worktree` come from the branch read taken under this engine lock; since it, the
+    // engine only committed the units' copies, which moves their own branches and creates or removes
+    // none, and no other process writes a branch while the lock is held.
     for r in &turn {
         if !cps.iter().any(|c| c.0.name == r.repo.name) {
             let wt = ensure_checkpoint_worktree(p, k, &r.repo)?;
@@ -237,14 +267,21 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     // The turn's merges sit on a detached head: the checkpoint branch itself stays where it was until the
     // turn passes, so no automatic sync of another unit can take in a merge that is later put back.
     for (_, wt) in &cps {
-        gitx::must(wt, &["checkout", "-q", "--detach"])?;
+        gitx::must_moving(wt, &["checkout", "-q", "--detach"], &[], true)?;
     }
 
     // The merge: each unit into the checkpoint's own working copy, in order. No event yet.
     let mut merged: Vec<Merged> = Vec::new();
     let mut conflicted: Vec<Ready> = Vec::new();
+    // Where each copy's head stands while no merge has moved it yet: the mark's commit, since
+    // `checkout --detach` keeps the head on the commit it was on.
+    let mut at: Vec<(String, String)> = heads.clone();
     for r in turn {
-        match merge_one(&cpwt_of(&r.repo.name), &r)? {
+        let known = at
+            .iter()
+            .position(|(n, _)| n == &r.repo.name)
+            .map(|i| at.remove(i).1);
+        match merge_one(&cpwt_of(&r.repo.name), &r, known)? {
             Merge::Done { before, tip } => merged.push(Merged { r, before, tip }),
             Merge::Conflict => conflicted.push(r),
             Merge::Failed(why) => {
@@ -268,8 +305,8 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
 
     // The check, once, with only the turn's lock held.
     drop(eng);
+    gitx::memo::unlocked(&top);
     hold_point("land-turn", k);
-    let top = p.work_dir().join(k);
     let mut landed: Vec<(Ready, String, String)> = Vec::new();
     let mut blamed: Vec<(Ready, String, Vec<String>)> = Vec::new();
     if !merged.is_empty() {
@@ -305,7 +342,7 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
                     let cpwt = cpwt_of(&r.repo.name);
                     let step = {
                         let _g = lock::engine(p, &format!("land {unit}"))?;
-                        merge_one(&cpwt, &r)?
+                        merge_one(&cpwt, &r, None)?
                     };
                     match step {
                         Merge::Conflict => conflicted.push(r),
@@ -347,9 +384,12 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
 
     // The outcome: one `unit.land` event for each unit, in order; then the mark goes.
     let _eng = lock::engine(p, &format!("land {unit}"))?;
-    // The log is read again: the suite ran for a long time without the engine lock.
+    // The log and the branches are read again: the suite ran for a long time without the engine lock.
+    gitx::memo::unlocked(&top);
     let st3 = events::require_chain(p)?;
     gates::refuse_if_drift(p, &st3, &format!("land {unit}"))?;
+    // The branches are read anew here. Dropped call (U-118): only its `rev-list --count` between the
+    // recorded commit and the main tip, two commit ids, comes from the memo, since no write changes it.
     refuse_if_main_moved(p, &st3)?;
     for (r, _, _) in &landed {
         if let Some(why) = changed_since(p, &st3, &r.unit) {
@@ -368,8 +408,10 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
         }
     }
     // Only now does each checkpoint branch move, to where the turn's merges end.
+    // It moves the checkpoint branch to the commit the copy already has out, so no file of the copy
+    // changes: the copy's hash from the check stays in the memo for the events below.
     for (_, wt) in &cps {
-        gitx::must(wt, &["checkout", "-q", "-B", &cpb, "HEAD"])?;
+        gitx::must_moving(wt, &["checkout", "-q", "-B", &cpb, "HEAD"], &[&cpb], false)?;
     }
     crash_point("land-after-merge");
     for (r, tip, merged_hash) in &landed {
@@ -383,6 +425,8 @@ fn run_turn(p: &Project, unit: &str, k: &str, marked: &mut bool) -> R<Value> {
     let _ = fs::remove_file(lock::turn_mark(p, k));
     *marked = false;
     // Each landed unit's working copy goes; one that holds something stays and says why.
+    // Dropped call (U-118): its `show-ref` of the unit's branch comes from the branch read after the
+    // check; since it, only the checkpoint branch moved.
     let mut cleaned: Vec<(String, cleanup::Removal)> = Vec::new();
     for (r, _, _) in &landed {
         if let Ok(x) = cleanup::remove_unit_copy(p, &r.unit) {
@@ -645,9 +689,12 @@ fn ready(
     }
     if gitx::has_uncommitted(&wt) {
         gitx::add_all_without_junk(&wt)?;
-        gitx::must(
+        // It moves the unit's branch, the one its copy has out; a commit creates and removes no branch.
+        gitx::must_moving(
             &wt,
             &["commit", "-q", "-m", &format!("{unit}: {}", s(&u, "title"))],
+            &[&ub],
+            true,
         )?;
     }
     let cpb = p.checkpoint_branch(s(&u, "checkpoint"));
@@ -700,8 +747,14 @@ pub fn clean_engine_merge(p: &Project, unit: &str, wt: &Path, judged_head: &str)
 
 /// Merge one unit into the checkpoint's working copy with the `Land <U>` commit. A merge that does not
 /// finish leaves the working copy exactly as it was.
-fn merge_one(cpwt: &Path, r: &Ready) -> R<Merge> {
-    let before = gitx::must(cpwt, &["rev-parse", "HEAD"])?;
+/// `known` is the commit the head stands on when the caller knows it without asking git.
+fn merge_one(cpwt: &Path, r: &Ready, known: Option<String>) -> R<Merge> {
+    // Dropped call (U-118): with `known`, the `rev-parse HEAD` of the mark answered it, and only a
+    // `checkout --detach`, which keeps the commit, ran in the copy since.
+    let before = match known {
+        Some(c) => c,
+        None => gitx::must(cpwt, &["rev-parse", "HEAD"])?,
+    };
     if gitx::is_ancestor(cpwt, &r.ub, "HEAD") {
         return Ok(Merge::Done {
             tip: gitx::head_short(cpwt),
