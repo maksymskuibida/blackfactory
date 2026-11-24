@@ -881,15 +881,14 @@ impl Project {
                 self.policy = toml::from_str(&String::from_utf8_lossy(&disk)).unwrap_or_default();
             }
         }
-        let profile = if self.policy.exec.sandbox && crate::sandbox::available() {
-            Some(crate::sandbox::git_profile(
-                &self.state_dir_resolved(),
-                &self.root.to_string_lossy(),
-            ))
-        } else {
-            None
-        };
-        crate::gitx::configure(&self.policy.exec.git, &self.policy.exec.path, profile);
+        // The sandbox is asked about at the first git call that runs, not here (E-1).
+        crate::gitx::configure(
+            &self.policy.exec.git,
+            &self.policy.exec.path,
+            self.policy.exec.sandbox,
+            &self.state_dir_resolved(),
+            &self.root.to_string_lossy(),
+        );
         Ok(())
     }
 
