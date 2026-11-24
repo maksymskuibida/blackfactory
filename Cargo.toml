@@ -10,6 +10,7 @@ rust-version = "1.89"
 
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.release]
 lto = true
@@ -21,3 +22,4 @@ panic = "abort"
 # measure something close to the shipped binary.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

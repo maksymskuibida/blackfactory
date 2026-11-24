@@ -5,6 +5,8 @@
 # suite with `cargo nextest run --package=bf --profile extended`.
 
 [profile.default]
+# Six test threads, so the two unit suites the heavy queue allows start about twelve test processes together.
+test-threads = 6
 # Every test runs in its own process; show slow ones and stop a hung test.
 slow-timeout = { period = "60s", terminate-after = 5 }
 failure-output = "immediate-final"
