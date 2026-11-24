@@ -73,6 +73,19 @@ fn start(fx: &Fx) {
     fx.must(&["unit", "land", "U-1"]);
 }
 
+/// The plan and the run started with U-1 landed, built once by those calls and copied per test (D-140).
+fn started_state(fx: &Fx) {
+    plan(fx);
+    start(fx);
+}
+
+const STARTED: &str = "checkpoint_findings_hold::started";
+
+/// The same state as `Fx::new`, `plan` and `start`, copied.
+fn started() -> Fx {
+    Fx::state_copy(STARTED, started_state)
+}
+
 fn brief(fx: &Fx) -> Out {
     fx.bf(&["brief", "K-1", "--role", "reviewer", "--json"])
 }
@@ -130,9 +143,7 @@ fn fates(fx: &Fx, round: u64) -> Vec<String> {
 
 #[test]
 fn a_finding_filed_again_is_open_on_its_own_and_the_close_is_refused() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
     assert_eq!(o.code, 0, "{}", o.all());
@@ -174,9 +185,7 @@ fn a_finding_filed_again_is_open_on_its_own_and_the_close_is_refused() {
 
 #[test]
 fn the_close_is_refused_while_a_fix_the_human_picked_is_open() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     fx.must_in(
         &fx.work("K-1-review"),
@@ -202,6 +211,7 @@ fn the_close_is_refused_while_a_fix_the_human_picked_is_open() {
 
 #[test]
 fn a_fix_aborted_leaves_its_finding_open_and_the_human_decides() {
+    // Built through the full `bf` calls, so that the path of building the state stays covered.
     let fx = Fx::new();
     plan(&fx);
     start(&fx);
@@ -248,9 +258,7 @@ fn a_fix_aborted_leaves_its_finding_open_and_the_human_decides() {
 
 #[test]
 fn the_repeat_review_brief_after_a_passed_fix_carries_the_fixed_sentence_on_open_findings() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     report(&fx, json!({"areas": areas(), "findings": [high()]}));
     fx.pass_checkpoint_fix("changed by the fix\n");
@@ -354,9 +362,7 @@ fn a_parked_checkpoint_refuses_the_pick_to_fix_with_and_without_words() {
 
 #[test]
 fn a_high_finding_is_picked_to_be_fixed_only_in_the_humans_words_taken_once() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     report(&fx, json!({"areas": areas(), "findings": [high()]}));
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
@@ -391,9 +397,7 @@ fn a_high_finding_is_picked_to_be_fixed_only_in_the_humans_words_taken_once() {
 
 #[test]
 fn after_an_abort_and_a_sync_the_human_is_asked_and_the_close_names_the_finding() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     report(&fx, json!({"areas": areas(), "findings": [high()]}));
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
@@ -423,14 +427,37 @@ fn after_an_abort_and_a_sync_the_human_is_asked_and_the_close_names_the_finding(
 
 #[test]
 fn the_reviewers_brief_gives_the_nextest_example_probe_command() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     let text = fs::read_to_string(fx.project().briefs_dir().join("K-1-reviewer.md")).unwrap();
     assert!(text.contains("cargo nextest run -E test(=p1)"), "{text}");
     assert!(!text.contains("cargo test p1"), "{text}");
     assert!(text.contains("fails when it selects no test"), "{text}");
+}
+
+// R-70: the order of a fix, its checkpoint's landings and its close, on the copied state. No fix opens for
+// a checkpoint whose unit has not landed (K-2), nor for one whose close is already recorded (K-1), and
+// each refusal names that order, not the checks.
+#[test]
+fn no_fix_opens_before_every_unit_has_landed_or_after_the_close() {
+    let fx = started();
+    let o = fx.refused(&["checkpoint", "fix", "K-2", "--open"]);
+    eprintln!("open K-2: {}", o.stderr);
+    assert!(o.stderr.contains("its units have not all landed"), "{}", o.stderr);
+    // K-1 is reviewed clean, its check passes and it closes.
+    brief(&fx);
+    fx.must_in(
+        &fx.work("K-1-review"),
+        &["evidence", "run", "X-2", "--", "test", "-f", "src/a.txt"],
+    );
+    let o = report(&fx, json!({"areas": areas(), "findings": []}));
+    assert_eq!(o.code, 0, "{}", o.all());
+    fx.must(&["checkpoint", "close", "K-1"]);
+    let o = fx.refused(&["checkpoint", "fix", "K-1", "--open"]);
+    eprintln!("open K-1 after its close: {}", o.stderr);
+    assert!(o.stderr.contains("or it is closed"), "{}", o.stderr);
+    let st = fx.must(&["status", "--json"]).json();
+    assert!(st["checkpoint_fix"]["open"].is_null(), "{}", st["checkpoint_fix"]);
 }
 
 // R-92, D-66, TH-42: a decision on a finding or on parking takes only a human message written after the
@@ -439,17 +466,89 @@ const BEFORE_ONE: &str = "Carry on with the build, thanks.";
 const BEFORE_TWO: &str = "Looks good to me, keep going.";
 
 /// Two sentences written before the plan; round 1 files a high finding and its fix is aborted.
-fn aborted_after_old_words() -> Fx {
-    let fx = Fx::new();
+fn aborted_state(fx: &Fx) {
     fx.human(BEFORE_ONE);
     fx.human(BEFORE_TWO);
-    plan(&fx);
-    start(&fx);
-    brief(&fx);
-    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    plan(fx);
+    start(fx);
+    brief(fx);
+    let o = report(fx, json!({"areas": areas(), "findings": [high()]}));
     assert_eq!(o.code, 0, "{}", o.all());
     fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
+}
+
+/// `aborted_state` built through the full `bf` calls in the test: kept by one test so that the path of
+/// building it stays covered.
+fn aborted_after_old_words_built() -> Fx {
+    let fx = Fx::new();
+    aborted_state(&fx);
     fx
+}
+
+/// `aborted_state` as it is stored for copying. The reviewer's brief of round 1 names the review's working
+/// copy in the build folder, which the copy removes; the engine only writes that brief and never reads it,
+/// and `bf brief K-1 --role reviewer` would open a new round, so the stored state leaves the old brief out.
+/// No test of the copied state reads it, and `copies_behave_as_their_sources` compares the copy with the
+/// state built with the brief.
+fn aborted_state_stored(fx: &Fx) {
+    aborted_state(fx);
+    fs::remove_file(fx.project().briefs_dir().join("K-1-reviewer.md")).unwrap();
+}
+
+const ABORTED: &str = "checkpoint_findings_hold::aborted";
+
+/// The same state as `aborted_after_old_words_built`, built once and copied (D-140).
+fn aborted_after_old_words() -> Fx {
+    Fx::state_copy(ABORTED, aborted_state_stored)
+}
+
+/// The states of this file, each built once by those calls and copied per test (D-140).
+const STATES: [(&str, Build); 2] = [(STARTED, started_state), (ABORTED, aborted_state_stored)];
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: each state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    for (name, build) in STATES {
+        require_sandbox_from_env(&Fx::state_copy(name, build));
+    }
+}
+
+/// `fixture_state_copy`: a copy of each state of this file passes the canary (in `state_copy`) and fixes
+/// or reopens as the same state built through the full `bf` calls in the test does.
+pub(crate) fn copies_behave_as_their_sources() {
+    // The started state fixes: a high finding, its fix passes, and the finding is fixed by it.
+    let fix = |fx: &Fx| -> Vec<String> {
+        brief(fx);
+        let o = report(fx, json!({"areas": areas(), "findings": [high()]}));
+        assert_eq!(o.code, 0, "{}", o.all());
+        fx.pass_checkpoint_fix("changed by the fix\n");
+        fates(fx, 1)
+    };
+    let src = Fx::new();
+    started_state(&src);
+    let src_fates = fix(&src);
+    let fx = started();
+    let copy_fates = fix(&fx);
+    assert!(copy_fates[0].starts_with("fixed by"), "{copy_fates:?}");
+    assert_eq!(copy_fates, src_fates);
+    assert_eq!(
+        fs::read_to_string(fx.work("K-1").join("src/a.txt")).unwrap(),
+        fs::read_to_string(src.work("K-1").join("src/a.txt")).unwrap()
+    );
+    fx.must(&["log", "--verify"]);
+    // The aborted state reopens: the human's new words open the fix again.
+    let reopen = |fx: &Fx| -> Vec<String> {
+        fx.human("Yes, open the fix again.");
+        fx.must(&pick_args("fix", "open the fix again"));
+        directives(fx)
+    };
+    let src = aborted_after_old_words_built();
+    let src_ds = reopen(&src);
+    let fx = aborted_after_old_words();
+    let ds = reopen(&fx);
+    assert!(ds.contains(&"fix-checkpoint".to_string()), "{ds:?}");
+    assert_eq!(ds, src_ds);
+    fx.must(&["log", "--verify"]);
 }
 
 fn pick_args<'a>(how: &'a str, quote: &'a str) -> Vec<&'a str> {
@@ -523,7 +622,7 @@ fn a_release_takes_only_words_written_after_the_report_that_parked_the_checkpoin
 
 #[test]
 fn a_settle_event_that_cites_old_words_is_ignored_on_replay() {
-    let fx = aborted_after_old_words();
+    let fx = aborted_after_old_words_built();
     let p = fx.project();
     let st = bf::events::replay_log(&bf::events::load_log(&p).unwrap());
     let old = st.turns.iter().find(|t| t.text == BEFORE_TWO).unwrap().seq;
@@ -589,9 +688,7 @@ fn the_usage_and_the_close_name_the_words_and_the_open_finding() {
 const DURING: &str = "Looks fine so far, keep going.";
 
 fn fix_at_work() -> Fx {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
     assert_eq!(o.code, 0, "{}", o.all());
@@ -805,9 +902,7 @@ fn a_review_release_event_that_cites_words_written_before_the_report_is_ignored_
 
 #[test]
 fn a_repeat_review_brief_gives_the_outcome_open_for_a_low_finding_left_open() {
-    let fx = Fx::new();
-    plan(&fx);
-    start(&fx);
+    let fx = started();
     brief(&fx);
     fx.must_in(
         &fx.work("K-1-review"),

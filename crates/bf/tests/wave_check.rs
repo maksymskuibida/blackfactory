@@ -124,6 +124,102 @@ fn review_second(fx: &Fx) {
     fx.must(&["report", "U-2", "--result", "built", "--role", "reviewer"]);
 }
 
+/// The plan with a wave check, the run started and U-1 landed with `good` content: built once by those
+/// calls and copied per test (D-140).
+fn good_state(fx: &Fx) {
+    plan(fx, true);
+    start(fx);
+    land_first(fx, "good\n");
+}
+
+/// The same with `bad` content, which fails the wave check.
+fn bad_state(fx: &Fx) {
+    plan(fx, true);
+    start(fx);
+    land_first(fx, "bad\n");
+}
+
+/// The states of this file, each built once by those calls and copied per test (D-140).
+const STATES: [(&str, Build); 2] = [
+    ("wave_check::good", good_state),
+    ("wave_check::bad", bad_state),
+];
+
+/// U-1 landed with good content, copied.
+fn landed_good() -> Fx {
+    Fx::state_copy(STATES[0].0, STATES[0].1)
+}
+
+/// U-1 landed with bad content, copied.
+fn landed_bad() -> Fx {
+    Fx::state_copy(STATES[1].0, STATES[1].1)
+}
+
+/// `fixture_state_copy::required_sandbox_is_met_for_state_copy`: each state of this file meets the
+/// sandbox under `BF_TEST_SANDBOX_REQUIRE=1`.
+pub(crate) fn require_sandbox_for_states() {
+    for (name, build) in STATES {
+        require_sandbox_from_env(&Fx::state_copy(name, build));
+    }
+}
+
+/// `fixture_state_copy`: a copy of each state of this file passes the canary (in `state_copy`) and lands
+/// or fixes as the same state built through the full `bf` calls in the test does.
+pub(crate) fn copies_behave_as_their_sources() {
+    // The good state lands U-2 after its wave check passes.
+    let land = |fx: &Fx| -> (String, String) {
+        let r = fx
+            .must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"])
+            .json();
+        review_second(fx);
+        fx.must(&["unit", "land", "U-2"]);
+        let st = bf::events::replay(&fx.project()).unwrap();
+        (
+            r["state"].as_str().unwrap().to_string(),
+            st.units["U-2"].state.clone(),
+        )
+    };
+    let src = Fx::new();
+    good_state(&src);
+    let src_out = land(&src);
+    let fx = landed_good();
+    let out = land(&fx);
+    assert_eq!(out, ("passed".to_string(), "landed".to_string()));
+    assert_eq!(out, src_out);
+    assert_eq!(
+        fs::read_to_string(fx.work("K-1").join("src/b.txt")).unwrap(),
+        fs::read_to_string(src.work("K-1").join("src/b.txt")).unwrap()
+    );
+    fx.must(&["log", "--verify"]);
+    // The bad state fails its wave check, and the fix passes it again.
+    let fix = |fx: &Fx| -> (String, String) {
+        let r = fx
+            .must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"])
+            .json();
+        // `bf next` hands the fix out.
+        assert!(find(&directives(fx), "fix-wave").is_some());
+        let k = fx.work("K-1");
+        fs::write(k.join("src/a.txt"), "good\n").unwrap();
+        commit(&k, "fix");
+        for role in ["builder", "reviewer"] {
+            let o = fx.bf_in(&k, &["report", "K-1", "--role", role, "--result", "built"]);
+            assert_eq!(o.code, 0, "{}", o.all());
+        }
+        (
+            r["state"].as_str().unwrap().to_string(),
+            wave_state(fx, "K-1", 1),
+        )
+    };
+    let src = Fx::new();
+    bad_state(&src);
+    let src_out = fix(&src);
+    let fx = landed_bad();
+    let out = fix(&fx);
+    assert_eq!(out, ("failed".to_string(), "passed".to_string()));
+    assert_eq!(out, src_out);
+    fx.must(&["log", "--verify"]);
+}
+
 fn directives(fx: &Fx) -> Vec<Value> {
     fx.must(&["next", "--json"]).json()["directives"]
         .as_array()
@@ -179,10 +275,7 @@ fn a_landed_wave_offers_the_step_and_the_next_waves_units_at_the_same_time() {
 
 #[test]
 fn the_step_runs_on_a_copy_and_records_a_receipt_bound_to_that_content() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "good\n");
+    let fx = landed_good();
     let content = fx.project().content_hash(&fx.work("K-1")).unwrap();
     let r = fx
         .must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"])
@@ -219,10 +312,7 @@ fn the_step_runs_on_a_copy_and_records_a_receipt_bound_to_that_content() {
 
 #[test]
 fn no_unit_lands_until_the_wave_check_before_it_has_passed() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "good\n");
+    let fx = landed_good();
     // U-2 is built and reviewed without waiting for the check.
     review_second(&fx);
     let o = fx.refused(&["unit", "land", "U-2"]);
@@ -245,10 +335,7 @@ fn no_unit_lands_until_the_wave_check_before_it_has_passed() {
 
 #[test]
 fn a_failed_wave_check_opens_a_fix_held_to_the_units_landed_since_the_last_pass() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "bad\n");
+    let fx = landed_bad();
     let r = fx
         .must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"])
         .json();
@@ -320,10 +407,7 @@ fn a_failed_wave_check_opens_a_fix_held_to_the_units_landed_since_the_last_pass(
 
 #[test]
 fn no_land_is_offered_while_a_wave_fix_of_its_checkpoint_is_open() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "bad\n");
+    let fx = landed_bad();
     fx.must(&["checkpoint", "wave-check", "K-1", "--wave", "1", "--json"]);
     review_second(&fx);
     // U-2 is reviewed, and its checkpoint's wave fix is open: no land is offered, and the unit waits.
@@ -340,10 +424,7 @@ fn no_land_is_offered_while_a_wave_fix_of_its_checkpoint_is_open() {
 
 #[test]
 fn a_wave_fix_that_changes_a_file_outside_its_set_reports_built() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "bad\n");
+    let fx = landed_bad();
     fx.must(&["checkpoint", "wave-check", "K-1", "--wave", "1"]);
     fx.must(&["next", "--json"]);
     let k = fx.work("K-1");
@@ -375,10 +456,7 @@ fn a_plan_with_no_wave_check_has_no_step_and_no_hold() {
 
 #[test]
 fn the_wave_check_step_needs_no_token_and_a_worker_cannot_run_it() {
-    let fx = Fx::new();
-    plan(&fx, true);
-    start(&fx);
-    land_first(&fx, "good\n");
+    let fx = landed_good();
     // From inside a working copy the engine refuses: planning and landing belong to the conductor.
     // The landing removed the unit's folder; the call still comes from where it stood.
     let wc = fx.work("U-1");
