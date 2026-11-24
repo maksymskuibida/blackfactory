@@ -779,3 +779,65 @@ fn every_writer_is_held_to_the_cover_check_of_a_protected_folder() {
     assert_ne!(bash(&fx, &wc, "python3 -c \"import shutil; shutil.copytree('evil','build')\""), "deny");
     assert_ne!(bash(&fx, &wc, "ditto evil build"), "deny");
 }
+
+#[test]
+fn only_a_worker_agent_with_a_copy_may_enter_a_working_copy() {
+    let (fx, wc) = unit_place();
+    let cd = "cd .bf/work/U-1";
+    // A worker agent that is given a copy starts at the root and enters it.
+    for agent in ["builder", "reviewer", "verifier", "security-auditor", "legal-auditor", "uiux-verifier", "knowledge-writer"] {
+        assert_ne!(says_as(&fx, &fx.root, agent, "Bash", json!({"command": cd})), "deny", "{agent}");
+        // Inside the copy it does not leave it.
+        assert_eq!(says_as(&fx, &wc, agent, "Bash", json!({"command": "cd .."})), "deny", "{agent} leaves");
+        assert_eq!(says_as(&fx, &wc, agent, "Bash", json!({"command": "cd /"})), "deny", "{agent} leaves");
+    }
+    // The main session and any other agent do not enter.
+    assert_eq!(says_as(&fx, &fx.root, "", "Bash", json!({"command": cd})), "deny");
+    for agent in ["designer", "repair-judge", "lawyer"] {
+        assert_eq!(says_as(&fx, &fx.root, agent, "Bash", json!({"command": cd})), "deny", "{agent}");
+    }
+}
+
+// ---- a subagent's payload cwd is the workspace root: judge by role
+
+#[test]
+fn a_builder_at_the_workspace_root_writes_freely_in_a_copy_at_work() {
+    let (fx, wc) = unit_place();
+    let other = json!({"file_path": wc.join("src/other.txt").to_string_lossy(), "content": "x"});
+    // The payload cwd is the root, as it is for every subagent.
+    assert_ne!(says_as(&fx, &fx.root, "builder", "Write", other.clone()), "deny");
+    // The main session at the root has no such freedom.
+    assert_eq!(says_as(&fx, &fx.root, "", "Write", other.clone()), "deny");
+    // Protected paths in the copy stay refused.
+    let prot = json!({"file_path": wc.join("factory/policy.toml").to_string_lossy(), "content": "x"});
+    assert_eq!(says_as(&fx, &fx.root, "builder", "Write", prot), "deny");
+    // The read-only roles stay read-only.
+    for agent in ["reviewer", "verifier", "security-auditor", "uiux-verifier"] {
+        assert_eq!(says_as(&fx, &fx.root, agent, "Write", other.clone()), "deny", "{agent}");
+    }
+}
+
+#[test]
+fn a_builder_at_the_workspace_root_may_not_write_into_an_idle_copy() {
+    let (fx, _wc) = unit_place();
+    // A copy of a unit the table does not hold (landed or parked) is not at work.
+    let idle = fx.root.join(".bf/work/U-9");
+    fs::create_dir_all(idle.join("src")).unwrap();
+    let other = json!({"file_path": idle.join("src/other.txt").to_string_lossy(), "content": "x"});
+    assert_eq!(says_as(&fx, &fx.root, "builder", "Write", other), "deny");
+}
+
+#[test]
+fn a_worker_command_that_enters_a_copy_is_judged_from_the_copy_and_from_the_root_it_is_not_loosened() {
+    let (fx, _wc) = unit_place();
+    // A builder at the root: a leading cd into the copy makes the write a copy write.
+    assert_ne!(
+        says_as(&fx, &fx.root, "builder", "Bash", json!({"command": "cd .bf/work/U-1 && echo x > src/other.txt"})),
+        "deny"
+    );
+    // From the copy, the leave-the-copy rule applies to the command's own effective folder.
+    assert_eq!(
+        says_as(&fx, &fx.root, "builder", "Bash", json!({"command": "cd .bf/work/U-1 && echo x > ../U-9.txt"})),
+        "deny"
+    );
+}

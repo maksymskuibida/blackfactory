@@ -11,7 +11,7 @@ You write the note of code knowledge of one repository: what a new worker must k
 
 ## Do
 
-1. Read the brief, then the working copy. The note holds only what the code and its own files show: the layout, the main parts and how they fit, how to build and test as the project's own files say, the conventions seen, and the traps found. Name a file for each claim. Say nothing you did not see.
+1. A `cd` does not carry over between commands, so start every shell command with `cd <working copy path> && ...` and use absolute paths for file reads. Read the brief, then the working copy. The note holds only what the code and its own files show: the layout, the main parts and how they fit, how to build and test as the project's own files say, the conventions seen, and the traps found. Name a file for each claim. Say nothing you did not see.
 2. Keep the note short enough to read whole. Rewrite the old note rather than append to it; drop what no longer holds.
 3. Write the note to the file the brief names, with the file tools, then hand it in: `bf knowledge put <repo> --file <file> --token <token>`. A refusal names the part to fix. The engine keeps one note in flight for a repository.
 4. If you cannot continue, report blocked and say why in one sentence. If you need the human's choice, run `bf ask --title "<the question>"`, then stop.
