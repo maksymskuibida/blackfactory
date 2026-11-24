@@ -256,7 +256,7 @@ fn run_tool(
             .iter()
             .map(|r| r.path.to_string_lossy().to_string())
             .collect::<Vec<_>>();
-        let profile = crate::sandbox::check_profile(
+        let mut profile = crate::sandbox::check_profile(
             &p.state_dir_resolved(),
             &p.root.to_string_lossy(),
             &dir.to_string_lossy(),
@@ -264,6 +264,8 @@ fn run_tool(
             &p.transcript_root(),
             &repo_paths,
         );
+        // R-76: with the setting on, the cache folder is denied after every other rule.
+        profile.push_str(&crate::sandbox::compile_cache::profile_denial(p));
         crate::sandbox::command(&profile, crate::evidence::CHECK_SHELL)
     } else {
         Command::new(crate::evidence::CHECK_SHELL)
@@ -288,10 +290,16 @@ fn run_tool(
         .copied()
         .chain(p.policy.exec.env.iter().map(|x| x.as_str()))
     {
+        if crate::evidence::wrapper_name(k) {
+            continue;
+        }
         if let Some(v) = std::env::var_os(k) {
             cmd.env(k, v);
         }
     }
+    // R-76: no caller's wrapper brings a compile cache into a scan tool; both variables are empty.
+    cmd.env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "");
     crate::session::home::set_env(&mut cmd);
     let o = cmd.output().map_err(|e| {
         refuse(
