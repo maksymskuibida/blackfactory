@@ -239,8 +239,8 @@ fn the_profile_names_the_literal_path_and_only_it() {
     assert_eq!(
         denial,
         format!(
-            "(deny file-read* file-write* (subpath \"{}\"))\n",
-            top.display()
+            "(deny file-read* file-write* (subpath \"{t}\"))\n(deny network-outbound (remote unix-socket (subpath \"{t}\")))\n",
+            t = top.display()
         )
     );
     // A link at the cache folder changes nothing in the denial: it still names the literal path.
