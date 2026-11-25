@@ -117,7 +117,7 @@ pub fn live_turns(a: &Amend) -> Vec<&Value> {
 }
 
 /// The turns of mode `absent` counted since the run's flag was set.
-fn absent_turns<'a>(a: &'a Amend, since_seq: u64) -> Vec<&'a Value> {
+fn absent_turns(a: &Amend, since_seq: u64) -> Vec<&Value> {
     live_turns(a)
         .into_iter()
         .filter(|t| is_absent_turn(t) && t["seq"].as_u64().unwrap_or(0) > since_seq)
