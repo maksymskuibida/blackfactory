@@ -398,7 +398,9 @@ if not isinstance(hooks, dict):
 
 def key(cmd):
     # "bf guard --root x" and "bf guard" are the same hook: compare the first two words.
-    return " ".join((cmd or "").split()[:2])
+    # The engine's hook command takes the event's name too: each event is its own hook.
+    words = (cmd or "").split()
+    return " ".join(words[:3] if words[1:2] == ["hook"] else words[:2])
 
 for event, entries in frag.get("hooks", {}).items():
     current = hooks.setdefault(event, [])

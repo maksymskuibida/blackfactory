@@ -201,7 +201,7 @@ impl Say {
     }
 }
 
-fn is_subagent(payload: &Value) -> bool {
+pub(crate) fn is_subagent(payload: &Value) -> bool {
     DATA.subagent_fields.iter().any(|k| {
         payload
             .get(*k)
@@ -210,7 +210,7 @@ fn is_subagent(payload: &Value) -> bool {
     })
 }
 
-fn question() -> String {
+pub(crate) fn release_question() -> String {
     t(
         "absent.release_question",
         &[
@@ -221,13 +221,13 @@ fn question() -> String {
 }
 
 fn asked(say: &mut Say) {
-    say.human.push(question());
+    say.human.push(release_question());
     say.conductor.push(t(
         "absent.ask.conductor",
         &[
             ("yes", &t("absent.answer_yes", &[])),
             ("stay", &t("absent.answer_stay", &[])),
-            ("question", &question()),
+            ("question", &release_question()),
         ],
     ));
 }
@@ -263,6 +263,11 @@ fn set_say(p: &Project, st: &State, payload: &Value, say: &mut Say) {
             .human
             .push(t("absent.set.checkpoint", &[("checkpoint", &k)])),
         None => say.human.push(t("absent.set.no_checkpoint", &[])),
+    }
+    let unreached = crate::hooks::unreached_list(p);
+    if !unreached.is_empty() {
+        say.human
+            .push(t("absent.set.unreached", &[("events", &unreached)]));
     }
     say.human.push(t("absent.set.waits", &[]));
     say.human.push(t("absent.set.limits", &[]));

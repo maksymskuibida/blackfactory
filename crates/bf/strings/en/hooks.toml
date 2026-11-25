@@ -1,0 +1,11 @@
+# The engine's answers to the harness's other hooks while the run's human-absent flag is on (R-74, D-96).
+
+"hooks.permission.denied" = "The human is away (the run's human-absent flag is on), so this permission prompt is answered no and nothing waits for them. Take the path that needs no permission; if there is none, record the question with `bf ask`, report blocked and stop, so that other work goes on."
+"hooks.stop.reason" = "The human is away (the run's human-absent flag is on) and `bf next` still has steps that need no human: {steps}. Run `bf next` and go on with them. A second stop at the same state of the log passes."
+"hooks.stop.step" = "{role} {action} {target}"
+"hooks.start.context" = "The human-absent flag is on for this run, so this session is under it from its first turn. Go on with `bf next`.\n{line}"
+"hooks.journal.line" = "{at} session {session} waits for input: {message}"
+"hooks.journal.no_message" = "(no message)"
+"absent.set.unreached" = "The harness has not yet called the engine's hook for: {events}. The guard behind each is not served, so what it would catch can still wait for you."
+"absent.status.unreached" = "Hooks the harness has never called: {events}. The guard behind each is not served."
+"absent.status.waits" = "Waiting for input: {line}"
