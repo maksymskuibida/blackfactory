@@ -810,6 +810,7 @@ fn judge_due(p: &Project, st: &State, a: &events::Amend) -> bool {
         v.as_ref()
             .is_some_and(|v| v["fingerprint"].as_str() == Some(a.fingerprint.as_str()))
     };
+    let mode = crate::judge::Mode::now(st);
     p.policy.review.repair_judge
         && a.status == "narrowed"
         && crate::amend::is_repair(a)
@@ -817,8 +818,8 @@ fn judge_due(p: &Project, st: &State, a: &events::Amend) -> bool {
         && !a.human_only
         && !a.from_design
         && !own(&a.verdict)
-        && a.failed.is_none()
-        && a.judge_turns.is_empty()
+        && (mode == crate::judge::Mode::Absent || a.failed.is_none())
+        && crate::judge::turn_room(p, st, a, mode)
         && !a
             .changes
             .iter()
@@ -827,16 +828,26 @@ fn judge_due(p: &Project, st: &State, a: &events::Amend) -> bool {
         && crate::judge::refused_records(st, a).is_empty()
 }
 
+/// Whether a verdict or a failure of the judge ended the turn `t`.
+fn turn_ended(a: &events::Amend, t: &Value) -> bool {
+    let fp = t["fingerprint"].as_str();
+    let own = |v: &Option<Value>| v.as_ref().is_some_and(|v| v["fingerprint"].as_str() == fp);
+    own(&a.verdict) || own(&a.failed)
+}
+
 /// The minutes since the judge's token of the latest narrowing was issued, when it was issued more than
 /// the policy's idle limit ago and no verdict or failure ended its turn.
 fn judge_idle(idle_minutes: u64, a: &events::Amend) -> Option<u64> {
-    if a.status != "narrowed" || a.verdict.is_some() || a.failed.is_some() {
+    if a.status != "narrowed" {
         return None;
     }
     let t = a
         .judge_turns
         .last()
         .filter(|t| t["fingerprint"].as_str() == Some(a.fingerprint.as_str()))?;
+    if turn_ended(a, t) {
+        return None;
+    }
     let at = crate::util::parse_rfc3339(t["at"].as_str().unwrap_or(""));
     let age = crate::util::now_secs().saturating_sub(at) / 60;
     (at > 0 && age > idle_minutes).then_some(age)
@@ -854,15 +865,62 @@ fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mu
             .map(|v| reasons_text(&v["reasons"]))
             .unwrap_or_default();
         let failed = a.failed.as_ref().map(|f| s(f, "reason").to_string());
+        let absent = crate::absent::is_on(st);
+        // A plan repair that cannot go on without the human while the run's flag is on is withdrawn by
+        // the conductor, so that the one place for an open amendment is free; the human's step stays.
+        // It cannot go on when it is the human's, when no token can be issued for it, or when its
+        // judge never reported.
+        let plan_repair =
+            crate::amend::is_repair(a) && crate::amend::designed_in(&a.ids).is_empty();
+        let judge_idle_now = a
+            .judge_turns
+            .last()
+            .is_some_and(|t| !t["void"].as_bool().unwrap_or(false) && !turn_ended(a, t))
+            && judge_idle(p.policy.limits.idle_minutes, a).is_some();
+        let withdraw_why = if !(absent && open && plan_repair) {
+            None
+        } else if a.human_only {
+            Some(if let Some(f) = &failed {
+                t("absent_judge.next.withdraw.failed", &[("reason", f)])
+            } else if asked {
+                t("absent_judge.next.withdraw.ask", &[("reasons", &reasons)])
+            } else {
+                t("absent_judge.next.withdraw.human", &[])
+            })
+        } else if let Some(why) = crate::judge::token_blocked(p, st, a) {
+            Some(t("absent_judge.next.withdraw.blocked", &[("why", &why)]))
+        } else if judge_idle_now {
+            Some(t("absent_judge.next.withdraw.idle", &[]))
+        } else {
+            None
+        };
+        if let Some(why) = withdraw_why {
+            directives.push(
+                json!({"role": "conductor", "action": "withdraw-repair", "amendment": a.id,
+                "reason": why,
+                "commands": [format!("bf amend withdraw {} --reason \"{}\"", a.id,
+                    t("absent_judge.next.withdraw.reason", &[]))],
+                "note": t("absent_judge.next.withdraw.note", &[("amend", &a.id), ("reason", &why)])}),
+            );
+        }
         if a.status == "narrowed" && crate::amend::is_repair(a) && judge_due(p, st, a) {
             directives.push(
                 json!({"role": "conductor", "action": "judge-repair", "work": "amender",
                 "amendment": a.id, "commands": [format!("bf roles token {} judge", a.id)],
-                "note": t("next.judge_repair.note", &[("amend", &a.id)])}),
+                "mode": if absent { "absent" } else { "present" },
+                "note": if absent {
+                    t("absent_judge.next.judge_repair.note", &[("amend", &a.id)])
+                } else {
+                    t("next.judge_repair.note", &[("amend", &a.id)])
+                }}),
             );
             continue;
         }
-        if open && a.judge_turns.last().is_some() && verdict.is_none() && failed.is_none() {
+        if open
+            && a.judge_turns
+                .last()
+                .is_some_and(|t| !t["void"].as_bool().unwrap_or(false) && !turn_ended(a, t))
+        {
             let stale = a
                 .judge_turns
                 .last()
@@ -887,7 +945,7 @@ fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mu
             }
             continue;
         }
-        if a.status == "narrowed" && asked && !a.seen {
+        if a.status == "narrowed" && asked && a.human_only && !a.seen {
             directives.push(
                 json!({"role": "human", "action": "decide-repair", "amendment": a.id,
                 "judge": "ask", "reasons": reasons,
@@ -895,7 +953,7 @@ fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mu
             );
             continue;
         }
-        if a.status == "narrowed" && failed.is_some() && !a.seen {
+        if a.status == "narrowed" && failed.is_some() && a.human_only && !a.seen {
             let why = failed.clone().unwrap_or_default();
             directives.push(
                 json!({"role": "human", "action": "decide-repair", "amendment": a.id,
@@ -914,16 +972,18 @@ fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mu
             a.status.clone()
         };
         let note = if a.judged && st.judged_unseen.contains(&a.id) {
-            Some(t(
-                "next.judged_seen.approved",
-                &[("amend", &a.id), ("reasons", &reasons)],
-            ))
-        } else if let Some(why) = &failed {
+            let key = if st.judged_absent.contains(&a.id) {
+                "absent_judge.next.judged_seen.approved"
+            } else {
+                "next.judged_seen.approved"
+            };
+            Some(t(key, &[("amend", &a.id), ("reasons", &reasons)]))
+        } else if let Some(why) = failed.as_ref().filter(|_| a.human_only) {
             Some(t(
                 "next.judged_seen.failed",
                 &[("amend", &a.id), ("state", &state), ("reason", why)],
             ))
-        } else if asked {
+        } else if asked && a.human_only {
             Some(t(
                 "next.judged_seen.ask",
                 &[("amend", &a.id), ("state", &state), ("reasons", &reasons)],
@@ -941,7 +1001,8 @@ fn judge_flow(p: &Project, st: &State, directives: &mut Vec<Value>, waiting: &mu
             };
             directives.push(
                 json!({"role": "human", "action": "see-judged-repair", "info": true,
-                "amendment": a.id, "judge": kind, "reasons": reasons, "note": note}),
+                "amendment": a.id, "judge": kind, "reasons": reasons, "note": note,
+                "absent": st.judged_absent.contains(&a.id)}),
             );
         }
     }
@@ -968,7 +1029,7 @@ mod next_checks {
         assert!(judge_idle(p, &amend_with_turn(&old)).is_some());
         assert!(judge_idle(p, &amend_with_turn(&fresh)).is_none());
         let mut a = amend_with_turn(&old);
-        a.failed = Some(json!({"reason": "x"}));
+        a.failed = Some(json!({"fingerprint": "fp", "reason": "x"}));
         assert!(judge_idle(p, &a).is_none());
     }
 }

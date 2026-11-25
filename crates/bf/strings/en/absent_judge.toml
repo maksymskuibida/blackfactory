@@ -1,0 +1,21 @@
+# The repair judge under the free rules of the human-absent flag (R-73, D-95, U-70).
+
+"absent_judge.token.turns_used" = "{amend} has had all the judge turns the policy gives it while the human is absent, so the repair is the human's"
+"absent_judge.released" = "the run's human-absent flag was released, so the judge's token of mode absent is void; no verdict was taken and no turn was counted. {amend} is judged again in the usual mode"
+"absent_judge.seen.none" = "no judged repair is waiting for you to see"
+
+"absent_judge.open.refused" = "open an amendment while the human is absent"
+"absent_judge.open.because.not_repair" = "the run's human-absent flag is on, and an amendment that is not a plan repair can only be approved by the human, so it would hold the one open place until they return"
+"absent_judge.open.because.from_design" = "the run's human-absent flag is on, and a repair from a fix design's marked item is never judged, so it would hold the one open place until the human returns"
+"absent_judge.open.do_this" = "Note the change you need for the human with `bf ask --title \"<the change>\" --context \"<why>\"` and go on with the units that do not need it."
+"absent_judge.open.worked_when" = "`bf ask` records the note and `bf next` gives you other work."
+
+"absent_judge.next.judge_repair.note" = "Plan repair {amend} is narrowed and holds no design part, and the human is absent, so the judge works under the free rules. Get the judge's one-use token with `bf roles token {amend} judge`, then start a subagent of type repair-judge with that token and the amendment. It gives its verdict with `bf amend judge {amend} --file - --token <token> --model <model>`. After an ask or a refused go you may revise, narrow and ask for a new judge, up to the policy's judge turns; after the last turn the repair is the human's."
+"absent_judge.next.withdraw.failed" = "the judge gave no verdict and the repair is the human's: {reason}"
+"absent_judge.next.withdraw.ask" = "the judge asked and the repair is the human's: {reasons}"
+"absent_judge.next.withdraw.human" = "the repair is the human's for good"
+"absent_judge.next.withdraw.reason" = "became the human's while they are absent"
+"absent_judge.next.withdraw.note" = "Plan repair {amend} cannot go on without the human ({reason}). Withdraw it with the command given, so that the one place for an open amendment is free; the units it touched wait, every other unit goes on, and the human sees the withdrawn repair with its reasons."
+"absent_judge.next.judged_seen.approved" = "For the human to see: the judge approved plan repair {amend} with no human message while the human was absent. Reasons: {reasons}. Show the human the repair; when they say they saw it, run `bf amend seen {amend} --quote \"<the human's words>\"`, or `bf amend seen --all --quote \"<the human's words>\"` for every repair at once."
+"absent_judge.next.withdraw.blocked" = "no judge token can be issued for it: {why}"
+"absent_judge.next.withdraw.idle" = "the judge's turn was started and never reported, and the human is away"

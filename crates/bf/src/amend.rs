@@ -106,8 +106,21 @@ pub fn narrowing(p: &Project, st: &State, a: &Amend, keep: &[String]) -> R<(Vec<
         parts.push(format!("op{i}:{}", crate::evidence::record_hash(op)));
     }
     let mut changes = Vec::new();
+    // The records the checkpoint operations remove at the approval: read as gone before it, so the
+    // fingerprint the human approves covers the deletion.
+    let removed: Vec<String> = if a.ops.is_empty() {
+        vec![]
+    } else {
+        edit_of(p, st, &a.ops)
+            .map(|e| e.removed)
+            .unwrap_or_default()
+    };
     for id in ids {
-        let rec = p.get_record(id)?;
+        let rec = if removed.contains(id) {
+            None
+        } else {
+            p.get_record(id)?
+        };
         let h = match &rec {
             Some(r) => crate::evidence::record_hash(r),
             None => "missing".to_string(),
@@ -546,6 +559,8 @@ pub struct Edit {
     pub renames: Vec<(String, String)>,
     /// The checkpoints made by the operations.
     pub created: Vec<String>,
+    /// The checkpoint records the operations leave no place for: approval removes their files.
+    pub removed: Vec<String>,
     disk: BTreeMap<String, Value>,
 }
 
@@ -571,6 +586,7 @@ impl Edit {
             checks,
             renames: vec![],
             created: vec![],
+            removed: vec![],
             disk,
         })
     }
@@ -590,6 +606,7 @@ impl Edit {
         self.changed()
             .iter()
             .map(|r| s(r, "id").to_string())
+            .chain(self.removed.iter().cloned())
             .collect()
     }
 
@@ -631,31 +648,228 @@ fn reaches(units: &[Value], from: &str, to: &str) -> bool {
 /// The request of a checkpoint operation, as it is kept in the log.
 pub fn op_from_args(pos: &[String], title: Option<&str>) -> R<Value> {
     let how = pos.first().map(|x| x.as_str()).unwrap_or("");
-    if !matches!(how, "before" | "after" | "split") || pos.len() < 3 {
-        return Err(refuse_owned(
-            "run `bf amend checkpoint`",
-            "it needs `before`, `after` or `split`, a checkpoint and the units",
-            vec![
-                "Run `bf amend checkpoint before K-3 U-7 U-8` or `after K-3 U-7 U-8` to put the units on a new checkpoint.".to_string(),
-                "Run `bf amend checkpoint split K-3 U-4` to keep U-4 on K-3 and put the rest on a new checkpoint right after it.".to_string(),
-            ],
-            "The command prints the renamed numbers.",
-        ));
+    let ok = match how {
+        "before" | "after" | "split" => pos.len() >= 3,
+        "merge" => pos.len() == 3,
+        _ => false,
+    };
+    if !ok {
+        return Err(from_key("cli.amend_merge.usage", &[]));
     }
-    let mut units: Vec<String> = vec![];
-    for u in &pos[2..] {
-        if !units.contains(u) {
-            units.push(u.clone());
+    let mut op = if how == "merge" {
+        json!({"how": how, "at": pos[1], "with": pos[2]})
+    } else {
+        let mut units: Vec<String> = vec![];
+        for u in &pos[2..] {
+            if !units.contains(u) {
+                units.push(u.clone());
+            }
         }
-    }
-    let mut op = json!({"how": how, "at": pos[1], "units": units});
+        json!({"how": how, "at": pos[1], "units": units})
+    };
     if let Some(t) = title.filter(|t| !t.trim().is_empty()) {
         op["title"] = json!(t.trim());
     }
     Ok(op)
 }
 
+/// Merge the checkpoint right after `at` into it: the units and the proven parts of both, the later
+/// checkpoints one number lower, and the record of the highest number left without a place.
+fn apply_merge(st: &State, e: &mut Edit, op: &Value) -> R<()> {
+    let (a, b) = (s(op, "at").to_string(), s(op, "with").to_string());
+    let vals = [("a", a.as_str()), ("b", b.as_str())];
+    let find = |e: &Edit, id: &str| e.cps.iter().find(|k| s(k, "id") == id).cloned();
+    let (Some(ka), Some(kb)) = (find(e, &a), find(e, &b)) else {
+        return Err(from_key("cli.amend_merge.unknown", &vals));
+    };
+    if num(&b) != num(&a) + 1 {
+        return Err(from_key("cli.amend_merge.not_next", &vals));
+    }
+    let units_of = |e: &Edit, k: &Value| -> Vec<String> {
+        let mut v = str_list(k, "after");
+        for u in e.units.iter().filter(|u| s(u, "checkpoint") == s(k, "id")) {
+            let id = s(u, "id").to_string();
+            if !v.contains(&id) {
+                v.push(id);
+            }
+        }
+        v
+    };
+    let (ua, ub) = (units_of(e, &ka), units_of(e, &kb));
+    let started = |e: &Edit, id: &str, us: &[String]| {
+        us.iter().any(|u| st.units.contains_key(u))
+            || e.orig_of(id)
+                .is_some_and(|o| st.closed.contains_key(&o) || st.synced.iter().any(|x| x.0 == o))
+    };
+    if started(e, &b, &ub) {
+        return Err(from_key("cli.amend_merge.started", &vals));
+    }
+    if e.orig_of(&a).is_some_and(|o| st.closed.contains_key(&o)) {
+        return Err(from_key("cli.amend_merge.closed", &vals));
+    }
+    let (ca, cb) = (ka.get("unit_checks"), kb.get("unit_checks"));
+    // A missing list differs from a present one: the units of one checkpoint would gain checks.
+    if ca != cb {
+        let show = |v: Option<&Value>| v.map_or("none".to_string(), |x| x.to_string());
+        return Err(from_key(
+            "cli.amend_merge.unit_checks",
+            &[
+                ("a", &a),
+                ("b", &b),
+                ("list_a", &show(ca)),
+                ("list_b", &show(cb)),
+            ],
+        ));
+    }
+    for k in e.cps.iter().filter(|k| num(s(k, "id")) > num(&b)) {
+        let id = s(k, "id");
+        let us = units_of(e, k);
+        if started(e, id, &us) {
+            return Err(from_key(
+                "cli.amend_merge.later_started",
+                &[("a", &a), ("b", &b), ("id", id)],
+            ));
+        }
+    }
+    // The merged checkpoint.
+    let union = |f: &str| {
+        let mut v = str_list(&ka, f);
+        for x in str_list(&kb, f) {
+            if !v.contains(&x) {
+                v.push(x);
+            }
+        }
+        v
+    };
+    let mut k = ka.clone();
+    let mut after = ua.clone();
+    after.extend(ub.iter().filter(|u| !ua.contains(u)).cloned());
+    k["after"] = json!(after);
+    k["proves"] = json!(union("proves"));
+    k["checks"] = json!(union("checks"));
+    for f in ["stop", "pull_request"] {
+        let v = ka[f].as_bool().unwrap_or(false) || kb[f].as_bool().unwrap_or(false);
+        if v || ka.get(f).is_some() {
+            k[f] = json!(v);
+        }
+    }
+    for f in ["stop_why", "human_step"] {
+        let (x, y) = (s(&ka, f).to_string(), s(&kb, f).to_string());
+        let v = if x.is_empty() {
+            y
+        } else if y.is_empty() || x == y {
+            x
+        } else {
+            format!("{x} {y}")
+        };
+        if !v.is_empty() {
+            k[f] = json!(v);
+        }
+    }
+    for f in ["on_human_step", "unit_checks", "unit_checks_reason"] {
+        if ka.get(f).is_none() {
+            if let Some(v) = kb.get(f) {
+                k[f] = v.clone();
+            }
+        }
+    }
+    if !s(op, "title").is_empty() {
+        k["title"] = json!(s(op, "title"));
+    }
+    let (x, y) = (s(&ka, "text").to_string(), s(&kb, "text").to_string());
+    if !y.is_empty() && x != y {
+        k["text"] = json!(if x.is_empty() {
+            y
+        } else {
+            format!("{x}\n\n{y}")
+        });
+    }
+    // The units of the later checkpoint go onto this one, keeping their order among themselves.
+    for u in e
+        .units
+        .iter_mut()
+        .filter(|u| ub.iter().any(|x| x == s(u, "id")))
+    {
+        u["checkpoint"] = json!(a);
+    }
+    // Two units that now share a checkpoint and a file, with no order between them, go one after
+    // the other: the later checkpoint's unit after the earlier one's.
+    for ub1 in &ub {
+        for ua1 in &ua {
+            let find = |id: &String| e.units.iter().find(|u| s(u, "id") == id).cloned();
+            let (Some(x), Some(y)) = (find(ua1), find(ub1)) else {
+                continue;
+            };
+            let share = str_list(&x, "files").iter().any(|fa| {
+                str_list(&y, "files").iter().any(|fb| {
+                    crate::util::norm_overlap(
+                        &crate::util::norm_scope(fa),
+                        &crate::util::norm_scope(fb),
+                    )
+                })
+            });
+            if !share || reaches(&e.units, ub1, ua1) || reaches(&e.units, ua1, ub1) {
+                continue;
+            }
+            if let Some(u) = e.units.iter_mut().find(|u| s(u, "id") == ub1) {
+                let mut d = str_list(u, "depends_on");
+                d.push(ua1.clone());
+                u["depends_on"] = json!(d);
+            }
+        }
+    }
+    e.cps.retain(|c| s(c, "id") != b);
+    if let Some(c) = e.cps.iter_mut().find(|c| s(c, "id") == a) {
+        *c = k;
+    }
+    // Every checkpoint after the merged one takes the number one lower.
+    let map: BTreeMap<String, String> = e
+        .cps
+        .iter()
+        .map(|k| s(k, "id").to_string())
+        .filter(|id| num(id) > num(&b))
+        .map(|id| {
+            let to = format!("K-{}", num(&id) - 1);
+            (id, to)
+        })
+        .collect();
+    let follow = |x: &str| map.get(x).cloned().unwrap_or_else(|| x.to_string());
+    let fresh: Vec<(String, String)> = map
+        .iter()
+        .filter(|(cur, _)| {
+            !e.created.iter().any(|c| c == *cur) && !e.renames.iter().any(|(_, n)| n == *cur)
+        })
+        .map(|(c, n)| (c.clone(), n.clone()))
+        .collect();
+    e.renames = e
+        .renames
+        .iter()
+        .filter(|(_, n)| *n != b)
+        .map(|(o, n)| (o.clone(), follow(n)))
+        .chain(fresh)
+        .collect();
+    e.created = e
+        .created
+        .iter()
+        .filter(|c| **c != b)
+        .map(|c| follow(c))
+        .collect();
+    for k in e.cps.iter_mut() {
+        let id = follow(s(k, "id"));
+        k["id"] = json!(id);
+    }
+    for u in e.units.iter_mut() {
+        let id = follow(s(u, "checkpoint"));
+        u["checkpoint"] = json!(id);
+    }
+    e.cps.sort_by_key(|k| num(s(k, "id")));
+    Ok(())
+}
+
 fn apply_op(p: &Project, st: &State, e: &mut Edit, op: &Value) -> R<()> {
+    if s(op, "how") == "merge" {
+        return apply_merge(st, e, op);
+    }
     let how = s(op, "how").to_string();
     let at = s(op, "at").to_string();
     let what = if how == "split" {
@@ -1029,6 +1243,13 @@ pub fn edit_of(p: &Project, st: &State, ops: &[Value]) -> R<Edit> {
     let mut e = Edit::load(p)?;
     for op in ops {
         apply_op(p, st, &mut e, op)?;
+        // A checkpoint record on disk that the plan now has no place for is removed at the approval.
+        e.removed = e
+            .disk
+            .keys()
+            .filter(|id| id.starts_with("K-") && !e.cps.iter().any(|k| s(k, "id") == id.as_str()))
+            .cloned()
+            .collect();
     }
     Ok(e)
 }
@@ -1092,12 +1313,25 @@ pub fn refuse_if_result_breaks_plan(p: &Project, a: &Amend, e: &Edit) -> R<()> {
 pub fn write_edit(p: &Project, e: &Edit) -> R<Vec<(std::path::PathBuf, Option<Vec<u8>>)>> {
     let changed = e.changed();
     let mut before: Vec<(std::path::PathBuf, Option<Vec<u8>>)> = vec![];
-    for r in &changed {
-        let path = p.record_path(s(r, "id"))?;
+    for id in changed
+        .iter()
+        .map(|r| s(r, "id").to_string())
+        .chain(e.removed.iter().cloned())
+    {
+        let path = p.record_path(&id)?;
         before.push((path.clone(), std::fs::read(&path).ok()));
     }
     for r in &changed {
         if let Err(err) = p.write_record(r) {
+            undo_writes(&before);
+            return Err(err);
+        }
+    }
+    for id in &e.removed {
+        let gone = p
+            .record_path(id)
+            .and_then(|f| std::fs::remove_file(f).map_err(Into::into));
+        if let Err(err) = gone {
             undo_writes(&before);
             return Err(err);
         }
@@ -1116,18 +1350,28 @@ pub fn undo_writes(before: &[(std::path::PathBuf, Option<Vec<u8>>)]) {
 }
 
 /// The rows of the plan stage of an amendment page for its checkpoint operations: a renamed checkpoint
-/// under its old number, marked as moved, and every other changed record as changed or new.
+/// under its old number, marked as moved, every other changed record as changed or new, and each record
+/// an operation removes with its old content, marked gone. The marks are texts of `amend_merge.toml`.
 pub fn plan_rows(e: &Edit) -> Vec<(String, Value, String)> {
     let mut out = vec![];
     for r in e.changed() {
         let id = s(&r, "id").to_string();
         if let Some((old, _)) = e.renames.iter().find(|(_, n)| *n == id) {
-            out.push((old.clone(), r.clone(), format!("moved to {id}")));
+            let how = strings::t("cli.amend_merge.row.moved", &[("id", &id)]);
+            out.push((old.clone(), r.clone(), how));
         } else if e.created.contains(&id) || !e.disk.contains_key(&id) {
             // The freed number belongs to the new checkpoint, and its old holder's row keeps that id.
-            out.push((format!("new-{id}"), r.clone(), "new".to_string()));
+            let how = strings::t("cli.amend_merge.row.new", &[]);
+            out.push((format!("new-{id}"), r.clone(), how));
         } else {
-            out.push((id, r.clone(), "changed".to_string()));
+            let how = strings::t("cli.amend_merge.row.changed", &[]);
+            out.push((id, r.clone(), how));
+        }
+    }
+    for id in &e.removed {
+        if let Some(old) = e.disk.get(id) {
+            let how = strings::t("cli.amend_merge.row.gone", &[]);
+            out.push((format!("gone-{id}"), old.clone(), how));
         }
     }
     out

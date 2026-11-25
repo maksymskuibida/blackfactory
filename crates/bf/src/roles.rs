@@ -434,6 +434,7 @@ fn amend_brief(p: &Project, amend: &str, r: &Role) -> R<std::path::PathBuf> {
     }
     md.push_str("- `bf review split` with your own token, to hand stages of the amendment to stage agents\n");
     md.push_str(&designer_section(p, amend));
+    md.push_str(&design::design_only_section(false));
     md.push_str(&format!(
         "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",
         p.policy.limits.max_rounds, p.policy.limits.idle_minutes
@@ -490,6 +491,7 @@ fn design_brief(p: &Project, r: &Role) -> R<std::path::PathBuf> {
     }
     if role == "designer" {
         md.push_str(&designer_section(p, DESIGN));
+        md.push_str(&design::design_only_section(false));
     }
     md.push_str(&format!(
         "\n## Limits\n\n- Review rounds: up to {}.\n- Idle limit: {} minutes.\n",

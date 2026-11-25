@@ -1153,6 +1153,7 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
         }
         let w = words.get(i)?;
         let base = basename(w);
+        let wrapper_at = i;
         // Options that take an argument, per wrapper.
         // The last number is how many plain words follow the options before the command (a time limit,
         // a lock file, a mask, a pseudo terminal's log file).
@@ -1186,6 +1187,17 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
             "noglob" | "nocorrect" | "-" | "coproc" => ("", &[], 0),
             // zsh's `repeat N cmd` and `function name { ... }`: the count or the name comes first.
             "repeat" | "function" => ("", &[], 1),
+            // `rustup run <toolchain> cmd`: the word `run` and the toolchain come first.
+            // Only `run` runs a command; any other subcommand (`component add clippy`) is not a wrapper.
+            "rustup" => {
+                let sub = words[i + 1..]
+                    .iter()
+                    .find(|a| !a.starts_with('-') && !a.starts_with('+'));
+                if sub.map(String::as_str) != Some("run") {
+                    return Some((i, via));
+                }
+                ("", &[], 0)
+            }
             "sandbox-exec" => ("", &["-f", "-n", "-p", "-D"], 0),
             "pkexec" => ("", &["--user"], 0),
             "runuser" => ("", &["-u", "-g", "-G", "-s", "-w"], 0),
@@ -1231,6 +1243,29 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
                 i += 1;
             } else {
                 break;
+            }
+        }
+        if base == "rustup" {
+            // Find the word `run` itself (rustup's own options and a `+toolchain` may come before it),
+            // then run's own options (`--install`, `-h`), the toolchain and an optional `--`.
+            i = wrapper_at + 1;
+            while i < words.len() && words[i] != "run" {
+                i += 1;
+            }
+            i += 1;
+            // Run's options, `--` and the toolchain may come in any order; the first other word after
+            // the toolchain is the program.
+            let mut toolchain = false;
+            while i < words.len() {
+                let w = words[i].as_str();
+                if w.starts_with('-') {
+                    i += 1;
+                } else if !toolchain {
+                    toolchain = true;
+                    i += 1;
+                } else {
+                    break;
+                }
             }
         }
         i += skip_pos;

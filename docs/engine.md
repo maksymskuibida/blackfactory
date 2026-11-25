@@ -332,6 +332,12 @@ A payload is **not** a human turn when: it does not say `hook_event_name: UserPr
 
 The engine cannot tell a person from a program that writes to the hook's input. The hook is the source of human turns, the checks above remove the obvious fakes, and the quote on every decision (below) makes it visible which words were taken. See "What the engine does not stop".
 
+### `bf hook <event>`
+
+For the harness's other hooks, while the run's human-absent flag is on (R-74, D-96). It reads the event's payload on stdin, answers in the harness's form within the hook's time, and always exits 0 with no output when the flag is off. The events and their forms are adapter data (`hook_events`): `permission` (a permission prompt is answered no, with the reason and the step to take instead; the engine never answers yes), `elicitation` (a tool server's request for input or sign-in is declined), `stop` (the end of the conductor's turn is turned back once for each head of the log while `bf next` has a step of any role but the human's, the engine's own `land`, `close-checkpoint` and `wave-check` included; a returning session, a subagent and a state with only the human's steps pass), `ask-answer` (the ask menu's answer to the release question: `yes` releases and `stay absent` clears every returning mark, only in a conductor session where the flag is returning), `idle` (a notice that the session waits for input, written to a journal that `bf absent status` shows) and `start` (a session's start, resume or compaction is told the flag and the instruction). Every call marks its event as reached in the state folder; `bf absent status` and the set message name each event the harness has never called.
+
+**What no guard reaches.** The harness's own usage limit and sign-in; a prompt inside a browser page or another app; the sign-in window of a tool server; a tool that no list of the adapter or the policy names; an agent that types into the harness's own prompt through control of the app that the human gave it; and a harness that hands an event to no hook (the marks above show which). The next-step box of the desktop app has no hook of its own for its answer: the release by that box is the human's message.
+
 ### `bf gate open <kind> [--ref ID]` / `approve` / `reject` / `skip ui` / `status`
 
 Kinds: `idea`, `requirements`, `ui`, `architecture`, `plan`, `checkpoint-step` (needs `--ref K-<n>`). A gate has rounds; its ID is `<kind>-r<round>` (or `<kind>-<ref>-r<round>`). Opening records a snapshot of the records the page shows, so the next round can mark what is new, changed or removed.
@@ -424,9 +430,11 @@ Only one amendment is open at a time. `open` is refused while one is open (not a
 - **Stated limit.** The agent type is the one the harness puts in the hook payload. The engine trusts it and cannot check it.
 - **The ui stage.** No screen or journey changes: the judged repairs, a fix's grants and the accepted findings are rows of the existing run, checkpoint and amendment pages.
 
-### `bf amend checkpoint before|after|split <K-n> <U-n>... [--title T]`
+### `bf amend checkpoint before|after|split <K-n> <U-n>...|merge <K-n> <K-m> [--title T]`
 
 Inside an open amendment the engine can insert a checkpoint between two others, or split one in two, by renaming the later checkpoints one number forward. `before K-3 U-7 U-8` puts the units on a new checkpoint under the number `K-3`, and `K-3` and every later checkpoint become one number higher; `after K-3 ...` puts it under `K-4` the same way. `split K-3 U-4` keeps `U-4` on `K-3` and puts the rest of `K-3`'s units on a new checkpoint right after it. The numbers always read in the order of the plan.
+
+`merge K-2 K-3` goes the other way: it puts the units, proven parts and checks of `K-3` onto `K-2`, which must not be closed (it may have started), while `K-3` and every checkpoint after it must not have started. Every later checkpoint takes the number one lower, and the record of the highest number is removed at the approval as a removed unit is: the narrowing lists it as `removed` with its old content, the amendment page shows it as gone, and the approval records it as `missing`. `--title` names the merged checkpoint (else `K-2`'s title stays). `pull_request` and `stop` hold when either checkpoint has them, `stop_why` and `human_step` are joined when they differ, and the merge is refused when the two lists of `unit_checks` differ, and a checkpoint with a list differs from one with none. Units of the two checkpoints that share a file and have no order between them are put one after the other, those of `K-3` after those of `K-2`. A judged repair that holds a merge goes to the human.
 
 ```bash
 bf amend open --repair U-7 U-8

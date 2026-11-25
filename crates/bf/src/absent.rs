@@ -201,7 +201,7 @@ impl Say {
     }
 }
 
-fn is_subagent(payload: &Value) -> bool {
+pub(crate) fn is_subagent(payload: &Value) -> bool {
     DATA.subagent_fields.iter().any(|k| {
         payload
             .get(*k)
@@ -210,7 +210,7 @@ fn is_subagent(payload: &Value) -> bool {
     })
 }
 
-fn question() -> String {
+pub(crate) fn release_question() -> String {
     t(
         "absent.release_question",
         &[
@@ -221,13 +221,13 @@ fn question() -> String {
 }
 
 fn asked(say: &mut Say) {
-    say.human.push(question());
+    say.human.push(release_question());
     say.conductor.push(t(
         "absent.ask.conductor",
         &[
             ("yes", &t("absent.answer_yes", &[])),
             ("stay", &t("absent.answer_stay", &[])),
-            ("question", &question()),
+            ("question", &release_question()),
         ],
     ));
 }
@@ -263,6 +263,11 @@ fn set_say(p: &Project, st: &State, payload: &Value, say: &mut Say) {
             .human
             .push(t("absent.set.checkpoint", &[("checkpoint", &k)])),
         None => say.human.push(t("absent.set.no_checkpoint", &[])),
+    }
+    let unreached = crate::hooks::unreached_list(p);
+    if !unreached.is_empty() {
+        say.human
+            .push(t("absent.set.unreached", &[("events", &unreached)]));
     }
     say.human.push(t("absent.set.waits", &[]));
     say.human.push(t("absent.set.limits", &[]));
@@ -404,10 +409,13 @@ pub fn stamp_briefs(paths: &[std::path::PathBuf]) -> R<()> {
     Ok(())
 }
 
-/// Takes the block out of every brief of the run: the brief is as it was written.
+/// Takes the block out of every brief of the run: the brief is as it was written. Only whole blocks
+/// go (R-74): the begin line, the title line right after it and the first later end line, with no
+/// begin line between. Any other marker text stays as it is.
 pub fn clear_briefs(p: &Project) -> R<()> {
     let begin = t("absent_briefs.begin", &[]);
     let end = t("absent_briefs.end", &[]);
+    let title = format!("## {}", t("absent_briefs.title", &[]));
     let Ok(rd) = std::fs::read_dir(p.briefs_dir()) else {
         return Ok(());
     };
@@ -422,23 +430,50 @@ pub fn clear_briefs(p: &Project) -> R<()> {
         if !text.contains(&begin) {
             continue;
         }
-        // Every block goes, the one at the top and the ones a brief embeds from other briefs.
-        let mut out = String::new();
-        let mut rest = text.as_str();
-        while let Some(s) = rest.find(&begin) {
-            out.push_str(&rest[..s]);
-            let after = &rest[s..];
-            let Some(at) = after.find(&end) else {
-                rest = after;
-                break;
-            };
-            let tail = &after[at + end.len()..];
-            rest = tail.strip_prefix("\n\n").unwrap_or(tail);
+        let out = without_whole_blocks(&text, &begin, &title, &end);
+        if out != text {
+            crate::util::atomic_write(&path, out.as_bytes())?;
         }
-        out.push_str(rest);
-        crate::util::atomic_write(&path, out.as_bytes())?;
     }
     Ok(())
+}
+
+/// The text without its whole blocks, read line by line.
+fn without_whole_blocks(text: &str, begin: &str, title: &str, end: &str) -> String {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let body = |l: &str| l.strip_suffix('\n').map(str::to_string);
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let whole = body(lines[i]).as_deref() == Some(begin)
+            && lines.get(i + 1).and_then(|l| body(l)).as_deref() == Some(title);
+        let mut close = None;
+        if whole {
+            for (j, l) in lines.iter().enumerate().skip(i + 2) {
+                let l = l.strip_suffix('\n').unwrap_or(l);
+                if l == begin {
+                    break;
+                }
+                if l == end {
+                    close = Some(j);
+                    break;
+                }
+            }
+        }
+        match close {
+            Some(j) => {
+                i = j + 1;
+                if lines.get(i).copied() == Some("\n") {
+                    i += 1;
+                }
+            }
+            None => {
+                out.push_str(lines[i]);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// The flag as data, for `bf absent status`.

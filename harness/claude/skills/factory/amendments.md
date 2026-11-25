@@ -2,7 +2,7 @@
 
 Once a stage's gate is approved its records are frozen: they change only through an amendment. `bf amend open [--repair] <ID>...` opens one. Only one amendment is open at a time: `bf amend open` is refused while one is open. Change the open one with `bf amend revise <ID>...` (it keeps its ID, needs narrowing again and a new human message before approval) or drop it with `bf amend withdraw <A-n> --reason "<why>"`.
 
-A plan repair (a check's command, a unit's files or order, moving a unit, or `bf amend checkpoint before|after|split <K> <U>...`) needs no designer and no review. Any other amendment goes through these steps, each started without stopping or asking:
+A plan repair (a check's command, a unit's files or order, moving a unit, or `bf amend checkpoint before|after|split <K> <U>...`, or `bf amend checkpoint merge <K> <K+1>`, which joins a checkpoint that has not started into the one before it and goes to the human, never the judge) needs no designer and no review. Any other amendment goes through these steps, each started without stopping or asking:
 1. The general designer first: `bf roles token <A-n> designer`, then `bf brief <A-n> --role designer`. It designs the whole amendment, or reports a split into stages with `bf review split`.
 2. After a split, each stage designer named: `bf review token --subject <A-n> --stage <stage> --role <role>`, then `bf review brief <stage> --subject <A-n> --role <role>`. The general designer then reconciles the drafts.
 3. The review runs in the shape the design took: one review for each stage of a split, then the review that the stages agree; for a design with no split, the solo reviewer (`bf review token amendment --subject <A-n>`), and any stage review it asks for. Rounds, parking, accepting and releasing are as in the design review of `design-stages.md`, with the amendment ID.
@@ -11,6 +11,8 @@ A plan repair (a check's command, a unit's files or order, moving a unit, or `bf
 An amendment names its new records: a record that does not exist yet is named in `bf amend open` like any other, and is put while the amendment waits for the human.
 
 A kept record that must change goes in this order, the order the engine accepts: `bf amend revise` naming the IDs it names now and every record that changed, put the records, narrow, the human's yes, approve.
+
+After the engine of U-111 is installed, open the plan repair D-127 names: `bf amend open --repair <the unit of U-74 and U-75>`, then `bf amend checkpoint merge <the checkpoint of U-74> <the checkpoint of U-75>`.
 
 ## After `bf amend approve`
 

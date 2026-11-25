@@ -66,11 +66,211 @@ pub const PROTECTED: &[&str] = &[
     "harness/claude/adapter.toml",
 ];
 
-/// The mode of the judging. Only the one with the human present is here; the free rules of the
-/// human-absent flag (U-68) add theirs beside it.
+/// The name of the free mode in the log: the judge's token and its events carry it.
+pub const MODE_ABSENT: &str = "absent";
+
+/// The mode of the judging: the usual one with the human present, or the free one while the run's
+/// human-absent flag is on (R-73, D-95). The mode is fixed when the token is issued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Present,
+    Absent,
+}
+
+impl Mode {
+    /// The mode as the log writes it: empty for the usual one.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Present => "",
+            Mode::Absent => MODE_ABSENT,
+        }
+    }
+    /// The mode a token asked for now would have: the run's flag, read from its state.
+    pub fn now(st: &State) -> Mode {
+        if crate::absent::is_on(st) {
+            Mode::Absent
+        } else {
+            Mode::Present
+        }
+    }
+}
+
+/// The turn the token of `fingerprint` opened, if there is one.
+fn turn_for<'a>(a: &'a Amend, fp: &str) -> Option<&'a Value> {
+    a.judge_turns
+        .iter()
+        .rev()
+        .find(|t| t["fingerprint"].as_str() == Some(fp))
+}
+
+fn is_void(t: &Value) -> bool {
+    t["void"].as_bool().unwrap_or(false)
+}
+
+fn is_absent_turn(t: &Value) -> bool {
+    t["mode"].as_str() == Some(MODE_ABSENT)
+}
+
+/// The turns that count: a turn of mode `absent` that the release of the flag voided does not.
+pub fn live_turns(a: &Amend) -> Vec<&Value> {
+    a.judge_turns.iter().filter(|t| !is_void(t)).collect()
+}
+
+/// The turns of mode `absent` counted since the run's flag was set.
+fn absent_turns(a: &Amend, since_seq: u64) -> Vec<&Value> {
+    live_turns(a)
+        .into_iter()
+        .filter(|t| is_absent_turn(t) && t["seq"].as_u64().unwrap_or(0) > since_seq)
+        .collect()
+}
+
+/// Whether the turn of `fp` may speak: a turn of mode `absent` only while the run's flag is on.
+pub fn turn_mode_ok(st: &State, a: &Amend, fp: &str) -> bool {
+    match turn_for(a, fp) {
+        Some(t) if is_absent_turn(t) => st.absent.on && !is_void(t),
+        _ => true,
+    }
+}
+
+/// The replay of the end of a turn (a verdict or a failed judge). In the usual mode a turn that ended
+/// with no go makes the repair the human's. In mode `absent` it does so only at the last turn of the
+/// policy, and then the records the narrowings of those turns changed are bound until the human saw them
+/// (R-73 acceptances 9 and 10).
+pub fn end_turn(st: &mut State, id: &str, fp: &str, go: bool) {
+    let since = st.absent.since_seq;
+    let Some(a) = st.amends.iter_mut().find(|a| a.id == id) else {
+        return;
+    };
+    let absent = turn_for(a, fp).is_some_and(is_absent_turn);
+    if let Some(t) = a
+        .judge_turns
+        .iter_mut()
+        .rev()
+        .find(|t| t["fingerprint"].as_str() == Some(fp))
+    {
+        t["ended"] = json!(true);
+    }
+    if go {
+        return;
+    }
+    if !absent {
+        a.human_only = true;
+        events::keep_asked(st, id);
+        return;
+    }
+    let turns = absent_turns(a, since);
+    let limit = turns
+        .last()
+        .and_then(|t| t["limit"].as_u64())
+        .filter(|l| *l > 0)
+        .unwrap_or(3) as usize;
+    if turns.len() < limit {
+        return;
+    }
+    let mut bound: Vec<String> = turns
+        .iter()
+        .flat_map(|t| {
+            t["ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str().map(String::from))
+        })
+        .collect();
+    bound.sort();
+    bound.dedup();
+    a.human_only = true;
+    for b in bound {
+        st.asked.insert(b, id.to_string());
+    }
+}
+
+/// The replay of the release of the run's flag: a token of mode `absent` that no verdict ended is void
+/// and counts no turn; a repair whose turns of that mode ended with no go is the human's, as in the usual
+/// mode.
+pub fn void_absent_turns(st: &mut State) {
+    let ids: Vec<String> = st.amends.iter().map(|a| a.id.clone()).collect();
+    for id in ids {
+        let mut hold = false;
+        if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+            for t in a.judge_turns.iter_mut() {
+                if is_absent_turn(t) && !is_void(t) && !t["ended"].as_bool().unwrap_or(false) {
+                    t["void"] = json!(true);
+                }
+            }
+            let open = matches!(a.status.as_str(), "open" | "narrowed");
+            let ended = a
+                .judge_turns
+                .iter()
+                .any(|t| is_absent_turn(t) && !is_void(t));
+            if open && ended && !a.human_only {
+                a.human_only = true;
+                hold = true;
+            }
+        }
+        if hold {
+            events::keep_asked(st, &id);
+        }
+    }
+}
+
+/// Why no judge token can be issued for the narrowed repair `a` however it is revised, when that is so:
+/// the switch is off, it changes a record that an unseen `ask` binds, it holds records a fix design
+/// marked, or it had all its turns. The conductor withdraws such a repair while the human is away.
+pub fn token_blocked(p: &Project, st: &State, a: &Amend) -> Option<String> {
+    if a.status != "narrowed" {
+        return None;
+    }
+    if !p.policy.review.repair_judge {
+        return Some(strings::t("judge.token.because.switch_off", &[]));
+    }
+    let asked: Vec<String> = a
+        .changes
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .filter(|id| st.asked.contains_key(*id))
+        .map(|id| format!("{id} ({})", st.asked[id]))
+        .collect();
+    if !asked.is_empty() {
+        return Some(strings::t(
+            "judge.token.because.asked",
+            &[("amend", &a.id), ("records", &asked.join(", "))],
+        ));
+    }
+    let marked = refused_records(st, a);
+    if !marked.is_empty() {
+        return Some(strings::t(
+            "judge.token.because.marked",
+            &[("amend", &a.id), ("records", &marked.join(", "))],
+        ));
+    }
+    let limit = p.policy.absent.judge_turns.max(1) as usize;
+    // A turn counts as used only once it has ended: a judge that is still running may give a go.
+    let ended = absent_turns(a, st.absent.since_seq)
+        .iter()
+        .filter(|t| t["ended"].as_bool().unwrap_or(false))
+        .count();
+    if ended >= limit {
+        return Some(strings::t(
+            "absent_judge.token.turns_used",
+            &[("amend", &a.id)],
+        ));
+    }
+    None
+}
+
+/// The judge's turns an amendment may still have in `mode`, as the token counts them.
+pub fn turn_room(p: &Project, st: &State, a: &Amend, mode: Mode) -> bool {
+    match mode {
+        Mode::Present => live_turns(a).is_empty(),
+        Mode::Absent => {
+            let limit = p.policy.absent.judge_turns.max(1) as usize;
+            absent_turns(a, st.absent.since_seq).len() < limit
+                && !live_turns(a)
+                    .iter()
+                    .any(|t| t["fingerprint"].as_str() == Some(a.fingerprint.as_str()))
+        }
+    }
 }
 
 /// Whether an `amend.approve` written by the judge (`by = "judge"`, with `judge_seq`) counts on replay:
@@ -94,6 +294,9 @@ pub fn approve_counts(st: &State, ev: &Value) -> bool {
         && v["verdict"].as_str() == Some("go")
         && js > a.changed_seq
         && v["fingerprint"].as_str() == Some(a.fingerprint.as_str())
+        && turn_mode_ok(st, a, &a.fingerprint)
+        && ev["mode"].as_str().unwrap_or("")
+            == turn_for(a, &a.fingerprint).map_or("", |t| t["mode"].as_str().unwrap_or(""))
         && a.judge_turns.iter().any(|t| {
             t["fingerprint"].as_str() == Some(a.fingerprint.as_str())
                 && t["seq"].as_u64().is_some_and(|x| x < js)
@@ -308,6 +511,7 @@ pub fn token(p: &Project, amend: &str) -> R<Value> {
     if a.human_only || a.from_design {
         return Err(refused("judge.token.because.human_only", &[]));
     }
+    let mode = Mode::now(&st);
     let own = |t: &&Value| t["fingerprint"].as_str() == Some(a.fingerprint.as_str());
     if a.verdict
         .as_ref()
@@ -315,11 +519,16 @@ pub fn token(p: &Project, amend: &str) -> R<Value> {
     {
         return Err(refused("judge.token.because.has_verdict", &[]));
     }
-    if a.judge_turns.iter().any(|t| own(&t)) {
+    if live_turns(a).iter().any(own) {
         return Err(refused("judge.token.because.has_token", &[]));
     }
-    if !a.judge_turns.is_empty() {
-        return Err(refused("judge.token.because.earlier_turn", &[]));
+    if !turn_room(p, &st, a, mode) {
+        let key = if mode == Mode::Absent {
+            "absent_judge.token.turns_used"
+        } else {
+            "judge.token.because.earlier_turn"
+        };
+        return Err(refused(key, &[]));
     }
     let asked: Vec<String> = a
         .changes
@@ -344,11 +553,13 @@ pub fn token(p: &Project, amend: &str) -> R<Value> {
     events::append(
         p,
         "amend.judge.token",
-        json!({"amend": amend, "fingerprint": a.fingerprint}),
+        json!({"amend": amend, "fingerprint": a.fingerprint, "mode": mode.name(),
+            "limit": p.policy.absent.judge_turns.max(1)}),
     )?;
     let tok = crate::run::issue_token(p, &token_key(amend))?;
     p.write_guard()?;
-    Ok(json!({"amend": amend, "role": ROLE, "token": tok}))
+    Ok(json!({"amend": amend, "role": ROLE, "token": tok,
+        "mode": if mode == Mode::Absent { MODE_ABSENT } else { "present" }}))
 }
 
 /// `bf amend open --repair --from-design <K>`: the mark needs the repair mark and a checkpoint.
@@ -426,6 +637,19 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
     if !crate::run::holds_token(p, &token_key(amend), token) {
         return Err(plain("judge.because.token", &[]));
     }
+    // The mode is the token's. A token of mode `absent` is void once the run's flag is released: no
+    // verdict is taken, no turn is counted, and the repair is judged again in the usual mode.
+    let mode = if a.judge_turns.last().is_some_and(is_absent_turn) {
+        Mode::Absent
+    } else {
+        Mode::Present
+    };
+    // A turn the release voided stays void when the flag is set again: it takes no verdict.
+    let voided = a.judge_turns.last().is_some_and(is_void);
+    if mode == Mode::Absent && (!st.absent.on || voided) {
+        let _ = crate::run::spend_token(p, &token_key(amend));
+        return Err(plain("absent_judge.released", &[]));
+    }
     // The token is for the latest narrowing, and that narrowing has not had its turn.
     let turn_is_current = a
         .judge_turns
@@ -448,7 +672,8 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
         events::append(
             p,
             "amend.judge.failed",
-            json!({"amend": amend, "fingerprint": a.fingerprint, "reason": reason}),
+            json!({"amend": amend, "fingerprint": a.fingerprint, "reason": reason,
+                "mode": mode.name()}),
         )?;
         let _ = crate::run::spend_token(p, &token_key(amend));
         p.write_guard()?;
@@ -474,7 +699,7 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
         Ok(x) => x,
         Err(reason) => return finish_failed(reason),
     };
-    let (failures, measures) = match limits(p, &st, a, Mode::Present) {
+    let (failures, measures) = match limits(p, &st, a, mode) {
         Ok(x) => x,
         Err(e) => return finish_failed(failure_text(&e)),
     };
@@ -505,7 +730,7 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
             p,
             "amend.judge",
             json!({"amend": amend, "verdict": verdict, "reasons": reasons, "model": model,
-                "fingerprint": a.fingerprint, "measures": measures,
+                "fingerprint": a.fingerprint, "measures": measures, "mode": mode.name(),
                 "session": pass.session, "agent": pass.agent}),
         )?;
         let judge_seq = ev["seq"].as_u64().unwrap_or(0);
@@ -515,61 +740,86 @@ pub fn judge(p: &Project, amend: &str, source: &str, token: Option<&str>, model:
             &st,
             a,
             edit,
-            json!({"by": "judge", "judge_seq": judge_seq}),
+            json!({"by": "judge", "judge_seq": judge_seq, "mode": mode.name(),
+                "measures": measures}),
         )?;
-        return Ok(json!({"amend": amend, "verdict": "go", "approved": true,
-            "judge_seq": judge_seq, "unblocked": unblocked, "measures": measures}));
+        return Ok(
+            json!({"amend": amend, "verdict": "go", "approved": true, "mode": mode.name(),
+            "judge_seq": judge_seq, "unblocked": unblocked, "measures": measures}),
+        );
     }
     events::append(
         p,
         "amend.judge",
         json!({"amend": amend, "verdict": verdict, "reasons": reasons, "model": model,
-            "fingerprint": a.fingerprint, "measures": measures,
+            "fingerprint": a.fingerprint, "measures": measures, "mode": mode.name(),
             "session": pass.session, "agent": pass.agent}),
     )?;
     let _ = crate::run::spend_token(p, &token_key(amend));
     p.write_guard()?;
-    Ok(json!({"amend": amend, "verdict": "ask", "approved": false, "reasons": reasons}))
+    Ok(
+        json!({"amend": amend, "verdict": "ask", "approved": false, "mode": mode.name(),
+        "reasons": reasons}),
+    )
 }
 
 // ---- the human's sight ----
 
-/// `bf amend seen <A-n> --quote "<the human's words>"`: the human says they saw a judged repair, an `ask`
-/// or a failed judge. It writes `amend.judge.seen`; on replay it counts only with a human turn after the
-/// verdict whose words carry the quote.
-pub fn seen(p: &Project, amend: &str, quote: &str) -> R<Value> {
+/// `bf amend seen <A-n>... --quote "<the human's words>"`, or `--all`: the human says they saw judged
+/// repairs, `ask`s or failed judges, all on one message of theirs. It writes one `amend.judge.seen`; on
+/// replay it counts only with a human turn after the latest verdict of them whose words carry the quote.
+pub fn seen(p: &Project, amends: &[String], all: bool, quote: &str) -> R<Value> {
     let st = events::require_chain(p)?;
-    let refused = |key: &str| {
+    let turn_of = |a: &Amend| {
+        [
+            a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
+            a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    };
+    let name = amends.join(", ");
+    let refused = |key: &str, id: &str| {
         refuse_owned(
-            strings::t("judge_guard.seen.refused", &[("amend", amend)]),
-            strings::t(key, &[("amend", amend)]),
+            strings::t("judge_guard.seen.refused", &[("amend", &name)]),
+            strings::t(key, &[("amend", id)]),
             vec![strings::t("judge_guard.seen.do_this", &[])],
             strings::t("judge_guard.seen.worked_when", &[]),
         )
     };
-    let Some(a) = st.amends.iter().find(|a| a.id == amend) else {
-        return Err(refused("judge_guard.seen.because.no_amendment"));
+    let ids: Vec<String> = if all {
+        st.amends
+            .iter()
+            .filter(|a| !a.seen && turn_of(a).is_some())
+            .map(|a| a.id.clone())
+            .collect()
+    } else {
+        amends.to_vec()
     };
-    let after = [
-        a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
-        a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
-    ]
-    .into_iter()
-    .flatten()
-    .max();
-    let Some(after) = after else {
-        return Err(refused("judge_guard.seen.because.no_turn"));
-    };
-    if a.seen {
-        return Err(refused("judge_guard.seen.because.already"));
+    if ids.is_empty() {
+        return Err(refused("absent_judge.seen.none", ""));
+    }
+    let mut after = 0u64;
+    for id in &ids {
+        let Some(a) = st.amends.iter().find(|a| a.id == *id) else {
+            return Err(refused("judge_guard.seen.because.no_amendment", id));
+        };
+        let Some(t) = turn_of(a) else {
+            return Err(refused("judge_guard.seen.because.no_turn", id));
+        };
+        if a.seen {
+            return Err(refused("judge_guard.seen.because.already", id));
+        }
+        after = after.max(t);
     }
     let (turn, _) = events::pick_turn(&st, after, events::Decide::Approve, quote)?;
-    events::append(
-        p,
-        "amend.judge.seen",
-        json!({"amend": amend, "turn": turn, "quote": quote.trim()}),
-    )?;
-    Ok(json!({"amend": amend, "seen": true, "turn": turn}))
+    let mut data = json!({"amend": ids[0], "amends": ids, "turn": turn, "quote": quote.trim()});
+    if ids.len() == 1 {
+        data.as_object_mut().map(|o| o.remove("amends"));
+    }
+    events::append(p, "amend.judge.seen", data)?;
+    Ok(json!({"amend": ids[0], "amends": ids, "seen": true, "turn": turn}))
 }
 
 // ---- the limits ----
@@ -769,11 +1019,57 @@ fn cp_order(id: &str) -> u32 {
     schema::parse_id(id).map(|x| x.1).unwrap_or(0)
 }
 
+/// The free rules of mode `absent` (R-73, D-95), in place of the field list, the scope limit and the
+/// chain limit: the scripts of U-68 over the plan in force and the plan the narrowing leaves, and the
+/// measures, which refuse nothing.
+fn absent_limits(p: &Project, st: &State, a: &Amend) -> R<(Vec<String>, Value)> {
+    use std::collections::BTreeSet;
+    let before = crate::gates::before_plan(p, a)?;
+    let after = crate::plan::load(p)?;
+    let ids =
+        |l: &[Value]| -> BTreeSet<String> { l.iter().map(|u| s(u, "id").to_string()).collect() };
+    let mut landed = ids(&before.units);
+    landed.extend(ids(&after.units));
+    landed.retain(|u| st.unit_state(u) == "landed");
+    let closed: BTreeSet<String> = st.closed.keys().cloned().collect();
+    let design = ids(&after.designed);
+    let new_problems = crate::gates::new_plan_problems(p, a, false)?;
+    let facts = free::Facts {
+        before: free::Slice {
+            units: &before.units,
+            handoffs: &before.handoffs,
+            checkpoints: &before.checkpoints,
+            checks: &before.checks,
+        },
+        after: free::Slice {
+            units: &after.units,
+            handoffs: &after.handoffs,
+            checkpoints: &after.checkpoints,
+            checks: &after.checks,
+        },
+        changes: &a.changes,
+        ops: a.ops.len(),
+        waive: &a.waive,
+        landed: &landed,
+        closed: &closed,
+        design: &design,
+        new_problems: &new_problems,
+    };
+    let mut out = free::refusals(&facts);
+    out.dedup();
+    let mut cp_ids: Vec<String> = ids(&after.checkpoints).into_iter().collect();
+    cp_ids.sort_by_key(|k| cp_order(k));
+    let measures = free::measures(&before.units, &after.units, &cp_ids);
+    Ok((out, measures))
+}
+
 /// The engine's limits of a judged go, each failure named, and the measures (for each checkpoint the
 /// share of its scope changed and the longest run of one-unit waves, before and after). The limits are
 /// checked on every record the narrowing lists as changed, kept records included.
 pub fn limits(p: &Project, st: &State, a: &Amend, mode: Mode) -> R<(Vec<String>, Value)> {
-    let Mode::Present = mode;
+    if mode == Mode::Absent {
+        return absent_limits(p, st, a);
+    }
     let mut out: Vec<String> = Vec::new();
     let f = |key: &str, vals: &[(&str, &str)]| strings::t(key, vals);
     let ledger: Vec<&str> = p.policy.ledger.kinds.iter().map(|x| x.as_str()).collect();

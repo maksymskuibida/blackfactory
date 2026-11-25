@@ -51,7 +51,8 @@ pub(crate) fn cmd_amend(args: &Args) -> R<()> {
         )?,
         Some("seen") => crate::judge::seen(
             &p,
-            args.pos.get(2).map(|x| x.as_str()).unwrap_or(""),
+            &args.pos[2..],
+            args.has("all"),
             args.flag("quote").unwrap_or(""),
         )?,
         Some("checkpoint") => gates::amend_checkpoint(&p, &args.pos[2..], args.flag("title"))?,

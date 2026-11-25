@@ -19,6 +19,7 @@ pub mod gates;
 pub mod gitx;
 pub mod guard;
 pub mod guardtable;
+pub mod hooks;
 pub mod intents;
 pub mod judge;
 pub mod knowledge;

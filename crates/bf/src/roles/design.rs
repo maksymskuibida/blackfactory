@@ -610,6 +610,7 @@ pub fn brief_kind(p: &Project, kind: &str, subject: Option<&str>) -> R<PathBuf> 
             md.push_str("\nYou are a stage reviewer: you cannot request further reviews.\n");
         }
     }
+    md.push_str(&design_only_section(true));
     md.push('\n');
     md.push_str(&limits_and_tier(p));
     md.push_str(
@@ -701,6 +702,7 @@ pub fn brief_stage(p: &Project, stage: &str, amend: &str, role: Option<&str>) ->
     for x in r.runs {
         md.push_str(&format!("- `{x}`\n"));
     }
+    md.push_str(&design_only_section(is_reviewing_role(role)));
     md.push('\n');
     md.push_str(&limits_and_tier(p));
     md.push_str(
@@ -709,6 +711,20 @@ pub fn brief_stage(p: &Project, stage: &str, amend: &str, role: Option<&str>) ->
     let path = p.briefs_dir().join(format!("{amend}-{role}-{stage}.md"));
     util::atomic_write(&path, md.as_bytes())?;
     Ok(path)
+}
+
+/// The brief's section that tells a designer or a design reviewer to design and judge only (D-111).
+pub fn design_only_section(reviewer: bool) -> String {
+    let key = if reviewer {
+        "guard_design.brief.reviewer"
+    } else {
+        "guard_design.brief.designer"
+    };
+    format!(
+        "\n## {}\n\n{}\n",
+        crate::strings::t("guard_design.brief.title", &[]),
+        crate::strings::t(key, &[]).trim()
+    )
 }
 
 /// Whether `name` is a stage of a split that no kind of design review carries (`ui`, `threats`).
