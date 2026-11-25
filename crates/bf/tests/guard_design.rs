@@ -64,6 +64,10 @@ const REFUSED: &[&str] = &[
     "git clone -b main /nonexistent-code /tmp/c",
     "git clone --depth 1 /nonexistent-code /tmp/c",
     "git clone file:///nonexistent-code /tmp/c",
+    "git clone --revision main /nonexistent-code /tmp/c",
+    "git clone /nonexistent-code/.git /tmp/c",
+    "cp -R /nonexistent-code/.git /tmp/c",
+    "rustup run --install stable cargo test",
     "rustup run stable cargo test",
     "git worktree add /tmp/c",
 ];

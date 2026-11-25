@@ -60,7 +60,12 @@ fn is_checkout(table: &Value, abs: &str) -> bool {
         .any(|p| {
             let p = p.trim_end_matches('/');
             // The repository itself, or a folder that holds it.
-            abs.trim_end_matches('/') == p || abs == "/" || under(p, abs).is_some()
+            let a = abs.trim_end_matches('/');
+            // A path inside a repository's `.git` folder holds its whole history.
+            a == p
+                || abs == "/"
+                || under(p, abs).is_some()
+                || under(a, &format!("{p}/.git")).is_some()
         })
 }
 
@@ -150,6 +155,7 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
                         "--server-option",
                         "--bundle-uri",
                         "--ref-format",
+                        "--revision",
                     ];
                     let mut j = 1;
                     let mut src = None;

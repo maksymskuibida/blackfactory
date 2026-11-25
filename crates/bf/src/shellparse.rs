@@ -1187,7 +1187,16 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
             // zsh's `repeat N cmd` and `function name { ... }`: the count or the name comes first.
             "repeat" | "function" => ("", &[], 1),
             // `rustup run <toolchain> cmd`: the word `run` and the toolchain come first.
-            "rustup" => ("", &[], 2),
+            // Only `run` runs a command; any other subcommand (`component add clippy`) is not a wrapper.
+            "rustup" => {
+                let sub = words[i + 1..]
+                    .iter()
+                    .find(|a| !a.starts_with('-') && !a.starts_with('+'));
+                if sub.map(String::as_str) != Some("run") {
+                    return Some((i, via));
+                }
+                ("", &[], 1)
+            }
             "sandbox-exec" => ("", &["-f", "-n", "-p", "-D"], 0),
             "pkexec" => ("", &["--user"], 0),
             "runuser" => ("", &["-u", "-g", "-G", "-s", "-w"], 0),
@@ -1233,6 +1242,13 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
                 i += 1;
             } else {
                 break;
+            }
+        }
+        if base == "rustup" {
+            // The word `run`, then run's own options (`--install`, `-h`), then the toolchain.
+            i += 1;
+            while i < words.len() && words[i].starts_with('-') {
+                i += 1;
             }
         }
         i += skip_pos;

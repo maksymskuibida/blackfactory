@@ -1066,10 +1066,35 @@ fn with_the_network_on_a_check_cannot_connect_to_a_socket_in_the_denied_cache_fo
     let out = std::process::Command::new("sandbox-exec")
         .args(["-p", &profile, "python3", "-c", client, &sock_s])
         .output();
-    let Ok(out) = out else { return };
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let text = out
+        .as_ref()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
     if text.trim().is_empty() {
-        return; // the sandbox itself is not available here
+        // Inside the engine's own sandbox a second sandbox cannot start. Anywhere else an empty
+        // output (or a missing sandbox-exec or python3) is a failure, never a silent pass.
+        assert!(
+            inside_the_engines_sandbox(),
+            "sandbox-exec or python3 printed nothing outside the engine's sandbox: the denied connect was not checked: {out:?}"
+        );
+        eprintln!(
+            "NOT CHECKED: the denied connect cannot be shown inside the engine's sandbox; run `cargo nextest run --package=bf compile_cache_server::` outside it"
+        );
+        return;
     }
     assert_eq!(text.trim(), "refused", "{text}");
+}
+
+#[cfg(target_os = "macos")]
+fn inside_the_engines_sandbox() -> bool {
+    std::env::var("BF_EVIDENCE").as_deref() == Ok("1")
+        && Path::new("/usr/bin/sandbox-exec").exists()
+        && !std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
 }
