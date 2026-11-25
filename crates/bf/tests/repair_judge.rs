@@ -2,7 +2,7 @@
 //! the replay. The guard's pass is written by the guard itself: a test gets one by sending the hook the
 //! payload of a subagent of type `repair-judge` that runs the judge's command.
 
-mod common;
+pub(crate) mod common;
 use common::*;
 use serde_json::{json, Value};
 use std::fs;
@@ -283,7 +283,7 @@ fn repair_judge_a_human_approval_that_adds_a_plan_problem_through_a_handoff_is_r
 
 // ---- a project with a plan the human approved ----
 
-fn unit(id: &str, cp: &str, file: &str, deps: &[&str], est: u32) -> String {
+pub(crate) fn unit(id: &str, cp: &str, file: &str, deps: &[&str], est: u32) -> String {
     format!(
         "id=\"{id}\"\nkind=\"unit\"\ntitle=\"Unit {id}\"\ndelivers=[\"R-1\",\"C-1\"]\nfiles=[\"{file}\"]\ndepends_on={}\ncheckpoint=\"{cp}\"\nestimate={est}\nfull_suite=\"fixture\"\n",
         json!(deps)
@@ -342,7 +342,7 @@ fn planned_state(fx: &Fx) {
 const PLANNED: &str = "repair_judge::plan";
 
 /// The same state as `Fx::new` and `planned_state`, built once by those calls and copied (D-140).
-fn planned() -> Fx {
+pub(crate) fn planned() -> Fx {
     Fx::state_copy(PLANNED, planned_state)
 }
 
@@ -374,7 +374,7 @@ pub(crate) fn copies_behave_as_their_sources() {
     fx.must(&["log", "--verify"]);
 }
 
-fn put_replace(fx: &Fx, kind: &str, text: &str) {
+pub(crate) fn put_replace(fx: &Fx, kind: &str, text: &str) {
     let f = fx.root.join("edit.toml");
     fs::write(&f, text).unwrap();
     fx.must(&["record", "put", kind, "--file", f.to_str().unwrap(), "--replace"]);
@@ -382,7 +382,7 @@ fn put_replace(fx: &Fx, kind: &str, text: &str) {
 }
 
 /// Open a plan repair over `ids`, put the edits, narrow it. Returns its ID.
-fn repair(fx: &Fx, ids: &[&str], edits: &[(&str, String)]) -> String {
+pub(crate) fn repair(fx: &Fx, ids: &[&str], edits: &[(&str, String)]) -> String {
     let mut a = vec!["amend", "open", "--repair"];
     a.extend(ids);
     a.push("--json");
@@ -397,19 +397,19 @@ fn repair(fx: &Fx, ids: &[&str], edits: &[(&str, String)]) -> String {
     aid
 }
 
-fn token(fx: &Fx, aid: &str) -> String {
+pub(crate) fn token(fx: &Fx, aid: &str) -> String {
     fx.must(&["roles", "token", aid, "judge", "--json"]).json()["token"]
         .as_str()
         .unwrap()
         .to_string()
 }
 
-fn pass(fx: &Fx, aid: &str) {
+pub(crate) fn pass(fx: &Fx, aid: &str) {
     pass_for(fx, aid, "t");
 }
 
 /// The pass of a judge's turn for the call that carries the token `tok`.
-fn pass_for(fx: &Fx, aid: &str, tok: &str) {
+pub(crate) fn pass_for(fx: &Fx, aid: &str, tok: &str) {
     let d = fx.root.join(".claude/agents");
     fs::create_dir_all(&d).unwrap();
     fs::copy(
@@ -425,7 +425,7 @@ fn pass_for(fx: &Fx, aid: &str, tok: &str) {
     assert_eq!(o.code, 0, "{}", o.all());
 }
 
-fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
+pub(crate) fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
     fx.bf_stdin(
         &fx.root,
         &["amend", "judge", aid, "--file", "-", "--token", tok, "--model", "strong-model"],
@@ -434,14 +434,14 @@ fn judge(fx: &Fx, aid: &str, tok: &str, verdict: &str) -> Out {
 }
 
 /// The whole turn of a judge with a pass: token, pass, verdict.
-fn turn(fx: &Fx, aid: &str, verdict: &str) -> Out {
+pub(crate) fn turn(fx: &Fx, aid: &str, verdict: &str) -> Out {
     let t = token(fx, aid);
     pass(fx, aid);
     pass_for(fx, aid, &t);
     judge(fx, aid, &t, verdict)
 }
 
-fn events(fx: &Fx) -> Vec<Value> {
+pub(crate) fn events(fx: &Fx) -> Vec<Value> {
     fs::read_to_string(fx.root.join("factory/log/events.jsonl"))
         .unwrap()
         .lines()
@@ -449,11 +449,11 @@ fn events(fx: &Fx) -> Vec<Value> {
         .collect()
 }
 
-fn kinds(fx: &Fx, kind: &str) -> usize {
+pub(crate) fn kinds(fx: &Fx, kind: &str) -> usize {
     events(fx).iter().filter(|e| e["kind"] == kind).count()
 }
 
-fn status_of(fx: &Fx, aid: &str) -> String {
+pub(crate) fn status_of(fx: &Fx, aid: &str) -> String {
     let st = fx.must(&["status", "--json"]).json();
     st["amendments"]
         .as_array()

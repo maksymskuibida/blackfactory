@@ -1579,6 +1579,21 @@ pub fn amend_open_marked(
             "The command prints the impact set.",
         ));
     }
+    // While the run's flag is on, nothing that only the human can approve may hold the one open place
+    // (R-73, finding F-223). The flag is read from the run's state, whatever session calls.
+    if crate::absent::is_on(&st) && (!repair || from_design.is_some()) {
+        let key = if repair {
+            "absent_judge.open.because.from_design"
+        } else {
+            "absent_judge.open.because.not_repair"
+        };
+        return Err(refuse_owned(
+            strings::t("absent_judge.open.refused", &[]),
+            strings::t(key, &[]),
+            vec![strings::t("absent_judge.open.do_this", &[])],
+            strings::t("absent_judge.open.worked_when", &[]),
+        ));
+    }
     if let Some(open) = open_amendment(&st) {
         let o = open.id.clone();
         return Err(refuse_owned(

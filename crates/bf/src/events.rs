@@ -1468,7 +1468,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 crate::absent::replay_turn(&mut st, seq);
             }
             "absent.session" | "absent.set" | "absent.stay" | "absent.release" => {
+                let was_on = st.absent.on;
                 crate::absent::replay(&mut st, &turn_ix, ev, seq, &at);
+                if was_on && !st.absent.on {
+                    crate::judge::void_absent_turns(&mut st);
+                }
             }
             "gate.open" => {
                 st.gates.push(Gate {
@@ -3141,6 +3145,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         && a.fingerprint == fp
                         && !a.from_design
                         && !a.human_only
+                        && crate::judge::turn_mode_ok(&st, a, &fp)
                 }) && matches!(verdict.as_str(), "go" | "ask");
                 if !ok {
                     st.ignored.push(crate::strings::t(
@@ -3154,19 +3159,26 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         "verdict": verdict, "reasons": ev["reasons"], "model": ev["model"],
                         "seq": seq, "fingerprint": fp,
                     }));
-                    if verdict == "ask" {
-                        a.human_only = true;
-                    }
                 }
-                if verdict == "ask" {
-                    keep_asked(&mut st, &id);
-                }
+                crate::judge::end_turn(&mut st, &id, &fp, verdict == "go");
             }
             "amend.judge.token" => {
                 let id = sv("amend");
+                let mode = if sv("mode") == crate::judge::MODE_ABSENT && st.absent.on {
+                    crate::judge::MODE_ABSENT
+                } else {
+                    ""
+                };
                 if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
+                    let ids: Vec<String> = a
+                        .changes
+                        .iter()
+                        .filter_map(|c| c["id"].as_str().map(String::from))
+                        .collect();
                     a.judge_turns
-                        .push(json!({"fingerprint": sv("fingerprint"), "seq": seq, "at": at}));
+                        .push(json!({"fingerprint": sv("fingerprint"), "seq": seq,
+                        "at": at, "mode": mode, "limit": ev["limit"].as_u64().unwrap_or(0),
+                        "ids": ids}));
                 } else {
                     st.ignored.push(crate::strings::t(
                         "events.k2.ignored.judge_token",
@@ -3176,12 +3188,12 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "amend.judge.failed" => {
                 let id = sv("amend");
+                let fp = sv("fingerprint");
                 if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
                     a.failed = Some(json!({
-                        "fingerprint": sv("fingerprint"), "reason": sv("reason"), "seq": seq,
+                        "fingerprint": fp, "reason": sv("reason"), "seq": seq,
                     }));
-                    a.human_only = true;
-                    keep_asked(&mut st, &id);
+                    crate::judge::end_turn(&mut st, &id, &fp, false);
                 } else {
                     st.ignored.push(crate::strings::t(
                         "events.k2.ignored.judge_failed",
@@ -3190,22 +3202,33 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
             }
             "amend.judge.seen" => {
-                let id = sv("amend");
                 let tseq = ev["turn"].as_u64().unwrap_or(0);
-                let after = st
-                    .amends
-                    .iter()
-                    .find(|a| a.id == id)
-                    .map(|a| {
-                        [
-                            a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
-                            a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .max()
-                    })
-                    .unwrap_or(None);
+                let mut ids: Vec<String> = crate::store::str_list(ev, "amends");
+                if ids.is_empty() {
+                    ids.push(sv("amend"));
+                }
+                // The latest verdict or failure of any of them: the human's words come after it.
+                let mut after: Option<u64> = Some(0);
+                for id in &ids {
+                    let one = st
+                        .amends
+                        .iter()
+                        .find(|a| a.id == *id)
+                        .map(|a| {
+                            [
+                                a.verdict.as_ref().and_then(|v| v["seq"].as_u64()),
+                                a.failed.as_ref().and_then(|v| v["seq"].as_u64()),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .max()
+                        })
+                        .unwrap_or(None);
+                    after = match (after, one) {
+                        (Some(x), Some(y)) => Some(x.max(y)),
+                        _ => None,
+                    };
+                }
                 let Some(after) = after else {
                     st.ignored.push(crate::strings::t(
                         "events.k2.ignored.judge_seen_none",
@@ -3229,11 +3252,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     continue;
                 }
                 st.turns[turn_ix[&tseq]].used = true;
-                if let Some(a) = st.amends.iter_mut().find(|a| a.id == id) {
-                    a.seen = true;
+                for id in &ids {
+                    if let Some(a) = st.amends.iter_mut().find(|a| a.id == *id) {
+                        a.seen = true;
+                    }
+                    st.judged_unseen.retain(|x| x != id);
+                    st.asked.retain(|_, a| a != id);
                 }
-                st.judged_unseen.retain(|x| *x != id);
-                st.asked.retain(|_, a| *a != id);
             }
             "amend.approve" => {
                 let id = sv("amend");
@@ -3412,7 +3437,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
 
 /// The records the narrowing of an `ask` or a failed judge lists as changed belong to the amendment's
 /// `asked` entry until its `amend.judge.seen`; a withdrawn amendment keeps them (F-213).
-fn keep_asked(st: &mut State, amend: &str) {
+pub(crate) fn keep_asked(st: &mut State, amend: &str) {
     let ids: Vec<String> = st
         .amends
         .iter()
