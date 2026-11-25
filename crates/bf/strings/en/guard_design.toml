@@ -1,0 +1,30 @@
+# Strings of the guard's rule of the design roles (U-97, D-111, D-113): the refusals of cargo, of
+# `bf evidence run` and of a copy of a repository for a designer or a design reviewer, and the section
+# their briefs hold.
+
+"guard_design.cargo.refused" = "run `cargo {sub}`"
+"guard_design.cargo.because" = "a designer and a design reviewer design and judge only: they build nothing, run no test or suite and time nothing"
+"guard_design.cargo.step" = "Read the code and the receipts that exist. If the design needs a fact that neither gives, name the gap in your report; the conductor starts an investigator for it."
+"guard_design.cargo.worked" = "The design stands on what the records, the code and the receipts say, and any gap is named in the report."
+
+"guard_design.evidence.refused" = "run a check with `bf evidence run`"
+"guard_design.evidence.because" = "a designer and a design reviewer run no check: a check is run by the builder of a unit, and a measurement is the investigator's"
+"guard_design.evidence.step" = "Read the receipts that exist with `bf record get` or `bf record list`. If a claim has no receipt, name the gap in your report."
+"guard_design.evidence.worked" = "The report names what no receipt shows, and nothing is run."
+
+"guard_design.copy.refused" = "copy a repository or a working copy with `{command}`"
+"guard_design.copy.because" = "a designer and a design reviewer read the checkout where it stands; a copy is only made to build or measure in, which they do not do"
+"guard_design.copy.step" = "Read the files in place with the read tools. If you need a fact that only a build or a measurement gives, name the gap in your report."
+"guard_design.copy.worked" = "The files are read where they are, and no copy is made."
+
+"guard_design.brief.title" = "Design and judge only"
+"guard_design.brief.designer" = """
+You design and judge only. You read the records, the code and the receipts that exist, and give each unit its files, its acceptance and its check.
+You do not profile, build a prototype, run or time a test or a suite, run cargo or copy the checkout; the guard refuses `cargo` (build, check, clippy, test, nextest, run, bench), `bf evidence run` and a copy of a repository.
+When the design needs a fact that no receipt and no reading of the code gives, name the gap in your report and design from what an investigator, started by the conductor for that one question, reports.
+"""
+"guard_design.brief.reviewer" = """
+You judge only. You check each claim against the code and the receipts, and you do not repeat a measurement.
+You do not profile, build, run or time a test or a suite, run cargo or copy the checkout; the guard refuses `cargo` (build, check, clippy, test, nextest, run, bench), `bf evidence run` and a copy of a repository.
+Ask for a measurement only when a claim has none: file a finding that names the claim.
+"""
