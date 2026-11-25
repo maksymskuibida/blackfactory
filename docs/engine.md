@@ -424,9 +424,11 @@ Only one amendment is open at a time. `open` is refused while one is open (not a
 - **Stated limit.** The agent type is the one the harness puts in the hook payload. The engine trusts it and cannot check it.
 - **The ui stage.** No screen or journey changes: the judged repairs, a fix's grants and the accepted findings are rows of the existing run, checkpoint and amendment pages.
 
-### `bf amend checkpoint before|after|split <K-n> <U-n>... [--title T]`
+### `bf amend checkpoint before|after|split <K-n> <U-n>...|merge <K-n> <K-m> [--title T]`
 
 Inside an open amendment the engine can insert a checkpoint between two others, or split one in two, by renaming the later checkpoints one number forward. `before K-3 U-7 U-8` puts the units on a new checkpoint under the number `K-3`, and `K-3` and every later checkpoint become one number higher; `after K-3 ...` puts it under `K-4` the same way. `split K-3 U-4` keeps `U-4` on `K-3` and puts the rest of `K-3`'s units on a new checkpoint right after it. The numbers always read in the order of the plan.
+
+`merge K-2 K-3` goes the other way: it puts the units, proven parts and checks of `K-3` onto `K-2`, which must not be closed (it may have started), while `K-3` and every checkpoint after it must not have started. Every later checkpoint takes the number one lower, and the record of the highest number is removed at the approval as a removed unit is: the narrowing lists it as `removed` with its old content, the amendment page shows it as gone, and the approval records it as `missing`. `--title` names the merged checkpoint (else `K-2`'s title stays). `pull_request` and `stop` hold when either checkpoint has them, `stop_why` and `human_step` are joined when they differ, and the merge is refused when the two lists of `unit_checks` differ. Units of the two checkpoints that share a file and have no order between them are put one after the other, those of `K-3` after those of `K-2`. A judged repair that holds a merge goes to the human.
 
 ```bash
 bf amend open --repair U-7 U-8
