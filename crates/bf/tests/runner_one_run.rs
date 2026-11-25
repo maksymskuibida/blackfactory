@@ -151,6 +151,7 @@ fn runner_one_run_the_same_command_elsewhere_or_in_the_sandbox_or_not_is_another
         ("folder", ".bf/work/U-2"),
         ("repos", "/other"),
         ("sandbox", "none"),
+        ("sandbox", "sandbox-exec+compile-cache"),
         ("content_hash", "c2"),
         ("command", "cargo test --all"),
     ] {
@@ -158,6 +159,15 @@ fn runner_one_run_the_same_command_elsewhere_or_in_the_sandbox_or_not_is_another
         v[field] = serde_json::json!(other);
         assert!(find_run(&[rec(v)], &key).is_none(), "{field} differs");
     }
+    // A run through the compile cache is another run than one without it, in both directions (R-76).
+    let cached = RunKey {
+        sandbox: "sandbox-exec+compile-cache".into(),
+        ..key.clone()
+    };
+    assert!(find_run(&receipts, &cached).is_none());
+    let mut with_cache = base.clone();
+    with_cache["sandbox"] = serde_json::json!("sandbox-exec+compile-cache");
+    assert!(find_run(&[rec(with_cache)], &cached).is_some());
     let mut unsealed = rec(base);
     unsealed.seal_ok = false;
     assert!(find_run(&[unsealed], &key).is_none());

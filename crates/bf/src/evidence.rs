@@ -720,13 +720,25 @@ pub fn run_with(
     }
     // R-32: one command runs once on one content. A run of the same command in the same repositories,
     // folder and sandbox, for any check of this intent, counts here too, a failing one as well.
-    let key = run_key(p, argv, &before, &top);
+    // R-76: a unit check in its own copy may have a compile cache server. It starts before the key is
+    // made, so the key names the cache only when the run will use it; a server that fails to start gives
+    // a run without the cache, which an earlier run of the same command finds.
+    let limit = (chk["heavy"].as_bool() == Some(true)).then(|| heavy_time_limit(p));
+    let heavy = chk["heavy"].as_bool() == Some(true);
+    let (mut server, mut cache_note) = cache_server(p, s(&chk, "scope"), unit, &top, limit);
+    let mut key = run_key_with(p, argv, &before, &top, server.is_some());
     if repeat.is_none() {
         let receipts = load_receipts(p)?;
         if let Some(src) = find_run(&receipts, &key) {
             let src = src.v.clone();
+            drop(server);
             return counted_receipt(p, check_id, unit, &src, &key);
         }
+    }
+    // A heavy check may wait for its place a long time, longer than a server's idle timeout, so the
+    // server goes now and a fresh one starts once the place is taken.
+    if heavy {
+        drop(server.take());
     }
     let tail_bytes = p.policy.evidence.tail_bytes;
     let program_note = crate::programs::verify(p, check_id, &argv[0])?;
@@ -734,11 +746,30 @@ pub fn run_with(
         eprintln!("note: {n}");
     }
     // R-63: a heavy check takes a place first and waits its turn; the wait is no attempt.
-    let _place = if chk["heavy"].as_bool() == Some(true) {
+    let _place = if heavy {
         take_place(p, check_id, unit)?
     } else {
         None
     };
+    if heavy {
+        let (fresh, note) = cache_server(p, s(&chk, "scope"), unit, &top, limit);
+        // The key and the receipt agree: a server that did not come up again gives a run without the cache
+        // (and one that came up where the first did not gives a run with it), which an earlier run of the
+        // same command may count.
+        if fresh.is_some() != key.sandbox.ends_with("compile-cache") {
+            key = run_key_with(p, argv, &before, &top, fresh.is_some());
+            if repeat.is_none() {
+                let receipts = load_receipts(p)?;
+                if let Some(src) = find_run(&receipts, &key) {
+                    let src = src.v.clone();
+                    drop(fresh);
+                    return counted_receipt(p, check_id, unit, &src, &key);
+                }
+            }
+        }
+        server = fresh;
+        cache_note = note;
+    }
     // D-110: the machine's load at the start of the run is written into the receipt; a busy machine
     // is a warning only, and the check runs all the same.
     let (load, cores) = machine_load();
@@ -757,7 +788,6 @@ pub fn run_with(
     }
     let started = std::time::Instant::now();
     // TH-11: a heavy check runs under the time limit of a check; its place is freed when it ends.
-    let limit = (chk["heavy"].as_bool() == Some(true)).then(|| heavy_time_limit(p));
     fs::create_dir_all(p.receipts_dir())?;
     // R-31: the ignore file exists before the pending output does, so an interrupted run leaves nothing
     // that a `git add -A` would commit.
@@ -765,9 +795,19 @@ pub fn run_with(
     let pending = p
         .receipts_dir()
         .join(format!(".output-{}.txt", std::process::id()));
-    let cache_note = crate::sandbox::compile_cache::receipt_note(p, s(&chk, "scope"), unit, &top);
-    let (exit, tail, out_hash, total, sandboxed) =
-        exec_capture_keep(p, &top, argv, tail_bytes, Some(&pending), limit)?;
+    let ran = exec_capture_cache(
+        p,
+        &top,
+        argv,
+        tail_bytes,
+        Some(&pending),
+        limit,
+        server.as_ref(),
+    );
+    // The server ends and its folder goes however the run ended.
+    let used_cache = server.is_some();
+    drop(server);
+    let (exit, tail, out_hash, total, sandboxed) = ran?;
     drop(_place);
     let after = p.content_hash(&top)?;
     if before != after {
@@ -809,7 +849,7 @@ pub fn run_with(
         "reason": repeat_reason,
         "command": argv.join(" "),
         "program": CHECK_SHELL,
-        "sandbox": if sandboxed { "sandbox-exec" } else { "none" },
+        "sandbox": sandbox_name(sandboxed, used_cache && sandboxed),
         "program_note": program_note.clone().unwrap_or_default(),
         "compile_cache_note": cache_note,
         "exit": exit,
@@ -840,6 +880,53 @@ pub fn run_with(
         }
     }
     Ok(v)
+}
+
+/// The compile cache's server for a check, and the note a receipt carries: a server only for a unit
+/// check in its own copy with the cache usable and the server ready; else none, and why (empty when the
+/// setting is off or the run is not one that could use it).
+fn cache_server(
+    p: &Project,
+    scope: &str,
+    unit: Option<&str>,
+    top: &Path,
+    limit: Option<std::time::Duration>,
+) -> (
+    Option<crate::sandbox::compile_cache::server::Server>,
+    String,
+) {
+    use crate::sandbox::compile_cache as cc;
+    if p.policy.exec.compile_cache.is_empty() || !cc::own_copy(p, scope, unit, top) {
+        return (None, String::new());
+    }
+    let paths = match cc::tier(p, scope, unit, top) {
+        cc::Use::Units(paths) => paths,
+        cc::Use::Off(why) => return (None, why),
+    };
+    let s = |x: &Path| x.to_string_lossy().to_string();
+    // The profile names the run's folder, which `start` makes, so it is built from the folder then.
+    let profile_for = |run: &cc::server::RunDir| {
+        let base = base_profile(p, top, false);
+        crate::sandbox::cache_server_profile(&base, &s(top), &s(&paths.folder), &s(&run.dir))
+    };
+    let path = if p.policy.exec.path.is_empty() {
+        "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+    } else {
+        p.policy.exec.path.clone()
+    };
+    let idle = limit.map_or(3600, |l| l.as_secs() + 60);
+    match cc::server::start(
+        &paths,
+        &cc::server::Start {
+            program: &p.policy.exec.compile_cache,
+            profile: Some(&profile_for),
+            path: &path,
+            idle_seconds: idle,
+        },
+    ) {
+        Ok(srv) => (Some(srv), String::new()),
+        Err(why) => (None, why),
+    }
 }
 
 /// D-110: a run warns when the one-minute load is at or above this share of the cores (one half).
@@ -895,6 +982,18 @@ pub struct RunKey {
 
 /// The key a run of `argv` in `top` at `content` has now.
 pub fn run_key(p: &Project, argv: &[String], content: &str, top: &Path) -> RunKey {
+    run_key_with(p, argv, content, top, false)
+}
+
+/// The same, for a run that uses the compile cache when `cache` is set: its sandbox is
+/// `sandbox-exec+compile-cache`, another run than the one without (TH-13).
+pub fn run_key_with(
+    p: &Project,
+    argv: &[String],
+    content: &str,
+    top: &Path,
+    cache: bool,
+) -> RunKey {
     let sandboxed = p.policy.exec.sandbox && crate::sandbox::available();
     RunKey {
         command: argv.join(" "),
@@ -914,7 +1013,16 @@ pub fn run_key(p: &Project, argv: &[String], content: &str, top: &Path) -> RunKe
             .strip_prefix(&p.root)
             .map(|r| r.to_string_lossy().to_string())
             .unwrap_or_default(),
-        sandbox: if sandboxed { "sandbox-exec" } else { "none" }.to_string(),
+        sandbox: sandbox_name(sandboxed, cache).to_string(),
+    }
+}
+
+/// The sandbox's name in a run key and a receipt.
+fn sandbox_name(sandboxed: bool, cache: bool) -> &'static str {
+    match (sandboxed, cache) {
+        (true, true) => "sandbox-exec+compile-cache",
+        (true, false) => "sandbox-exec",
+        _ => "none",
     }
 }
 
@@ -1462,6 +1570,42 @@ pub(crate) fn exec_capture_keep(
     keep: Option<&Path>,
     limit: Option<std::time::Duration>,
 ) -> R<(i64, String, String, u64, bool)> {
+    exec_capture_cache(p, dir, argv, tail_bytes, keep, limit, None)
+}
+
+/// The check profile of a command in `dir`, with the network as the policy says or denied.
+fn base_profile(p: &Project, dir: &Path, network: bool) -> String {
+    let repo_paths = p
+        .repos
+        .iter()
+        .map(|r| r.path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let mut profile = crate::sandbox::check_profile(
+        &p.state_dir_resolved(),
+        &p.root.to_string_lossy(),
+        &dir.to_string_lossy(),
+        network,
+        &p.transcript_root(),
+        &repo_paths,
+    );
+    if crate::sandbox::is_review_copy(&p.work_dir(), dir) {
+        profile = crate::sandbox::review_profile(&profile, &repo_paths);
+    }
+    profile
+}
+
+/// The same, with the server of the compile cache when the run has one (R-76): the check's profile gets
+/// the one connect to its socket and the run's `tmp/`, and the check gets the client's variables.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exec_capture_cache(
+    p: &Project,
+    dir: &Path,
+    argv: &[String],
+    tail_bytes: usize,
+    keep: Option<&Path>,
+    limit: Option<std::time::Duration>,
+    cache: Option<&crate::sandbox::compile_cache::server::Server>,
+) -> R<(i64, String, String, u64, bool)> {
     let mut keep_file = match keep {
         Some(k) => Some(fs::File::create(k)?),
         None => None,
@@ -1483,24 +1627,16 @@ pub(crate) fn exec_capture_keep(
     // writes to the working copy.
     let sandboxed = p.policy.exec.sandbox && crate::sandbox::available();
     let mut cmd = if sandboxed {
-        let repo_paths = p
-            .repos
-            .iter()
-            .map(|r| r.path.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        let mut profile = crate::sandbox::check_profile(
-            &p.state_dir_resolved(),
-            &p.root.to_string_lossy(),
-            &dir.to_string_lossy(),
-            p.policy.exec.network,
-            &p.transcript_root(),
-            &repo_paths,
-        );
-        if crate::sandbox::is_review_copy(&p.work_dir(), dir) {
-            profile = crate::sandbox::review_profile(&profile, &repo_paths);
-        }
+        let mut profile = base_profile(p, dir, p.policy.exec.network);
         // R-76: with the setting on, the cache folder is denied after every other rule.
         profile.push_str(&crate::sandbox::compile_cache::profile_denial(p));
+        if let Some(c) = cache {
+            let s = |x: &Path| x.to_string_lossy().to_string();
+            // `t/` lies in `<top>/<project id>/<intent hash>/`: the cache folder of the denial is `<top>`.
+            let top = c.run.runs.ancestors().nth(3).map(s).unwrap_or_default();
+            profile.push_str(&crate::sandbox::cache_client_rule(&s(c.socket())));
+            profile.push_str(&crate::sandbox::cache_tmp_rules(&top, &s(c.tmp())));
+        }
         crate::sandbox::command(&profile, CHECK_SHELL)
     } else {
         Command::new(CHECK_SHELL)
@@ -1534,6 +1670,14 @@ pub(crate) fn exec_capture_keep(
     // variables are empty, which makes cargo ignore a wrapper that a `.cargo/config.toml` names.
     cmd.env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "");
+    if let Some(c) = cache {
+        cmd.env("RUSTC_WRAPPER", &c.program)
+            .env("SCCACHE_SERVER_UDS", c.socket())
+            .env("SCCACHE_CONF", "/dev/null")
+            .env("SCCACHE_CACHED_CONF", "/dev/null")
+            .env("SCCACHE_IGNORE_SERVER_IO_ERROR", "1")
+            .env("TMPDIR", c.tmp());
+    }
     // After the loop, so whatever the policy lists, the account's home is what the check sees.
     crate::session::home::set_env(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {
