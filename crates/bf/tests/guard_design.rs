@@ -70,6 +70,16 @@ const REFUSED: &[&str] = &[
     "rustup run --install stable cargo test",
     "rustup run stable cargo test",
     "git worktree add /tmp/c",
+    "rustup +nightly run stable cargo test",
+    "rustup run stable -- cargo test",
+    "rustup run stable -- cargo nextest run",
+    "echo test | xargs cargo",
+    "cargo install --path /nonexistent-code",
+    "cargo miri test",
+    "cargo llvm-cov",
+    "git -C /nonexistent-code bundle create /tmp/x.bundle --all",
+    "git -C /nonexistent-code archive -o /tmp/x.tar HEAD",
+    "zip -r /tmp/c.zip /nonexistent-code",
 ];
 
 const ALLOWED: &[&str] = &[
@@ -222,5 +232,25 @@ fn the_two_role_files_hold_the_sentences() {
         "Ask for a measurement only when a claim has none",
     ] {
         assert!(r.contains(s), "design-reviewer.md lacks `{s}`");
+    }
+}
+
+/// `resolve` is shared by every guard rule: the engine-call reading sees `bf` through the same rustup forms.
+#[test]
+fn the_engine_calls_are_read_through_every_rustup_form() {
+    for cmd in [
+        "rustup run stable bf evidence run X-1",
+        "rustup +nightly run stable bf evidence run X-1",
+        "rustup run stable -- bf evidence run X-1",
+        "rustup -v run --install stable -- bf evidence run X-1",
+    ] {
+        let calls = bf::shellparse::engine_calls(cmd);
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.words.first().map(String::as_str) == Some("bf")
+                    && c.words.get(1).map(String::as_str) == Some("evidence")),
+            "{cmd}: {calls:?}"
+        );
     }
 }

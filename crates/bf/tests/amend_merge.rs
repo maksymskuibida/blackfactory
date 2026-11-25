@@ -354,10 +354,17 @@ fn a_merge_is_refused_when_the_unit_check_lists_differ_and_taken_when_they_agree
 
     let fx = Fx::new();
     plan4_with(&fx, &l("only"), "", "", false);
-    let opened = open(&fx);
-    fx.must(&["amend", "checkpoint", "merge", "K-2", "K-3"]);
-    approve(&fx, &opened);
-    assert_eq!(rec(&fx, "K-2")["unit_checks"][0]["name"], "only");
+    open(&fx);
+    // A missing list differs from a present one: the merge is refused and nothing changes.
+    let o = fx.refused(&["amend", "checkpoint", "merge", "K-2", "K-3"]);
+    assert!(o.stderr.contains("only") && o.stderr.contains("none"), "{}", o.stderr);
+    assert_eq!(rec(&fx, "U-3")["checkpoint"], "K-3");
+
+    let fx = Fx::new();
+    plan4_with(&fx, "", &l("later"), "", false);
+    open(&fx);
+    let o = fx.refused(&["amend", "checkpoint", "merge", "K-2", "K-3"]);
+    assert!(o.stderr.contains("later") && o.stderr.contains("none"), "{}", o.stderr);
 }
 
 #[test]

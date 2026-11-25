@@ -1153,6 +1153,7 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
         }
         let w = words.get(i)?;
         let base = basename(w);
+        let wrapper_at = i;
         // Options that take an argument, per wrapper.
         // The last number is how many plain words follow the options before the command (a time limit,
         // a lock file, a mask, a pseudo terminal's log file).
@@ -1195,7 +1196,7 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
                 if sub.map(String::as_str) != Some("run") {
                     return Some((i, via));
                 }
-                ("", &[], 1)
+                ("", &[], 0)
             }
             "sandbox-exec" => ("", &["-f", "-n", "-p", "-D"], 0),
             "pkexec" => ("", &["--user"], 0),
@@ -1245,9 +1246,19 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
             }
         }
         if base == "rustup" {
-            // The word `run`, then run's own options (`--install`, `-h`), then the toolchain.
+            // Find the word `run` itself (rustup's own options and a `+toolchain` may come before it),
+            // then run's own options (`--install`, `-h`), the toolchain and an optional `--`.
+            i = wrapper_at + 1;
+            while i < words.len() && words[i] != "run" {
+                i += 1;
+            }
             i += 1;
-            while i < words.len() && words[i].starts_with('-') {
+            while i < words.len() && words[i].starts_with('-') && words[i] != "--" {
+                i += 1;
+            }
+            // The toolchain.
+            i += 1;
+            if words.get(i).map(String::as_str) == Some("--") {
                 i += 1;
             }
         }

@@ -13,9 +13,25 @@ use serde_json::Value;
 /// The agent types the rule binds.
 const ROLES: &[&str] = &["designer", "design-reviewer", "uiux-designer"];
 
-/// The cargo subcommands a design role may not run.
+/// The cargo subcommands a design role may not run: the guard's own list of the ones named most, kept for
+/// the `cargo-<sub>` program form.
 const CARGO_BARRED: &[&str] = &[
     "build", "check", "clippy", "test", "nextest", "run", "bench",
+];
+
+/// The only cargo subcommands a design role may run: short and read-only. Any other (`install`, `miri`,
+/// `llvm-cov`, a subcommand read from stdin by `xargs`) is refused.
+const CARGO_ALLOWED: &[&str] = &[
+    "version",
+    "--version",
+    "-V",
+    "--list",
+    "metadata",
+    "tree",
+    "search",
+    "help",
+    "--help",
+    "-h",
 ];
 
 /// Does the rule bind this agent type?
@@ -85,6 +101,15 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
             });
             let pos: Vec<&String> = args.iter().filter(|a| !flag(a)).collect();
             recursive && pos.len() >= 2 && pos[..pos.len() - 1].iter().any(|p| hit(p, cwd))
+        }
+        // `zip -r <archive> <source>...`: a recursive zip of a checkout copies it whole.
+        "zip" => {
+            let recursive = args.iter().any(|a| {
+                a == "--recurse-paths"
+                    || (a.starts_with('-') && !a.starts_with("--") && a.contains('r'))
+            });
+            let pos: Vec<&String> = args.iter().filter(|a| !flag(a)).collect();
+            recursive && pos.len() >= 2 && pos[1..].iter().any(|p| hit(p, cwd))
         }
         "rsync" | "ditto" => {
             let pos: Vec<&String> = args.iter().filter(|a| !flag(a)).collect();
@@ -172,6 +197,8 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
                     }
                     src.is_some_and(|p| hit(p.strip_prefix("file://").unwrap_or(p), &base))
                 }
+                // `bundle` and `archive` write the whole history or tree of the checkout they run in.
+                Some("bundle") | Some("archive") => is_checkout(table, &base),
                 Some("worktree") => {
                     rest.get(1).map(|s| s.as_str()) == Some("add") && is_checkout(table, &base)
                 }
@@ -225,17 +252,20 @@ pub fn shell_denial(cmd: &str, cwd: &str, table: &Value) -> Option<Decision> {
         }
         if prog == "cargo" {
             // Cargo's built-in short forms name the same subcommands.
-            if let Some(sub) = cargo_sub(w)
-                .map(|s| match s {
-                    "b" => "build",
-                    "c" => "check",
-                    "t" => "test",
-                    "r" => "run",
-                    x => x,
-                })
-                .filter(|s| CARGO_BARRED.contains(s))
-            {
-                return Some(refuse("cargo", &[("sub", sub)]));
+            let sub = cargo_sub(w).map(|s| match s {
+                "b" => "build",
+                "c" => "check",
+                "t" => "test",
+                "r" => "run",
+                x => x,
+            });
+            // The options of a call with no subcommand (`cargo --version`, `cargo --list`) are read here.
+            let only_flags = w[1..].iter().any(|a| CARGO_ALLOWED.contains(&a.as_str()));
+            match sub {
+                Some(s) if CARGO_ALLOWED.contains(&s) => {}
+                None if only_flags => {}
+                Some(s) => return Some(refuse("cargo", &[("sub", s)])),
+                None => return Some(refuse("cargo", &[("sub", "")])),
             }
         } else if copies_checkout(prog, w, cwd, table) {
             let shown = w.join(" ");

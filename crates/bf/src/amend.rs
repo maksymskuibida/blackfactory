@@ -708,18 +708,18 @@ fn apply_merge(st: &State, e: &mut Edit, op: &Value) -> R<()> {
         return Err(from_key("cli.amend_merge.closed", &vals));
     }
     let (ca, cb) = (ka.get("unit_checks"), kb.get("unit_checks"));
-    if let (Some(x), Some(y)) = (ca, cb) {
-        if x != y {
-            return Err(from_key(
-                "cli.amend_merge.unit_checks",
-                &[
-                    ("a", &a),
-                    ("b", &b),
-                    ("list_a", &x.to_string()),
-                    ("list_b", &y.to_string()),
-                ],
-            ));
-        }
+    // A missing list differs from a present one: the units of one checkpoint would gain checks.
+    if ca != cb {
+        let show = |v: Option<&Value>| v.map_or("none".to_string(), |x| x.to_string());
+        return Err(from_key(
+            "cli.amend_merge.unit_checks",
+            &[
+                ("a", &a),
+                ("b", &b),
+                ("list_a", &show(ca)),
+                ("list_b", &show(cb)),
+            ],
+        ));
     }
     for k in e.cps.iter().filter(|k| num(s(k, "id")) > num(&b)) {
         let id = s(k, "id");
