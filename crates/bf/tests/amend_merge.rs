@@ -220,8 +220,7 @@ fn after_the_approval_the_removal_reads_as_approved() {
     let ev: Value = log
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|e| e["kind"] == "amend.approve")
-        .next_back()
+        .rfind(|e| e["kind"] == "amend.approve")
         .unwrap();
     assert_eq!(ev["content"]["K-4"]["h"], "missing", "{ev}");
     assert_eq!(ev["renamed"], json!([["K-4", "K-3"]]));
