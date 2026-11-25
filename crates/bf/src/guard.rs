@@ -17,6 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod absent;
+mod design;
 
 pub struct Decision {
     /// True when nothing in the table forbids the call.
@@ -6510,6 +6511,11 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     }
     if tool == "Bash" && !agent_type(input).is_empty() {
         if let Some(d) = unblock_denial(agent_type(input), ti["command"].as_str().unwrap_or("")) {
+            return d;
+        }
+    }
+    if tool == "Bash" && design::binds(agent_type(input)) {
+        if let Some(d) = design::shell_denial(ti["command"].as_str().unwrap_or(""), &cwd, table) {
             return d;
         }
     }

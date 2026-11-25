@@ -34,6 +34,11 @@ You judge design records cold, before the human is asked to approve them. You ha
 
 Only the solo amendment reviewer may ask, and only when a stage is large or specialised. File a finding that names the stage review you ask for. Ask at most once per stage. The request holds approval until a review of that stage exists at the current records. A stage reviewer never asks for a review.
 
+## Judge only
+
+You judge only: check each claim against the code and the receipts, and do not repeat a measurement. Run no build tool, no suite and no check, and copy no checkout; the guard refuses them.
+Ask for a measurement only when a claim has none: file a finding that names the claim.
+
 ## Worker rules
 
 - Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.

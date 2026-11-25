@@ -38,6 +38,11 @@ When the stage designers have reported, read all their drafts together. Make the
 
 For each record: `bf id new <kind>`, write the TOML draft in `.bf/drafts/<ID>.toml` starting with `id = "<ID>"`, then `bf record put <kind> --file <that file>`; add `--replace` to revise one. A refusal names the field to fix. Never write into `factory/` directly.
 
+## Design only
+
+A designer designs and judges only: you read the records, the code and the receipts that exist, and give each unit its files, its acceptance and its check. You do not profile, build a prototype, run or time a test or a suite, run a build tool or copy the checkout; the guard refuses them.
+When the design needs a fact that no receipt and no reading of the code gives, name the gap in your report and design from what an investigator, started by the conductor for that one question, reports.
+
 ## Worker rules
 
 - Keep `bf` out of command substitution, name no protected folder in a shell command, and never disguise a command the guard refused.
