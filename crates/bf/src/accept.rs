@@ -257,7 +257,13 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
     {
         return ignore(st, "events.k2.ignored.unit_accept_not_review", seq);
     }
-    if listed.is_empty() {
+    let rec_ids: Vec<String> = ev["records_only"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
+    if listed.is_empty() && rec_ids.is_empty() {
         return ignore(st, "events.k2.ignored.unit_accept_form", seq);
     }
     // An accept names only findings the unit's reports listed and that are still open. The log cannot
@@ -275,7 +281,9 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
         return ignore(st, "events.k2.ignored.unit_accept_turn", seq);
     }
     st.turns[ix[&tseq]].used = true;
-    for (id, level) in &listed {
+    let mut all = listed.clone();
+    all.extend(rec_ids.iter().map(|id| (id.clone(), String::new())));
+    for (id, level) in &all {
         st.accepted.push(Accepted {
             scope: "unit".into(),
             subject: unit.clone(),
@@ -293,8 +301,13 @@ pub(crate) fn replay_unit(st: &mut State, ix: &HashMap<u64, usize>, ev: &Value, 
         let had = !u.open_findings.is_empty();
         u.open_findings
             .retain(|o| !listed.iter().any(|(id, _)| id == o));
-        // A parked unit whose open findings are all fixed or accepted goes on to `reviewed`.
-        if had && u.open_findings.is_empty() && u.state == "parked" {
+        // A parked unit goes on to `reviewed` when the event says no finding of it stays open, in the log or
+        // in a record. An event with no `settled_all` (written before) counts the log's findings only.
+        let settled = match ev["settled_all"].as_bool() {
+            Some(b) => b,
+            None => had && u.open_findings.is_empty(),
+        };
+        if settled && u.open_findings.is_empty() && u.state == "parked" {
             u.state = "reviewed".into();
             // The accepted unit lands only on the content of the round that filed the findings, as a clean
             // review binds it (R-95): the round is counted as judged for the landing check.

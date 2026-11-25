@@ -13,7 +13,7 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 }
 
 /// Accept findings of a parked unit in the human's own words. Any of the open findings may be named,
-/// some now and the rest later; at least one must be listed by the log. Each named record gets
+/// some now and the rest later, also only ones a record holds. Each named record gets
 /// `outcome = accepted`, and the unit is reviewed once none is left open.
 pub fn accept(p: &Project, unit: &str, findings: &[String], quote: &str) -> R<Value> {
     let what = t("cli.unit_accept.what", &[("unit", unit)]);
@@ -84,17 +84,7 @@ pub fn accept(p: &Project, unit: &str, findings: &[String], quote: &str) -> R<Va
             t("cli.unit_accept.worked", &[("unit", unit)]),
         ));
     }
-    // The replay counts only findings the log lists; an accept that names none of them would be an event
-    // it ignores, so it is refused before anything is written.
     log_ids.retain(|id| findings.contains(id));
-    if log_ids.is_empty() {
-        return Err(refuse(
-            what,
-            t("cli.unit_accept.records_only", &[("unit", unit)]),
-            &[&t("cli.unit_accept.records_only.step", &[("unit", unit)])],
-            t("cli.unit_accept.worked", &[("unit", unit)]),
-        ));
-    }
     // Words that are not the human's, or that come before the review, are refused here.
     let (turn, _) = events::pick_turn(&st, u.review_seq, events::Decide::Approve, quote)?;
     // A finding only a record holds is marked below, with the ones the log lists.
@@ -103,11 +93,13 @@ pub fn accept(p: &Project, unit: &str, findings: &[String], quote: &str) -> R<Va
         .map(|id| json!({"id": id, "severity": open.get(id).cloned().unwrap_or_default()}))
         .collect();
     let only_records: Vec<&String> = findings.iter().filter(|f| !log_ids.contains(f)).collect();
+    // Settled when no finding of the unit, in the log or in a record, stays open after this accept.
+    let settled_all = open.keys().all(|k| findings.contains(k));
     events::append(
         p,
         "unit.finding.accept",
         json!({"unit": unit, "findings": listed, "records_only": only_records,
-               "turn": turn, "quote": quote.trim()}),
+               "settled_all": settled_all, "turn": turn, "quote": quote.trim()}),
     )?;
     for id in findings {
         if let Some(mut rec) = p.get_record(id)? {
