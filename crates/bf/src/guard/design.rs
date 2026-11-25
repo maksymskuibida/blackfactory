@@ -108,8 +108,13 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
                 a == "--recurse-paths"
                     || (a.starts_with('-') && !a.starts_with("--") && a.contains('r'))
             });
+            // `-R` recurses by pattern from the current folder.
+            let by_pattern = args
+                .iter()
+                .any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('R'));
             let pos: Vec<&String> = args.iter().filter(|a| !flag(a)).collect();
-            recursive && pos.len() >= 2 && pos[1..].iter().any(|p| hit(p, cwd))
+            (recursive && pos.len() >= 2 && pos[1..].iter().any(|p| hit(p, cwd)))
+                || (by_pattern && is_checkout(table, cwd))
         }
         "rsync" | "ditto" => {
             let pos: Vec<&String> = args.iter().filter(|a| !flag(a)).collect();
@@ -198,7 +203,26 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
                     src.is_some_and(|p| hit(p.strip_prefix("file://").unwrap_or(p), &base))
                 }
                 // `bundle` and `archive` write the whole history or tree of the checkout they run in.
-                Some("bundle") | Some("archive") => is_checkout(table, &base),
+                Some("bundle") => is_checkout(table, &base),
+                // `git archive --remote <path>` reads the checkout the path names.
+                Some("archive") => {
+                    let mut remote = false;
+                    let mut k = 1;
+                    while k < rest.len() {
+                        let a = rest[k].as_str();
+                        if let Some(v) = a.strip_prefix("--remote=") {
+                            remote |= hit(v.strip_prefix("file://").unwrap_or(v), &base);
+                        } else if a == "--remote" {
+                            if let Some(v) = rest.get(k + 1) {
+                                let v = v.as_str();
+                                remote |= hit(v.strip_prefix("file://").unwrap_or(v), &base);
+                            }
+                            k += 1;
+                        }
+                        k += 1;
+                    }
+                    remote || is_checkout(table, &base)
+                }
                 Some("worktree") => {
                     rest.get(1).map(|s| s.as_str()) == Some("add") && is_checkout(table, &base)
                 }

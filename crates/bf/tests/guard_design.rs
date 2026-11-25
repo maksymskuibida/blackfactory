@@ -72,6 +72,8 @@ const REFUSED: &[&str] = &[
     "git worktree add /tmp/c",
     "rustup +nightly run stable cargo test",
     "rustup run stable -- cargo test",
+    "rustup run -- stable cargo test",
+    "rustup run stable --install cargo test",
     "rustup run stable -- cargo nextest run",
     "echo test | xargs cargo",
     "cargo install --path /nonexistent-code",
@@ -242,6 +244,8 @@ fn the_engine_calls_are_read_through_every_rustup_form() {
         "rustup run stable bf evidence run X-1",
         "rustup +nightly run stable bf evidence run X-1",
         "rustup run stable -- bf evidence run X-1",
+        "rustup run -- stable bf evidence run X-1",
+        "rustup run stable --install bf evidence run X-1",
         "rustup -v run --install stable -- bf evidence run X-1",
     ] {
         let calls = bf::shellparse::engine_calls(cmd);

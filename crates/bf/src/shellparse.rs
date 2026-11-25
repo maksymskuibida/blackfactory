@@ -1253,13 +1253,19 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
                 i += 1;
             }
             i += 1;
-            while i < words.len() && words[i].starts_with('-') && words[i] != "--" {
-                i += 1;
-            }
-            // The toolchain.
-            i += 1;
-            if words.get(i).map(String::as_str) == Some("--") {
-                i += 1;
+            // Run's options, `--` and the toolchain may come in any order; the first other word after
+            // the toolchain is the program.
+            let mut toolchain = false;
+            while i < words.len() {
+                let w = words[i].as_str();
+                if w.starts_with('-') {
+                    i += 1;
+                } else if !toolchain {
+                    toolchain = true;
+                    i += 1;
+                } else {
+                    break;
+                }
             }
         }
         i += skip_pos;
