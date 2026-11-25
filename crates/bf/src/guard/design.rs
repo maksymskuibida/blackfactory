@@ -157,7 +157,7 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
                         let a = rest[j].as_str();
                         if WITH_VALUE.contains(&a) {
                             j += 2;
-                        } else if flag(&rest[j]) {
+                        } else if flag(rest[j]) {
                             j += 1;
                         } else {
                             src = Some(a);
