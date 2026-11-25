@@ -1,0 +1,6 @@
+# Strings of the group `compile_cache_server`: keys are quoted and flat, `"cli.compile_cache.some.key" = "text"`.
+"cli.compile_cache.off.socket_long" = "no compile cache: the socket path `{path}` is longer than 100 bytes"
+"cli.compile_cache.off.run_dir" = "no compile cache: the run's folder under `{path}` could not be made"
+"cli.compile_cache.off.server_start" = "no compile cache: the server could not be started ({why})"
+"cli.compile_cache.off.server_exited" = "no compile cache: the server ended before it was ready ({status})"
+"cli.compile_cache.off.server_slow" = "no compile cache: the server was not ready within {seconds} seconds"

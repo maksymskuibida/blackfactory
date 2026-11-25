@@ -6,6 +6,8 @@
 //! account's home (never `HOME`). Each part is made and opened one at a time without following a
 //! link, and the profiles name the literal path, never a resolved one.
 
+pub mod server;
+
 use crate::session::home::account_home;
 use crate::store::Project;
 use crate::util;

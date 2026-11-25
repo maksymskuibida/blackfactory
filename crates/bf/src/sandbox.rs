@@ -123,6 +123,76 @@ pub fn cache_denial(top: &str) -> String {
     format!("(deny file-read* file-write* (subpath {}))\n", q(top))
 }
 
+/// The header every profile starts with, which a profile built from another one repeats.
+const HEADER: &str = "(version 1)\n(allow default)\n";
+
+/// The profile of the compile cache's server for a unit check (R-76 acceptance 9, TH-20). `check_profile`
+/// is the check's profile built with no network and without the denial of the cache folder. Every write
+/// is denied; then writes are allowed in `units/` of `folder`, in the run's folder and at `/dev/null`;
+/// then the check profile's own rules come again in their order (so no allowance opens a denial); last
+/// the server may bind and accept on its one Unix socket. `wc` is the run's working copy, which the
+/// check profile's rules already allow.
+pub fn cache_server_profile(check_profile: &str, wc: &str, folder: &str, run_dir: &str) -> String {
+    let _ = wc;
+    let rules = check_profile.strip_prefix(HEADER).unwrap_or(check_profile);
+    let socket = format!("{run_dir}/{}", compile_cache::server::SOCKET_NAME);
+    let mut p = String::from(HEADER);
+    p.push_str("(deny network*)\n(deny file-write*)\n");
+    for allowed in [format!("{folder}/units"), run_dir.to_string()] {
+        p.push_str(&format!("(allow file-write* (subpath {}))\n", q(&allowed)));
+    }
+    p.push_str(&format!(
+        "(allow file-write* (literal {}))\n",
+        q("/dev/null")
+    ));
+    p.push_str(rules);
+    p.push_str(&format!(
+        "(allow network-bind network-inbound (local unix-socket (path-literal {})))\n",
+        q(&socket)
+    ));
+    p
+}
+
+/// The one rule that lets a check connect to the server's socket and nothing else of the network; it
+/// goes after the denial of the cache folder.
+pub fn cache_client_rule(socket: &str) -> String {
+    format!(
+        "(allow network-outbound (remote unix-socket (path-literal {})))\n",
+        q(socket)
+    )
+}
+
+/// What a check that uses the cache may do in the cache folder beyond the socket (after the folder's
+/// denial): read and write in the run's own `tmp/`, and make no hard link to a file elsewhere in the
+/// cache folder (`top`, the denial's path). The folders above `tmp/` give their metadata alone (a literal rule for each, no listing and
+/// no read of a file), because without it the system refuses to enter `tmp/` as a working directory, and
+/// a test that makes a project there and runs a command in it would fail.
+pub fn cache_tmp_rules(top: &str, tmp: &str) -> String {
+    let mut p = String::new();
+    // From the cache's top (`.../blackfactory-cc`, the denial's path) down to the folder that holds `tmp/`.
+    let mut chain: Vec<&Path> = Vec::new();
+    let mut cur = Path::new(tmp).parent();
+    while let Some(c) = cur {
+        chain.push(c);
+        if c == Path::new(top) {
+            break;
+        }
+        cur = c.parent();
+    }
+    for c in chain.iter().rev() {
+        p.push_str(&format!(
+            "(allow file-read-metadata (literal {}))\n",
+            q(&c.to_string_lossy())
+        ));
+    }
+    p.push_str(&format!(
+        "(allow file-read* file-write* (subpath {t}))\n(deny file-link (subpath {f}))\n(allow file-link (subpath {t}))\n",
+        t = q(tmp),
+        f = q(top)
+    ));
+    p
+}
+
 /// What a command in the checkpoint reviewer's copy may not do beyond a check (TH-16): move a branch or
 /// a tag of the repository the copy came from. The copy is a worktree, so its git data lives in the
 /// repository's own `.git`; the refs and the main checkout's HEAD are out of reach, the copy's own index
