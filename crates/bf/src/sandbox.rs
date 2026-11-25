@@ -120,7 +120,10 @@ pub fn check_profile(
 /// The denial of the whole compile cache folder (R-76): reads and writes, by its literal path, which
 /// goes after every other rule of a check's profile while the setting is on.
 pub fn cache_denial(top: &str) -> String {
-    format!("(deny file-read* file-write* (subpath {}))\n", q(top))
+    format!(
+        "(deny file-read* file-write* (subpath {t}))\n(deny network-outbound (remote unix-socket (subpath {t})))\n",
+        t = q(top)
+    )
 }
 
 /// The header every profile starts with, which a profile built from another one repeats.

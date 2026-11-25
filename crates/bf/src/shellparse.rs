@@ -1186,6 +1186,8 @@ fn resolve(words: &[String]) -> Option<(usize, Option<String>)> {
             "noglob" | "nocorrect" | "-" | "coproc" => ("", &[], 0),
             // zsh's `repeat N cmd` and `function name { ... }`: the count or the name comes first.
             "repeat" | "function" => ("", &[], 1),
+            // `rustup run <toolchain> cmd`: the word `run` and the toolchain come first.
+            "rustup" => ("", &[], 2),
             "sandbox-exec" => ("", &["-f", "-n", "-p", "-D"], 0),
             "pkexec" => ("", &["--user"], 0),
             "runuser" => ("", &["-u", "-g", "-G", "-s", "-w"], 0),

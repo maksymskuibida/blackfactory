@@ -1027,3 +1027,49 @@ fn the_sweep_does_not_hang_on_a_named_pipe_planted_as_the_lock() {
     );
     assert!(!dir.exists());
 }
+
+#[test]
+fn the_denial_of_the_cache_folder_also_denies_a_connect_to_a_unix_socket_in_it() {
+    let d = bf::sandbox::cache_denial("/h/Library/Caches/blackfactory-cc");
+    assert!(
+        d.contains("(deny network-outbound (remote unix-socket (subpath \"/h/Library/Caches/blackfactory-cc\")))"),
+        "{d}"
+    );
+    // The client rule of a check comes after it, so the check still reaches its own socket.
+    let both = format!(
+        "{d}{}",
+        bf::sandbox::cache_client_rule("/h/Library/Caches/blackfactory-cc/x/s")
+    );
+    assert!(
+        both.find("deny network-outbound").unwrap() < both.find("allow network-outbound").unwrap()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn with_the_network_on_a_check_cannot_connect_to_a_socket_in_the_denied_cache_folder() {
+    if !can_bind() {
+        return;
+    }
+    let (_t, home) = own_home();
+    let top = home.join("top");
+    fs::create_dir_all(&top).unwrap();
+    let sock = top.join("s");
+    let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let top_s = top.to_string_lossy().to_string();
+    let sock_s = sock.to_string_lossy().to_string();
+    let profile = format!(
+        "(version 1)\n(allow default)\n{}",
+        bf::sandbox::cache_denial(&top_s)
+    );
+    let client = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ntry:\n s.connect(sys.argv[1])\n print('connected')\nexcept OSError:\n print('refused')\n";
+    let out = std::process::Command::new("sandbox-exec")
+        .args(["-p", &profile, "python3", "-c", client, &sock_s])
+        .output();
+    let Ok(out) = out else { return };
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if text.trim().is_empty() {
+        return; // the sandbox itself is not available here
+    }
+    assert_eq!(text.trim(), "refused", "{text}");
+}

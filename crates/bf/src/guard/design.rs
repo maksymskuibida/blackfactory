@@ -126,11 +126,46 @@ fn copies_checkout(prog: &str, w: &[String], cwd: &str, table: &Value) -> bool {
             }
             let rest: Vec<&String> = args[i.min(args.len())..].iter().collect();
             match rest.first().map(|s| s.as_str()) {
-                Some("clone") => rest[1..]
-                    .iter()
-                    .filter(|a| !flag(a))
-                    .take(1)
-                    .any(|p| hit(p, &base)),
+                Some("clone") => {
+                    // Options that take a value: the value is not the source.
+                    const WITH_VALUE: &[&str] = &[
+                        "-b",
+                        "--branch",
+                        "--depth",
+                        "-o",
+                        "--origin",
+                        "-c",
+                        "--config",
+                        "--reference",
+                        "--reference-if-able",
+                        "--separate-git-dir",
+                        "-u",
+                        "--upload-pack",
+                        "-j",
+                        "--jobs",
+                        "--filter",
+                        "--template",
+                        "--shallow-since",
+                        "--shallow-exclude",
+                        "--server-option",
+                        "--bundle-uri",
+                        "--ref-format",
+                    ];
+                    let mut j = 1;
+                    let mut src = None;
+                    while j < rest.len() {
+                        let a = rest[j].as_str();
+                        if WITH_VALUE.contains(&a) {
+                            j += 2;
+                        } else if flag(&rest[j]) {
+                            j += 1;
+                        } else {
+                            src = Some(a);
+                            break;
+                        }
+                    }
+                    src.is_some_and(|p| hit(p.strip_prefix("file://").unwrap_or(p), &base))
+                }
                 Some("worktree") => {
                     rest.get(1).map(|s| s.as_str()) == Some("add") && is_checkout(table, &base)
                 }

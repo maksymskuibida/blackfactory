@@ -61,6 +61,10 @@ const REFUSED: &[&str] = &[
     "tar cf /tmp/c.tar /nonexistent-code",
     "tar -C /nonexistent-code -cf /tmp/c.tar .",
     "git clone /nonexistent-code /tmp/c",
+    "git clone -b main /nonexistent-code /tmp/c",
+    "git clone --depth 1 /nonexistent-code /tmp/c",
+    "git clone file:///nonexistent-code /tmp/c",
+    "rustup run stable cargo test",
     "git worktree add /tmp/c",
 ];
 
@@ -87,7 +91,11 @@ fn each_design_type_is_refused_each_named_command_with_the_keys_text() {
             } else {
                 "guard_design.copy.because"
             };
-            assert!(d.reason.contains(&t(key, &[])), "{agent}: {cmd}: {}", d.reason);
+            assert!(
+                d.reason.contains(&t(key, &[])),
+                "{agent}: {cmd}: {}",
+                d.reason
+            );
         }
     }
 }
@@ -115,11 +123,16 @@ fn a_session_of_another_type_is_judged_as_before() {
                 "{agent:?}: {cmd}"
             );
         }
-        for cmd in ["cargo build", "cargo nextest run --package=bf", "bf evidence run X-1 --unit U-1 -- true"] {
+        for cmd in [
+            "cargo build",
+            "cargo nextest run --package=bf",
+            "bf evidence run X-1 --unit U-1 -- true",
+        ] {
             let d = run(agent, cmd);
             for k in ["cargo", "evidence", "copy"] {
                 assert!(
-                    !d.reason.contains(&t(&format!("guard_design.{k}.because"), &[])),
+                    !d.reason
+                        .contains(&t(&format!("guard_design.{k}.because"), &[])),
                     "{agent:?}: {cmd}"
                 );
             }
@@ -144,16 +157,41 @@ fn the_three_kinds_of_brief_hold_the_section() {
     let reviewer = t("guard_design.brief.reviewer", &[]);
     assert!(!title.is_empty() && !designer.is_empty() && !reviewer.is_empty());
     let rev = brief_at(&fx, &["review", "brief", "amendment", "--subject", "A-1"]);
-    assert!(rev.contains(&title) && rev.contains(reviewer.trim()), "{rev}");
+    assert!(
+        rev.contains(&title) && rev.contains(reviewer.trim()),
+        "{rev}"
+    );
     let g = bf::run::issue_token(&fx.project(), "A-1:designer").unwrap();
-    fx.must(&["review", "split", "A-1", "--stage", "requirements=R-2", "--token", &g]);
+    fx.must(&[
+        "review",
+        "split",
+        "A-1",
+        "--stage",
+        "requirements=R-2",
+        "--token",
+        &g,
+    ]);
     let stage = brief_at(
         &fx,
-        &["review", "brief", "requirements", "--subject", "A-1", "--role", "designer"],
+        &[
+            "review",
+            "brief",
+            "requirements",
+            "--subject",
+            "A-1",
+            "--role",
+            "designer",
+        ],
     );
-    assert!(stage.contains(&title) && stage.contains(designer.trim()), "{stage}");
+    assert!(
+        stage.contains(&title) && stage.contains(designer.trim()),
+        "{stage}"
+    );
     let general = brief_at(&fx, &["brief", "A-1", "--role", "designer"]);
-    assert!(general.contains(&title) && general.contains(designer.trim()), "{general}");
+    assert!(
+        general.contains(&title) && general.contains(designer.trim()),
+        "{general}"
+    );
 }
 
 fn role_file(name: &str) -> String {
