@@ -1,0 +1,44 @@
+# Strings of the group `amend_merge`: the merge of a checkpoint into the one before it inside an
+# amendment (D-127), the refusals of the checkpoint operations, and the labels of the plan rows.
+
+"cli.amend_merge.usage.refused" = "run `bf amend checkpoint`"
+"cli.amend_merge.usage.because" = "it needs `before`, `after` or `split`, a checkpoint and the units, or `merge` and two checkpoints"
+"cli.amend_merge.usage.do_this.1" = "Run `bf amend checkpoint before K-3 U-7 U-8` or `after K-3 U-7 U-8` to put the units on a new checkpoint."
+"cli.amend_merge.usage.do_this.2" = "Run `bf amend checkpoint split K-3 U-4` to keep U-4 on K-3 and put the rest on a new checkpoint right after it."
+"cli.amend_merge.usage.do_this.3" = "Run `bf amend checkpoint merge K-3 K-4` to merge K-4, which has not started, into the checkpoint K-3 right before it."
+"cli.amend_merge.usage.worked_when" = "The command prints the renamed numbers."
+
+"cli.amend_merge.unknown.refused" = "merge a checkpoint"
+"cli.amend_merge.unknown.because" = "{a} or {b} is not a checkpoint of the plan"
+"cli.amend_merge.unknown.do_this.1" = "Name two checkpoints that `bf plan check` lists."
+"cli.amend_merge.unknown.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.not_next.refused" = "merge {b} into {a}"
+"cli.amend_merge.not_next.because" = "{b} is not the checkpoint right after {a} in plan order"
+"cli.amend_merge.not_next.do_this.1" = "Name the checkpoint with the next number as the second one, for example `bf amend checkpoint merge K-3 K-4`."
+"cli.amend_merge.not_next.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.started.refused" = "merge {b} into {a}"
+"cli.amend_merge.started.because" = "{b} has started: a unit of it started, or it has a branch"
+"cli.amend_merge.started.do_this.1" = "Merge a checkpoint that has not started, or wait until {b} is closed and leave it as it is."
+"cli.amend_merge.started.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.closed.refused" = "merge {b} into {a}"
+"cli.amend_merge.closed.because" = "{a} is closed, so it cannot take more units"
+"cli.amend_merge.closed.do_this.1" = "Merge into a checkpoint that is not closed."
+"cli.amend_merge.closed.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.unit_checks.refused" = "merge {b} into {a}"
+"cli.amend_merge.unit_checks.because" = "{a} lists the unit checks {list_a} and {b} lists {list_b}, and one checkpoint can have only one list"
+"cli.amend_merge.unit_checks.do_this.1" = "Put the same `unit_checks` on {a} and {b} (a change of records in the amendment), then merge them."
+"cli.amend_merge.unit_checks.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.later_started.refused" = "merge {b} into {a}"
+"cli.amend_merge.later_started.because" = "{id} comes after {b} and has started or is closed, so it cannot take a lower number"
+"cli.amend_merge.later_started.do_this.1" = "Merge only when every checkpoint after {b} has not started."
+"cli.amend_merge.later_started.worked_when" = "`bf amend checkpoint` prints the renamed numbers and the plan check on the result."
+
+"cli.amend_merge.row.moved" = "moved to {id}"
+"cli.amend_merge.row.new" = "new"
+"cli.amend_merge.row.changed" = "changed"
+"cli.amend_merge.row.gone" = "gone"

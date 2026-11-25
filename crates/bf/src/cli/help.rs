@@ -11,7 +11,7 @@ Humans:   gate open|approve|reject|status | human-turn | hook <event> | test-mod
 Checks:   checks list|state|propose|set | checks wave|unit question|propose|set|state | checkpoint wave-check
 Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>
-More:     ask | answer | questions | amend open [--repair]|revise|checkpoint before|after|split <K-n> <U-n>... [--title <t>]|narrow|approve|withdraw | cost | stuck | doctor [--perf] | clean [--dry-run] | guard
+More:     ask | answer | questions | amend open [--repair]|revise|checkpoint before|after|split <K-n> <U-n>...|merge <K-n> <K-m> [--title <t>]|narrow|approve|withdraw | cost | stuck | doctor [--perf] | clean [--dry-run] | guard
 
 Every command that prints data takes --json. Exit codes: 0 done, 2 refused, 1 error.
 See docs/engine.md.";
