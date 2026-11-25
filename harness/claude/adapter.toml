@@ -82,3 +82,20 @@ input_tools = [
   { tool = "mcp__ccd_session__spawn_task" },
   { tool = "mcp__ccd_session__hand_off_to_session" },
 ]
+
+# The harness's other hooks, each called as the engine's hook command with the event's name (R-74, D-96):
+# what would wait for the human and has no tool call. `event` is the engine's name, `harness` the harness's
+# name of the hook, `matcher` what the harness filters its calls by (empty: none), `timeout` the seconds the
+# harness gives it, `answer` the form of the engine's answer as JSON ("" for none). In an answer `<text>`
+# stands for the engine's reason or context and `<human>` for the line shown to the human.
+# Checked against the harness's hook documents: PermissionRequest answers with `decision.behavior`,
+# Elicitation with `action`, Stop with `decision` and `reason`, PostToolUse and SessionStart with
+# `additionalContext`, and Notification (matcher `idle_prompt`) takes no answer.
+hook_events = [
+  { event = "permission", harness = "PermissionRequest", matcher = "", timeout = 5, answer = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"<text>","interrupt":false}}}' },
+  { event = "elicitation", harness = "Elicitation", matcher = "", timeout = 5, answer = '{"hookSpecificOutput":{"hookEventName":"Elicitation","action":"decline"}}' },
+  { event = "stop", harness = "Stop", matcher = "", timeout = 30, answer = '{"decision":"block","reason":"<text>"}' },
+  { event = "ask-answer", harness = "PostToolUse", matcher = "AskUserQuestion", timeout = 10, answer = '{"systemMessage":"<human>","hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"<text>"}}' },
+  { event = "idle", harness = "Notification", matcher = "idle_prompt", timeout = 5, answer = "" },
+  { event = "start", harness = "SessionStart", matcher = "startup|resume|clear|compact", timeout = 10, answer = '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<text>"}}' },
+]

@@ -17,6 +17,7 @@ mod group;
 mod guard;
 mod head;
 mod help;
+mod hook;
 mod human_turn;
 mod id;
 mod init;
@@ -548,6 +549,7 @@ fn dispatch(args: &Args) -> R<()> {
         "guard" => guard::cmd_guard(args),
         "init" => init::cmd_init(args),
         "human-turn" => human_turn::cmd_human_turn(args),
+        "hook" => hook::cmd_hook(args),
         "id" => id::cmd_id(args),
         "record" => record::cmd_record(args),
         "checks" | "scan" | "legal" | "preset" | "uiux" | "roles" => group::cmd_group(args, cmd),

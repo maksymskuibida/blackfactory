@@ -7,7 +7,7 @@ Run:      run start|stop | status | progress | log | next | brief | report | uni
 Proof:    evidence run|attach|verify|fail|unreachable | checkpoint close
 Fixes:    checkpoint finding|review|fix|sync | unit scope|restore|format
 Review:   review token <kind>|brief <kind>|split <A-n> --stage <s>=<IDs>|finding <gate or A-n> --accept <F-ids> --quote <words>|release <gate or A-n> --quote <words>
-Humans:   gate open|approve|reject|status | human-turn | test-mode grant
+Humans:   gate open|approve|reject|status | human-turn | hook <event> | test-mode grant
 Checks:   checks list|state|propose|set | checks wave|unit question|propose|set|state | checkpoint wave-check
 Roles:    roles list|show|token
 Pages:    view <kind> | render <kind>

@@ -98,8 +98,49 @@ fn adapter_data(manifest: &Path, out_dir: &Path) {
         }
         out.push_str("    ],\n");
     }
+    out.push_str("    hook_events: &[\n");
+    for e in hook_events_of(&table) {
+        writeln!(
+            out,
+            "        HookEvent {{ event: {:?}, harness: {:?}, matcher: {:?}, timeout: {}, answer: {:?} }},",
+            e.0, e.1, e.2, e.3, e.4
+        )
+        .unwrap();
+    }
+    out.push_str("    ],\n");
     out.push_str("};\n");
     std::fs::write(out_dir.join("adapter_data.rs"), out).unwrap();
+}
+
+/// The hook events of `adapter.toml`: name, harness name, matcher, timeout and answer form.
+fn hook_events_of(table: &toml::Table) -> Vec<(String, String, String, i64, String)> {
+    let items: Vec<(String, String, String, i64, String)> = table
+        .get("hook_events")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_table())
+                .map(|t| {
+                    let s = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let (event, harness) = (s("event"), s("harness"));
+                    if event.is_empty() || harness.is_empty() {
+                        fail("adapter.toml: a hook event needs `event` and `harness`".into());
+                    }
+                    let timeout = t.get("timeout").and_then(|v| v.as_integer()).unwrap_or(0);
+                    if timeout <= 0 {
+                        fail(format!(
+                            "adapter.toml: the hook event `{event}` needs a positive `timeout`"
+                        ));
+                    }
+                    (event, harness, s("matcher"), timeout, s("answer"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if items.is_empty() {
+        fail("adapter.toml: key `hook_events` is missing or has no events".into());
+    }
+    items
 }
 
 /// A list of tools of `adapter.toml`: each a table with `tool` and an optional `field`.

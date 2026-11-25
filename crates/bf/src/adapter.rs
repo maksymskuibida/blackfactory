@@ -8,6 +8,20 @@ pub struct ToolField {
     pub field: &'static str,
 }
 
+/// One of the harness's hooks that the engine answers with its hook command (R-74, D-96).
+pub struct HookEvent {
+    /// The engine's name of the event: the argument of the hook command.
+    pub event: &'static str,
+    /// The harness's name of the hook.
+    pub harness: &'static str,
+    /// What the harness filters the hook's calls by; empty for none.
+    pub matcher: &'static str,
+    /// The seconds the harness gives the hook.
+    pub timeout: u32,
+    /// The form of the engine's answer as JSON, with `<text>` and `<human>` as places; empty for none.
+    pub answer: &'static str,
+}
+
 /// The adapter data of one harness. A path that starts with `~/` is under the account's home
 /// (`session::home::resolve_tilde`).
 pub struct Data {
@@ -46,6 +60,8 @@ pub struct Data {
     pub command_tools: &'static [ToolField],
     /// The tools that type into an app or send a message to a session.
     pub input_tools: &'static [ToolField],
+    /// The hooks of the harness other than the tool hook and the prompt hook.
+    pub hook_events: &'static [HookEvent],
 }
 
 include!(concat!(env!("OUT_DIR"), "/adapter_data.rs"));
