@@ -107,6 +107,23 @@ fn status_text(v: &Value) -> String {
                         ("fate", &field("fate")),
                     ],
                 ),
+                "wants_fix" => {
+                    let waits = f["waits_text"].as_str().unwrap_or("").to_string();
+                    crate::strings::t(
+                        if waits.is_empty() {
+                            "status.finding.wants_fix_plain"
+                        } else {
+                            "status.finding.wants_fix"
+                        },
+                        &[
+                            ("id", &field("id")),
+                            ("severity", &field("severity")),
+                            ("title", &field("title")),
+                            ("waits", &waits),
+                            ("source", &field("source_text")),
+                        ],
+                    )
+                }
                 _ => String::new(),
             };
             if !line.is_empty() {

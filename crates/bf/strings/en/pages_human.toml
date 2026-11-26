@@ -1,0 +1,30 @@
+# Strings of the checkpoint page and of `bf status` for the findings the human files themselves, what a
+# waiting one waits for, and what a fix took from them (R-81, S-7, J-7, D-171, D-62).
+
+"page.quote.label" = "The human's words (message {turn})"
+"page.finding.weight.not_given" = "weight not given"
+"page.finding.state.wants_fix" = "waits for a fix"
+
+"page.finding.wants_fix.round" = "Waits for a fix: an open review or audit round must report first."
+"page.finding.wants_fix.fix_round" = "Waits for a fix: it joins the next round of the fix at work."
+"page.finding.wants_fix.sync" = "Waits for a fix: a sync is open."
+"page.finding.wants_fix.units" = "Waits for a fix: a unit of the checkpoint has not landed."
+"page.finding.wants_fix.other_fix" = "Waits for a fix: a fix of another checkpoint is open."
+"page.finding.wants_fix.run" = "Waits for a fix: no run is active."
+"page.finding.wants_fix.plan_gate" = "Waits for a fix: the plan gate is not approved."
+"page.finding.wants_fix.budget" = "Waits for a fix: the budget cap is reached."
+"page.finding.wants_fix.check" = "Waits for a fix: a check of the checkpoint waits for the human's decision."
+
+"page.fix.step.design" = "while the design was drawn or waited for the yes"
+"page.fix.step.low" = "while the fix waited on low findings"
+"page.fix.step.parked" = "while the fix was parked"
+"page.fix.step.review" = "at the next round after a review"
+"page.fix.step.park" = "at the park of the fix"
+"page.fix.step.gap" = "after a plan gap"
+
+"page.fix.human_added" = "Human findings taken: {ids}, joined {step}."
+"page.fix.outside_design" = "Outside the stored design: {ids}."
+"page.fix.human_held" = "Human findings held for the release: {ids}."
+
+"status.finding.wants_fix" = "finding {id} [{severity}] {title}: waits for a fix, {waits}, filed by {source}"
+"status.finding.wants_fix_plain" = "finding {id} [{severity}] {title}: waits for a fix, filed by {source}"
