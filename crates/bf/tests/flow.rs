@@ -577,9 +577,13 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
         ],
     );
     fx.must(&["unit", "land", "U-1"]);
+    // An agent check that judges the built result is an audit (R-77): the engine offers it to its auditor,
+    // and no worker marks it met or failed.
     let n = fx.must(&["next", "--json"]).json();
     let d = &n["directives"][0];
+    assert_eq!(d["action"], "audit-checkpoint", "{n}");
     assert_eq!(d["role"], "verifier", "{n}");
+    assert_eq!(d["check"], "X-5", "{n}");
     let vt = d["token"].as_str().unwrap().to_string();
     let k = fx.work("K-1");
     let shot = fx.root.join(".bf/shot.txt");
@@ -591,134 +595,40 @@ fn a_check_judged_by_an_agent_needs_a_stated_outcome_from_the_verifier() {
         .refused(&["checkpoint", "close", "K-1"])
         .stderr
         .contains("no sealed passing receipt"));
-    // An outcome needs a sentence, and the verifier's token: a builder's token is not enough.
-    let o = fx.bf_in(
-        &k,
-        &[
-            "evidence",
-            "attach",
-            "X-5",
-            shot_s,
-            "--outcome",
-            "met",
-            "--token",
-            &vt,
-        ],
-    );
-    assert_eq!(o.code, 2);
-    assert!(o.stderr.contains("one sentence"), "{}", o.stderr);
     let says = "I read the screen text and it says hello";
     // The landing removed the unit's folder; the call still comes from where it stood.
     fs::create_dir_all(&wc).unwrap();
-    for bad in [None, Some(bt.as_str())] {
-        let mut a = vec![
-            "evidence",
-            "attach",
-            "X-5",
-            shot_s,
-            "--outcome",
-            "met",
-            "--says",
-            says,
-        ];
-        if let Some(t) = bad {
-            a.extend(["--token", t]);
+    for outcome in ["met", "failed"] {
+        for token in [None, Some(vt.as_str()), Some(bt.as_str())] {
+            let mut a = vec![
+                "evidence", "attach", "X-5", shot_s, "--outcome", outcome, "--says", says,
+            ];
+            if let Some(t) = token {
+                a.extend(["--token", t]);
+            }
+            let o = fx.bf_in(&k, &a);
+            assert_eq!(o.code, 2, "{}", o.all());
+            assert!(o.stderr.contains("audit-checkpoint"), "{}", o.stderr);
         }
-        let o = fx.bf_in(&wc, &a);
-        assert_eq!(o.code, 2, "{}", o.all());
-        assert!(o.stderr.contains("verifier's token"), "{}", o.stderr);
     }
-    // `failed` is a mark: the human decides; a later `met` at the same content supersedes it.
-    fx.must_in(
-        &k,
+    let o = fx.bf_in(&k, &["evidence", "fail", "X-5", "--reason", "the screen is blank"]);
+    assert_eq!(o.code, 2, "{}", o.all());
+    assert!(o.stderr.contains("audit-checkpoint"), "{}", o.stderr);
+    // The auditor's report settles the check, and the engine writes the receipt.
+    fx.must(&["brief", "K-1", "--role", "verifier", "--check", "X-5"]);
+    let o = fx.bf_stdin(
+        &fx.root,
         &[
-            "evidence",
-            "attach",
-            "X-5",
-            shot_s,
-            "--outcome",
-            "failed",
-            "--says",
-            "the screen is blank",
-            "--token",
-            &vt,
+            "report", "K-1", "--role", "verifier", "--check", "X-5", "--result", "findings", "--findings", "-",
+            "--token", &vt,
         ],
+        &serde_json::json!({"areas": [{"area": "the screen", "how": "read"}], "findings": []}).to_string(),
     );
-    // A failed check opens a fix for a builder, not a question to the human; the fix turned down, it
-    // opens again.
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
-    fx.must(&["checkpoint", "fix", "K-1", "--abort"]);
-    // The abort of a fix opened for a failed check marks nothing declined: the fix opens again, and
-    // the human has no question to decide while it is open.
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "fix-checkpoint", "{n}");
-    assert_eq!(n["directives"].as_array().unwrap().len(), 1, "{n}");
-    assert_eq!(n["directives"][0]["failing_checks"][0], "X-5", "{n}");
-    // The fix is built and reviewed, and only then does the verifier run the check again.
-    let ft = n["directives"][0]["token"].as_str().unwrap().to_string();
-    fs::write(k.join("src/a.txt"), "a2\n").unwrap();
-    git(&k, &["add", "-A"]);
-    git(&k, &["commit", "-q", "-m", "fix"]);
-    fx.must_in(
-        &k,
-        &["report", "K-1", "--role", "builder", "--result", "built", "--token", &ft],
-    );
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "review-checkpoint-fix", "{n}");
-    let fr = n["directives"][0]["token"].as_str().unwrap().to_string();
-    fx.must_in(
-        &k,
-        &["report", "K-1", "--role", "reviewer", "--result", "built", "--token", &fr],
-    );
-    // The verifier's token is the one the engine gives now, not the one from before the fix.
-    let n = fx.must(&["next", "--json"]).json();
-    assert_eq!(n["directives"][0]["action"], "run-checkpoint-checks", "{n}");
-    assert_eq!(n["directives"][0]["role"], "verifier", "{n}");
-    let vt2 = n["directives"][0]["token"].as_str().unwrap().to_string();
-    assert_ne!(vt2, vt, "{n}");
-    let vt = vt2;
-    fx.must_in(
-        &k,
-        &[
-            "evidence",
-            "attach",
-            "X-5",
-            shot_s,
-            "--outcome",
-            "unreachable",
-            "--says",
-            "the device is not here",
-            "--token",
-            &vt,
-        ],
-    );
-    fx.must_in(
-        &k,
-        &[
-            "evidence",
-            "attach",
-            "X-5",
-            shot_s,
-            "--outcome",
-            "met",
-            "--says",
-            says,
-            "--token",
-            &vt,
-        ],
-    );
-    // The pages show the outcome, the sentence and the file.
+    assert_eq!(o.code, 0, "{}", o.all());
     let page = fx.must(&["view", "checkpoint", "K-1"]).json().to_string();
-    assert!(
-        page.contains("met") && page.contains(says) && page.contains("shot.txt"),
-        "{page}"
-    );
+    assert!(page.contains("shot.txt"), "{page}");
     let cov = fx.must(&["view", "coverage"]).json().to_string();
-    assert!(
-        cov.contains("Judged by an agent") && cov.contains("the screen is blank"),
-        "{cov}"
-    );
+    assert!(cov.contains("Judged by an agent"), "{cov}");
     fx.must(&["checkpoint", "close", "K-1"]);
 }
 
@@ -1506,4 +1416,46 @@ fn the_transcript_rows_own_marks_decide_when_the_row_is_found() {
         send_prompt(&fx, json!({"prompt_id": "missing"}), "Fresh words.")["recorded"],
         true
     );
+}
+
+/// The token refusal of an outcome on an agent check that is no audit source (a unit's own agent check) holds
+/// (F-641): no token and a builder's token are refused, and the refusal is not the audit's.
+#[test]
+fn an_outcome_on_a_units_own_agent_check_needs_the_reviewers_token() {
+    let fx = Fx::new();
+    for (k, t) in [
+        ("requirement", "id=\"R-1\"\nkind=\"requirement\"\ntitle=\"A\"\nacceptance=[\"a\"]\n"),
+        ("unit", "id=\"U-1\"\nkind=\"unit\"\ntitle=\"A\"\ndelivers=[\"R-1\"]\nfiles=[\"src/a.txt\"]\ncheckpoint=\"K-1\"\n"),
+        ("check", "id=\"X-1\"\nkind=\"check\"\ntitle=\"a\"\nhow=\"command\"\ncommand=\"test -f src/a.txt\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("check", "id=\"X-5\"\nkind=\"check\"\ntitle=\"Read the screen aloud\"\nhow=\"agent\"\nproves=[\"R-1\"]\nscope=\"unit\"\nunit=\"U-1\"\n"),
+        ("checkpoint", "id=\"K-1\"\nkind=\"checkpoint\"\nstop_why=\"Test fixture.\"\ntitle=\"K\"\nafter=[\"U-1\"]\nproves=[\"R-1\"]\nchecks=[\"X-1\"]\n"),
+    ] {
+        assert_eq!(fx.put(k, t).code, 0);
+    }
+    fx.set_policy("tokens = false", "tokens = true");
+    fx.commit_all("records");
+    fx.start_test_run();
+    let wc = std::path::PathBuf::from(
+        fx.must(&["unit", "start", "U-1", "--json"]).json()["working_copy"]
+            .as_str()
+            .unwrap(),
+    );
+    fs::create_dir_all(wc.join("src")).unwrap();
+    fs::write(wc.join("src/a.txt"), "a\n").unwrap();
+    let bt = fx.take_token("U-1", "builder");
+    let shot = fx.root.join("shot.txt");
+    fs::write(&shot, "hello\n").unwrap();
+    let shot_s = shot.to_str().unwrap();
+    for bad in [None, Some(bt.as_str())] {
+        let mut a = vec![
+            "evidence", "attach", "X-5", shot_s, "--outcome", "met", "--says", "I read the screen text and it says hello",
+        ];
+        if let Some(t) = bad {
+            a.extend(["--token", t]);
+        }
+        let o = fx.bf_in(&wc, &a);
+        assert_eq!(o.code, 2, "{}", o.all());
+        assert!(o.stderr.contains("token"), "{}", o.stderr);
+        assert!(!o.stderr.contains("audit-checkpoint"), "{}", o.stderr);
+    }
 }

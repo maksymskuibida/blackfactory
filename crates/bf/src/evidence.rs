@@ -1874,6 +1874,13 @@ pub fn attach(
     };
     if j.outcome.is_some() {
         refuse_review_check(&chk, "give an outcome")?;
+        // An audit is settled by the engine from its auditor's report; no worker marks it (R-77). A step of
+        // a UI/UX verification and `unreachable` are taken as before.
+        let is_step = s(&chk, "named") == "built-uiux-verification"
+            && crate::uiux::parse_step(says).is_some();
+        if matches!(j.outcome, Some("met") | Some("failed")) && !is_step {
+            refuse_audit_mark(p, &chk, "give an outcome")?;
+        }
         if s(&chk, "how") != "agent" {
             return Err(refuse(
                 format!("give {check_id} an outcome"),
@@ -1940,6 +1947,9 @@ pub fn attach(
                     .filter(|k| str_list(k, "checks").iter().any(|c| c == check_id))
                 {
                     keys.push(format!("{}:verifier", s(k, "id")));
+                    if crate::ckaudit::is_source(&pl, s(k, "id"), check_id) {
+                        keys.push(crate::ckaudit::token_key(s(k, "id"), check_id));
+                    }
                     for r in family_roles(false) {
                         keys.push(format!("{}:{r}", s(k, "id")));
                     }
@@ -2058,6 +2068,9 @@ pub fn outcome(
         ));
     }
     refuse_review_check(&chk, &format!("mark it as {kind}"))?;
+    if kind == "fail" {
+        refuse_audit_mark(p, &chk, "mark it as fail")?;
+    }
     if reason.trim().is_empty() {
         return Err(refuse(
             format!("mark {check_id} as {kind}"),
@@ -2375,6 +2388,30 @@ pub fn review_receipt(p: &Project, check_id: &str, content: &str, says: &str) ->
         json!({"receipt": v["id"], "check": check_id, "unit": null}),
     )?;
     Ok(v)
+}
+
+/// An audit source of a checkpoint takes no met or failed mark from a worker: the engine writes its receipt
+/// from the auditor's report (R-77). A check that is no audit source is not touched.
+fn refuse_audit_mark(p: &Project, chk: &Value, what: &str) -> R<()> {
+    let pl = crate::plan::load(p)?;
+    let id = s(chk, "id");
+    if !crate::ckaudit::is_source_anywhere(&pl, id) {
+        return Ok(());
+    }
+    let k = pl
+        .checkpoints
+        .iter()
+        .map(|k| s(k, "id"))
+        .find(|k| crate::ckaudit::is_source(&pl, k, id))
+        .unwrap_or("");
+    let role = crate::ckaudit::role_of(&pl, id);
+    let sub = [("what", what), ("check", id), ("k", k), ("role", role)];
+    Err(crate::refusal::refuse_owned(
+        crate::strings::t("ck_audit_order.refuse.mark.what", &sub),
+        crate::strings::t("ck_audit_order.refuse.mark.why", &sub),
+        vec![crate::strings::t("ck_audit_order.refuse.mark.step", &sub)],
+        crate::strings::t("ck_audit_order.refuse.mark.check", &sub),
+    ))
 }
 
 fn refuse_review_check(chk: &Value, what: &str) -> R<()> {

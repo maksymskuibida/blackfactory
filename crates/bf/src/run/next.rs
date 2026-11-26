@@ -45,7 +45,8 @@ fn directive_kind(d: &Value) -> &'static str {
         "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
         "reviewer" => "reviewer",
         "verifier" => "verifier",
-        "security-auditor" => "reviewer",
+        "uiux-verifier" => "verifier",
+        "security-auditor" | "legal-auditor" => "reviewer",
         _ => "conductor",
     }
 }
@@ -481,7 +482,16 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 // ordinary step; no agent judges the load.
                 if marked.iter().all(|m| m["outcome"] == "unreachable") {
                     let (load, cores) = evidence::machine_load();
-                    directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": checks,
+                    let audits = crate::ckaudit::due(p, &st, &pl, kid, &content, &receipts)?;
+                    for c in &audits {
+                        directives.push(crate::ckaudit::directive(p, &st, &pl, kid, c));
+                    }
+                    let checks: Vec<String> = checks
+                        .into_iter()
+                        .filter(|c| !crate::ckaudit::is_source(&pl, kid, c))
+                        .collect();
+                    if !checks.is_empty() {
+                        directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": checks,
                         "tier": p.policy.tiers.verifier, "working_copy": p.work_dir().join(kid).to_string_lossy(),
                         "brief": p.briefs_dir().join(format!("{kid}-verifier.md")).to_string_lossy(),
                         "load": load, "cores": cores,
@@ -489,6 +499,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                                    "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
                         "commands": [format!("bf brief {kid} --role verifier")],
                         "note": crate::strings::t("check_accept.run_again.note", &[("k", kid)])}));
+                    }
                 }
                 continue;
             }
@@ -531,8 +542,11 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         s(r, "id") == c && s(r, "named") == crate::checks::CHECKPOINT_REVIEW
                     })
                 })
+                // An audit is offered to its auditor, never to the verifier (R-77).
+                .filter(|c| !crate::ckaudit::is_source(&pl, kid, c))
                 .collect();
             let review_needed = crate::ckreview::needed(p, &st, kid, &content)?;
+            let audits = crate::ckaudit::due(p, &st, &pl, kid, &content, &receipts)?;
             let human_needed =
                 crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
             if !missing.is_empty() {
@@ -547,6 +561,8 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 }
             } else if review_needed {
                 directives.push(crate::ckreview::directive(p, &st, kid)?);
+            } else if !audits.is_empty() {
+                // The close waits for every audit (R-77).
             } else if human_needed {
                 let open = st
                     .latest_gate("checkpoint-step", Some(kid))
@@ -589,6 +605,9 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         "steps": crate::enforce::way_out_steps(&st, &unproven),
                         "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
                 }
+            }
+            for c in &audits {
+                directives.push(crate::ckaudit::directive(p, &st, &pl, kid, c));
             }
             // Offered whenever a low finding is open and nothing holds.
             if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
