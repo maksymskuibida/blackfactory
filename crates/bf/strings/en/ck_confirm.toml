@@ -4,6 +4,8 @@
 
 "ck_confirm.source.review" = "the checkpoint review"
 "ck_confirm.source.audit" = "the audit {check}"
+"ck_confirm.source.human" = "the checkpoint review (the human's own finding)"
+"ck_confirm.brief.item_human" = "- {id} [{severity}] {title}: the human wrote this finding themselves, in these words: \"{action}\". Answered by {fix}; the diff of that fix is in `{path}`."
 
 "ck_confirm.fate.answered" = "answered by {by}, waits for {source}"
 "ck_confirm.fate.by_confirmed" = "{by}, confirmed by round {round}"

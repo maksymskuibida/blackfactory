@@ -1051,6 +1051,14 @@ pub struct State {
     pub ck_round_done: Vec<(String, u32, u64)>,
     /// The source of each review round: (checkpoint, round) -> the check id of an audit, empty for the review.
     pub ck_round_source: HashMap<(String, u32), String>,
+    /// The messages of the human a finding was filed from (R-81): a message files once, whatever decisions
+    /// it also made.
+    pub ck_human_filed: std::collections::HashSet<u64>,
+    /// The seqs of the filings the replay counted.
+    pub ck_human_seqs: std::collections::HashSet<u64>,
+    /// Checkpoint -> the seq of the first `unit.start` of a unit of it: the floor of the words a finding of the
+    /// human may be filed from.
+    pub ck_first_start: BTreeMap<String, u64>,
     /// The audit sources that confirm nothing now: (checkpoint, check id) of a check switched off for the run or
     /// no longer listed by the checkpoint. Filled by `replay` from the plan, never by the log (R-78).
     pub ck_unconfirming: std::collections::HashSet<(String, String)>,
@@ -1185,7 +1193,7 @@ fn mark_unconfirming(p: &Project, st: &mut State) {
     let pairs: std::collections::HashSet<(String, String)> = st
         .ck_round_source
         .iter()
-        .filter(|(_, src)| !src.is_empty())
+        .filter(|(_, src)| crate::ckreview::is_audit(src))
         .map(|((k, _), src)| (k.clone(), src.clone()))
         .collect();
     for (k, src) in pairs {
@@ -1918,6 +1926,10 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
             }
             "unit.start" => {
+                let ck = unit_start_checkpoint(ev);
+                if !ck.is_empty() {
+                    st.ck_first_start.entry(ck).or_insert(seq);
+                }
                 let u = st.units.entry(sv("unit")).or_default();
                 u.state = "running".into();
                 u.base_commit = sv("base_commit");
@@ -3004,6 +3016,27 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     sv("source"),
                 );
             }
+            "checkpoint.finding.human" => {
+                let k = sv("checkpoint");
+                let n = ev["round"].as_u64().unwrap_or(0) as u32;
+                match crate::ckhuman::judge(&st, &ck_rounds, ev, seq) {
+                    Err(cause) => {
+                        st.ignored.push(cause);
+                        continue;
+                    }
+                    Ok(tseq) => {
+                        st.ck_human_filed.insert(tseq);
+                        st.ck_human_seqs.insert(seq);
+                    }
+                }
+                st.ck_round_source
+                    .insert((k.clone(), n), crate::ckhuman::SOURCE.to_string());
+                st.ck_round_done.push((k.clone(), n, seq));
+                ck_rounds.insert(
+                    (k, n),
+                    ev["findings"].as_array().cloned().unwrap_or_default(),
+                );
+            }
             "checkpoint.review.done" => {
                 if matches!(sv("result").as_str(), "clean" | "findings") {
                     let n = ev["round"].as_u64().unwrap_or(0) as u32;
@@ -4031,9 +4064,35 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
     Ok((t.seq, t.text.clone()))
 }
 
+/// The checkpoint a `unit.start` belongs to: its `checkpoint` field, or for an event written before that
+/// field existed the id at the end of its `base` (the checkpoint branch, such as `bf/K-8`).
+fn unit_start_checkpoint(ev: &Value) -> String {
+    if let Some(c) = ev["checkpoint"].as_str().filter(|c| !c.is_empty()) {
+        return c.to_string();
+    }
+    let base = ev["base"].as_str().unwrap_or("");
+    let tail = base.rsplit('/').next().unwrap_or("");
+    match tail.strip_prefix("K-") {
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => tail.to_string(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_unit_start_without_a_checkpoint_field_still_gives_the_floor_of_the_human_words() {
+        let log = log_of(&[
+            ("human.turn", json!({"text":"before"})),
+            ("unit.start", json!({"unit":"U-1","base":"bf/K-8"})),
+            ("human.turn", json!({"text":"after"})),
+        ]);
+        let st = replay_log(&log);
+        assert_eq!(crate::ckhuman::words_floor(&st, "K-8"), Some(2));
+        assert_eq!(crate::ckhuman::words_floor(&st, "K-9"), None);
+    }
 
     fn ev(seq: u64, prev: &str, kind: &str, extra: Value) -> Value {
         let mut m = extra.as_object().cloned().unwrap_or_default();

@@ -22,10 +22,22 @@ pub fn source_of(st: &State, k: &str, round: u32) -> String {
         .unwrap_or_default()
 }
 
+/// The source whose next round confirms a finding of `source`: the checkpoint review for its own findings
+/// and for the human's, the audit's check for an audit's.
+pub fn confirmer(source: &str) -> &str {
+    if ckreview::is_human(source) {
+        ""
+    } else {
+        source
+    }
+}
+
 /// The source as a human reads it.
 pub fn source_text(source: &str) -> String {
     if source.is_empty() {
         t("ck_confirm.source.review", &[])
+    } else if ckreview::is_human(source) {
+        t("ck_confirm.source.human", &[])
     } else {
         t("ck_confirm.source.audit", &[("check", source)])
     }
@@ -36,6 +48,9 @@ pub fn source_text(source: &str) -> String {
 pub fn source_kind(pl: &Plan, source: &str) -> &'static str {
     if source.is_empty() {
         return "review";
+    }
+    if ckreview::is_human(source) {
+        return "human";
     }
     match crate::ckaudit::named_of(pl, source) {
         "security-audit" => "security_audit",
@@ -108,7 +123,7 @@ pub fn fix_fate(
     let source = source_of(st, k, round);
     // The source is read as it stands now: one switched off for the run, or whose check the checkpoint no
     // longer lists, confirms nothing, so its answered finding is fixed.
-    let live = if source.is_empty() {
+    let live = if !ckreview::is_audit(&source) {
         ckreview::required(st)
     } else {
         !st.ck_unconfirming
@@ -123,7 +138,7 @@ pub fn fix_fate(
         .ck_confirms
         .iter()
         .rev()
-        .filter(|c| c.checkpoint == k && c.source == source && c.seq > d.seq)
+        .filter(|c| c.checkpoint == k && c.source == confirmer(&source) && c.seq > d.seq)
     {
         if c.confirmed.contains(&id) {
             return Some((
@@ -179,7 +194,7 @@ pub fn answered(st: &State, rs: &[Round], k: &str, source: &str) -> Vec<Answered
     let mut out = Vec::new();
     for r in rs
         .iter()
-        .filter(|r| r.source == source && ckreview::reported(r))
+        .filter(|r| confirmer(&r.source) == source && ckreview::reported(r))
     {
         for (i, f) in r.findings.iter().enumerate() {
             let Some((x, _)) = ckreview::fate(st, k, r.round, i, f) else {
@@ -204,6 +219,14 @@ pub fn answered(st: &State, rs: &[Round], k: &str, source: &str) -> Vec<Answered
         }
     }
     out
+}
+
+fn source_of_finding(st: &State, k: &str, id: &str) -> String {
+    id.strip_prefix('r')
+        .and_then(|x| x.split_once('.'))
+        .and_then(|(a, _)| a.parse::<u32>().ok())
+        .map(|r| source_of(st, k, r))
+        .unwrap_or_default()
 }
 
 /// The diff a fix made, per repository of the checkpoint, from the heads it opened at to the heads it ended at.
@@ -264,8 +287,13 @@ pub fn brief_section(
         } else {
             s(&a.finding, "where")
         };
+        let item = if ckreview::is_human(&source_of_finding(st, k, &a.id)) {
+            "ck_confirm.brief.item_human"
+        } else {
+            "ck_confirm.brief.item"
+        };
         md.push_str(&t(
-            "ck_confirm.brief.item",
+            item,
             &[
                 ("id", &a.id),
                 ("severity", s(&a.finding, "severity")),

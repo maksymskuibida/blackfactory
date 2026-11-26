@@ -1886,7 +1886,7 @@ fn checkpoint_review_rows(pl: &Plan, rounds: &[crate::ckreview::Round]) -> Vec<V
     rounds
         .iter()
         .map(|r| {
-            let audit = !r.source.is_empty();
+            let audit = crate::ckreview::is_audit(&r.source);
             let mut body = vec![];
             if audit {
                 body.push(text(&t("page.review.audit.check", &[("check", &r.source)])));

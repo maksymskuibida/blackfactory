@@ -55,6 +55,16 @@ pub struct Round {
 pub fn rounds(p: &Project, k: &str) -> R<Vec<Round>> {
     let log = events::load_log(p)?;
     let mut out: Vec<Round> = Vec::new();
+    // A filing of the human is a round only when the replay counted it.
+    let counted: std::collections::HashSet<u64> = if log
+        .events
+        .iter()
+        .any(|e| e["kind"].as_str() == Some("checkpoint.finding.human"))
+    {
+        events::replay(p)?.ck_human_seqs
+    } else {
+        Default::default()
+    };
     for ev in &log.events {
         if ev["checkpoint"].as_str() != Some(k) {
             continue;
@@ -76,6 +86,21 @@ pub fn rounds(p: &Project, k: &str) -> R<Vec<Round>> {
                 source: s(ev, "source").to_string(),
                 ..Default::default()
             }),
+            Some("checkpoint.finding.human") => {
+                // Only an event the replay counted is a round: one it ignored is no round (D-170).
+                if !counted.contains(&ev["seq"].as_u64().unwrap_or(0)) {
+                    continue;
+                }
+                out.push(Round {
+                    checkpoint: k.to_string(),
+                    round: ev["round"].as_u64().unwrap_or(0) as u32,
+                    content: s(ev, "content").to_string(),
+                    result: Some("findings".to_string()),
+                    findings: ev["findings"].as_array().cloned().unwrap_or_default(),
+                    source: crate::ckhuman::SOURCE.to_string(),
+                    ..Default::default()
+                })
+            }
             Some("checkpoint.review.done") => {
                 let n = ev["round"].as_u64().unwrap_or(0) as u32;
                 if let Some(r) = out.iter_mut().rev().find(|r| r.round == n) {
@@ -279,8 +304,13 @@ pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
 /// medium finding of a review since the human last released it is still open. Only the human releases it.
 pub fn parked(p: &Project, st: &State, k: &str) -> R<bool> {
     let rs = rounds(p, k)?;
+    let own: Vec<Round> = rs
+        .iter()
+        .filter(|r| !is_human(&r.source))
+        .cloned()
+        .collect();
     Ok(reviews(st, k, &rs) >= p.policy.limits.checkpoint_reviews
-        && !open_blocking_only(st, k, &rs).is_empty())
+        && !open_blocking_only(st, k, &own).is_empty())
 }
 
 /// What changed the checkpoint's content since the latest review, read from the engine's own events: units
@@ -527,11 +557,25 @@ pub fn copy_path(p: &Project, k: &str) -> PathBuf {
     p.work_dir().join(format!("{k}-review"))
 }
 
+/// Whether a round's source is the human's own filing.
+pub fn is_human(source: &str) -> bool {
+    source == crate::ckhuman::SOURCE
+}
+
+/// Whether a round's source is an audit: neither the review nor the human.
+pub fn is_audit(source: &str) -> bool {
+    !source.is_empty() && !is_human(source)
+}
+
 /// The latest reported round of each source, the review's first, in round order.
 pub(crate) fn latest_per_source(rs: &[Round]) -> Vec<&Round> {
     let mut out: Vec<&Round> = Vec::new();
     for r in rs.iter().filter(|r| reported(r)) {
-        match out.iter().position(|o| o.source == r.source) {
+        // Each filing of the human is a round of its own whose low findings may still be open.
+        match out
+            .iter()
+            .position(|o| o.source == r.source && !is_human(&r.source))
+        {
             Some(i) => out[i] = r,
             None => out.push(r),
         }

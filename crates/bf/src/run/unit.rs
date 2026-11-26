@@ -122,7 +122,7 @@ pub fn unit_start(p: &Project, unit: &str) -> R<Value> {
         events::append(
             p,
             "unit.start",
-            json!({"unit": unit, "repo": repo.name, "branch": ub, "path": path.to_string_lossy(), "base": cpb, "base_commit": base_commit}),
+            json!({"unit": unit, "checkpoint": k, "repo": repo.name, "branch": ub, "path": path.to_string_lossy(), "base": cpb, "base_commit": base_commit}),
         )?;
     }
     p.write_guard()?;
