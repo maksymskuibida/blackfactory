@@ -1,0 +1,7 @@
+# Strings of the findings a checkpoint fix was opened for, as its builder's and its reviewer's briefs list them
+# (R-78, D-160, D-62): each with its id, its source, its severity, where it is and what it asks.
+
+"fix_sources.title" = "Findings this fix answers"
+"fix_sources.intro.builder" = "Each finding below is what this fix is opened for. Answer each one. The source named with it judges later whether the work holds."
+"fix_sources.intro.reviewer" = "Judge for each finding below whether the builder's work answers it, and file a finding of your own for each one that is not answered, beside any other problem you find. You end none of them: do not name any as confirmed or fixed. The source named with each finding confirms it in its next round."
+"fix_sources.item" = "{id} (filed by {source}) [{severity}] {title} ({where}). It asks: {action}"

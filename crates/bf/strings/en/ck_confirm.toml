@@ -15,10 +15,6 @@
 "ck_confirm.brief.item" = "- {id} [{severity}] {title} ({where}). It asked: {action}. Answered by {fix}; the diff of that fix is in `{path}`."
 "ck_confirm.brief.form" = "The two lists go in the report beside `areas` and `findings`:\n\n```\n{{\"confirmed\": [\"r1.1\"], \"still_open\": [{{\"id\": \"r1.2\", \"why\": \"what is still wrong\"}}]}}\n```"
 
-"ck_confirm.fix.title" = "Findings this fix answers"
-"ck_confirm.fix.intro.builder" = "Each finding below is what this fix is opened for. Answer each one. The source named with it judges later whether the work holds."
-"ck_confirm.fix.intro.reviewer" = "Judge for each finding below whether the builder's work answers it, and file a finding of your own for each one that is not answered, beside any other problem you find. You end none of them: do not name any as confirmed or fixed. The source named with each finding confirms it in its next round."
-"ck_confirm.fix.item" = "{id} (filed by {source}): {title}. It asks: {action}"
 
 "ck_confirm.what.report" = "report on {k} from {source}"
 "ck_confirm.what.fix_review" = "report the review of the fix of {k}"
