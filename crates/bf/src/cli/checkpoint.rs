@@ -106,6 +106,8 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                     ),
                     None => crate::strings::t("cli.ckfix.abort.done", &[("k", k)]),
                 }
+            } else if let Some(m) = v["message"].as_str() {
+                m.to_string()
             } else {
                 crate::strings::t("cli.ckfix.release.done", &[("k", k)])
             }
