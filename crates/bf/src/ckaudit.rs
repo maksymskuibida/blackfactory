@@ -817,7 +817,7 @@ pub fn due(
 pub fn round_open(p: &Project, k: &str) -> R<bool> {
     Ok(ckreview::rounds(p, k)?
         .iter()
-        .any(|r| !r.source.is_empty() && r.result.is_none()))
+        .any(|r| ckreview::is_audit(&r.source) && r.result.is_none()))
 }
 
 /// The directive `audit-checkpoint` for one due audit of `k`.
@@ -845,7 +845,7 @@ pub fn blocking_to_fix(
     let mut ids = Vec::new();
     for r in ckreview::rounds(p, k)?
         .iter()
-        .filter(|r| !r.source.is_empty() && ckreview::reported(r) && r.content == content)
+        .filter(|r| ckreview::is_audit(&r.source) && ckreview::reported(r) && r.content == content)
     {
         for (n, f) in ckreview::open_findings(st, k, r) {
             if ckreview::blocking(f) {

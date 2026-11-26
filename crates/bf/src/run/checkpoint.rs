@@ -487,6 +487,11 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
                 "ck_confirm.close.answered",
                 &[("id", id), ("sev", sev), ("title", title), ("fate", &waits)],
             ));
+        } else if crate::ckreview::is_human(source) {
+            check_gaps.push(crate::strings::t(
+                "ck_human.close.open",
+                &[("id", id), ("sev", sev), ("title", title)],
+            ));
         } else if source.is_empty() {
             check_gaps.push(format!(
                 "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
@@ -520,7 +525,12 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         steps.push(format!("Run `bf checkpoint close {k}` again."));
         let because = match held_by.first() {
             Some((id, sev, title, source)) if !was_closed_already(&st, k) => {
-                let head = if source.is_empty() {
+                let head = if crate::ckreview::is_human(source) {
+                    crate::strings::t(
+                        "ck_human.close.open",
+                        &[("id", id), ("sev", sev), ("title", title)],
+                    )
+                } else if source.is_empty() {
                     format!(
                         "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
                     )

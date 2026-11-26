@@ -12,6 +12,7 @@
 "page.finding.source.legal_audit" = "the legal audit {check}"
 "page.finding.source.uiux" = "the UI/UX verification {check}"
 "page.finding.source.audit" = "the audit {check}"
+"page.finding.source.human" = "the human's own finding"
 
 "page.finding.state.open" = "open"
 "page.finding.state.answered" = "answered"

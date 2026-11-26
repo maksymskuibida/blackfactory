@@ -91,6 +91,8 @@ const VALUE_FLAGS: &[&str] = &[
     "accept",
     "decline",
     "fix-findings",
+    "severity",
+    "fix-quote",
     "need-files",
     "verdict",
     "revert",
