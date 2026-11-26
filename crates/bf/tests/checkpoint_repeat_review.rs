@@ -167,7 +167,7 @@ fn the_areas_are_kept_with_the_review_shown_on_the_page_and_given_to_the_next_re
     assert_eq!(round["areas"][0]["area"], "the close rule", "{st}");
     assert_eq!(round["areas"][1]["how"], "built and run", "{st}");
     let page = fx.must(&["view", "checkpoint", "K-1"]).json();
-    let body = page["sections"][0]["rows"]
+    let body = page["sections"].as_array().unwrap().iter().find(|s| s["id"] == "proofs").unwrap()["rows"]
         .as_array()
         .unwrap()
         .iter()

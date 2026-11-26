@@ -1844,6 +1844,14 @@ pub fn status_json(p: &Project, st: &State, pl: &Plan) -> Value {
             json!({"checkpoint": k, "parked": parked(p, st, k).unwrap_or(false),
             "reviews": reviews(st, k, &rs),
             "recovery_line": recovery_line(p, st, k, &rs),
+            "findings": rs.iter().filter(|r| reported(r)).flat_map(|r| r.findings.iter().enumerate().map(|(i, f)| {
+                let state = fate(st, k, r.round, i, f).map(|x| x.0).unwrap_or_else(|| "open".to_string());
+                json!({"id": format!("r{}.{}", r.round, i + 1), "round": r.round, "title": s(f, "title"),
+                    "severity": s(f, "severity"), "source": r.source,
+                    "source_kind": crate::ckconfirm::source_kind(pl, &r.source),
+                    "source_text": crate::ckconfirm::source_label(pl, &r.source),
+                    "state": state, "fate": fate_text(st, k, r.round, i, f)})
+            }).collect::<Vec<_>>()).collect::<Vec<_>>(),
             "rounds": rs.iter().map(|r| json!({
             "round": r.round, "source": r.source, "kind": r.kind, "reason": r.reason, "content": r.content, "covered": r.covered,
             "result": r.result, "findings": r.findings.len(),
