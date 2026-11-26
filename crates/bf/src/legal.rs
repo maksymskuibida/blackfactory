@@ -536,6 +536,20 @@ fn project_here() -> R<Project> {
     Project::discover(&dir)
 }
 
+/// The refusal of `bf legal finding` from a checkpoint's working copy: the audit round's report is named (D-164).
+fn refuse_from_checkpoint(p: &Project, k: &str) -> crate::refusal::Fail {
+    crate::refusal::from_key(
+        "ck_audit_records.refuse.legal_finding",
+        &[
+            ("k", k),
+            (
+                "check",
+                &crate::ckaudit::checks_of_role(p, k, "legal-auditor"),
+            ),
+        ],
+    )
+}
+
 /// Entry point of `bf legal <sub> ...`: `finding <file>`, `questions`, `list`.
 pub fn run(sub: &str, rest: &[String]) -> R<Value> {
     match sub {
@@ -544,6 +558,11 @@ pub fn run(sub: &str, rest: &[String]) -> R<Value> {
             let Some(path) = rest.first() else {
                 return Err(bad("no finding file was given"));
             };
+            if let Some((_, zone_id)) =
+                crate::cli::real_zone(&p).filter(|(z, _)| *z == "checkpoint")
+            {
+                return Err(refuse_from_checkpoint(&p, &zone_id));
+            }
             let f = read_file(&p, path)?;
             file_finding(&p, &f)
         }

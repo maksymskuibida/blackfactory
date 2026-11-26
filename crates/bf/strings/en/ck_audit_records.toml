@@ -1,0 +1,30 @@
+# Strings of the records of an auditor at a checkpoint (R-77, D-164, D-62): the refusals of a finding record,
+# a legal record and `bf legal finding` from a checkpoint's working copy, and the refusals of a legal entry
+# that needs a lawyer.
+
+"ck_audit_records.refuse.record.refused" = "put a {kind} record from the working copy of {k}"
+"ck_audit_records.refuse.record.because" = "at a checkpoint an auditor files its findings only through its audit round, so that each one is a review finding of {k} that the human decides and a fix takes"
+"ck_audit_records.refuse.record.do_this.1" = "Report the audit round: `bf report {k} --role {role} --check {check} --token <token> --result findings --findings -`."
+"ck_audit_records.refuse.record.do_this.2" = "`bf next` names the audit and gives its token."
+"ck_audit_records.refuse.record.worked_when" = "`bf next` lists the findings of the round as review findings of {k}."
+
+"ck_audit_records.refuse.legal_finding.refused" = "run `bf legal finding` from the working copy of {k}"
+"ck_audit_records.refuse.legal_finding.because" = "at a checkpoint the legal auditor files its findings only through its audit round; an entry that needs a lawyer is also filed as a marked legal record by the engine"
+"ck_audit_records.refuse.legal_finding.do_this.1" = "Report the audit round with the entry's `lawyer_check` and `market`: `bf report {k} --role legal-auditor --check {check} --token <token> --result findings --findings -`."
+"ck_audit_records.refuse.legal_finding.do_this.2" = "`bf next` names the audit and gives its token."
+"ck_audit_records.refuse.legal_finding.worked_when" = "`bf legal list` shows the marked legal record of the entry after the report."
+
+"ck_audit_records.refuse.lawyer_source.refused" = "report findings on {k} for {check}"
+"ck_audit_records.refuse.lawyer_source.because" = "entry {number} carries `lawyer_check`, which only a legal audit's entry may carry; {check} is no legal audit"
+"ck_audit_records.refuse.lawyer_source.do_this.1" = "Leave `lawyer_check` out of the entry, or report it in the legal audit."
+"ck_audit_records.refuse.lawyer_source.worked_when" = "The command records the round."
+
+"ck_audit_records.refuse.lawyer_market.refused" = "report findings on {k} for {check}"
+"ck_audit_records.refuse.lawyer_market.because" = "entry {number} says a lawyer must check it but names no `market`, so no legal record can be filed for it"
+"ck_audit_records.refuse.lawyer_market.do_this.1" = "Give the entry a `market`, the market the legal risk is in."
+"ck_audit_records.refuse.lawyer_market.worked_when" = "The command records the round and files a marked legal record for the entry."
+
+"ck_audit_records.refuse.lawyer_filed.refused" = "report findings on {k} for {check}"
+"ck_audit_records.refuse.lawyer_filed.because" = "the legal record of entry {number} was not filed: {why}"
+"ck_audit_records.refuse.lawyer_filed.do_this.1" = "Correct the entry and report again."
+"ck_audit_records.refuse.lawyer_filed.worked_when" = "The command records the round and files a marked legal record for the entry."
