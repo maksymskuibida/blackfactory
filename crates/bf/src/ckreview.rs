@@ -47,6 +47,8 @@ pub struct Round {
     /// The round reported with no critical, high or medium finding although it was no ordinary review: the
     /// findings of the rounds before it no longer hold the close.
     pub supersedes: bool,
+    /// The id of the agent check whose audit this round is; empty for the checkpoint review itself.
+    pub source: String,
 }
 
 /// Every review round of `k`, in log order.
@@ -71,6 +73,7 @@ pub fn rounds(p: &Project, k: &str) -> R<Vec<Round>> {
                 covered: s(ev, "covered").to_string(),
                 kind: s(ev, "review_kind").to_string(),
                 reason: s(ev, "reason").to_string(),
+                source: s(ev, "source").to_string(),
                 ..Default::default()
             }),
             Some("checkpoint.review.done") => {
@@ -151,7 +154,7 @@ pub fn fate_text(st: &State, k: &str, round: u32, index: usize, f: &Value) -> St
 }
 
 /// The findings of a round that are open: (number inside the round from 1, the finding).
-fn open_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize, &'a Value)> {
+pub(crate) fn open_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize, &'a Value)> {
     r.findings
         .iter()
         .enumerate()
@@ -161,15 +164,15 @@ fn open_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize, &'a Value
 }
 
 /// Whether a round finished with a report (not void, not still open).
-fn reported(r: &Round) -> bool {
+pub(crate) fn reported(r: &Round) -> bool {
     matches!(r.result.as_deref(), Some("clean") | Some("findings"))
 }
 
 /// The reviews the checkpoint has had since the human last released it.
-fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
+pub(crate) fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
     let floor = st.ck_review_floor.get(k).copied().unwrap_or(0);
     rs.iter()
-        .filter(|r| reported(r) && r.round > floor && r.kind.is_empty())
+        .filter(|r| r.source.is_empty() && reported(r) && r.round > floor && r.kind.is_empty())
         .count() as u32
 }
 
@@ -177,7 +180,7 @@ fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
 /// round, the finding, the content the round judged). A release moves the floor only for counting reviews;
 /// the findings it sent to a fix keep holding the close until that fix passes its review or the human
 /// settles them.
-fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usize, Value, String)> {
+pub(crate) fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usize, Value, String)> {
     rs.iter()
         .filter(|r| reported(r))
         .filter(|r| {
@@ -194,29 +197,49 @@ fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usize, Value, S
         .collect()
 }
 
-/// Whether the review at exactly this content let the checkpoint go on: it filed no high and no medium
-/// finding, or each such finding has since been fixed, accepted or declined, and no high or medium finding
-/// of any review since the human last released the checkpoint is open.
+/// Whether the review's own rounds (source empty) at exactly this content let the checkpoint go on: it filed
+/// no high and no medium finding, or each such finding has since been fixed, accepted or declined, and no
+/// high or medium finding of the review since the human last released the checkpoint is open. Findings of
+/// audit rounds do not count, so one audit's finding neither stops another audit nor makes the review due
+/// again; the close is held by `open_blocking_named` over every source.
 pub fn passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
-    let rs = rounds(p, k)?;
-    Ok(rs
+    let own: Vec<Round> = rounds(p, k)?
+        .into_iter()
+        .filter(|r| r.source.is_empty())
+        .collect();
+    Ok(own
         .iter()
         .filter(|r| reported(r) && r.content == content)
         .any(|r| !open_findings(st, k, r).iter().any(|(_, f)| blocking(f)))
-        && open_blocking(st, k, &rs).is_empty())
+        && open_blocking(st, k, &own).is_empty())
+}
+
+/// The same rule under the name the audit module reads.
+pub fn review_passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
+    passed_at(p, st, k, content)
 }
 
 /// The high and medium findings still open in any review of the checkpoint, as `r<round>.<number>`, the
 /// severity and the title.
-pub fn open_blocking_named(p: &Project, st: &State, k: &str) -> R<Vec<(String, String, String)>> {
+pub fn open_blocking_named(
+    p: &Project,
+    st: &State,
+    k: &str,
+) -> R<Vec<(String, String, String, String)>> {
     let rs = rounds(p, k)?;
     Ok(open_blocking(st, k, &rs)
         .into_iter()
         .map(|(r, i, f, _)| {
+            let source = rs
+                .iter()
+                .find(|x| x.round == r)
+                .map(|x| x.source.clone())
+                .unwrap_or_default();
             (
                 format!("r{r}.{i}"),
                 s(&f, "severity").to_string(),
                 s(&f, "title").to_string(),
+                source,
             )
         })
         .collect())
@@ -224,7 +247,8 @@ pub fn open_blocking_named(p: &Project, st: &State, k: &str) -> R<Vec<(String, S
 
 /// Whether the checkpoint still needs its review before it can close.
 pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
-    Ok(required(st) && !passed_at(p, st, k, content)?)
+    // A parked checkpoint (also by an audit's finding at the limit) asks the human, as R-77 orders.
+    Ok(required(st) && (!passed_at(p, st, k, content)? || parked(p, st, k)?))
 }
 
 /// Whether the checkpoint is parked: it has had the number of reviews the policy allows, and a high or
@@ -316,7 +340,7 @@ fn extra_mode(
     rs: &[Round],
     content: &str,
 ) -> R<Option<(String, String)>> {
-    if let Some(o) = open_round(rs) {
+    if let Some(o) = open_round(rs, "") {
         return Ok(Some(o.clone())
             .filter(|o| !o.kind.is_empty())
             .map(|o| (o.kind, o.reason)));
@@ -325,7 +349,7 @@ fn extra_mode(
         return Ok(None);
     }
     let floor = st.ck_review_floor.get(k).copied().unwrap_or(0);
-    let Some(latest) = rs.iter().rev().find(|r| reported(r)) else {
+    let Some(latest) = rs.iter().rev().find(|r| r.source.is_empty() && reported(r)) else {
         return Ok(None);
     };
     let used = rs
@@ -386,7 +410,7 @@ pub fn ask(p: &Project, k: &str, quote: &str) -> R<Value> {
         .count() as u32;
     let why = if !parked(p, &st, k)? {
         Some("ck_recovery.ask.not_parked")
-    } else if open_round(&rs).is_some() {
+    } else if open_round(&rs, "").is_some() {
         Some("ck_recovery.ask.open")
     } else if st.ck_asks.get(k).copied().unwrap_or(0) > asked {
         Some("ck_recovery.ask.pending")
@@ -401,7 +425,12 @@ pub fn ask(p: &Project, k: &str, quote: &str) -> R<Value> {
             t("ck_recovery.refuse.check", &[]),
         ));
     }
-    let Some(last) = rs.iter().rev().find(|r| reported(r)).cloned() else {
+    let Some(last) = rs
+        .iter()
+        .rev()
+        .find(|r| r.source.is_empty() && reported(r))
+        .cloned()
+    else {
         return Err(refuse_owned(
             what,
             t("ck_recovery.ask.not_parked", &[("k", k)]),
@@ -430,7 +459,7 @@ pub fn ask(p: &Project, k: &str, quote: &str) -> R<Value> {
 /// review that was no ordinary one, with its reason.
 fn recovery_line(p: &Project, st: &State, k: &str, rs: &[Round]) -> String {
     use crate::strings::t;
-    if open_round(rs).is_none() && parked(p, st, k).unwrap_or(false) {
+    if open_round(rs, "").is_none() && parked(p, st, k).unwrap_or(false) {
         let content = cp_content(p, k).unwrap_or_default();
         if let Ok(Some((kind, reason))) = extra_mode(p, st, k, rs, &content) {
             return t(
@@ -460,22 +489,39 @@ fn recovery_line(p: &Project, st: &State, k: &str, rs: &[Round]) -> String {
 /// The low findings of the latest review that nobody has settled yet, for the human.
 pub fn open_low(p: &Project, st: &State, k: &str) -> R<Vec<Value>> {
     let rs = rounds(p, k)?;
-    let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
-        return Ok(vec![]);
-    };
-    Ok(open_findings(st, k, last)
+    let mut out = Vec::new();
+    for last in latest_per_source(&rs) {
+        out.extend(open_findings(st, k, last)
         .into_iter()
         .filter(|(_, f)| !blocking(f))
-        .map(|(i, f)| json!({"id": format!("r{}.{}", last.round, i), "title": s(f, "title"), "where": s(f, "where"), "action": s(f, "action")}))
-        .collect())
+        .map(|(i, f)| json!({"id": format!("r{}.{}", last.round, i), "title": s(f, "title"), "where": s(f, "where"), "action": s(f, "action")})));
+    }
+    Ok(out)
 }
 
 pub fn copy_path(p: &Project, k: &str) -> PathBuf {
     p.work_dir().join(format!("{k}-review"))
 }
 
-fn open_round(rs: &[Round]) -> Option<&Round> {
-    rs.last().filter(|r| r.result.is_none())
+/// The latest reported round of each source, the review's first, in round order.
+pub(crate) fn latest_per_source(rs: &[Round]) -> Vec<&Round> {
+    let mut out: Vec<&Round> = Vec::new();
+    for r in rs.iter().filter(|r| reported(r)) {
+        match out.iter().position(|o| o.source == r.source) {
+            Some(i) => out[i] = r,
+            None => out.push(r),
+        }
+    }
+    out.sort_by_key(|r| (!r.source.is_empty(), r.round));
+    out
+}
+
+/// The open round of a source (empty for the review): its latest round, when that has no result.
+pub(crate) fn open_round<'a>(rs: &'a [Round], source: &str) -> Option<&'a Round> {
+    rs.iter()
+        .rev()
+        .find(|r| r.source == source)
+        .filter(|r| r.result.is_none())
 }
 
 /// The directive for the reviewer of a checkpoint, or for the human when the rounds are used up.
@@ -490,7 +536,7 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
     }
     // A fix that ended without passing its review leaves its findings open. No new review is offered at
     // the content they were filed on while no fix is open: the human says what becomes of them.
-    if mode.is_none() && st.ck_fix.is_none() && open_round(&rs).is_none() {
+    if mode.is_none() && st.ck_fix.is_none() && open_round(&rs, "").is_none() {
         let open: Vec<Value> = open_blocking(st, k, &rs)
             .into_iter()
             .map(|(r, i, f, _)| json!({"id": format!("r{r}.{i}"), "severity": s(&f, "severity"), "title": s(&f, "title"), "where": s(&f, "where"), "action": s(&f, "action")}))
@@ -503,7 +549,7 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
             );
         }
     }
-    let round = open_round(&rs)
+    let round = open_round(&rs, "")
         .map(|r| r.round)
         .unwrap_or(rs.len() as u32 + 1);
     let mut d = json!({"role": "reviewer", "action": "review-checkpoint", "checkpoint": k,
@@ -545,7 +591,7 @@ pub fn low_directive(p: &Project, st: &State, k: &str) -> R<Option<Value>> {
     ))
 }
 
-fn heads(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, String)>> {
+pub(crate) fn heads(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, String)>> {
     let mut out = Vec::new();
     for r in run::checkpoint_repos(p, pl, k)? {
         let wt = run::checkpoint_wt(p, pl, k, r)?;
@@ -557,7 +603,7 @@ fn heads(p: &Project, pl: &Plan, k: &str) -> R<Vec<(String, String)>> {
     Ok(out)
 }
 
-fn heads_json(h: &[(String, String)]) -> Value {
+pub(crate) fn heads_json(h: &[(String, String)]) -> Value {
     json!(h
         .iter()
         .map(|(r, c)| json!({"repo": r, "head": c}))
@@ -621,7 +667,7 @@ fn make_copy(p: &Project, pl: &Plan, k: &str) -> R<PathBuf> {
     Ok(root)
 }
 
-fn cp_content(p: &Project, k: &str) -> R<String> {
+pub(crate) fn cp_content(p: &Project, k: &str) -> R<String> {
     p.content_hash(&p.work_dir().join(k))
 }
 
@@ -635,7 +681,7 @@ fn refuse_not_ready(k: &str, because: &str) -> crate::refusal::Fail {
 }
 
 /// The fate of every finding of a round, for the status and the page.
-fn outcomes_json(st: &State, k: &str, r: &Round) -> Value {
+pub(crate) fn outcomes_json(st: &State, k: &str, r: &Round) -> Value {
     json!(r
         .findings
         .iter()
@@ -648,7 +694,7 @@ fn outcomes_json(st: &State, k: &str, r: &Round) -> Value {
 }
 
 /// Lines that say, for each round, the areas it probed and how, and the probes it kept.
-fn report_lines(r: &Round) -> String {
+pub(crate) fn report_lines(r: &Round) -> String {
     let mut t = String::new();
     for a in &r.areas {
         t.push_str(&format!("  - Area: {} ({})\n", s(a, "area"), s(a, "how")));
@@ -668,7 +714,10 @@ fn report_lines(r: &Round) -> String {
 /// The areas every review before round `n` probed, in order, without repeats: the angles already taken.
 fn areas_taken(rs: &[Round], n: u32) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for r in rs.iter().filter(|r| r.round < n && reported(r)) {
+    for r in rs
+        .iter()
+        .filter(|r| r.source.is_empty() && r.round < n && reported(r))
+    {
         for a in &r.areas {
             let x = s(a, "area").to_string();
             if !out.contains(&x) {
@@ -679,7 +728,7 @@ fn areas_taken(rs: &[Round], n: u32) -> Vec<String> {
     out
 }
 
-fn read_unit_brief(p: &Project, u: &str) -> String {
+pub(crate) fn read_unit_brief(p: &Project, u: &str) -> String {
     let path = p.briefs_dir().join(format!("{u}-builder.md"));
     if let Ok(t) = fs::read_to_string(&path) {
         return t;
@@ -692,7 +741,7 @@ fn read_unit_brief(p: &Project, u: &str) -> String {
 
 /// For each landed unit of the checkpoint, the files it changed outside its recommended list (D-115): one
 /// call of `outside::changed` and `outside::section` per unit, from its latest landing.
-fn outside_md(p: &Project, st: &State, pl: &Plan, k: &str) -> String {
+pub(crate) fn outside_md(p: &Project, st: &State, pl: &Plan, k: &str) -> String {
     let Ok(log) = events::load_log(p) else {
         return String::new();
     };
@@ -784,7 +833,7 @@ fn builders_md(p: &Project, st: &State, pl: &Plan, k: &str, rs: &[Round], n: u32
     let since = rs
         .iter()
         .rev()
-        .find(|r| r.round < n && reported(r))
+        .find(|r| r.source.is_empty() && r.round < n && reported(r))
         .map(|r| events::round_report_seq(st, k, r.round))
         .unwrap_or(0);
     let mut body = String::new();
@@ -862,7 +911,10 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     }
     let mut rs = rounds(p, k)?;
     // A round still open on other content is void: the reviewer judged what is no longer there.
-    if let Some(o) = open_round(&rs).filter(|o| o.content != content).cloned() {
+    if let Some(o) = open_round(&rs, "")
+        .filter(|o| o.content != content)
+        .cloned()
+    {
         events::append(
             p,
             "checkpoint.review.done",
@@ -875,7 +927,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         let same = rs
             .iter()
             .rev()
-            .find(|r| reported(r))
+            .find(|r| r.source.is_empty() && reported(r))
             .is_some_and(|l| l.content == content);
         return Err(refuse_parked(k, same));
     }
@@ -883,7 +935,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     // same finding again would open a fix without the human's words.
     if mode.is_none()
         && st.ck_fix.is_none()
-        && open_round(&rs).is_none()
+        && open_round(&rs, "").is_none()
         && !open_blocking(&st, k, &rs).is_empty()
     {
         return Err(refuse(
@@ -896,11 +948,11 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
             "`bf next` gives the reviewer's directive once the findings have an end or a fix has passed.",
         ));
     }
-    let n = match open_round(&rs) {
+    let n = match open_round(&rs, "") {
         Some(o) => o.round,
         None => {
             let n = rs.last().map(|r| r.round).unwrap_or(0) + 1;
-            let earlier = rs.iter().rev().find(|r| reported(r));
+            let earlier = rs.iter().rev().find(|r| r.source.is_empty() && reported(r));
             let covered = match earlier {
                 None => "the whole checkpoint, cold".to_string(),
                 Some(e) => format!(
@@ -952,7 +1004,9 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         "# Brief: {k} as reviewer (checkpoint review, round {n})\n\nCheckpoint: {}\n\n",
         s(&kr, "title")
     );
-    let is_repeat = rs.iter().any(|r| r.round < n && reported(r));
+    let is_repeat = rs
+        .iter()
+        .any(|r| r.source.is_empty() && r.round < n && reported(r));
     md.push_str(&format!(
         "You review the whole checkpoint{}, on the strong tier. Round {n} covers: {}.\n\n",
         if is_repeat { "" } else { " cold" },
@@ -1008,7 +1062,10 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         ));
     }
     // Earlier rounds: the findings with their outcomes, and what changed since the round before.
-    let earlier: Vec<&Round> = rs.iter().filter(|r| r.round < n && reported(r)).collect();
+    let earlier: Vec<&Round> = rs
+        .iter()
+        .filter(|r| r.source.is_empty() && r.round < n && reported(r))
+        .collect();
     if !earlier.is_empty() {
         md.push_str("## Earlier rounds\n\nThe scope of this round is the whole checkpoint, not only what changed. Work in this order: first confirm that each finding marked fixed below is fixed; then review the code that changed; then take angles the earlier reviews did not take (the areas below tell you which they took). File only new problems: do not file again a finding the human accepted or declined, or one that is open and listed here. A finding that is listed here as open stays open and holds the close until a fix opened for it passes its review or the human settles it, so it is not filed again; a finding filed again word for word is a new finding of its own and stays open on its own. Anything a fix broke is new.\n\n");
         for r in &earlier {
@@ -1047,7 +1104,11 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
                 taken.join("; ")
             }
         ));
-        if let Some(last) = rs.iter().rev().find(|r| r.round < n && !r.heads.is_empty()) {
+        if let Some(last) = rs
+            .iter()
+            .rev()
+            .find(|r| r.source.is_empty() && r.round < n && !r.heads.is_empty())
+        {
             let mut since = String::new();
             for r in run::checkpoint_repos(p, &pl, k)? {
                 let wt = run::checkpoint_wt(p, &pl, k, r)?;
@@ -1109,13 +1170,13 @@ pub fn wants(p: &Project, st: &State, k: &str, role: Option<&str>) -> bool {
         && st.sync_open.is_none()
         && role == Some("reviewer")
         && rounds(p, k)
-            .map(|rs| open_round(&rs).is_some())
+            .map(|rs| open_round(&rs, "").is_some())
             .unwrap_or(false)
 }
 
 const SEVERITIES: [&str; 4] = ["critical", "high", "medium", "low"];
 
-fn finding_list(findings: Option<&Value>) -> Vec<Value> {
+pub(crate) fn finding_list(findings: Option<&Value>) -> Vec<Value> {
     findings
         .and_then(|f| {
             f.as_array()
@@ -1125,7 +1186,7 @@ fn finding_list(findings: Option<&Value>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn object_list(findings: Option<&Value>, key: &str) -> Vec<Value> {
+pub(crate) fn object_list(findings: Option<&Value>, key: &str) -> Vec<Value> {
     findings
         .and_then(|f| f.get(key))
         .and_then(|x| x.as_array().cloned())
@@ -1152,7 +1213,7 @@ fn canonical_how(how: &str) -> Option<&'static str> {
 }
 
 /// The areas of a report, each with its `how` in canonical form. A report with none is refused.
-fn check_areas(k: &str, raw: Vec<Value>) -> R<Vec<Value>> {
+pub(crate) fn check_areas(k: &str, raw: Vec<Value>) -> R<Vec<Value>> {
     let mut out = Vec::new();
     for (i, a) in raw.iter().enumerate() {
         let name = s(a, "area").trim().to_string();
@@ -1255,11 +1316,31 @@ fn refuse_probe(k: &str, name: &str, because: String) -> crate::refusal::Fail {
 /// The probes of a report, checked, with their files read from the reviewer's copy and stored as evidence
 /// files of the round. Returns the probes as stored with the review.
 fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value]) -> R<Vec<Value>> {
-    let copy = copy_path(p, k);
+    store_probes_in(
+        p,
+        k,
+        round,
+        raw,
+        list,
+        &copy_path(p, k),
+        &format!("{k}-review"),
+    )
+}
+
+/// The probes of a report, read from `copy` and stored under the evidence folder as `<label>-<round>`.
+pub(crate) fn store_probes_in(
+    p: &Project,
+    k: &str,
+    round: u32,
+    raw: &[Value],
+    list: &[Value],
+    copy: &std::path::Path,
+    label: &str,
+) -> R<Vec<Value>> {
     let dir = p
         .evidence_dir()
         .join("probes")
-        .join(format!("{k}-review-{round}"));
+        .join(format!("{label}-{round}"));
     let mut out: Vec<Value> = Vec::new();
     for x in raw {
         let name = s(x, "name").trim().to_string();
@@ -1331,7 +1412,7 @@ fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value])
             let base = rel.file_name().and_then(|b| b.to_str()).unwrap_or("probe");
             let dest = dir.join(format!("{name}-{base}"));
             util::atomic_write(&dest, body.as_bytes())?;
-            stored = format!("factory/evidence/probes/{k}-review-{round}/{name}-{base}");
+            stored = format!("factory/evidence/probes/{label}-{round}/{name}-{base}");
         } else if let Some(why) = hold.iter().find_map(|t| leak_in(p, t)) {
             return Err(refuse_probe(k, &name, format!("it holds {why}")));
         }
@@ -1347,7 +1428,7 @@ fn store_probes(p: &Project, k: &str, round: u32, raw: &[Value], list: &[Value])
 
 /// The findings, each naming a probe checked against the stored ones: a finding that a probe exposed
 /// carries what the fix needs to keep it. A finding the human already accepted or declined is not filed again.
-fn prepare_findings(
+pub(crate) fn prepare_findings(
     p: &Project,
     st: &State,
     k: &str,
@@ -1418,7 +1499,7 @@ fn finding_where(f: &Value) -> &str {
     }
 }
 
-fn check_findings(k: &str, list: &[Value]) -> R<()> {
+pub(crate) fn check_findings(k: &str, list: &[Value]) -> R<()> {
     for (i, f) in list.iter().enumerate() {
         let sev = s(f, "severity");
         let file = if s(f, "where").is_empty() {
@@ -1482,7 +1563,7 @@ pub fn report(
         run::need_run(&st)?;
         let pl = plan::load(p)?;
         let rs = rounds(p, k)?;
-        let Some(round) = open_round(&rs).cloned() else {
+        let Some(round) = open_round(&rs, "").cloned() else {
             return Err(refuse(
                 format!("report on the review of {k}"),
                 "no review round is open",
@@ -1635,7 +1716,7 @@ fn copy_of_open_round(p: &Project, what: &str) -> R<(String, PathBuf)> {
         ));
     }
     let rs = rounds(p, &k)?;
-    if open_round(&rs).is_none() {
+    if open_round(&rs, "").is_none() {
         return Err(refuse(
             what.to_string(),
             "no review round is open for this checkpoint",
@@ -1716,7 +1797,7 @@ pub fn status_json(p: &Project, st: &State, pl: &Plan) -> Value {
             "reviews": reviews(st, k, &rs),
             "recovery_line": recovery_line(p, st, k, &rs),
             "rounds": rs.iter().map(|r| json!({
-            "round": r.round, "kind": r.kind, "reason": r.reason, "content": r.content, "covered": r.covered,
+            "round": r.round, "source": r.source, "kind": r.kind, "reason": r.reason, "content": r.content, "covered": r.covered,
             "result": r.result, "findings": r.findings.len(),
             "areas": r.areas, "probes": r.probes,
             "outcomes": if r.findings.is_empty() { Value::Null } else { outcomes_json(st, k, r) },
@@ -1741,14 +1822,17 @@ fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, us
     let mut out: Vec<(u32, usize, Value)> = Vec::new();
     for word in spec.split(',').map(|w| w.trim()).filter(|w| !w.is_empty()) {
         if word == "low" {
-            let Some(last) = rs.iter().rev().find(|r| reported(r)) else {
+            let lasts = latest_per_source(&rs);
+            if lasts.is_empty() {
                 return Err(bad(format!("{k} has no review report yet")));
-            };
-            for (i, f) in open_findings(st, k, last)
-                .into_iter()
-                .filter(|(_, f)| !blocking(f))
-            {
-                out.push((last.round, i, f.clone()));
+            }
+            for last in lasts {
+                for (i, f) in open_findings(st, k, last)
+                    .into_iter()
+                    .filter(|(_, f)| !blocking(f))
+                {
+                    out.push((last.round, i, f.clone()));
+                }
             }
             continue;
         }
@@ -1927,6 +2011,7 @@ pub fn settle(
         json!({"checkpoint": k, "ids": ids, "fate": fate_name, "reason": reason.trim(),
                "turn": turn, "quote": quote.trim()}),
     )?;
+    crate::ckaudit::receipt_on_decisions(p, k)?;
     p.write_guard()?;
     Ok(json!({"checkpoint": k, "settled": picked.len(), "fate": fate_name}))
 }
@@ -2047,7 +2132,12 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
         ));
     }
     let rs = rounds(p, k)?;
-    let Some(last) = rs.iter().rev().find(|r| reported(r)).cloned() else {
+    let Some(last) = rs
+        .iter()
+        .rev()
+        .find(|r| r.source.is_empty() && reported(r))
+        .cloned()
+    else {
         return Err(refuse(
             format!("release the review of {k}"),
             "no review report",
@@ -2095,7 +2185,7 @@ pub fn abort(p: &Project, k: &str, quote: &str) -> R<Value> {
         ));
     }
     let rs = rounds(p, k)?;
-    let Some(open) = open_round(&rs).cloned() else {
+    let Some(open) = open_round(&rs, "").cloned() else {
         return Err(refuse_owned(
             what,
             crate::strings::t("ckreview.abort.none.why", &[("k", k)]),

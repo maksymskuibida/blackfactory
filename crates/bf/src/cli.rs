@@ -61,6 +61,7 @@ const VALUE_FLAGS: &[&str] = &[
     "unit",
     "result",
     "role",
+    "check",
     "note",
     "findings",
     "cost",

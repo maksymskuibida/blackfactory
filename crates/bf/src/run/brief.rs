@@ -18,6 +18,14 @@ pub(crate) fn write_brief(p: &Project, unit: &str, role: &str) -> Option<String>
     }
 }
 
+/// `bf brief <K> --role <role> --check <X>` is an audit of the checkpoint; without `--check` nothing changes.
+pub fn brief_checked(p: &Project, unit: &str, role: &str, check: Option<&str>) -> R<PathBuf> {
+    match check {
+        Some(c) if unit.starts_with("K-") => crate::ckaudit::brief(p, unit, role, c),
+        _ => brief(p, unit, role),
+    }
+}
+
 pub fn brief(p: &Project, unit: &str, role: &str) -> R<PathBuf> {
     if unit.starts_with("K-") {
         return brief_checkpoint(p, unit, role);

@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// `bf report <K> --role <role> --check <X>` is an audit's report; without `--check` nothing changes.
+#[allow(clippy::too_many_arguments)]
+pub fn report_checked(
+    p: &Project,
+    unit: &str,
+    result: &str,
+    role: Option<&str>,
+    check: Option<&str>,
+    note: &str,
+    findings: Option<&Value>,
+    cost: f64,
+    token: Option<&str>,
+) -> R<Value> {
+    match (check, role) {
+        (Some(c), Some(r)) if unit.starts_with("K-") => {
+            crate::ckaudit::report(p, unit, r, c, result, note, findings, token)
+        }
+        _ => report(p, unit, result, role, note, findings, cost, token),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     p: &Project,

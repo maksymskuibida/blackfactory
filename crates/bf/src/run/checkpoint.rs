@@ -481,10 +481,22 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         vec![]
     };
     if !was_closed_already(&st, k) && !held_by.is_empty() {
-        let (id, sev, title) = &held_by[0];
-        check_gaps.push(format!(
-            "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
-        ));
+        let (id, sev, title, source) = &held_by[0];
+        if source.is_empty() {
+            check_gaps.push(format!(
+                "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
+            ));
+        } else {
+            check_gaps.push(crate::strings::t(
+                "ck_audit.close.open",
+                &[
+                    ("id", id),
+                    ("sev", sev),
+                    ("title", title),
+                    ("source", source),
+                ],
+            ));
+        }
         unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
     } else if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
         check_gaps.push(format!(
@@ -502,10 +514,22 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
         let because = match held_by.first() {
-            Some((id, sev, title)) if !was_closed_already(&st, k) => {
-                let head = format!(
-                    "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
-                );
+            Some((id, sev, title, source)) if !was_closed_already(&st, k) => {
+                let head = if source.is_empty() {
+                    format!(
+                        "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
+                    )
+                } else {
+                    crate::strings::t(
+                        "ck_audit.close.open",
+                        &[
+                            ("id", id),
+                            ("sev", sev),
+                            ("title", title),
+                            ("source", source),
+                        ],
+                    )
+                };
                 if gaps.len() > 1 {
                     format!("{head}, and {} other gap(s) have no proof", gaps.len() - 1)
                 } else {
