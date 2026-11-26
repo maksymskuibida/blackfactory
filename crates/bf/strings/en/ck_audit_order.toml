@@ -1,0 +1,7 @@
+# Strings of the order of the audits of a checkpoint (R-77, D-159, D-62): the refusal of a mark by a worker
+# on an audit check.
+
+"ck_audit_order.refuse.mark.what" = "{what} for {check}"
+"ck_audit_order.refuse.mark.why" = "{check} is an audit of {k}: the engine writes its receipt from its auditor's report, and no worker marks it met or failed"
+"ck_audit_order.refuse.mark.step" = "The directive `audit-checkpoint` of `bf next` names the auditor ({role}); it reports with `bf report {k} --role {role} --check {check} --token <token> --result findings --findings -`."
+"ck_audit_order.refuse.mark.check" = "`bf next` lists the audits of {k}, and `bf evidence verify` shows the receipt after the report."

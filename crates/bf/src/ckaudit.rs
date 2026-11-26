@@ -75,7 +75,7 @@ fn is_uiux(pl: &Plan, check: &str) -> bool {
     named_of(pl, check) == "built-uiux-verification"
 }
 
-fn token_key(k: &str, check: &str) -> String {
+pub fn token_key(k: &str, check: &str) -> String {
     format!("{k}:audit:{check}")
 }
 
@@ -644,4 +644,86 @@ pub fn receipt_on_decisions(p: &Project, k: &str) -> R<()> {
         evidence::review_receipt(p, &check, &r.content, &says)?;
     }
     Ok(())
+}
+
+/// Whether `check` is an audit source of some checkpoint of the plan (the refusals of a mark by a worker).
+pub fn is_source_anywhere(pl: &Plan, check: &str) -> bool {
+    pl.checkpoints
+        .iter()
+        .any(|k| is_source(pl, s(k, "id"), check))
+}
+
+/// The audits of `k` due at `content`: sources the human has not switched off, with no passing receipt and no
+/// accepted check at that content and no round that reported at it. Empty while the checkpoint review
+/// still has to pass, since an audit follows it (D-159).
+pub fn due(
+    p: &Project,
+    st: &State,
+    pl: &Plan,
+    k: &str,
+    content: &str,
+    receipts: &[evidence::Receipt],
+) -> R<Vec<String>> {
+    if ckreview::needed(p, st, k, content)? {
+        return Ok(vec![]);
+    }
+    let rs = ckreview::rounds(p, k)?;
+    Ok(sources(pl, k)
+        .into_iter()
+        .filter(|c| {
+            !pl.checks
+                .iter()
+                .any(|r| s(r, "id") == c && crate::enforce::is_off(st, r))
+        })
+        .filter(|c| evidence::satisfied_at(receipts, c, content).is_none())
+        .filter(|c| evidence::accepted_at(st, k, c, content).is_none())
+        .filter(|c| {
+            !rs.iter()
+                .any(|r| &r.source == c && r.content == content && ckreview::reported(r))
+        })
+        .collect())
+}
+
+/// Whether an audit round of `k` is open.
+pub fn round_open(p: &Project, k: &str) -> R<bool> {
+    Ok(ckreview::rounds(p, k)?
+        .iter()
+        .any(|r| !r.source.is_empty() && r.result.is_none()))
+}
+
+/// The directive `audit-checkpoint` for one due audit of `k`.
+pub fn directive(p: &Project, st: &State, pl: &Plan, k: &str, check: &str) -> Value {
+    let role = role_of(pl, check);
+    let kind = crate::roles::get(role).map_or("reviewer", |r| r.tier);
+    json!({"role": role, "action": "audit-checkpoint", "checkpoint": k, "check": check,
+        "tier": p.policy.tiers.get(kind),
+        "working_copy": p.work_dir().join(k).to_string_lossy(),
+        "brief": p.briefs_dir().join(format!("{k}-audit-{check}.md")).to_string_lossy(),
+        "limits": {"max_rounds": p.policy.limits.max_rounds, "idle_minutes": p.policy.limits.idle_minutes,
+                   "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
+        "commands": [format!("bf brief {k} --role {role} --check {check}")]})
+}
+
+/// The open critical, high and medium findings of the audit rounds of `k` that judged `content`, with their
+/// round and number, for the one fix that follows the audits.
+pub fn blocking_to_fix(
+    p: &Project,
+    st: &State,
+    k: &str,
+    content: &str,
+) -> R<(Vec<Value>, Vec<(u32, u32)>)> {
+    let mut findings = Vec::new();
+    let mut ids = Vec::new();
+    for r in ckreview::rounds(p, k)?
+        .iter()
+        .filter(|r| !r.source.is_empty() && ckreview::reported(r) && r.content == content)
+    {
+        for (n, f) in ckreview::open_findings(st, k, r) {
+            if ckreview::blocking(f) {
+                findings.push(f.clone());
+                ids.push((r.round, n as u32));
+            }
+        }
+    }
+    Ok((findings, ids))
 }

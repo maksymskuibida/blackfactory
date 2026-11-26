@@ -68,7 +68,14 @@ pub(crate) fn sync_tokens(p: &Project, v: &mut Value) -> R<()> {
                 || crate::roles::is_new_role(&role))
                 && !unit.is_empty()
             {
-                let key = format!("{unit}:{role}");
+                // An audit has a token of its own for each check (R-77).
+                let key = match d["check"]
+                    .as_str()
+                    .filter(|_| d["action"] == "audit-checkpoint")
+                {
+                    Some(c) => format!("{unit}:audit:{c}"),
+                    None => format!("{unit}:{role}"),
+                };
                 let tok = match tokens.get(&key).and_then(|t| t.as_str()) {
                     Some(t) => t.to_string(),
                     None => util::random_hex(12)?,
@@ -187,7 +194,12 @@ impl OpenWork {
                         .unwrap_or(false)
             }
             "verifier" => self.verifier_open(p, k),
-            _ => false,
+            r => match r.strip_prefix("audit:") {
+                Some(check) => crate::ckreview::rounds(p, k)
+                    .map(|rs| crate::ckreview::open_round(&rs, check).is_some())
+                    .unwrap_or(false),
+                None => false,
+            },
         }
     }
 

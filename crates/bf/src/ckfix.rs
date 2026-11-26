@@ -283,8 +283,21 @@ pub fn maybe_open(p: &Project) -> R<()> {
         if content.is_empty() || st.ck_declined.contains(&format!("{kid}@{content}")) {
             continue;
         }
+        // No fix opens while an audit round is open or an audit is due: one fix takes the failed checks and
+        // every audit's findings together (R-77).
+        if crate::ckaudit::round_open(p, kid)?
+            || !crate::ckaudit::due(p, &st, &pl, kid, &content, &receipts)?.is_empty()
+        {
+            continue;
+        }
         let (failed, unreachable) = failing_checks(&pl, &st, &receipts, k, &content);
-        if !opens_fix(&failed, unreachable) {
+        // A checkpoint parked at the limit of reviews waits for the human: its audit findings go to no fix.
+        let (findings, ids) = if crate::ckreview::parked(p, &st, kid)? {
+            (vec![], vec![])
+        } else {
+            crate::ckaudit::blocking_to_fix(p, &st, kid, &content)?
+        };
+        if unreachable || (failed.is_empty() && findings.is_empty()) {
             continue;
         }
         let _lock = crate::lock::engine(p, &format!("open a fix of {kid}"))?;
@@ -292,17 +305,34 @@ pub fn maybe_open(p: &Project) -> R<()> {
         if st2.ck_fix.is_some() || st2.sync_open.is_some() {
             return Ok(());
         }
-        if open_locked(
-            p,
-            &pl,
-            kid,
-            "check",
-            failed,
-            (vec![], vec![]),
-            &content,
-            false,
-            None,
-        )? {
+        let opened = if findings.is_empty() {
+            open_locked(
+                p,
+                &pl,
+                kid,
+                "check",
+                failed,
+                (vec![], vec![]),
+                &content,
+                false,
+                None,
+            )?
+        } else {
+            open_locked_by(
+                p,
+                &pl,
+                kid,
+                "review",
+                failed,
+                (findings, ids),
+                &content,
+                false,
+                None,
+                None,
+                Some("audit"),
+            )?
+        };
+        if opened {
             return Ok(());
         }
     }

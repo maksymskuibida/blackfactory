@@ -2417,6 +2417,30 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                                     }
                                 }
                             }
+                            "audit" => {
+                                // One fix after the audits: each finding it names is a blocking finding of a
+                                // round of an audit source, as the replay recorded it.
+                                let ok = !ids_named.is_empty()
+                                    && ids_named.len() == findings_named.len()
+                                    && ids_named.iter().zip(findings_named.iter()).all(
+                                        |((r, i), f)| {
+                                            *i >= 1
+                                                && matches!(
+                                                    f["severity"].as_str(),
+                                                    Some("critical" | "high" | "medium")
+                                                )
+                                                && ck_rounds
+                                                    .get(&(ck.clone(), *r))
+                                                    .and_then(|l| l.get(*i as usize - 1))
+                                                    == Some(f)
+                                        },
+                                    );
+                                if ok {
+                                    None
+                                } else {
+                                    Some("a fix opened after the audits names findings that differ from their rounds' or are not blocking")
+                                }
+                            }
                             "reopen" => {
                                 // A fix reopened after an abort for the same findings keeps the human's
                                 // earlier words (R-71): it cites no turn of its own, only the latest opening
