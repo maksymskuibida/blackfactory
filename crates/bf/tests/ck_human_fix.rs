@@ -1013,7 +1013,7 @@ fn the_other_cases_of_the_request_replay_to_the_same_fixes() {
     // The log replays to the same fixes, with nothing ignored and nothing waiting.
     let st = state(&fx);
     assert_eq!(st.ck_fixes.len(), 1);
-    assert!(st.ck_human_wait.get("K-1").map_or(true, |w| w.is_empty()));
+    assert!(st.ck_human_wait.get("K-1").is_none_or(|w| w.is_empty()));
     assert!(st.ignored.is_empty(), "{:?}", st.ignored);
     // A closed checkpoint refuses the filing.
     fx.human("The header is wrong. Please fix it.");

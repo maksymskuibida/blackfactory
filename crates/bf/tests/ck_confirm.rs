@@ -142,6 +142,7 @@ fn rounds(fx: &Fx) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn reviews(fx: &Fx) -> u64 {
     fx.must(&["status", "--json"]).json()["checkpoint_reviews"][0]["reviews"]
         .as_u64()

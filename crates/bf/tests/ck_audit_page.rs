@@ -143,6 +143,7 @@ fn rounds(fx: &Fx) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn reviews(fx: &Fx) -> u64 {
     fx.must(&["status", "--json"]).json()["checkpoint_reviews"][0]["reviews"]
         .as_u64()
@@ -150,6 +151,7 @@ fn reviews(fx: &Fx) -> u64 {
 }
 
 /// The receipts the engine wrote for a check.
+#[allow(dead_code)]
 fn receipts_of(fx: &Fx, check: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for e in fs::read_dir(fx.root.join("factory/receipts"))
@@ -168,6 +170,7 @@ fn receipts_of(fx: &Fx, check: &str) -> Vec<Value> {
     out
 }
 
+#[allow(dead_code)]
 fn log_text(fx: &Fx) -> String {
     fs::read_to_string(fx.root.join("factory/log/events.jsonl")).unwrap()
 }
@@ -214,6 +217,7 @@ fn outcome_of(fx: &Fx, round: u64, id: &str) -> Value {
         .unwrap_or_else(|| panic!("no outcome {id}: {r}"))
 }
 
+#[allow(dead_code)]
 fn actions(fx: &Fx) -> Vec<String> {
     fx.must(&["next", "--json"]).json()["directives"]
         .as_array()
