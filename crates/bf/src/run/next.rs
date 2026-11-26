@@ -613,7 +613,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                     } else {
                         format!("the finding {fid} ({sev}: {title}) is still open and holds the close of {kid}")
                     };
-                    directives.push(json!({"role": "conductor", "action": "settle-open-finding", "checkpoint": kid, "finding": fid, "gaps": [note.clone()],
+                    directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "finding": fid, "gaps": [note.clone()],
                         "note": format!("`bf checkpoint close {kid}` would refuse: {note}.")}));
                 } else if gaps.is_empty() {
                     directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
