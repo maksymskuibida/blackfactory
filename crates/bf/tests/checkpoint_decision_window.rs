@@ -239,7 +239,12 @@ fn words_written_during_the_fix_of_another_finding_decide_nothing() {
     let o = fx.bf(&["checkpoint", "close", "K-1"]);
     say("close", &o);
     assert_ne!(o.code, 0);
-    assert!(o.all().contains("r1.2"), "{}", o.all());
+    // r1.1 is answered by its fix and waits for the review, so it holds the close and is named first; r1.2
+    // is open and holds it too, until the human accepts it below.
+    assert!(o.all().contains("r1.1"), "{}", o.all());
+    let f = fates(&fx);
+    assert!(f.contains("r1.1=answered"), "{f}");
+    assert!(f.contains("r1.2=open"), "{f}");
     fx.human("I accept r1.2 as it is.");
     let o = accept(&fx, "r1.2", "I accept r1.2 as it is.");
     say("accept r1.2 on a new message", &o);

@@ -88,7 +88,12 @@ fn areas() -> Value {
 }
 
 fn findings(fx: &Fx, list: Value) -> Out {
-    let body = json!({"areas": areas(), "findings": list});
+    findings_confirming(fx, list, &[])
+}
+
+/// The same, naming the answered findings of an earlier round that this round confirms (R-78).
+fn findings_confirming(fx: &Fx, list: Value, confirmed: &[&str]) -> Out {
+    let body = json!({"areas": areas(), "findings": list, "confirmed": confirmed});
     fx.bf_stdin(
         &fx.root,
         &[
@@ -234,7 +239,7 @@ fn a_finding_needs_a_severity_and_a_file_and_opens_the_checkpoint_fix() {
         "{md}"
     );
     assert!(
-        md.contains("no edge case") && md.contains("Outcome: fixed by"),
+        md.contains("no edge case") && md.contains("Outcome: answered by"),
         "{md}"
     );
     let st = fx.must(&["status", "--json"]).json();
@@ -252,7 +257,14 @@ fn the_review_runs_again_on_new_content_within_the_limit_of_rounds() {
     let f = json!([{"title": "x", "severity": "high", "where": "src/a.txt:1", "action": "a"}]);
     for round in 1..=3 {
         brief_text(&fx);
-        assert_eq!(findings(&fx, f.clone()).code, 0, "round {round}");
+        // The review of the round after a fix confirms the finding that fix answered.
+        let confirmed = [format!("r{}.1", round - 1)];
+        let confirmed: Vec<&str> = confirmed.iter().take(usize::from(round > 1)).map(|x| x.as_str()).collect();
+        assert_eq!(
+            findings_confirming(&fx, f.clone(), &confirmed).code,
+            0,
+            "round {round}"
+        );
         if round < 3 {
             fx.pass_checkpoint_fix(&format!("changed by the fix {round}\n"));
         }

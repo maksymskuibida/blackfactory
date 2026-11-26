@@ -405,6 +405,9 @@ pub fn brief(p: &Project, k: &str, role: &str, check: &str) -> R<PathBuf> {
         }
         md.push('\n');
     }
+    md.push_str(&crate::ckconfirm::brief_section(
+        p, &st, &pl, &rs, k, check,
+    )?);
     let command = format!(
         "bf report {k} --role {role} --check {check} --token <token> --result findings --findings -"
     );
@@ -499,6 +502,9 @@ pub fn report(
     }
     let areas = ckreview::check_areas(k, raw_areas)?;
     ckreview::check_findings(k, &list)?;
+    let said = crate::ckconfirm::check_report(&st, &rs, k, check, findings)?;
+    let (confirmed, still_open) = said.stored();
+    let reopened = crate::ckconfirm::reopens_blocking(&rs, &said);
     let label = format!("{k}-audit-{check}");
     let probes = ckreview::store_probes_in(
         p,
@@ -527,10 +533,16 @@ pub fn report(
         }
         covered_ok = failed.is_empty() && !missing;
     }
-    let held_back = list.iter().any(ckreview::blocking);
+    let held_back = list.iter().any(ckreview::blocking) || reopened;
+    let result_word = if list.is_empty() && said.still_open.is_empty() {
+        "clean"
+    } else {
+        "findings"
+    };
     let mut done = json!({"checkpoint": k, "source": check, "round": round.round, "content": content,
-        "result": if list.is_empty() { "clean" } else { "findings" },
-        "findings": list, "areas": areas, "probes": probes, "note": note});
+        "result": result_word,
+        "findings": list, "areas": areas, "probes": probes, "note": note,
+        "confirmed": confirmed, "still_open": still_open});
     let mut receipt = false;
     if held_back {
         if ckreview::reviews(&st, k, &rs) >= p.policy.limits.checkpoint_reviews {
@@ -566,7 +578,7 @@ pub fn report(
     }
     p.write_guard()?;
     let mut out = json!({"checkpoint": k, "source": check, "round": round.round,
-        "result": if list.is_empty() { "clean" } else { "findings" },
+        "result": result_word,
         "findings": list.len(), "receipt": receipt});
     if parked {
         out["parked"] = json!(true);

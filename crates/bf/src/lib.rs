@@ -6,6 +6,7 @@ pub mod adapter;
 pub mod amend;
 pub mod checks;
 pub mod ckaudit;
+pub mod ckconfirm;
 pub mod ckfix;
 pub mod ckreview;
 pub mod cli;

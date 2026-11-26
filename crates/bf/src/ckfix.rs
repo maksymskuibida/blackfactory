@@ -463,6 +463,8 @@ fn open_locked_by(
     if let Some(how) = opened_by {
         ev["opened_by"] = json!(how);
     }
+    // R-78: the findings of this fix are answered when it ends, and confirmed by the next round of their source.
+    ev["confirm"] = json!(true);
     events::append(p, "checkpoint.fix.open", ev)?;
     if !from_saved.is_empty() {
         crate::fixscope::note_reopened(p, &from_saved, &applied, &not_applied)?;
@@ -1567,6 +1569,7 @@ fn report_inner(
             Ok(json!({"checkpoint": k, "phase": "review"}))
         }
         ("review", "findings") => {
+            crate::ckconfirm::refuse_fix_review_ends(k, findings)?;
             let listed = finding_list(findings);
             if listed.is_empty() {
                 return Err(refuse(
@@ -1610,6 +1613,7 @@ fn report_inner(
             Ok(json!({"checkpoint": k, "phase": to}))
         }
         ("review", "built") => {
+            crate::ckconfirm::refuse_fix_review_ends(k, findings)?;
             record_round(p, &pl, &f, "clean", "done", &[], String::new())?;
             go_on(p, &pl, &f)
         }
@@ -1836,7 +1840,8 @@ fn finish(p: &Project, pl: &Plan, f: &CkFixOpen, rerun: Vec<String>) -> R<Value>
     events::append(
         p,
         "checkpoint.fix.done",
-        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file, "marks": marks}),
+        json!({"checkpoint": f.checkpoint, "files": names, "units": units, "by_file": by_file, "marks": marks,
+               "after": heads(p, pl, &f.checkpoint)?}),
     )?;
     write_overlay(p)?;
     p.write_guard()?;
@@ -2176,6 +2181,37 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                     s(x, "probe_command")
                 ));
             }
+        }
+        md.push('\n');
+    }
+    if f.confirm && !f.origin_ids.is_empty() && f.origin_ids.len() == f.origin_findings.len() {
+        let st = events::replay(p)?;
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            crate::strings::t("ck_confirm.fix.title", &[]),
+            crate::strings::t(
+                if role == "builder" {
+                    "ck_confirm.fix.intro.builder"
+                } else {
+                    "ck_confirm.fix.intro.reviewer"
+                },
+                &[]
+            )
+        ));
+        for ((round, number), x) in f.origin_ids.iter().zip(&f.origin_findings) {
+            let source = crate::ckconfirm::source_of(&st, k, *round);
+            md.push_str(&format!(
+                "- {}\n",
+                crate::strings::t(
+                    "ck_confirm.fix.item",
+                    &[
+                        ("id", &format!("r{round}.{number}")),
+                        ("source", &crate::ckconfirm::source_text(&source)),
+                        ("title", s(x, "title")),
+                        ("action", s(x, "action")),
+                    ]
+                )
+            ));
         }
         md.push('\n');
     }
