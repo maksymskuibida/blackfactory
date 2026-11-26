@@ -59,7 +59,7 @@ A role is data: a short prompt, the tools it may use, what it may read, and a mo
 | Builder | The unit's brief | Edit records, gates or policy |
 | Reviewer (cold) | Brief, diff, receipts. Nothing from the builder's session. | Write code |
 | Verifier (UI/UX, code, performance) | The contract and the built result | Read source, for the checks declared blind |
-| Security expert and auditor | Threat model, diff, scan output | Write code (auditor) |
+| Security expert and auditor | Threat model, diff, scan output. At a checkpoint an auditor files its findings through its audit round (`bf report <K> --role <role> --check <X>`) | Write code (auditor) |
 | Lawyer and legal auditor | Design records, market list, sources fetched on demand | Write anywhere except findings |
 | Planner | Approved design records | Change design records |
 | Amendment evaluator | The engine's impact set | Widen the set |
@@ -90,6 +90,7 @@ All records are structured files inside the project's repository, one record per
 | Check: a command, an agent task or a human step, and the IDs it proves | Planner; plugins add kinds | By amendment |
 | Receipt: check, content it ran on, exit code, output hash, attached files | Engine only | Never |
 | Finding: stable id, severity, where, required action, outcome | Reviewer through the engine | Outcome only |
+| Outcome of a checkpoint finding: a fix that ends makes it answered, and it holds the close until the next round of its source confirms it (fixed) or names it still open; a finding the human filed is confirmed by the checkpoint review | Engine, from the rounds | Never |
 | Gate and approval: kind, round, proof, real or simulated | Engine, on a human act | Never |
 | Question and answer | Engine | Never |
 | Amendment: changed IDs, impact set, what re-opens | Engine and evaluator, approved by the human | Never |

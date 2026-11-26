@@ -4,6 +4,7 @@ Checkpoint actions in `bf next --json`:
 - `review-checkpoint` (reviewer; start the checkpoint reviewer).
 - `wave-check` (engine; start `bf checkpoint wave-check` in the background; the end of that command is the notice you wait for, never a loop).
 - `decide-checkpoint-review` (human; a parked review; their words come from a message written after the question was put to them).
+- `audit-checkpoint` (an auditor; start the role the directive names with its brief and token, beside the verifier; it files its findings through its audit round and the engine writes the check's receipt).
 - `decide-low-findings` (human; accept, decline or pick low findings).
 - `decide-checkpoint-fix` (human; a fix needs a plan change, was turned down or was aborted; opening it again takes their words, from a message written after the question was put to them).
 - `decide-wave-check` (human; a wave check failed and its fix was turned down).
@@ -20,6 +21,8 @@ What to run on a checkpoint fix:
 - `scope`: a fix builder may change a file outside the lists, and its reviewer is shown that file (D-115); there is no request for files and no `bf checkpoint scope` command.
 - `low`: low findings of a review are the human's: `bf checkpoint finding <K> --accept low --quote "<their words>"` accepts them together, `--fix-findings <ids>` picks some to be fixed.
 - The human may accept any finding of a parked fix or review in their own words.
+- `--fix-findings` also sends named open findings to a fix that waits (its review filed only low findings, or it is parked): `bf checkpoint finding <K> --fix-findings <ids> --quote "<their words>"` adds them and puts the fix back to work. Fix review ids are `f<round>.<number>`.
+- A finding the human writes themselves: `bf checkpoint finding <K> --human --quote "<their words>"`, quoting their words exactly and adding nothing of your own. Give `--severity` only when they named one. Add `--fix --fix-quote "<their words asking for the fix>"` only when they asked for a fix. Several findings in one message: `--human --findings -` with a JSON list of `{quote, severity}`. When one message both decides findings and names a new problem, run the decision command and the filing each, with quotes of the same message; the message files once. Filing is taken during every hold. Only you file, never a subagent.
 
 ## Syncs
 

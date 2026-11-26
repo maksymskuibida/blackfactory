@@ -1648,14 +1648,81 @@ fn fix_row(
         "body": body})
 }
 
+/// A `checkpoint.fix.add` of human findings the log holds: its position, the step it was written at and the
+/// ids it added (R-81).
+struct HumanAdd {
+    seq: u64,
+    step: String,
+    ids: Vec<String>,
+}
+
+fn human_adds(p: &Project, kid: &str) -> Vec<HumanAdd> {
+    let Ok(log) = events::load_log(p) else {
+        return Vec::new();
+    };
+    log.events
+        .iter()
+        .filter(|e| {
+            e["kind"].as_str() == Some("checkpoint.fix.add")
+                && e["human"].as_bool() == Some(true)
+                && s(e, "checkpoint") == kid
+        })
+        .map(|e| HumanAdd {
+            seq: e["seq"].as_u64().unwrap_or(0),
+            step: s(e, "step").to_string(),
+            ids: events::id_pairs(&e["finding_ids"])
+                .iter()
+                .map(|(r, i)| format!("r{r}.{i}"))
+                .collect(),
+        })
+        .collect()
+}
+
+/// The lines of a fix's row about the human findings it took, those outside its stored design and, while it
+/// is parked at its round limit, those it holds for the release (R-81, S-7). Each text is a key.
+fn human_lines(row: &mut Value, took: &[&HumanAdd], parked: bool) {
+    let Some(body) = row["body"].as_array_mut() else {
+        return;
+    };
+    let mut outside: Vec<String> = Vec::new();
+    for a in took {
+        let ids = a.ids.join(", ");
+        let step = t(&format!("page.fix.step.{}", a.step), &[]);
+        body.push(text(&t(
+            "page.fix.human_added",
+            &[("ids", &ids), ("step", &step)],
+        )));
+        outside.extend(a.ids.iter().cloned());
+    }
+    if !outside.is_empty() {
+        body.push(text(&t(
+            "page.fix.outside_design",
+            &[("ids", &outside.join(", "))],
+        )));
+    }
+    if parked {
+        let held: Vec<String> = took
+            .iter()
+            .filter(|a| a.step == "park")
+            .flat_map(|a| a.ids.clone())
+            .collect();
+        if !held.is_empty() {
+            body.push(text(&t(
+                "page.fix.human_held",
+                &[("ids", &held.join(", "))],
+            )));
+        }
+    }
+}
+
 /// The fixes of a checkpoint: every finished one in order, then the open one.
-fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
+fn fix_rows(st: &State, kid: &str, adds: &[HumanAdd]) -> Vec<Value> {
     let mut rows: Vec<Value> = st
         .ck_fixes
         .iter()
         .filter(|d| d.checkpoint == kid)
         .map(|d| {
-            fix_row(
+            let mut row = fix_row(
                 &d.id,
                 kid,
                 &d.source,
@@ -1667,7 +1734,13 @@ fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
                 &d.units,
                 &d.by_file,
                 &d.rounds_log,
-            )
+            );
+            let took: Vec<&HumanAdd> = adds
+                .iter()
+                .filter(|a| a.seq > d.open_seq && (d.seq == 0 || a.seq < d.seq))
+                .collect();
+            human_lines(&mut row, &took, false);
+            row
         })
         .collect();
     if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == kid) {
@@ -1682,7 +1755,7 @@ fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
             }
             note.push_str(&format!("Missing: {}.", f.missing.join("; ")));
         }
-        rows.push(fix_row(
+        let mut row = fix_row(
             &format!("{kid}-fix-{n}"),
             kid,
             &f.source,
@@ -1694,7 +1767,13 @@ fn fix_rows(st: &State, kid: &str) -> Vec<Value> {
             &[],
             &Value::Null,
             &f.rounds_log,
-        ));
+        );
+        let took: Vec<&HumanAdd> = adds
+            .iter()
+            .filter(|a| a.seq > f.open_seq && a.ids.iter().any(|i| f.outside_design.contains(i)))
+            .collect();
+        human_lines(&mut row, &took, f.phase == "parked");
+        rows.push(row);
     }
     rows
 }
@@ -1708,16 +1787,24 @@ fn checkpoint_finding_rows(
     pl: &Plan,
     k: &str,
     rounds: &[crate::ckreview::Round],
+    waiting: &[(u32, u32)],
+    waits: Option<&str>,
 ) -> Vec<Value> {
     let mut blocking_rows = Vec::new();
     let mut low_rows = Vec::new();
     for r in rounds.iter().filter(|r| crate::ckreview::reported(r)) {
         for (i, f) in r.findings.iter().enumerate() {
             let fate = crate::ckreview::fate(st, k, r.round, i, f);
-            let state = fate
+            let mut state = fate
                 .as_ref()
                 .map(|x| x.0.clone())
                 .unwrap_or_else(|| "open".to_string());
+            let wants_fix = state == "open"
+                && crate::ckreview::is_human(&r.source)
+                && waiting.contains(&(r.round, i as u32 + 1));
+            if wants_fix {
+                state = "wants_fix".to_string();
+            }
             let reason = fate.as_ref().map(|x| x.1.clone()).unwrap_or_default();
             let source_label = crate::ckconfirm::source_label(pl, &r.source);
             let body_state = match state.as_str() {
@@ -1747,7 +1834,32 @@ fn checkpoint_finding_rows(
             if !body_state.is_empty() {
                 body.push(text(&body_state));
             }
+            let human = crate::ckreview::is_human(&r.source);
+            let mut tags = vec![
+                json!({"text": t(&format!("page.weight.{sev}"), &[]), "tone": "none"}),
+                json!({"text": source_label, "tone": "info"}),
+            ];
+            let mut quote = Value::Null;
+            if human {
+                let turn = f["turn"].as_u64().unwrap_or(0).to_string();
+                let label = t("page.quote.label", &[("turn", &turn)]);
+                body.push(text(&label));
+                body.push(text(s(f, "action")));
+                quote = json!({"label": label, "text": s(f, "action"), "turn": f["turn"]});
+                if f["severity_given"].as_bool() == Some(false) {
+                    tags.push(
+                        json!({"text": t("page.finding.weight.not_given", &[]), "tone": "none"}),
+                    );
+                }
+            }
+            let waits_key = if wants_fix { waits } else { None };
+            if let Some(w) = waits_key {
+                body.push(text(&t(&format!("page.finding.wants_fix.{w}"), &[])));
+            }
             let row = json!({
+                "quote": quote,
+                "waits_for": waits_key,
+                "weight_given": !human || f["severity_given"].as_bool() != Some(false),
                 "id": format!("r{}.{}", r.round, i + 1),
                 "title": s(f, "title"),
                 "severity": sev,
@@ -1755,10 +1867,7 @@ fn checkpoint_finding_rows(
                 "weight_text": t(&format!("page.weight.{sev}"), &[]),
                 "handled": {"tone": match state.as_str() { "fixed" => "ok", "accepted" | "declined" => "accepted", _ => "open" },
                             "text": t(&format!("page.finding.state.{state}"), &[])},
-                "tags": [
-                    {"text": t(&format!("page.weight.{sev}"), &[]), "tone": "none"},
-                    {"text": source_label, "tone": "info"},
-                ],
+                "tags": tags,
                 "source": crate::ckconfirm::source_kind(pl, &r.source),
                 "source_check": r.source,
                 "source_text": source_label,
@@ -1885,6 +1994,7 @@ fn checkpoint_finding_rows(
 fn checkpoint_review_rows(pl: &Plan, rounds: &[crate::ckreview::Round]) -> Vec<Value> {
     rounds
         .iter()
+        .filter(|r| !crate::ckreview::is_human(&r.source))
         .map(|r| {
             let audit = crate::ckreview::is_audit(&r.source);
             let mut body = vec![];
@@ -1970,14 +2080,21 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
             fact("Units", str_list(k, "after").len(), "before it"),
         ],
     );
-    let fixes = fix_rows(st, &kid);
+    let adds = human_adds(p, &kid);
+    let fixes = fix_rows(st, &kid, &adds);
     let mut rows = rows;
     let mut rbody = vec![];
     let review_rounds = crate::ckreview::rounds(p, &kid)?;
-    if review_rounds.is_empty() {
+    if review_rounds
+        .iter()
+        .all(|r| crate::ckreview::is_human(&r.source))
+    {
         rbody.push(text("Review rounds: none yet."));
     }
-    for r in &review_rounds {
+    for r in review_rounds
+        .iter()
+        .filter(|r| !crate::ckreview::is_human(&r.source))
+    {
         rbody.push(text(&format!(
             "Review round {} judged content {}; covered: {}.{}",
             r.round,
@@ -2046,7 +2163,9 @@ fn checkpoint_view(p: &Project, st: &State, arg: Option<&str>) -> R<Value> {
         .filter(|u| s(u, "checkpoint") == kid)
         .map(|u| s(u, "id").to_string())
         .collect();
-    let finding_rows = checkpoint_finding_rows(st, &pl, &kid, &review_rounds);
+    let waiting = crate::ckhuman::waiting(st, &kid);
+    let waits = crate::ckhuman::waits_for(p, st, &pl, &kid).ok().flatten();
+    let finding_rows = checkpoint_finding_rows(st, &pl, &kid, &review_rounds, &waiting, waits);
     let review_rows = checkpoint_review_rows(&pl, &review_rounds);
     let mut sections = vec![];
     if !finding_rows.is_empty() {
