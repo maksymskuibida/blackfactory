@@ -886,6 +886,10 @@ pub struct CkFixDone {
     /// File -> its mark (`format only`, R-58); Null for a fix recorded before marks were kept.
     pub marks: Value,
     pub rounds_log: Vec<Value>,
+    /// The findings each of the fix's review rounds filed, `{round, findings}` (S-7).
+    pub history: Vec<Value>,
+    /// The log position of the opening of the fix, which an accept of its findings carries as `fix_open`.
+    pub open_seq: u64,
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
     /// The (round, number) pairs the fix was opened for; empty for a fix recorded before they were kept.
@@ -2979,6 +2983,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         by_file: ev["by_file"].clone(),
                         marks: ev["marks"].clone(),
                         rounds_log: o.rounds_log.clone(),
+                        history: o.history.clone(),
+                        open_seq: o.open_seq,
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
                         ids: o.origin_ids.clone(),

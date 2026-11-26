@@ -1,0 +1,45 @@
+# Strings of the checkpoint page and of `bf status` for the source and the state of each finding and for the
+# audit rounds (R-77, R-78, S-7, D-162, D-62).
+
+"page.checkpoint.findings.title" = "Findings"
+"page.checkpoint.findings.hint" = "Each finding with its source and what became of it"
+"page.checkpoint.reviews.title" = "Reviews"
+"page.checkpoint.reviews.hint" = "Each review and each audit round, in the order they ran"
+
+"page.finding.source.review" = "the checkpoint review"
+"page.finding.source.fix_review" = "a fix review"
+"page.finding.source.security_audit" = "the security audit {check}"
+"page.finding.source.legal_audit" = "the legal audit {check}"
+"page.finding.source.uiux" = "the UI/UX verification {check}"
+"page.finding.source.audit" = "the audit {check}"
+
+"page.finding.state.open" = "open"
+"page.finding.state.answered" = "answered"
+"page.finding.state.fixed" = "fixed"
+"page.finding.state.accepted" = "accepted"
+"page.finding.state.declined" = "declined"
+
+"page.finding.answered.body" = "Answered by {by}. It waits for {source} to confirm it."
+"page.finding.fixed.body" = "Fixed by {by}."
+"page.finding.fixed.by_later_round" = "Cleared by a later round of {fix}, up to round {round}."
+"page.finding.accepted.body" = "Accepted by the human. {reason}"
+"page.finding.declined.body" = "Declined by the human. {reason}"
+"page.finding.where" = "Where: {where}"
+"page.finding.action" = "What must be done: {action}"
+"page.finding.from_round" = "Filed in round {round}."
+
+"page.weight.critical" = "critical"
+"page.weight.high" = "high"
+"page.weight.medium" = "medium"
+"page.weight.low" = "low"
+
+"page.review.kind.audit" = "audit"
+"page.review.kind.recovery" = "recovery review"
+"page.review.kind.asked" = "asked for by the human"
+"page.review.audit.check" = "Check {check}"
+"page.review.audit.not_counted" = "An audit round does not count against the limit of reviews."
+"page.review.round.name" = "Round {round}"
+"page.review.round.result" = "Result: {result}."
+
+"status.finding.line" = "finding {id} [{severity}] {title}: {state}, filed by {source}"
+"status.finding.answered" = "finding {id} [{severity}] {title}: answered, {fate}"

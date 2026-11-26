@@ -20,7 +20,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// The named check of a check record, empty when it has none.
-fn named_of<'a>(pl: &'a Plan, check: &str) -> &'a str {
+pub(crate) fn named_of<'a>(pl: &'a Plan, check: &str) -> &'a str {
     pl.checks
         .iter()
         .find(|c| s(c, "id") == check)

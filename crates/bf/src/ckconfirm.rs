@@ -31,6 +31,28 @@ pub fn source_text(source: &str) -> String {
     }
 }
 
+/// The kind of a source for the page: `review` for the checkpoint review, else the kind of the audit's named
+/// check (`security_audit`, `legal_audit`, `uiux`) or `audit` for an agent check with no named check.
+pub fn source_kind(pl: &Plan, source: &str) -> &'static str {
+    if source.is_empty() {
+        return "review";
+    }
+    match crate::ckaudit::named_of(pl, source) {
+        "security-audit" => "security_audit",
+        "legal-audit" => "legal_audit",
+        "built-uiux-verification" => "uiux",
+        _ => "audit",
+    }
+}
+
+/// The source as the page and `bf status` read it: the text of its kind with the check id filled in.
+pub fn source_label(pl: &Plan, source: &str) -> String {
+    t(
+        &format!("page.finding.source.{}", source_kind(pl, source)),
+        &[("check", source)],
+    )
+}
+
 /// Whether a fate holds the close: none (open) or answered.
 pub fn holds_fate(fate: &Option<(String, String)>) -> bool {
     match fate {

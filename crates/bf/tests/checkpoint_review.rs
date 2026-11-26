@@ -519,7 +519,7 @@ fn the_checkpoint_page_shows_the_review_rounds_and_the_flaky_flag() {
     project(&fx, &format!("test -f {}", flag.display()));
     let page = |fx: &Fx| {
         let v = fx.must(&["view", "checkpoint", "K-1"]).json();
-        v["sections"][0]["rows"]
+        v["sections"].as_array().unwrap().iter().find(|s| s["id"] == "proofs").unwrap()["rows"]
             .as_array()
             .unwrap()
             .iter()
