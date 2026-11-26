@@ -104,8 +104,9 @@ pub(crate) fn blocking(f: &Value) -> bool {
     matches!(s(f, "severity"), "critical" | "high" | "medium")
 }
 
-/// What became of a finding: `fixed` (with the unit or units that fixed it), `accepted` by the human, or
-/// `declined` with a reason. None while it is open.
+/// What became of a finding: `fixed` (with the unit or units that fixed it), `answered` by a fix and waiting
+/// for the source that filed it (R-78), `accepted` by the human, or `declined` with a reason. None while it is
+/// open.
 pub fn fate(st: &State, k: &str, round: u32, index: usize, f: &Value) -> Option<(String, String)> {
     if let Some(x) = st
         .ck_settled
@@ -115,26 +116,7 @@ pub fn fate(st: &State, k: &str, round: u32, index: usize, f: &Value) -> Option<
     {
         return Some((x.fate.clone(), x.reason.clone()));
     }
-    st.ck_fixes
-        .iter()
-        .find(|d| {
-            d.checkpoint == k
-                && if d.ids.is_empty() {
-                    // Recorded before the pairs were kept: matched by value, but only findings of the
-                    // rounds no later than the one the fix was opened from.
-                    round <= d.from_round && d.origin_findings.contains(f)
-                } else {
-                    d.ids.contains(&(round, index as u32 + 1))
-                }
-        })
-        .map(|d| {
-            let by = if d.units.is_empty() {
-                d.id.clone()
-            } else {
-                format!("{} ({})", d.units.join(", "), d.id)
-            };
-            ("fixed".to_string(), by)
-        })
+    crate::ckconfirm::fix_fate(st, k, round, index, f)
 }
 
 /// The fate of a finding as a sentence: `open` while it has none.
@@ -142,6 +124,16 @@ pub fn fate_text(st: &State, k: &str, round: u32, index: usize, f: &Value) -> St
     match fate(st, k, round, index, f) {
         None => "open".to_string(),
         Some((x, why)) if x == "fixed" => format!("fixed by {why}"),
+        Some((x, why)) if x == "answered" => crate::strings::t(
+            "ck_confirm.fate.answered",
+            &[
+                ("by", &why),
+                (
+                    "source",
+                    &crate::ckconfirm::source_text(&crate::ckconfirm::source_of(st, k, round)),
+                ),
+            ],
+        ),
         Some((x, why)) if x == "accepted" => {
             if why.is_empty() {
                 "accepted by the human".to_string()
@@ -159,6 +151,16 @@ pub(crate) fn open_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize
         .iter()
         .enumerate()
         .filter(|(i, f)| fate(st, k, r.round, *i, f).is_none())
+        .map(|(i, f)| (i + 1, f))
+        .collect()
+}
+
+/// The findings of a round that are open or answered: the ones that hold the close.
+pub(crate) fn held_findings<'a>(st: &State, k: &str, r: &'a Round) -> Vec<(usize, &'a Value)> {
+    r.findings
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| crate::ckconfirm::holds(st, k, r.round, *i, f))
         .map(|(i, f)| (i + 1, f))
         .collect()
 }
@@ -181,6 +183,24 @@ pub(crate) fn reviews(st: &State, k: &str, rs: &[Round]) -> u32 {
 /// the findings it sent to a fix keep holding the close until that fix passes its review or the human
 /// settles them.
 pub(crate) fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usize, Value, String)> {
+    blocking_held(st, k, rs, true)
+}
+
+/// The same, without the answered findings: the ones that are open for the human or a fix (R-78).
+pub(crate) fn open_blocking_only(
+    st: &State,
+    k: &str,
+    rs: &[Round],
+) -> Vec<(u32, usize, Value, String)> {
+    blocking_held(st, k, rs, false)
+}
+
+fn blocking_held(
+    st: &State,
+    k: &str,
+    rs: &[Round],
+    with_answered: bool,
+) -> Vec<(u32, usize, Value, String)> {
     rs.iter()
         .filter(|r| reported(r))
         .filter(|r| {
@@ -188,11 +208,15 @@ pub(crate) fn open_blocking(st: &State, k: &str, rs: &[Round]) -> Vec<(u32, usiz
                 .any(|l| l.round > r.round && reported(l) && l.supersedes)
         })
         .flat_map(|r| {
-            open_findings(st, k, r)
-                .into_iter()
-                .filter(|(_, f)| blocking(f))
-                .map(|(i, f)| (r.round, i, f.clone(), r.content.clone()))
-                .collect::<Vec<_>>()
+            (if with_answered {
+                held_findings(st, k, r)
+            } else {
+                open_findings(st, k, r)
+            })
+            .into_iter()
+            .filter(|(_, f)| blocking(f))
+            .map(|(i, f)| (r.round, i, f.clone(), r.content.clone()))
+            .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -210,7 +234,7 @@ pub fn passed_at(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
     Ok(own
         .iter()
         .filter(|r| reported(r) && r.content == content)
-        .any(|r| !open_findings(st, k, r).iter().any(|(_, f)| blocking(f)))
+        .any(|r| !held_findings(st, k, r).iter().any(|(_, f)| blocking(f)))
         && open_blocking(st, k, &own).is_empty())
 }
 
@@ -256,7 +280,7 @@ pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
 pub fn parked(p: &Project, st: &State, k: &str) -> R<bool> {
     let rs = rounds(p, k)?;
     Ok(reviews(st, k, &rs) >= p.policy.limits.checkpoint_reviews
-        && !open_blocking(st, k, &rs).is_empty())
+        && !open_blocking_only(st, k, &rs).is_empty())
 }
 
 /// What changed the checkpoint's content since the latest review, read from the engine's own events: units
@@ -537,7 +561,7 @@ pub fn directive(p: &Project, st: &State, k: &str) -> R<Value> {
     // A fix that ended without passing its review leaves its findings open. No new review is offered at
     // the content they were filed on while no fix is open: the human says what becomes of them.
     if mode.is_none() && st.ck_fix.is_none() && open_round(&rs, "").is_none() {
-        let open: Vec<Value> = open_blocking(st, k, &rs)
+        let open: Vec<Value> = open_blocking_only(st, k, &rs)
             .into_iter()
             .map(|(r, i, f, _)| json!({"id": format!("r{r}.{i}"), "severity": s(&f, "severity"), "title": s(&f, "title"), "where": s(&f, "where"), "action": s(&f, "action")}))
             .collect();
@@ -688,7 +712,9 @@ pub(crate) fn outcomes_json(st: &State, k: &str, r: &Round) -> Value {
         .enumerate()
         .map(
             |(i, f)| json!({"id": format!("r{}.{}", r.round, i + 1), "title": s(f, "title"),
-            "severity": s(f, "severity"), "fate": fate_text(st, k, r.round, i, f)})
+            "severity": s(f, "severity"), "fate": fate_text(st, k, r.round, i, f),
+            "source": r.source,
+            "state": fate(st, k, r.round, i, f).map(|x| x.0).unwrap_or_else(|| "open".to_string())})
         )
         .collect::<Vec<_>>())
 }
@@ -936,7 +962,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
     if mode.is_none()
         && st.ck_fix.is_none()
         && open_round(&rs, "").is_none()
-        && !open_blocking(&st, k, &rs).is_empty()
+        && !open_blocking_only(&st, k, &rs).is_empty()
     {
         return Err(refuse(
             format!("review {k}"),
@@ -1130,6 +1156,7 @@ pub fn brief(p: &Project, k: &str) -> R<PathBuf> {
         }
         md.push('\n');
     }
+    md.push_str(&crate::ckconfirm::brief_section(p, &st, &pl, &rs, k, "")?);
     // The verification commands.
     md.push_str("## Verification commands\n\nRun these through the engine, from inside your copy, and never on your own. Run each at most once: a check that already has a passing receipt at this content is not run again. A repeat needs `--attempt <n> --reason \"<why>\"`.\n\n");
     let receipts = evidence::load_receipts(p)?;
@@ -1582,6 +1609,9 @@ pub fn report(
         }
         let areas = check_areas(k, raw_areas)?;
         check_findings(k, &list)?;
+        let said = crate::ckconfirm::check_report(&st, &rs, k, "", findings)?;
+        let (confirmed, still_open) = said.stored();
+        let reopened = crate::ckconfirm::reopens_blocking(&rs, &said);
         let probes = store_probes(p, k, round.round, &raw_probes, &list)?;
         let list = prepare_findings(p, &st, k, &list, &probes)?;
         let held_back = list.iter().any(blocking);
@@ -1602,15 +1632,32 @@ pub fn report(
                     "`bf evidence verify --checkpoint <K>` shows a passing receipt for each.",
                 ));
             }
-            let result = if list.is_empty() { "clean" } else { "findings" };
+            let result = if list.is_empty() && said.still_open.is_empty() {
+                "clean"
+            } else {
+                "findings"
+            };
             let mut done = json!({"checkpoint": k, "round": round.round, "content": content, "result": result,
-                       "findings": list, "areas": areas, "probes": probes, "note": note});
-            if !round.kind.is_empty() {
+                       "findings": list, "areas": areas, "probes": probes, "note": note,
+                       "confirmed": confirmed, "still_open": still_open});
+            if !round.kind.is_empty() && !reopened {
                 // A recovery review, or one the human asked for, that files nothing that holds the close
                 // judged the changed content: the findings of the reviews before it no longer hold it.
                 done["supersedes"] = json!(true);
             }
             events::append(p, "checkpoint.review.done", done)?;
+            // A finding named still open holds the close: the review settles nothing at this content.
+            if reopened {
+                remove_copy(p, &pl, k);
+                if p.policy.roles.tokens {
+                    run::spend_token(p, &format!("{k}:reviewer"))?;
+                }
+                p.write_guard()?;
+                return Ok(
+                    json!({"checkpoint": k, "round": round.round, "result": result,
+                    "low_findings": list.len(), "goes_on": false, "still_open": said.still_open.len()}),
+                );
+            }
             // The review settles the named check at the content it judged.
             let says = if list.is_empty() {
                 format!(
@@ -1643,7 +1690,8 @@ pub fn report(
         let parks = !round.kind.is_empty()
             || reviews(&st, k, &rs) + 1 >= p.policy.limits.checkpoint_reviews;
         let mut done = json!({"checkpoint": k, "round": round.round, "content": content, "result": "findings",
-                   "findings": list, "areas": areas, "probes": probes, "note": note});
+                   "findings": list, "areas": areas, "probes": probes, "note": note,
+                   "confirmed": confirmed, "still_open": still_open});
         if parks {
             done["parked"] = json!(true);
         }
@@ -2154,7 +2202,7 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
     };
     let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
     let pl = plan::load(p)?;
-    let held = open_blocking(&st, k, &rs);
+    let held = open_blocking_only(&st, k, &rs);
     let ids: Vec<(u32, u32)> = held.iter().map(|x| (x.0, x.1 as u32)).collect();
     let open: Vec<Value> = held.into_iter().map(|x| x.2).collect();
     let content = cp_content(p, k)?;

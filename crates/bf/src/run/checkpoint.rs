@@ -482,7 +482,12 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     };
     if !was_closed_already(&st, k) && !held_by.is_empty() {
         let (id, sev, title, source) = &held_by[0];
-        if source.is_empty() {
+        if let Some(waits) = crate::ckconfirm::answered_text(p, &st, k, id)? {
+            check_gaps.push(crate::strings::t(
+                "ck_confirm.close.answered",
+                &[("id", id), ("sev", sev), ("title", title), ("fate", &waits)],
+            ));
+        } else if source.is_empty() {
             check_gaps.push(format!(
                 "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
             ));
