@@ -833,14 +833,12 @@ pub fn directive(p: &Project, st: &State, pl: &Plan, k: &str, check: &str) -> Va
         "commands": [format!("bf brief {k} --role {role} --check {check}")]})
 }
 
+/// The blocking findings and their (round, number) ids.
+pub type BlockingToFix = (Vec<Value>, Vec<(u32, u32)>);
+
 /// The open critical, high and medium findings of the audit rounds of `k` that judged `content`, with their
 /// round and number, for the one fix that follows the audits.
-pub fn blocking_to_fix(
-    p: &Project,
-    st: &State,
-    k: &str,
-    content: &str,
-) -> R<(Vec<Value>, Vec<(u32, u32)>)> {
+pub fn blocking_to_fix(p: &Project, st: &State, k: &str, content: &str) -> R<BlockingToFix> {
     let mut findings = Vec::new();
     let mut ids = Vec::new();
     for r in ckreview::rounds(p, k)?
