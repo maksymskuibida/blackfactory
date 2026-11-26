@@ -5065,6 +5065,47 @@ fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
     }
 }
 
+/// `bf checkpoint finding --human` is the conductor's own step (R-81, D-170, TH-22): a call whose
+/// payload names an agent type (every subagent, in a working copy or in the workspace) is refused,
+/// also when its words before the subcommand cannot be read. A stated limit: the guard trusts the
+/// harness's agent type as for `bf unit unblock`, so a second top-level session that the harness
+/// does not mark as a subagent cannot be told from the conductor; the quote rule binds it.
+fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
+    let t = |k: &str| crate::strings::t(k, &[("agent", agent)]);
+    let calls = crate::shellparse::engine_calls(cmd);
+    let human = |c: &crate::shellparse::Call| {
+        c.words
+            .iter()
+            .any(|w| w == "--human" || w.starts_with("--human="))
+    };
+    let plain_of =
+        |c: &crate::shellparse::Call| crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
+    if calls.iter().any(|c| {
+        let plain = plain_of(c);
+        plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("finding")
+            && human(c)
+    }) {
+        return Some(deny(
+            &t("human_finding.guard.refused"),
+            &t("human_finding.guard.because"),
+            &[&t("human_finding.guard.step")],
+            &t("human_finding.guard.worked"),
+        ));
+    }
+    if calls.iter().any(|c| {
+        (c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))) && human(c)
+    }) {
+        return Some(deny(
+            &t("human_finding.guard.opaque.refused"),
+            &t("human_finding.guard.opaque.because"),
+            &[&t("human_finding.guard.opaque.step")],
+            &t("human_finding.guard.opaque.worked"),
+        ));
+    }
+    None
+}
+
 /// Is a call one of `bf unit unblock`, or one that may be it because its words before the
 /// subcommand cannot be read?
 fn is_unblock_call(c: &crate::shellparse::Call) -> bool {
@@ -6511,6 +6552,13 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
     }
     if tool == "Bash" && !agent_type(input).is_empty() {
         if let Some(d) = unblock_denial(agent_type(input), ti["command"].as_str().unwrap_or("")) {
+            return d;
+        }
+    }
+    if tool == "Bash" && !agent_type(input).is_empty() {
+        if let Some(d) =
+            human_finding_denial(agent_type(input), ti["command"].as_str().unwrap_or(""))
+        {
             return d;
         }
     }
