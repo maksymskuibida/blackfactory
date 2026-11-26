@@ -702,9 +702,24 @@ fn fix_findings(st: &State, f: &CkFixOpen) -> Vec<Value> {
                 "title": x["title"], "severity": x["severity"], "where": x["where"]})
         })
         .collect();
-    out.extend(open_ids(f).into_iter().map(|(id, x)| {
+    let open = open_ids(f);
+    out.extend(open.iter().map(|(id, x)| {
         json!({"id": id, "title": x["title"], "severity": x["severity"], "where": x["where"]})
     }));
+    for (id, x) in f.added.iter().filter(|a| a.0.starts_with('r')) {
+        if out.iter().any(|o| o["id"] == json!(id)) {
+            continue;
+        }
+        let round = id[1..]
+            .split_once('.')
+            .and_then(|(a, _)| a.parse::<u32>().ok())
+            .unwrap_or(0);
+        let source = crate::ckconfirm::source_of(st, &f.checkpoint, round);
+        out.push(
+            json!({"id": id, "source": crate::ckconfirm::source_text(&source),
+            "title": x["title"], "severity": x["severity"], "where": x["where"]}),
+        );
+    }
     out
 }
 
@@ -778,6 +793,18 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
 /// worked since. The engine goes on to the checks and the end, with no further round (R-71).
 pub(crate) fn settled(f: &CkFixOpen) -> bool {
     f.phase == "review" && f.rounds_log.last().map(|r| r["accepted"] == json!(true)) == Some(true)
+}
+
+/// Put findings the human sent into the fix: its builder's findings and the list of what was added (R-79).
+pub(crate) fn take_in(o: &mut CkFixOpen, items: Vec<(String, Value)>) {
+    for (id, v) in items {
+        if !o.findings.contains(&v) {
+            o.findings.push(v.clone());
+        }
+        if !o.added.iter().any(|a| a.0 == id) {
+            o.added.push((id, v));
+        }
+    }
 }
 
 /// The open findings of the fix's latest review round with their ids `f<round>.<number>`: those no accept covers.
@@ -1948,6 +1975,11 @@ pub fn command(
             }
         };
         let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
+        let carried: Vec<String> = if f.phase == "low" {
+            open_ids(&f).into_iter().map(|x| x.0).collect()
+        } else {
+            vec![]
+        };
         events::append(
             p,
             "checkpoint.fix.release",
@@ -1955,7 +1987,15 @@ pub fn command(
         )?;
         write_overlay(p)?;
         p.write_guard()?;
-        return Ok(json!({"checkpoint": k, "released": true}));
+        let mut v = json!({"checkpoint": k, "released": true});
+        if !carried.is_empty() {
+            v["carried"] = json!(carried);
+            v["message"] = json!(crate::strings::t(
+                "fix_add.release.carried",
+                &[("k", k), ("ids", &carried.join(", "))]
+            ));
+        }
+        return Ok(v);
     }
     Err(refuse_owned(
         crate::strings::t("cli.ckfix.needs.what", &[("k", k)]),
@@ -2234,6 +2274,36 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
                     "fix_sources.item",
                     &[
                         ("id", &format!("r{round}.{number}")),
+                        ("source", &crate::ckconfirm::source_text(&source)),
+                        ("severity", s(x, "severity")),
+                        ("where", s(x, "where")),
+                        ("title", s(x, "title")),
+                        ("action", s(x, "action")),
+                    ]
+                )
+            ));
+        }
+        md.push('\n');
+    }
+    let added_r: Vec<&(String, Value)> = f.added.iter().filter(|a| a.0.starts_with('r')).collect();
+    if f.confirm && !added_r.is_empty() {
+        let st = events::replay(p)?;
+        md.push_str(&format!(
+            "## {}\n\n",
+            crate::strings::t("fix_add.brief.title", &[])
+        ));
+        for (id, x) in added_r {
+            let round = id[1..]
+                .split_once('.')
+                .and_then(|(a, _)| a.parse::<u32>().ok())
+                .unwrap_or(0);
+            let source = crate::ckconfirm::source_of(&st, k, round);
+            md.push_str(&format!(
+                "- {}\n",
+                crate::strings::t(
+                    "fix_sources.item",
+                    &[
+                        ("id", id),
                         ("source", &crate::ckconfirm::source_text(&source)),
                         ("severity", s(x, "severity")),
                         ("where", s(x, "where")),

@@ -707,6 +707,9 @@ pub struct CkFixOpen {
     pub inherited: Vec<Accepted>,
     /// Opened under the engine that leaves its findings answered when it ends (R-78, D-160).
     pub confirm: bool,
+    /// The findings the human sent to this fix while it waited, with their ids (`r<round>.<number>` or
+    /// `f<round>.<number>`) and values (R-79).
+    pub added: Vec<(String, Value)>,
 }
 
 /// A hold the engine logged for a checkpoint: `marked`, `question` or `wave`, what it names, and the seq
@@ -2763,11 +2766,113 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 st.turns[turn_ix[&tseq]].used = true;
                 if let Some(o) = st.ck_fix.as_mut() {
+                    // From the low findings, every open finding of the fix's review goes into the fix (R-79).
+                    if o.phase == "low" {
+                        let items = crate::ckfix::open_ids(o);
+                        crate::ckfix::take_in(o, items);
+                    }
                     o.phase = "fix".into();
                     o.rounds = 0;
                     o.attempts = 0;
                     o.reason.clear();
                     o.missing.clear();
+                }
+            }
+            "checkpoint.fix.add" => {
+                let ck = sv("checkpoint");
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let Some(fx) = st
+                    .ck_fix
+                    .clone()
+                    .filter(|f| f.checkpoint == ck && matches!(f.phase.as_str(), "low" | "parked"))
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: findings were sent to a fix of {ck} that was not waiting for them (it was at work or none was open)"
+                    ));
+                    continue;
+                };
+                let pairs = id_pairs(&ev["finding_ids"]);
+                let mut items: Vec<(String, Value)> = Vec::new();
+                let mut bad: Option<String> = None;
+                for (r, i) in &pairs {
+                    let id = format!("r{r}.{i}");
+                    match ck_rounds
+                        .get(&(ck.clone(), *r))
+                        .and_then(|l| l.get((*i as usize).wrapping_sub(1)))
+                    {
+                        Some(v)
+                            if !fx.origin_ids.contains(&(*r, *i))
+                                && crate::ckreview::fate(&st, &ck, *r, *i as usize - 1, v)
+                                    .is_none() =>
+                        {
+                            items.push((id, v.clone()))
+                        }
+                        _ => bad = Some(id),
+                    }
+                }
+                let open = crate::ckfix::open_ids(&fx);
+                for x in ev["fix_findings"].as_array().into_iter().flatten() {
+                    let id = x["id"].as_str().unwrap_or("").to_string();
+                    match open.iter().find(|o| o.0 == id) {
+                        Some((_, v)) if *v == x["finding"] => items.push((id, v.clone())),
+                        _ => bad = Some(id),
+                    }
+                }
+                if let Some(id) = bad {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add names `{id}`, which is not an open finding the fix can take"
+                    ));
+                    continue;
+                }
+                if items.is_empty() {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add names no finding"
+                    ));
+                    continue;
+                }
+                let mut base = put_to_human_seq(&st, &ck, &pairs);
+                for x in ev["fix_findings"].as_array().into_iter().flatten() {
+                    let round = x["id"]
+                        .as_str()
+                        .and_then(|s| s.strip_prefix('f'))
+                        .and_then(|s| s.split_once('.'))
+                        .and_then(|(a, _)| a.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    for (r, q) in &fx.round_seqs {
+                        if *r == round {
+                            base = base.max(*q);
+                        }
+                    }
+                }
+                let bound = match decision_bound(&st, &ck, base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint fix add was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add cites no valid human turn and quote, or words written before the findings were put to the human"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(o) = st.ck_fix.as_mut() {
+                    crate::ckfix::take_in(o, items);
+                    o.phase = "fix".into();
+                    o.reason.clear();
                 }
             }
             "checkpoint.finding.settle" => {
@@ -2981,7 +3086,22 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         rounds_log: o.rounds_log.clone(),
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
-                        ids: o.origin_ids.clone(),
+                        ids: {
+                            let mut ids = o.origin_ids.clone();
+                            if !ids.is_empty() || o.origin_findings.is_empty() {
+                                for (id, _) in o.added.iter().filter(|a| a.0.starts_with('r')) {
+                                    if let Some((r, i)) = id[1..].split_once('.') {
+                                        if let (Ok(r), Ok(i)) = (r.parse::<u32>(), i.parse::<u32>())
+                                        {
+                                            if !ids.contains(&(r, i)) {
+                                                ids.push((r, i));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ids
+                        },
                         from_round: st
                             .ck_round_done
                             .iter()

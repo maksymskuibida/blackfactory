@@ -1,0 +1,12 @@
+# Strings of findings the human sends to an open checkpoint fix that waits for them (R-79, D-62).
+
+"fix_add.pick.step" = "Name findings as `r<round>.<number>` (any source) or `f<round>.<number>` (the open fix's review), separated by commas, or `low` for every open low finding of the latest review. `bf status` lists them."
+"fix_add.pick.not_fix_finding" = "`{word}` is not an open finding of the fix review of {k}"
+"fix_add.pick.already" = "`{word}` is in the fix already"
+"fix_add.work.because" = "a checkpoint fix is at work on {k} (phase `{phase}`): its builder or its reviewer has the turn, and more findings reach it only while it waits for the human"
+"fix_add.work.step" = "Wait for the fix to stop (`bf next` shows who has the turn), or end it with `bf checkpoint fix {k} --abort`, then name the findings again."
+"fix_add.work.check" = "`bf status` shows the open fix."
+"fix_add.hold_what" = "send findings to the fix"
+"fix_add.added" = "The findings {ids} joined the fix of {k}, which is back at work."
+"fix_add.release.carried" = "The fix of {k} is released with the open low findings {ids} added to it."
+"fix_add.brief.title" = "Findings sent to this fix by the human"

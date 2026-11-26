@@ -1855,19 +1855,25 @@ pub fn status_json(p: &Project, st: &State, pl: &Plan) -> Value {
     json!(out)
 }
 
-/// The findings a human names: `low` for every low finding of the latest review that is still open, or ids
-/// such as `r1.2,r1.3`. Each must exist and still be open. Returns (round, number inside the round, finding).
-fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, usize, Value)>> {
+/// The findings a human names: `low` for every low finding of the latest review that is still open, ids
+/// such as `r1.2,r1.3`, or ids of the open fix's review such as `f1.1`. Each must exist and still be open.
+/// Returns the checkpoint review's findings (round, number inside the round, finding) and the fix review's
+/// (id, finding).
+type Picks = (Vec<(u32, usize, Value)>, Vec<(String, Value)>);
+
+fn pick_all(p: &Project, st: &State, k: &str, spec: &str) -> R<Picks> {
     let rs = rounds(p, k)?;
     let bad = |because: String| {
         refuse(
             format!("name findings of {k}"),
             because,
-            &["Name findings as `r<round>.<number>`, separated by commas, or `low` for every open low finding of the latest review. `bf status` lists them."],
+            &[&crate::strings::t("fix_add.pick.step", &[])],
             "`bf status` shows what became of each finding.",
         )
     };
+    let open_fix = st.ck_fix.as_ref().filter(|f| f.checkpoint == k);
     let mut out: Vec<(u32, usize, Value)> = Vec::new();
+    let mut fout: Vec<(String, Value)> = Vec::new();
     for word in spec.split(',').map(|w| w.trim()).filter(|w| !w.is_empty()) {
         if word == "low" {
             let lasts = latest_per_source(&rs);
@@ -1884,11 +1890,27 @@ fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, us
             }
             continue;
         }
-        let parsed = word
-            .strip_prefix('r')
-            .and_then(|x| x.split_once('.'))
-            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<usize>().ok()?)));
-        let Some((round, idx)) = parsed else {
+        let split = |c: char| {
+            word.strip_prefix(c)
+                .and_then(|x| x.split_once('.'))
+                .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<usize>().ok()?)))
+        };
+        if split('f').is_some() {
+            let found = open_fix.and_then(|f| {
+                crate::ckfix::open_ids(f)
+                    .into_iter()
+                    .find(|(id, _)| id == word)
+            });
+            let Some(found) = found else {
+                return Err(bad(crate::strings::t(
+                    "fix_add.pick.not_fix_finding",
+                    &[("word", word), ("k", k)],
+                )));
+            };
+            fout.push(found);
+            continue;
+        }
+        let Some((round, idx)) = split('r') else {
             return Err(bad(format!("`{word}` is not a finding id")));
         };
         let Some(f) = rs
@@ -1907,10 +1929,24 @@ fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, us
         out.push((round, idx, f.clone()));
     }
     out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-    if out.is_empty() {
+    fout.dedup_by(|a, b| a.0 == b.0);
+    if out.is_empty() && fout.is_empty() {
         return Err(bad("no open finding is named".to_string()));
     }
-    Ok(out)
+    Ok((out, fout))
+}
+
+fn pick_findings(p: &Project, st: &State, k: &str, spec: &str) -> R<Vec<(u32, usize, Value)>> {
+    let (r, f) = pick_all(p, st, k, spec)?;
+    if let Some((id, _)) = f.first() {
+        return Err(refuse(
+            format!("name findings of {k}"),
+            crate::strings::t("fix_add.pick.not_fix_finding", &[("word", id), ("k", k)]),
+            &[&crate::strings::t("fix_add.pick.step", &[])],
+            "`bf status` shows what became of each finding.",
+        ));
+    }
+    Ok(r)
 }
 
 /// The refusal of a human decision on a checkpoint finding or of a review release while a checkpoint fix
@@ -2071,6 +2107,77 @@ fn earlier_words(st: &State, k: &str, pairs: &[(u32, u32)]) -> Option<(u64, Stri
     events::reusable_pick(st, k, pairs).map(|(seq, c)| (c.1, c.2.clone(), Some(seq)))
 }
 
+/// Findings the human sends to the open fix of `k` while it waits for them (phase `low` or parked): they
+/// join the fix, which goes back to work with its rounds and attempts kept (R-79).
+fn add_to_fix(
+    p: &Project,
+    k: &str,
+    f: crate::events::CkFixOpen,
+    rp: Vec<(u32, usize, Value)>,
+    fp: Vec<(String, Value)>,
+    quote: &str,
+) -> R<Value> {
+    for (r, i, _) in &rp {
+        if f.origin_ids.contains(&(*r, *i as u32))
+            || f.added.iter().any(|a| a.0 == format!("r{r}.{i}"))
+        {
+            return Err(refuse_owned(
+                format!("fix findings of {k}"),
+                crate::strings::t("fix_add.pick.already", &[("word", &format!("r{r}.{i}"))]),
+                vec![crate::strings::t("fix_add.pick.step", &[])],
+                "`bf status` shows the fix.".to_string(),
+            ));
+        }
+    }
+    let pairs: Vec<(u32, u32)> = rp.iter().map(|x| (x.0, x.1 as u32)).collect();
+    let st = events::require_chain(p)?;
+    let mut base = events::put_to_human_seq(&st, k, &pairs);
+    for (id, _) in &fp {
+        let round = id
+            .strip_prefix('f')
+            .and_then(|x| x.split_once('.'))
+            .and_then(|(a, _)| a.parse::<u32>().ok())
+            .unwrap_or(0);
+        for (r, q) in &f.round_seqs {
+            if *r == round {
+                base = base.max(*q);
+            }
+        }
+    }
+    run::observe_holds(p)?;
+    let st = events::require_chain(p)?;
+    let bound = match events::decision_bound(&st, k, base, u64::MAX) {
+        Ok(b) => b,
+        Err(h) => {
+            return Err(hold_refusal(
+                &crate::strings::t("fix_add.hold_what", &[]),
+                k,
+                &h,
+            ))
+        }
+    };
+    let (turn, _) = events::pick_turn(&st, bound, events::Decide::Approve, quote)?;
+    let names: Vec<String> = rp
+        .iter()
+        .map(|x| format!("r{}.{}", x.0, x.1))
+        .chain(fp.iter().map(|x| x.0.clone()))
+        .collect();
+    events::append(
+        p,
+        "checkpoint.fix.add",
+        json!({"checkpoint": k, "ids": names,
+               "finding_ids": pairs.iter().map(|(r, i)| json!({"round": r, "index": i})).collect::<Vec<_>>(),
+               "fix_findings": fp.iter().map(|(id, v)| json!({"id": id, "finding": v})).collect::<Vec<_>>(),
+               "turn": turn, "quote": quote.trim()}),
+    )?;
+    crate::ckfix::write_overlay(p)?;
+    p.write_guard()?;
+    Ok(
+        json!({"checkpoint": k, "phase": "fix", "fix_added": true, "findings": names,
+              "message": crate::strings::t("fix_add.added", &[("k", k), ("ids", &names.join(", "))])}),
+    )
+}
+
 /// `bf checkpoint finding <K> --fix-findings <ids>`: findings picked to be fixed open the checkpoint fix.
 pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
     let _lock = crate::lock::engine(p, &format!("fix findings of {k}"))?;
@@ -2085,6 +2192,25 @@ pub fn fix_chosen(p: &Project, k: &str, spec: &str, quote: &str) -> R<Value> {
             )],
             "`bf next` shows what the checkpoint waits for.",
         ));
+    }
+    if let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == k) {
+        if !matches!(f.phase.as_str(), "low" | "parked") {
+            if let Err(h) = events::decision_bound(&st, k, 0, u64::MAX) {
+                return Err(hold_refusal(
+                    &crate::strings::t("fix_add.hold_what", &[]),
+                    k,
+                    &h,
+                ));
+            }
+            return Err(refuse_owned(
+                format!("fix findings of {k}"),
+                crate::strings::t("fix_add.work.because", &[("k", k), ("phase", &f.phase)]),
+                vec![crate::strings::t("fix_add.work.step", &[("k", k)])],
+                crate::strings::t("fix_add.work.check", &[]),
+            ));
+        }
+        let (rp, fp) = pick_all(p, &st, k, spec)?;
+        return add_to_fix(p, k, f.clone(), rp, fp, quote);
     }
     let picked = pick_findings(p, &st, k, spec)?;
     let human: Option<(u64, String, Option<u64>)> = if picked.iter().any(|x| blocking(&x.2)) {
