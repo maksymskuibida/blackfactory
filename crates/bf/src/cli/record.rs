@@ -141,6 +141,23 @@ fn cmd_record_put(args: &Args, p: &Project) -> R<()> {
     // A worker's only record is a new, open finding for a unit that is in review. Marking a finding
     // fixed or accepted is not a worker's to do.
     if let Some((_, zone_id)) = real_zone(p) {
+        // At a checkpoint an auditor files only through its audit round (D-164): the report names it.
+        if zone_id.starts_with("K-") && matches!(kind.name, "finding" | "legal") {
+            let role = if kind.name == "legal" {
+                "legal-auditor"
+            } else {
+                "security-auditor"
+            };
+            return Err(crate::refusal::from_key(
+                "ck_audit_records.refuse.record",
+                &[
+                    ("kind", kind.name),
+                    ("k", &zone_id),
+                    ("role", role),
+                    ("check", &crate::ckaudit::checks_of_role(p, &zone_id, role)),
+                ],
+            ));
+        }
         if matches!(kind.name, "threat" | "legal") {
             // A threat or a legal record is put only with the token of a role that writes that kind.
             let held = crate::roles::writers_of(kind.name)

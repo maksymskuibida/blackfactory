@@ -71,6 +71,23 @@ pub fn role_of(pl: &Plan, check: &str) -> &'static str {
     }
 }
 
+/// The audit checks of `k` whose auditor is `role`, joined for a refusal; `<X>` when the plan names none.
+pub fn checks_of_role(p: &Project, k: &str, role: &str) -> String {
+    let found: Vec<String> = plan::load(p)
+        .map(|pl| {
+            sources(&pl, k)
+                .into_iter()
+                .filter(|c| role_of(&pl, c) == role)
+                .collect()
+        })
+        .unwrap_or_default();
+    if found.is_empty() {
+        "<X>".to_string()
+    } else {
+        found.join(" or ")
+    }
+}
+
 fn is_uiux(pl: &Plan, check: &str) -> bool {
     named_of(pl, check) == "built-uiux-verification"
 }
@@ -433,6 +450,104 @@ pub fn brief(p: &Project, k: &str, role: &str, check: &str) -> R<PathBuf> {
     Ok(path)
 }
 
+fn needs_lawyer(f: &Value) -> bool {
+    f.get("lawyer_check").and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// An entry that needs a lawyer belongs to a legal audit and names its market (D-164).
+fn check_lawyer_entries(pl: &Plan, k: &str, check: &str, list: &[Value]) -> R<()> {
+    for (i, f) in list.iter().enumerate() {
+        if !needs_lawyer(f) {
+            continue;
+        }
+        let n = (i + 1).to_string();
+        let vals = [("k", k), ("check", check), ("number", n.as_str())];
+        if named_of(pl, check) != "legal-audit" {
+            return Err(crate::refusal::from_key(
+                "ck_audit_records.refuse.lawyer_source",
+                &vals,
+            ));
+        }
+        if s(f, "market").trim().is_empty() {
+            return Err(crate::refusal::from_key(
+                "ck_audit_records.refuse.lawyer_market",
+                &vals,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Files each entry that needs a lawyer as a marked legal record and stores its id on the entry.
+/// An entry with the same title, place and market that an earlier round of this source filed keeps its legal record,
+/// so a repeat round files it again under the same id (a changed one is asked again, FU-15).
+fn earlier_legal_record(
+    p: &Project,
+    rs: &[ckreview::Round],
+    check: &str,
+    f: &Value,
+) -> Option<String> {
+    let market = s(f, "market").trim().to_string();
+    rs.iter()
+        .rev()
+        .filter(|r| r.source == check)
+        .flat_map(|r| r.findings.iter().rev())
+        .filter(|o| {
+            s(o, "title") == s(f, "title")
+                && s(o, "where") == s(f, "where")
+                && s(o, "market").trim() == market
+        })
+        .filter_map(|o| o.get("legal_record").and_then(|v| v.as_str()))
+        .find(|id| {
+            p.get_record(id)
+                .ok()
+                .flatten()
+                .is_some_and(|r| s(&r, "outcome") != "accepted")
+        })
+        .map(|id| id.to_string())
+}
+
+fn file_lawyer_entries(
+    p: &Project,
+    rs: &[ckreview::Round],
+    k: &str,
+    check: &str,
+    list: Vec<Value>,
+) -> R<Vec<Value>> {
+    let mut out = Vec::new();
+    for (i, mut f) in list.into_iter().enumerate() {
+        if needs_lawyer(&f) {
+            let mut legal = json!({
+                "title": s(&f, "title"), "markets": [s(&f, "market").trim()],
+                "risk": s(&f, "title"), "researched": false, "lawyer_check": true,
+            });
+            for key in ["text", "severity", "where", "action"] {
+                if !s(&f, key).is_empty() {
+                    legal[key] = json!(s(&f, key));
+                }
+            }
+            if let Some(id) = earlier_legal_record(p, rs, check, &f) {
+                legal["id"] = json!(id);
+            }
+            let filed = crate::legal::file_finding(p, &legal).map_err(|e| {
+                let n = (i + 1).to_string();
+                crate::refusal::from_key(
+                    "ck_audit_records.refuse.lawyer_filed",
+                    &[
+                        ("k", k),
+                        ("check", check),
+                        ("number", &n),
+                        ("why", &format!("{e}")),
+                    ],
+                )
+            })?;
+            f["legal_record"] = filed["id"].clone();
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
 /// `bf report <K> --role <role> --check <X> --token <token> --result findings --findings -`.
 #[allow(clippy::too_many_arguments)]
 pub fn report(
@@ -502,6 +617,7 @@ pub fn report(
     }
     let areas = ckreview::check_areas(k, raw_areas)?;
     ckreview::check_findings(k, &list)?;
+    check_lawyer_entries(&pl, k, check, &list)?;
     let said = crate::ckconfirm::check_report(&st, &rs, k, check, findings)?;
     let (confirmed, still_open) = said.stored();
     let reopened = crate::ckconfirm::reopens_blocking(&rs, &said);
@@ -533,6 +649,7 @@ pub fn report(
         }
         covered_ok = failed.is_empty() && !missing;
     }
+    let list = file_lawyer_entries(p, &rs, k, check, list)?;
     let held_back = list.iter().any(ckreview::blocking) || reopened;
     let result_word = if list.is_empty() && said.still_open.is_empty() {
         "clean"

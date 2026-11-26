@@ -192,10 +192,11 @@ fn an_auditor_reports_and_files_from_the_checkpoints_working_copy() {
     // A started unit of another checkpoint is not this checkpoint's unit.
     let outside = FINDING.replace("U-1", "U-3");
     assert!(put_in(&fx, &k, "finding", &outside, &tok).code != 0);
-    // The finding, then the report, both from the checkpoint's copy.
+    // A finding record from the checkpoint's copy is refused: an auditor files through its audit round (D-164).
     let o = put_in(&fx, &k, "finding", FINDING, &tok);
-    assert_eq!(o.code, 0, "{}", o.all());
-    println!("accepted on a checkpoint: {}", o.stdout);
+    assert!(o.code != 0, "{}", o.all());
+    assert!(o.all().contains("bf report K-1 --role security-auditor"), "{}", o.all());
+    // The report, from the checkpoint's copy.
     let o = fx.bf_in(
         &k,
         &[
@@ -226,13 +227,14 @@ fn an_auditor_reports_and_files_from_the_checkpoints_working_copy() {
         ],
     );
     assert!(o.code != 0);
-    // The legal auditor's legal record is taken from the checkpoint's copy with its own token only.
+    // The legal auditor's legal record from the checkpoint's copy is refused too, with any token.
     let legal = "kind=\"legal\"\ntitle=\"Cookie notice\"\n";
     let lt = token(&fx, "K-1", "legal-auditor");
     let wrong = token(&fx, "K-1", "uiux-verifier");
     assert!(put_in(&fx, &k, "legal", legal, &wrong).code != 0);
     let o = put_in(&fx, &k, "legal", legal, &lt);
-    assert_eq!(o.code, 0, "{}", o.all());
+    assert!(o.code != 0, "{}", o.all());
+    assert!(o.all().contains("--role legal-auditor"), "{}", o.all());
     // Nothing else is put from a checkpoint's copy.
     let o = put_in(
         &fx,
