@@ -598,7 +598,24 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 let (check_gaps, unproven) =
                     crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, k, &content)?;
                 gaps.extend(check_gaps);
-                if gaps.is_empty() {
+                let held = if gaps.is_empty() {
+                    crate::ckreview::close_held_by(p, &st, kid)?
+                } else {
+                    vec![]
+                };
+                if let Some((fid, sev, title, source)) = held.first() {
+                    // The close would refuse on this open finding: offer the way on for it, not the close.
+                    let note = if crate::ckreview::is_human(source) {
+                        crate::strings::t(
+                            "ck_human.close.open",
+                            &[("id", fid), ("sev", sev), ("title", title)],
+                        )
+                    } else {
+                        format!("the finding {fid} ({sev}: {title}) is still open and holds the close of {kid}")
+                    };
+                    directives.push(json!({"role": "conductor", "action": "settle-open-finding", "checkpoint": kid, "finding": fid, "gaps": [note.clone()],
+                        "note": format!("`bf checkpoint close {kid}` would refuse: {note}.")}));
+                } else if gaps.is_empty() {
                     directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
                 } else {
                     directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "gaps": gaps,

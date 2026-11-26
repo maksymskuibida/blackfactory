@@ -179,3 +179,22 @@ fn every_text_of_the_row_comes_from_a_key() {
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/guard.rs")).unwrap();
     assert!(!src.contains("only the conductor files"));
 }
+
+#[test]
+fn a_run_time_word_after_the_subcommand_of_a_filing_is_refused_to_an_agent() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "bf checkpoint finding K-1 $F --quote x",
+        "bf checkpoint finding K-1 ${F} --quote x",
+        "F=--human; bf checkpoint finding K-1 $F --quote x",
+    ] {
+        for cwd in [&fx.root, &wc] {
+            let out = guard(&fx, cwd, Some("builder"), cmd);
+            assert!(
+                out.contains("deny") && out.contains("builder"),
+                "{cmd}: {out}"
+            );
+        }
+        assert!(!guard(&fx, &fx.root, None, cmd).contains("deny"), "{cmd}");
+    }
+}

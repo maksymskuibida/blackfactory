@@ -5093,8 +5093,15 @@ fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
             &t("human_finding.guard.worked"),
         ));
     }
+    let finding_call = |c: &crate::shellparse::Call| {
+        let plain = plain_of(c);
+        plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("finding")
+    };
     if calls.iter().any(|c| {
-        (c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))) && human(c)
+        ((c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))) && human(c))
+            // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
+            || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
     }) {
         return Some(deny(
             &t("human_finding.guard.opaque.refused"),

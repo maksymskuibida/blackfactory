@@ -294,6 +294,17 @@ pub fn open_blocking_named(
         .collect())
 }
 
+/// The open blocking findings that hold the close of the checkpoint: those of the human and the audits
+/// always, those of the review's own rounds only while the review is required. The one rule the close and
+/// `bf next` both read.
+pub fn close_held_by(p: &Project, st: &State, k: &str) -> R<Vec<(String, String, String, String)>> {
+    let all = open_blocking_named(p, st, k)?;
+    if required(st) {
+        return Ok(all);
+    }
+    Ok(all.into_iter().filter(|f| !f.3.is_empty()).collect())
+}
+
 /// Whether the checkpoint still needs its review before it can close.
 pub fn needed(p: &Project, st: &State, k: &str, content: &str) -> R<bool> {
     // A parked checkpoint (also by an audit's finding at the limit) asks the human, as R-77 orders.

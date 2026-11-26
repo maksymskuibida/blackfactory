@@ -475,11 +475,7 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     let (mut check_gaps, mut unproven_names) =
         crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
     // R-49: no checkpoint closes before its review ran on the content being closed.
-    let held_by = if crate::ckreview::required(&st) {
-        crate::ckreview::open_blocking_named(p, &st, k)?
-    } else {
-        vec![]
-    };
+    let held_by = crate::ckreview::close_held_by(p, &st, k)?;
     if !was_closed_already(&st, k) && !held_by.is_empty() {
         let (id, sev, title, source) = &held_by[0];
         if let Some(waits) = crate::ckconfirm::answered_text(p, &st, k, id)? {
