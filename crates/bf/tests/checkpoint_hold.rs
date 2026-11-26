@@ -796,6 +796,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("withdraw-repair", "neither"),
     ("decide-repair", "neither"),
     ("see-judged-repair", "neither"),
+    ("see-waiting-human-findings", "neither"),
     ("open-plan-repair", "neither"),
     ("judge-block", "neither"),
 ];
