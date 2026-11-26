@@ -680,6 +680,34 @@ pub fn overlay(table: &mut Value) {
     }
 }
 
+/// The findings a fix was opened for, as its directive lists them: with the id and the source when the fix
+/// carries the pairs of its findings (R-78), as before otherwise.
+fn fix_findings(st: &State, f: &CkFixOpen) -> Vec<Value> {
+    let paired =
+        f.confirm && !f.origin_ids.is_empty() && f.origin_ids.len() == f.origin_findings.len();
+    if !paired {
+        return f
+            .findings
+            .iter()
+            .map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]}))
+            .collect();
+    }
+    let mut out: Vec<Value> = f
+        .origin_ids
+        .iter()
+        .zip(&f.origin_findings)
+        .map(|((round, number), x)| {
+            let source = crate::ckconfirm::source_of(st, &f.checkpoint, *round);
+            json!({"id": format!("r{round}.{number}"), "source": crate::ckconfirm::source_text(&source),
+                "title": x["title"], "severity": x["severity"], "where": x["where"]})
+        })
+        .collect();
+    out.extend(open_ids(f).into_iter().map(|(id, x)| {
+        json!({"id": id, "title": x["title"], "severity": x["severity"], "where": x["where"]})
+    }));
+    out
+}
+
 /// The directive for the open fix.
 pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
     let k = &f.checkpoint;
@@ -714,7 +742,7 @@ pub fn directive(p: &Project, st: &State, f: &CkFixOpen) -> Value {
             "may_change": lv.allowed.iter().chain(lv.test_dirs.iter()).collect::<Vec<_>>(),
             "granted": crate::fixscope::granted(st, k), "from_saved": f.from_saved,
             "failing_checks": f.failed.iter().filter_map(|x| x["check"].as_str()).collect::<Vec<_>>(),
-            "findings": f.findings.iter().map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]})).collect::<Vec<_>>(),
+            "findings": fix_findings(st, f),
             "commands": [format!("bf brief {k} --role builder")], "abort_command": abort});
             d
         }
@@ -2188,12 +2216,12 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         let st = events::replay(p)?;
         md.push_str(&format!(
             "## {}\n\n{}\n\n",
-            crate::strings::t("ck_confirm.fix.title", &[]),
+            crate::strings::t("fix_sources.title", &[]),
             crate::strings::t(
                 if role == "builder" {
-                    "ck_confirm.fix.intro.builder"
+                    "fix_sources.intro.builder"
                 } else {
-                    "ck_confirm.fix.intro.reviewer"
+                    "fix_sources.intro.reviewer"
                 },
                 &[]
             )
@@ -2203,10 +2231,12 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
             md.push_str(&format!(
                 "- {}\n",
                 crate::strings::t(
-                    "ck_confirm.fix.item",
+                    "fix_sources.item",
                     &[
                         ("id", &format!("r{round}.{number}")),
                         ("source", &crate::ckconfirm::source_text(&source)),
+                        ("severity", s(x, "severity")),
+                        ("where", s(x, "where")),
                         ("title", s(x, "title")),
                         ("action", s(x, "action")),
                     ]

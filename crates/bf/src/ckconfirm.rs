@@ -412,11 +412,19 @@ pub fn reopens_blocking(rs: &[Round], said: &Said) -> bool {
 
 /// A fix review's report may not end a finding of the checkpoint: it names none as confirmed or fixed.
 pub fn refuse_fix_review_ends(k: &str, report: Option<&Value>) -> R<()> {
-    for field in ["confirmed", "fixed"] {
-        let named = report
-            .and_then(|r| r.get(field))
-            .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()));
-        if named {
+    let filled = |v: Option<&Value>| {
+        v.is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
+    };
+    for field in ["confirmed", "still_open", "fixed"] {
+        let entries = report.and_then(|r| {
+            r.as_array()
+                .or_else(|| r.get("findings").and_then(|l| l.as_array()))
+        });
+        let in_entry = entries.is_some_and(|l| {
+            l.iter()
+                .any(|e| field != "still_open" && filled(e.get(field)))
+        });
+        if filled(report.and_then(|r| r.get(field))) || in_entry {
             return Err(refuse_owned(
                 t("ck_confirm.what.fix_review", &[("k", k)]),
                 t("ck_confirm.refuse.fix_review.why", &[("field", field)]),
