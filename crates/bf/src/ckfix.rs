@@ -251,6 +251,82 @@ pub(crate) fn opens_fix(failed: &[Value], unreachable: bool) -> bool {
     !failed.is_empty() && !unreachable
 }
 
+/// Whether the fix is in a step of its design, where a human finding joins it at once outside the design
+/// (R-81). The design steps come with U-25; until then no fix is in one.
+pub(crate) fn in_design(_f: &CkFixOpen) -> bool {
+    false
+}
+
+/// The first pass of `maybe_open` (R-81): a checkpoint with human findings that wait for a fix, no open round
+/// of its review or of an audit, every unit landed and no check marked unreachable gets one fix holding them,
+/// the failed checks and the blocking findings today's loop would open a fix for, and no finding that waits for
+/// the human's decision. A due audit does not stop it. Whether a fix was opened.
+fn open_for_human(p: &Project, pl: &Plan, st: &State, receipts: &[Receipt]) -> R<bool> {
+    for k in &pl.checkpoints {
+        let kid = s(k, "id");
+        if crate::ckhuman::waiting(st, kid).is_empty() || st.closed.contains_key(kid) {
+            continue;
+        }
+        let after = str_list(k, "after");
+        if after.is_empty() || !after.iter().all(|u| st.unit_state(u) == "landed") {
+            continue;
+        }
+        let rs = crate::ckreview::rounds(p, kid)?;
+        if crate::ckreview::open_round(&rs, "").is_some() || crate::ckaudit::round_open(p, kid)? {
+            continue;
+        }
+        let wc = p.work_dir().join(kid);
+        if !wc.join(".git").exists() && !wc.is_dir() {
+            for r in run::checkpoint_repos(p, pl, kid)? {
+                run::ensure_checkpoint_worktree(p, kid, r)?;
+            }
+            if !crate::ckreview::copy_path(p, kid).exists() {
+                crate::ckreview::make_copy(p, pl, kid)?;
+            }
+        }
+        let content = p.content_hash(&wc).unwrap_or_default();
+        if content.is_empty() {
+            continue;
+        }
+        let (failed, unreachable) = failing_checks(pl, st, receipts, k, &content);
+        if unreachable {
+            continue;
+        }
+        let declined = st.ck_declined.contains(&format!("{kid}@{content}"));
+        let failed = if declined { vec![] } else { failed };
+        let (mut findings, mut ids) = crate::ckhuman::waiting_findings(p, st, kid)?;
+        if findings.is_empty() {
+            continue;
+        }
+        if !declined && !crate::ckreview::parked(p, st, kid)? {
+            let (f2, i2) = crate::ckaudit::blocking_to_fix(p, st, kid, &content)?;
+            findings.extend(f2);
+            ids.extend(i2);
+        }
+        let _lock = crate::lock::engine(p, &format!("open a fix of {kid}"))?;
+        let st2 = events::require_chain(p)?;
+        if st2.ck_fix.is_some() || st2.sync_open.is_some() {
+            return Ok(true);
+        }
+        if open_locked_by(
+            p,
+            pl,
+            kid,
+            "review",
+            failed,
+            (findings, ids),
+            &content,
+            false,
+            None,
+            None,
+            Some("human"),
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Open a fix for a failed check of a checkpoint whose units have all landed. Called by `bf next`, so no
 /// question reaches the human for a check that merely failed. A check that could not run goes to the human.
 pub fn maybe_open(p: &Project) -> R<()> {
@@ -266,6 +342,9 @@ pub fn maybe_open(p: &Project) -> R<()> {
     }
     let pl = plan::load(p)?;
     let receipts = evidence::load_receipts(p)?;
+    if open_for_human(p, &pl, &st, &receipts)? {
+        return Ok(());
+    }
     for k in &pl.checkpoints {
         let kid = s(k, "id");
         let after = str_list(k, "after");
@@ -409,6 +488,22 @@ fn open_locked_by(
     human: Option<(u64, &str, Option<u64>)>,
     opened_by: Option<&str>,
 ) -> R<bool> {
+    // Every opening of review findings also takes the human findings that wait for a fix (R-81).
+    let (mut findings, mut finding_ids) = (findings, finding_ids);
+    if source != "check"
+        && source != "wave"
+        && opened_by != Some("human")
+        && findings.len() == finding_ids.len()
+    {
+        let st = events::replay(p)?;
+        let (more, more_ids) = crate::ckhuman::waiting_findings(p, &st, k)?;
+        for (f, id) in more.into_iter().zip(more_ids) {
+            if !finding_ids.contains(&id) {
+                findings.push(f);
+                finding_ids.push(id);
+            }
+        }
+    }
     for (_, wt) in wts(p, pl, k)? {
         if gitx::has_uncommitted(&wt) {
             if strict {
@@ -689,7 +784,21 @@ fn fix_findings(st: &State, f: &CkFixOpen) -> Vec<Value> {
         return f
             .findings
             .iter()
-            .map(|x| json!({"title": x["title"], "severity": x["severity"], "where": x["where"]}))
+            .map(|x| {
+                let mut v =
+                    json!({"title": x["title"], "severity": x["severity"], "where": x["where"]});
+                if let Some((id, _)) = f
+                    .added
+                    .iter()
+                    .find(|a| a.1 == *x && f.outside_design.contains(&a.0))
+                {
+                    v["id"] = json!(id);
+                    v["source"] = json!("human");
+                    v["action"] = x["action"].clone();
+                    v["outside_design"] = json!(true);
+                }
+                v
+            })
             .collect();
     }
     let mut out: Vec<Value> = f
@@ -698,8 +807,12 @@ fn fix_findings(st: &State, f: &CkFixOpen) -> Vec<Value> {
         .zip(&f.origin_findings)
         .map(|((round, number), x)| {
             let source = crate::ckconfirm::source_of(st, &f.checkpoint, *round);
-            json!({"id": format!("r{round}.{number}"), "source": crate::ckconfirm::source_text(&source),
-                "title": x["title"], "severity": x["severity"], "where": x["where"]})
+            let mut v = json!({"id": format!("r{round}.{number}"), "source": source_word(&source),
+                "title": x["title"], "severity": x["severity"], "where": x["where"]});
+            if crate::ckreview::is_human(&source) {
+                v["action"] = x["action"].clone();
+            }
+            v
         })
         .collect();
     let open = open_ids(f);
@@ -715,12 +828,27 @@ fn fix_findings(st: &State, f: &CkFixOpen) -> Vec<Value> {
             .and_then(|(a, _)| a.parse::<u32>().ok())
             .unwrap_or(0);
         let source = crate::ckconfirm::source_of(st, &f.checkpoint, round);
-        out.push(
-            json!({"id": id, "source": crate::ckconfirm::source_text(&source),
-            "title": x["title"], "severity": x["severity"], "where": x["where"]}),
-        );
+        let mut v = json!({"id": id, "source": source_word(&source),
+            "title": x["title"], "severity": x["severity"], "where": x["where"]});
+        if crate::ckreview::is_human(&source) {
+            v["action"] = x["action"].clone();
+        }
+        if f.outside_design.contains(id) {
+            v["outside_design"] = json!(true);
+        }
+        out.push(v);
     }
     out
+}
+
+/// The source of a finding in a directive: `human` for the human's own, as the replay names it, else the
+/// text a human reads.
+fn source_word(source: &str) -> String {
+    if crate::ckreview::is_human(source) {
+        "human".to_string()
+    } else {
+        crate::ckconfirm::source_text(source)
+    }
 }
 
 /// The directive for the open fix.
@@ -1665,11 +1793,24 @@ fn report_inner(
                     _ => String::new(),
                 },
             )?;
+            // R-81: the human findings that wait for a fix join the next round, or stay with a fix parked at
+            // its limit of rounds.
+            let step = if to == "parked" { "park" } else { "review" };
+            if crate::ckhuman::join_after_review(p, k, step)? {
+                return Ok(
+                    json!({"checkpoint": k, "phase": if to == "parked" { "parked" } else { "fix" },
+                    "human_joined": true}),
+                );
+            }
             Ok(json!({"checkpoint": k, "phase": to}))
         }
         ("review", "built") => {
             crate::ckconfirm::refuse_fix_review_ends(k, findings)?;
             record_round(p, &pl, &f, "clean", "done", &[], String::new())?;
+            // R-81: a fix that would end goes to a next round for the human findings that wait.
+            if crate::ckhuman::join_after_review(p, k, "review")? {
+                return Ok(json!({"checkpoint": k, "phase": "fix", "human_joined": true}));
+            }
             go_on(p, &pl, &f)
         }
         (ph, r) => Err(refuse(
@@ -1814,7 +1955,7 @@ fn open_from_review(
         crate::ckreview::rounds(p, k)?
             .iter()
             .rev()
-            .find(|r| r.result.as_deref() == Some("findings"))
+            .find(|r| r.source.is_empty() && r.result.as_deref() == Some("findings"))
             .map(|r| (1..=listed.len() as u32).map(|i| (r.round, i)).collect())
             .unwrap_or_default()
     } else {
@@ -2285,7 +2426,44 @@ pub fn brief(p: &Project, f: &CkFixOpen, role: &str) -> R<PathBuf> {
         }
         md.push('\n');
     }
-    let added_r: Vec<&(String, Value)> = f.added.iter().filter(|a| a.0.starts_with('r')).collect();
+    let added_r: Vec<&(String, Value)> = f
+        .added
+        .iter()
+        .filter(|a| a.0.starts_with('r') && !f.outside_design.contains(&a.0))
+        .collect();
+    let outside: Vec<&(String, Value)> = f
+        .added
+        .iter()
+        .filter(|a| f.outside_design.contains(&a.0))
+        .collect();
+    if !outside.is_empty() {
+        md.push_str(&format!(
+            "## {}\n\n{}\n\n",
+            crate::strings::t("human_fix.brief.title", &[]),
+            crate::strings::t(
+                if role == "builder" {
+                    "human_fix.brief.intro.builder"
+                } else {
+                    "human_fix.brief.intro.reviewer"
+                },
+                &[]
+            )
+        ));
+        for (id, x) in outside {
+            md.push_str(&format!(
+                "- {}\n",
+                crate::strings::t(
+                    "human_fix.brief.item",
+                    &[
+                        ("id", id),
+                        ("severity", s(x, "severity")),
+                        ("action", s(x, "action")),
+                    ]
+                )
+            ));
+        }
+        md.push('\n');
+    }
     if f.confirm && !added_r.is_empty() {
         let st = events::replay(p)?;
         md.push_str(&format!(

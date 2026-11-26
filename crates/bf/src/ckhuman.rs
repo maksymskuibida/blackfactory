@@ -4,7 +4,7 @@
 //! (which reads and sets no `used` mark of a turn) and the judgment the replay gives an event of this kind.
 
 use crate::ckreview;
-use crate::events::{self, State};
+use crate::events::{self, CkFixOpen, State};
 use crate::refusal::{refuse_owned, Fail, R};
 use crate::store::{s, Project};
 use crate::strings::t;
@@ -155,8 +155,28 @@ pub fn finding_of(quote: &str, severity: Option<&str>, turn: u64) -> Value {
     f
 }
 
-/// `bf checkpoint finding <K> --human ...`: file the findings, each in the human's quoted words.
+/// `bf checkpoint finding <K> --human ...`: file the findings, each in the human's quoted words. Filed with
+/// a fix, they join the open fix of the checkpoint when it waits for them, or open one at once when nothing
+/// holds it (R-81).
 pub fn file(p: &Project, k: &str, items: &[Item], fix: bool, fix_quote: &str) -> R<Value> {
+    let (v, filing) = file_locked(p, k, items, fix, fix_quote)?;
+    if fix {
+        let ids: Vec<(u32, u32)> = (1..=v["filed"].as_u64().unwrap_or(0) as u32)
+            .map(|i| (v["round"].as_u64().unwrap_or(0) as u32, i))
+            .collect();
+        join_waiting(p, k, &ids, filing)?;
+        crate::ckfix::maybe_open(p)?;
+    }
+    Ok(v)
+}
+
+fn file_locked(
+    p: &Project,
+    k: &str,
+    items: &[Item],
+    fix: bool,
+    fix_quote: &str,
+) -> R<(Value, u64)> {
     let _lock = crate::lock::engine(p, &format!("file a finding of {k}"))?;
     let st = events::require_chain(p)?;
     let pl = crate::plan::load(p)?;
@@ -219,7 +239,7 @@ pub fn file(p: &Project, k: &str, items: &[Item], fix: bool, fix_quote: &str) ->
     } else {
         String::new()
     };
-    events::append(
+    let written = events::append(
         p,
         "checkpoint.finding.human",
         json!({"checkpoint": k, "round": round, "content": content, "findings": findings,
@@ -229,7 +249,309 @@ pub fn file(p: &Project, k: &str, items: &[Item], fix: bool, fix_quote: &str) ->
     let ids: Vec<String> = (1..=findings.len())
         .map(|i| format!("r{round}.{i}"))
         .collect();
-    Ok(json!({"checkpoint": k, "round": round, "ids": ids, "filed": findings.len(), "fix": fix}))
+    Ok((
+        json!({"checkpoint": k, "round": round, "ids": ids, "filed": findings.len(), "fix": fix}),
+        written["seq"].as_u64().unwrap_or(0),
+    ))
+}
+
+/// The human findings of `k` that wait for a fix, as the replay keeps them.
+pub fn waiting(st: &State, k: &str) -> Vec<(u32, u32)> {
+    st.ck_human_wait.get(k).cloned().unwrap_or_default()
+}
+
+/// Findings with the (round, number) of each.
+pub type Waiting = (Vec<Value>, Vec<(u32, u32)>);
+
+/// The waiting human findings of `k` with their values, as the review rounds hold them.
+pub fn waiting_findings(p: &Project, st: &State, k: &str) -> R<Waiting> {
+    let rs = ckreview::rounds(p, k)?;
+    let (mut findings, mut ids) = (Vec::new(), Vec::new());
+    for (r, i) in waiting(st, k) {
+        let found = rs
+            .iter()
+            .find(|x| x.round == r && ckreview::is_human(&x.source))
+            .and_then(|x| x.findings.get((i as usize).wrapping_sub(1)));
+        if let Some(f) = found.filter(|f| ckreview::fate(st, k, r, i as usize - 1, f).is_none()) {
+            findings.push(f.clone());
+            ids.push((r, i));
+        }
+    }
+    Ok((findings, ids))
+}
+
+/// Why the human findings of `k` that wait for a fix wait, as the key of the reason (`round`, `fix_round`, `sync`,
+/// `other_fix`, `units`, `run`, `plan_gate`, `budget`, `check`); none when nothing holds them and the next
+/// `bf next` opens their fix. `bf next` and the page both read it.
+pub fn waits_for(
+    p: &Project,
+    st: &State,
+    pl: &crate::plan::Plan,
+    k: &str,
+) -> R<Option<&'static str>> {
+    if waiting(st, k).is_empty() {
+        return Ok(None);
+    }
+    if st.active_run().is_none() {
+        return Ok(Some("run"));
+    }
+    if !st.gate_passed("plan", None) {
+        return Ok(Some("plan_gate"));
+    }
+    if p.policy.budget.cap > 0.0 && st.cost >= p.policy.budget.cap {
+        return Ok(Some("budget"));
+    }
+    if st.sync_open.is_some() {
+        return Ok(Some("sync"));
+    }
+    if let Some(f) = &st.ck_fix {
+        return Ok(Some(if f.checkpoint == k {
+            "fix_round"
+        } else {
+            "other_fix"
+        }));
+    }
+    let after = pl
+        .checkpoint(k)
+        .map(|c| crate::store::str_list(c, "after"))
+        .unwrap_or_default();
+    if after.is_empty() || !after.iter().all(|u| st.unit_state(u) == "landed") {
+        return Ok(Some("units"));
+    }
+    let rs = ckreview::rounds(p, k)?;
+    if ckreview::open_round(&rs, "").is_some() || crate::ckaudit::round_open(p, k)? {
+        return Ok(Some("round"));
+    }
+    if let Some(c) = pl.checkpoint(k) {
+        let content = p.content_hash(&p.work_dir().join(k)).unwrap_or_default();
+        let receipts = crate::evidence::load_receipts(p)?;
+        if crate::ckfix::failing_checks(pl, st, &receipts, c, &content).1 {
+            return Ok(Some("check"));
+        }
+    }
+    Ok(None)
+}
+
+/// The reason as a human reads it.
+pub fn waits_text(key: &str, k: &str) -> String {
+    match key {
+        "round" => t("human_fix.waits.round", &[("k", k)]),
+        "fix_round" => t("human_fix.waits.fix_round", &[("k", k)]),
+        "sync" => t("human_fix.waits.sync", &[("k", k)]),
+        "other_fix" => t("human_fix.waits.other_fix", &[("k", k)]),
+        "units" => t("human_fix.waits.units", &[("k", k)]),
+        "run" => t("human_fix.waits.run", &[("k", k)]),
+        "plan_gate" => t("human_fix.waits.plan_gate", &[("k", k)]),
+        "budget" => t("human_fix.waits.budget", &[("k", k)]),
+        _ => t("human_fix.waits.check", &[("k", k)]),
+    }
+}
+
+/// The information entries of `bf next`: for each checkpoint with human findings that wait for a fix, what
+/// each waits for.
+pub fn next_entries(p: &Project, st: &State, pl: &crate::plan::Plan) -> R<Vec<Value>> {
+    let mut out = Vec::new();
+    for c in &pl.checkpoints {
+        let k = s(c, "id");
+        let wait = waiting(st, k);
+        if wait.is_empty() || st.closed.contains_key(k) {
+            continue;
+        }
+        let Some(why) = waits_for(p, st, pl, k)? else {
+            continue;
+        };
+        let reason = waits_text(why, k);
+        let rounds = ckreview::rounds(p, k)?;
+        let list: Vec<Value> = wait
+            .iter()
+            .map(|(r, i)| {
+                let title = rounds
+                    .iter()
+                    .find(|x| x.round == *r)
+                    .and_then(|x| x.findings.get(*i as usize - 1))
+                    .map(|f| s(f, "title").to_string())
+                    .unwrap_or_default();
+                json!({"id": format!("r{r}.{i}"), "title": title, "waits_for": why, "waits_text": reason})
+            })
+            .collect();
+        let ids: Vec<String> = wait.iter().map(|(r, i)| format!("r{r}.{i}")).collect();
+        out.push(json!({"role": "human", "action": "see-waiting-human-findings", "info": true,
+            "checkpoint": k, "findings": list,
+            "note": t("human_fix.next.note", &[("k", k), ("ids", &ids.join(", ")), ("reason", &reason)])}));
+    }
+    Ok(out)
+}
+
+fn pairs_json(ids: &[(u32, u32)]) -> Value {
+    json!(ids
+        .iter()
+        .map(|(r, i)| json!({"round": r, "index": i}))
+        .collect::<Vec<_>>())
+}
+
+/// The filing a round of human findings was written by, as the replay counted it.
+fn filing_seq(st: &State, k: &str, round: u32) -> u64 {
+    st.ck_round_done
+        .iter()
+        .rev()
+        .find(|(c, r, _)| c == k && *r == round)
+        .map(|x| x.2)
+        .unwrap_or(0)
+}
+
+/// A filing with a fix while a fix of the checkpoint waits for the human (`low`, `parked`) or its design is
+/// being made: the waiting findings are added to it at once (R-81). A fix at work takes them at its next round.
+fn join_waiting(p: &Project, k: &str, ids: &[(u32, u32)], filing: u64) -> R<()> {
+    let _lock = crate::lock::engine(p, &format!("add the human findings to the fix of {k}"))?;
+    let st = events::require_chain(p)?;
+    let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == k) else {
+        return Ok(());
+    };
+    let step = if f.phase == "low" {
+        "low"
+    } else if f.phase == "parked" {
+        "parked"
+    } else if crate::ckfix::in_design(f) {
+        "design"
+    } else {
+        return Ok(());
+    };
+    let wait = waiting(&st, k);
+    let ids: Vec<(u32, u32)> = ids.iter().copied().filter(|x| wait.contains(x)).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    events::append(
+        p,
+        "checkpoint.fix.add",
+        json!({"checkpoint": k, "human": true, "step": step, "finding_ids": pairs_json(&ids), "filing": filing}),
+    )?;
+    crate::ckfix::write_overlay(p)?;
+    p.write_guard()?;
+    Ok(())
+}
+
+/// The fix of `k` at work had its review reported: the waiting human findings join its next round (`review`),
+/// or stay with it parked at its round limit (`park`). The caller holds the engine lock. Whether any joined.
+pub(crate) fn join_after_review(p: &Project, k: &str, step: &str) -> R<bool> {
+    let st = events::require_chain(p)?;
+    let ids = waiting_findings(p, &st, k)?.1;
+    let Some(first) = ids.first() else {
+        return Ok(false);
+    };
+    events::append(
+        p,
+        "checkpoint.fix.add",
+        json!({"checkpoint": k, "human": true, "step": step, "finding_ids": pairs_json(&ids),
+               "filing": filing_seq(&st, k, first.0)}),
+    )?;
+    crate::ckfix::write_overlay(p)?;
+    p.write_guard()?;
+    Ok(true)
+}
+
+/// The fix of `k` has just gone from `gap` back to `fix`: the waiting human findings join it (step `gap`).
+/// The caller holds the engine lock. Whether any joined.
+#[allow(dead_code)]
+pub(crate) fn join_after_gap(p: &Project, k: &str) -> R<bool> {
+    join_after_review(p, k, "gap")
+}
+
+/// The judgment of the replay on a `checkpoint.fix.add` with `human = true`: the waiting human findings join
+/// the open fix only at the steps the engine writes them at, and any other add is ignored with its cause (TH-22).
+pub fn replay_add(
+    st: &mut State,
+    rounds: &HashMap<(String, u32), Vec<Value>>,
+    ev: &Value,
+    seq: u64,
+    prev: Option<&Value>,
+) -> Result<(), String> {
+    let k = s(ev, "checkpoint").to_string();
+    let step = s(ev, "step").to_string();
+    let sq = seq.to_string();
+    let ignored = |key: &str| t(key, &[("seq", &sq), ("k", &k), ("step", &step)]);
+    let pairs = events::id_pairs(&ev["finding_ids"]);
+    let wait = waiting(st, &k);
+    if pairs.is_empty() || pairs.iter().any(|x| !wait.contains(x)) {
+        return Err(ignored("human_fix.ignored.add.none"));
+    }
+    let Some(f) = st.ck_fix.as_ref().filter(|f| f.checkpoint == k) else {
+        return Err(ignored("human_fix.ignored.add.nofix"));
+    };
+    let reviewed = prev.filter(|e| {
+        e["kind"].as_str() == Some("checkpoint.fix.reviewed") && s(e, "checkpoint") == k
+    });
+    let fits = match step.as_str() {
+        "low" => f.phase == "low",
+        "parked" => f.phase == "parked",
+        "design" => crate::ckfix::in_design(f),
+        "review" => reviewed.is_some_and(|e| {
+            s(e, "to") != "parked"
+                && if s(e, "result") == "clean" {
+                    f.phase == "review"
+                } else {
+                    matches!(f.phase.as_str(), "fix" | "low")
+                }
+        }),
+        "park" => reviewed.is_some_and(|e| s(e, "to") == "parked") && f.phase == "parked",
+        "gap" => {
+            f.phase == "fix"
+                && f.gap_left != 0
+                && prev.is_some_and(|e| e["seq"].as_u64() == Some(f.gap_left))
+        }
+        _ => false,
+    };
+    if !fits {
+        return Err(ignored("human_fix.ignored.add.step"));
+    }
+    let mut items: Vec<(String, Value)> = Vec::new();
+    for (r, i) in &pairs {
+        match rounds
+            .get(&(k.clone(), *r))
+            .and_then(|l| l.get((*i as usize).wrapping_sub(1)))
+        {
+            Some(v)
+                if st.ck_round_source.get(&(k.clone(), *r)).map(|x| x.as_str()) == Some(SOURCE)
+                    && ckreview::fate(st, &k, *r, *i as usize - 1, v).is_none() =>
+            {
+                items.push((format!("r{r}.{i}"), v.clone()))
+            }
+            _ => return Err(ignored("human_fix.ignored.add.none")),
+        }
+    }
+    let clean = reviewed.is_some_and(|e| s(e, "result") == "clean");
+    if let Some(w) = st.ck_human_wait.get_mut(&k) {
+        w.retain(|x| !pairs.contains(x));
+    }
+    if let Some(o) = st.ck_fix.as_mut() {
+        join(o, &step, clean, items);
+    }
+    Ok(())
+}
+
+fn join(o: &mut CkFixOpen, step: &str, clean: bool, items: Vec<(String, Value)>) {
+    if clean {
+        o.findings.clear();
+    }
+    for (id, _) in &items {
+        if !o.outside_design.contains(id) {
+            o.outside_design.push(id.clone());
+        }
+    }
+    crate::ckfix::take_in(o, items);
+    match step {
+        "low" | "parked" | "review" | "gap" => {
+            // A round entered only for the human findings counts against the limit only when the review
+            // filed a critical, high or medium finding (a fix that waits on low findings counted it).
+            if step == "review" && o.phase == "low" {
+                o.rounds = o.rounds.saturating_sub(1);
+            }
+            o.phase = "fix".into();
+            o.parked_in_review = false;
+            o.reason.clear();
+        }
+        _ => {}
+    }
 }
 
 /// The line the command prints.

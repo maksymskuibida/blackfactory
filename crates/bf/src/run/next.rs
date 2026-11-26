@@ -649,6 +649,13 @@ pub fn next(p: &Project) -> R<Value> {
     }
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
+    // Human findings that wait for a fix are listed as information, each with what it waits for (R-81).
+    let waiting_entries = crate::ckhuman::next_entries(p, &st, &pl)?;
+    if !waiting_entries.is_empty() {
+        if let Some(ds) = v["directives"].as_array_mut() {
+            ds.extend(waiting_entries);
+        }
+    }
     let dirs = v["directives"].as_array().cloned().unwrap_or_default();
     let can_start = dirs.iter().any(|d| d["role"] != "human");
     let human_needed = dirs

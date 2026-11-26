@@ -705,7 +705,7 @@ pub fn remove_copy(p: &Project, pl: &Plan, k: &str) {
 
 /// A fresh copy of the checkpoint's content: a detached worktree of each repository at the commit the
 /// checkpoint branch stands on, so nothing done in it reaches the branch.
-fn make_copy(p: &Project, pl: &Plan, k: &str) -> R<PathBuf> {
+pub(crate) fn make_copy(p: &Project, pl: &Plan, k: &str) -> R<PathBuf> {
     remove_copy(p, pl, k);
     let root = copy_path(p, k);
     let repos = run::checkpoint_repos(p, pl, k)?;
