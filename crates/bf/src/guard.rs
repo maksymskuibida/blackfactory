@@ -5070,6 +5070,43 @@ fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
 /// also when its words before the subcommand cannot be read. A stated limit: the guard trusts the
 /// harness's agent type as for `bf unit unblock`, so a second top-level session that the harness
 /// does not mark as a subagent cannot be told from the conductor; the quote rule binds it.
+/// Does a cargo alias that the line sets (`CARGO_ALIAS_X=...`, `export CARGO_ALIAS_X=...`,
+/// `--config alias.x=...`) hold `--human` or `checkpoint finding`, or is its value unreadable?
+fn alias_value_hides_filing(cmd: &str) -> bool {
+    let hides = |v: &str| {
+        let v = v.to_ascii_lowercase();
+        v.contains("--human")
+            || v.contains('$')
+            || v.contains('`')
+            || (v.contains("checkpoint") && v.contains("finding"))
+    };
+    crate::shellparse::commands(cmd).iter().any(|p| {
+        let mut k = 0;
+        while k < p.words.len() {
+            let w = p.words[k].as_str();
+            if w.to_ascii_uppercase().starts_with("CARGO_ALIAS_") {
+                if let Some((_, v)) = w.split_once('=') {
+                    if hides(v) {
+                        return true;
+                    }
+                }
+            } else if w == "--config" {
+                if let Some(v) = p.words.get(k + 1) {
+                    if v.contains("alias") && hides(v) {
+                        return true;
+                    }
+                }
+            } else if let Some(v) = w.strip_prefix("--config=") {
+                if v.contains("alias") && hides(v) {
+                    return true;
+                }
+            }
+            k += 1;
+        }
+        false
+    })
+}
+
 fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
     let t = |k: &str| crate::strings::t(k, &[("agent", agent)]);
     let calls = crate::shellparse::engine_calls(cmd);
@@ -5103,6 +5140,9 @@ fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
         // words) may expand to `checkpoint finding --human`, so no literal `--human` is needed.
         run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))
             || (c.group && human(c))
+            // A cargo alias call hides its words in the alias value: refuse it when the value holds
+            // `--human` or `checkpoint finding`, or cannot be read (built at run time).
+            || (c.cargo && c.group && alias_value_hides_filing(cmd))
             // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
             || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
             // The subcommand itself read at run time (`bf $C finding K-1 $F`, `bf checkpoint $S K-1 $F`)
@@ -6573,15 +6613,16 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
             return d;
         }
     }
+    // The design refusal comes first, so a design type keeps the refusal it names for a call.
+    if tool == "Bash" && design::binds(agent_type(input)) {
+        if let Some(d) = design::shell_denial(ti["command"].as_str().unwrap_or(""), &cwd, table) {
+            return d;
+        }
+    }
     if tool == "Bash" && !agent_type(input).is_empty() {
         if let Some(d) =
             human_finding_denial(agent_type(input), ti["command"].as_str().unwrap_or(""))
         {
-            return d;
-        }
-    }
-    if tool == "Bash" && design::binds(agent_type(input)) {
-        if let Some(d) = design::shell_denial(ti["command"].as_str().unwrap_or(""), &cwd, table) {
             return d;
         }
     }

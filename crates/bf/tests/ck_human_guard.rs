@@ -172,7 +172,7 @@ fn every_text_of_the_row_comes_from_a_key() {
         Some("builder"),
         "bf checkpoint $E finding K-1 --human --quote x",
     );
-    assert!(opaque.contains("words built at run time"), "{opaque}");
+    assert!(opaque.contains("a word built at run time"), "{opaque}");
     // The source holds none of the row's text outside the strings.
     let src =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/guard.rs")).unwrap();
@@ -210,6 +210,10 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
         "bf checkpoint $S K-1 --quote x",
         "bf --severity=$(echo low checkpoint finding K-1 --human --quote x)",
         "bf --quote status --severity $(echo low checkpoint finding K-1 --human)",
+        "CARGO_ALIAS_X='run -- checkpoint finding --human' cargo x K-1 --quote x",
+        "export CARGO_ALIAS_X='run -- checkpoint finding --human'; cargo x K-1 --quote x",
+        "cargo --config 'alias.x=\"run -- checkpoint finding --human\"' x K-1 --quote x",
+        "CARGO_ALIAS_X=\"$A\" cargo x K-1 --quote x",
     ] {
         for cwd in [&fx.root, &wc] {
             let out = guard(&fx, cwd, Some("builder"), cmd);
@@ -224,6 +228,9 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
         "bf evidence run c --unit U-1 -- $X",
         "bf record get $ID",
         "bf checkpoint status $K",
+        "cargo build",
+        "CARGO_ALIAS_X='build' cargo x",
+        "cargo test -p bf",
     ] {
         for cwd in [&fx.root, &wc] {
             let out = guard(&fx, cwd, Some("builder"), cmd);
