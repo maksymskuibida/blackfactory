@@ -5103,13 +5103,12 @@ fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
             // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
             || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
             // The subcommand itself read at run time (`bf $C finding K-1 $F`, `bf checkpoint $S K-1 $F`)
-            // together with another run-time word: that word may be `--human`.
+            // is enough by itself: one run-time word can expand to `finding --human`.
             || {
                 let plain = plain_of(c);
-                let sub_run_time = plain.first().is_some_and(|x| run_time_word(x))
+                plain.first().is_some_and(|x| run_time_word(x))
                     || (plain.first().map(|x| x.as_str()) == Some("checkpoint")
-                        && plain.get(1).is_some_and(|x| run_time_word(x)));
-                sub_run_time && c.words.iter().skip(1).filter(|w| run_time_word(w)).count() >= 2
+                        && plain.get(1).is_some_and(|x| run_time_word(x)))
             }
     }) {
         return Some(deny(

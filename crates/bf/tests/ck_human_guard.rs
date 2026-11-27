@@ -131,7 +131,6 @@ fn a_filing_without_human_is_judged_as_today() {
     for cmd in [
         "bf checkpoint finding K-1 --severity low",
         "bf checkpoint status K-1",
-        "bf checkpoint $E K-1 --quote x",
         "bf report U-1 --result built --token t --note \"--human\"",
     ] {
         let with_agent = guard(&fx, &wc, Some("reviewer"), cmd);
@@ -206,6 +205,9 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
     for cmd in [
         "C=checkpoint; F=--human; bf $C finding K-1 $F --quote x",
         "S=finding; F=--human; bf checkpoint $S K-1 $F --quote x",
+        "bf checkpoint $(echo finding --human) K-1 --quote x",
+        "S=\"finding --human\"; bf checkpoint ${=S} K-1 --quote x",
+        "bf checkpoint $S K-1 --quote x",
     ] {
         for cwd in [&fx.root, &wc] {
             let out = guard(&fx, cwd, Some("builder"), cmd);
