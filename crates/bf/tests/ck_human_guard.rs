@@ -218,6 +218,10 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
         "cargo --config 'alias.x=\"run --\"' x checkpoint finding K-1 $F --quote x",
         "cargo --config ./a.toml x checkpoint finding K-1 --human --quote x",
         "cargo --config=./a.toml x checkpoint finding K-1 --human --quote x",
+        "read CARGO_ALIAS_X <<< 'run --'; export CARGO_ALIAS_X; cargo x checkpoint finding K-1 --human --quote x",
+        "N=CARGO_ALIAS_X; export $N='run --'; cargo x checkpoint finding K-1 --human --quote x",
+        "printf -v CARGO_ALIAS_X 'run --'; export CARGO_ALIAS_X; cargo x checkpoint finding K-1 --human --quote x",
+        "printf -v $N 'run --'; export $N; cargo x checkpoint finding K-1 --human --quote x",
     ] {
         for cwd in [&fx.root, &wc] {
             let out = guard(&fx, cwd, Some("builder"), cmd);
