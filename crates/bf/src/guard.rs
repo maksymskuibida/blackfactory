@@ -5065,11 +5065,6 @@ fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
     }
 }
 
-/// `bf checkpoint finding --human` is the conductor's own step (R-81, D-170, TH-22): a call whose
-/// payload names an agent type (every subagent, in a working copy or in the workspace) is refused,
-/// also when its words before the subcommand cannot be read. A stated limit: the guard trusts the
-/// harness's agent type as for `bf unit unblock`, so a second top-level session that the harness
-/// does not mark as a subagent cannot be told from the conductor; the quote rule binds it.
 /// Does a cargo alias that the line sets (`CARGO_ALIAS_X=...`, `export CARGO_ALIAS_X=...`,
 /// `--config alias.x=...`) hold `--human` or `checkpoint finding`, or is its value unreadable?
 fn alias_value_hides_filing(cmd: &str) -> bool {
@@ -5092,12 +5087,12 @@ fn alias_value_hides_filing(cmd: &str) -> bool {
                 }
             } else if w == "--config" {
                 if let Some(v) = p.words.get(k + 1) {
-                    if v.contains("alias") && hides(v) {
+                    if (v.contains("alias") && hides(v)) || !v.contains('=') {
                         return true;
                     }
                 }
             } else if let Some(v) = w.strip_prefix("--config=") {
-                if v.contains("alias") && hides(v) {
+                if (v.contains("alias") && hides(v)) || !v.contains('=') {
                     return true;
                 }
             }
@@ -5107,6 +5102,17 @@ fn alias_value_hides_filing(cmd: &str) -> bool {
     })
 }
 
+/// `bf checkpoint finding --human` is the conductor's own step (R-81, D-170, TH-22): a call whose
+/// payload names an agent type (every subagent, in a working copy or in the workspace) is refused,
+/// also when its words before the subcommand cannot be read. A stated limit: the guard trusts the
+/// harness's agent type as for `bf unit unblock`, so a second top-level session that the harness
+/// does not mark as a subagent cannot be told from the conductor; the quote rule binds it.
+///
+/// A cargo alias call (an alias assignment, `export`, or `--config`) is refused for an agent when any
+/// word after the program is read at run time: the alias name is then the first plain word, and the
+/// words behind it may be `run -- checkpoint finding K-1 --human`. A `--config` that is not KEY=VALUE
+/// names a TOML file the line cannot read, and is refused as opaque. A stated limit: an alias in a
+/// `.cargo/config.toml` in the tree is beyond what a line can show, and is not covered.
 fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
     let t = |k: &str| crate::strings::t(k, &[("agent", agent)]);
     let calls = crate::shellparse::engine_calls(cmd);
@@ -5142,7 +5148,10 @@ fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
             || (c.group && human(c))
             // A cargo alias call hides its words in the alias value: refuse it when the value holds
             // `--human` or `checkpoint finding`, or cannot be read (built at run time).
-            || (c.cargo && c.group && alias_value_hides_filing(cmd))
+            || (c.cargo
+                && c.group
+                && (alias_value_hides_filing(cmd)
+                    || c.words.iter().skip(1).any(|w| run_time_word(w))))
             // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
             || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
             // The subcommand itself read at run time (`bf $C finding K-1 $F`, `bf checkpoint $S K-1 $F`)

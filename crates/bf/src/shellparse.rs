@@ -459,7 +459,8 @@ fn is_quoted_command(how: &str) -> bool {
 
 /// The words after cargo's own options when the line gives cargo an alias it cannot read here: a
 /// `CARGO_ALIAS_*` assignment before it, or a `--config` value that names an alias
-/// (`--config 'alias.x="run --"'`). Such a call may be `cargo run`.
+/// (`--config 'alias.x="run --"'`), or a `--config` that is not KEY=VALUE (a path to a TOML file whose
+/// aliases the line cannot read). Such a call may be `cargo run`.
 pub fn cargo_alias_args(words: &[String]) -> Option<Vec<String>> {
     let i = program_index(words)?;
     if basename(&words[i]) != "cargo" {
@@ -473,10 +474,12 @@ pub fn cargo_alias_args(words: &[String]) -> Option<Vec<String>> {
     while k < words.len() && (words[k].starts_with('-') || words[k].starts_with('+')) {
         let w = words[k].as_str();
         if w == "--config" {
-            configured |= words.get(k + 1).is_some_and(|v| v.contains("alias"));
+            configured |= words
+                .get(k + 1)
+                .is_some_and(|v| v.contains("alias") || !v.contains('='));
             k += 2;
         } else if let Some(v) = w.strip_prefix("--config=") {
-            configured |= v.contains("alias");
+            configured |= v.contains("alias") || !v.contains('=');
             k += 1;
         } else if matches!(w, "--color" | "-Z" | "-C" | "--explain") {
             k += 2;
