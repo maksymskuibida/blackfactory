@@ -208,6 +208,8 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
         "bf checkpoint $(echo finding --human) K-1 --quote x",
         "S=\"finding --human\"; bf checkpoint ${=S} K-1 --quote x",
         "bf checkpoint $S K-1 --quote x",
+        "bf --severity=$(echo low checkpoint finding K-1 --human --quote x)",
+        "bf --quote status --severity $(echo low checkpoint finding K-1 --human)",
     ] {
         for cwd in [&fx.root, &wc] {
             let out = guard(&fx, cwd, Some("builder"), cmd);
@@ -215,6 +217,17 @@ fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_
                 out.contains("deny") && out.contains("builder"),
                 "{cmd}: {out}"
             );
+        }
+    }
+    // Ordinary calls with a run-time word after the subcommand are not refused as a human filing.
+    for cmd in [
+        "bf evidence run c --unit U-1 -- $X",
+        "bf record get $ID",
+        "bf checkpoint status $K",
+    ] {
+        for cwd in [&fx.root, &wc] {
+            let out = guard(&fx, cwd, Some("builder"), cmd);
+            assert!(!out.contains("human"), "{cmd}: {out}");
         }
     }
 }

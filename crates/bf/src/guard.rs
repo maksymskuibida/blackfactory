@@ -5099,7 +5099,10 @@ fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
             && plain.get(1).map(|x| x.as_str()) == Some("finding")
     };
     if calls.iter().any(|c| {
-        ((c.group || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))) && human(c))
+        // A run-time word before the subcommand (also as a flag value the parser drops from the plain
+        // words) may expand to `checkpoint finding --human`, so no literal `--human` is needed.
+        c.group
+            || run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))
             // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
             || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
             // The subcommand itself read at run time (`bf $C finding K-1 $F`, `bf checkpoint $S K-1 $F`)
