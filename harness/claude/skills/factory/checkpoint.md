@@ -17,6 +17,9 @@ Aborting a fix that has a built round is the human's choice; never abort it your
 
 What to run on a checkpoint fix:
 - `--open`: `bf checkpoint fix <K> --open` opens a fix for a failed check of the checkpoint's current content when none is open. A failed format or lint check ends with no review round once every change is accounted for.
+- `failed`: a failed check goes to a checkpoint fix, never to an amendment; this holds for a command or agent check, for an item of a human check the human reports as failed, and after the checkpoint's branches were merged.
+- `record`: the verifier records the failure with `bf evidence fail <X> --reason "<what failed>"` run in `.bf/work/<K>/`, since a receipt made elsewhere names other content and the engine ignores it; then follow `bf next`, or run `--open`.
+- `amend`: open an amendment only when the fix reports what the plan never gave it (`plan-gap`).
 - `scope`: a fix builder may change a file outside the lists, and its reviewer is shown that file (D-115); there is no request for files and no `bf checkpoint scope` command.
 - `low`: low findings of a review are the human's: `bf checkpoint finding <K> --accept low --quote "<their words>"` accepts them together, `--fix-findings <ids>` picks some to be fixed.
 - The human may accept any finding of a parked fix or review in their own words.
