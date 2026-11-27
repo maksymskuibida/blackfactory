@@ -704,20 +704,59 @@ pub fn report(
     Ok(out)
 }
 
-/// Whether the human has ended each blocking finding of `r`.
-fn ended_by_human(st: &State, k: &str, r: &Round) -> bool {
-    let blocking: Vec<(usize, &Value)> = r
+/// The blocking findings an audit round `r` named in `still_open`: findings of earlier rounds of the same
+/// source, open again under their own ids. Each is (round, index from 0, finding).
+fn reopened_by<'a>(
+    st: &State,
+    rs: &'a [Round],
+    k: &str,
+    r: &Round,
+) -> Vec<(u32, usize, &'a Value)> {
+    let mut out = Vec::new();
+    for c in st
+        .ck_confirms
+        .iter()
+        .filter(|c| c.checkpoint == k && c.round == r.round && c.source == r.source)
+    {
+        for id in &c.still_open {
+            let parsed = id
+                .strip_prefix('r')
+                .and_then(|x| x.split_once('.'))
+                .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<usize>().ok()?)));
+            let Some((round, n)) = parsed else { continue };
+            let Some(f) = rs
+                .iter()
+                .find(|x| x.round == round && x.source == r.source && ckreview::reported(x))
+                .and_then(|x| x.findings.get(n.wrapping_sub(1)))
+            else {
+                continue;
+            };
+            if ckreview::blocking(f) && !out.iter().any(|(a, b, _)| *a == round && *b == n - 1) {
+                out.push((round, n - 1, f));
+            }
+        }
+    }
+    out
+}
+
+/// Whether the human has ended each blocking finding of `r` and each it named in `still_open`.
+fn ended_by_human(st: &State, k: &str, rs: &[Round], r: &Round) -> bool {
+    let mut blocking: Vec<(u32, usize, &Value)> = r
         .findings
         .iter()
         .enumerate()
         .filter(|(_, f)| ckreview::blocking(f))
+        .map(|(i, f)| (r.round, i, f))
         .collect();
+    for x in reopened_by(st, rs, k, r) {
+        if !blocking.iter().any(|(a, b, _)| *a == x.0 && *b == x.1) {
+            blocking.push(x);
+        }
+    }
     !blocking.is_empty()
-        && blocking.iter().all(|(i, f)| {
+        && blocking.iter().all(|(round, i, f)| {
             matches!(
-                ckreview::fate(st, k, r.round, *i, f)
-                    .map(|x| x.0)
-                    .as_deref(),
+                ckreview::fate(st, k, *round, *i, f).map(|x| x.0).as_deref(),
                 Some("accepted") | Some("declined")
             )
         })
@@ -741,7 +780,7 @@ pub fn receipt_on_decisions(p: &Project, k: &str) -> R<()> {
         else {
             continue;
         };
-        if !ended_by_human(&st, k, r) {
+        if !ended_by_human(&st, k, &rs, r) {
             continue;
         }
         let receipts = evidence::load_receipts(p)?;
@@ -754,13 +793,19 @@ pub fn receipt_on_decisions(p: &Project, k: &str) -> R<()> {
                 continue;
             }
         }
-        let ids: Vec<String> = r
+        let mut ids: Vec<String> = r
             .findings
             .iter()
             .enumerate()
             .filter(|(_, f)| ckreview::blocking(f))
             .map(|(i, _)| format!("r{}.{}", r.round, i + 1))
             .collect();
+        for (round, i, _) in reopened_by(&st, &rs, k, r) {
+            let id = format!("r{round}.{}", i + 1);
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
         let says = t(
             "ck_audit.receipt.decided",
             &[
@@ -849,6 +894,20 @@ pub fn blocking_to_fix(p: &Project, st: &State, k: &str, content: &str) -> R<Blo
             if ckreview::blocking(f) {
                 findings.push(f.clone());
                 ids.push((r.round, n as u32));
+            }
+        }
+    }
+    // An open finding of an earlier round that a round at this content named in `still_open` goes to the fix too.
+    let rs = ckreview::rounds(p, k)?;
+    for r in rs
+        .iter()
+        .filter(|r| ckreview::is_audit(&r.source) && ckreview::reported(r) && r.content == content)
+    {
+        for (round, i, f) in reopened_by(st, &rs, k, r) {
+            let id = (round, i as u32 + 1);
+            if !ids.contains(&id) && ckreview::fate(st, k, round, i, f).is_none() {
+                findings.push(f.clone());
+                ids.push(id);
             }
         }
     }
