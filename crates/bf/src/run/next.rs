@@ -610,10 +610,31 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                             "ck_human.close.open",
                             &[("id", fid), ("sev", sev), ("title", title)],
                         )
+                    } else if source.is_empty() {
+                        format!("the finding {fid} ({sev}: {title}) of the checkpoint review is still open and holds the close of {kid}")
                     } else {
-                        format!("the finding {fid} ({sev}: {title}) is still open and holds the close of {kid}")
+                        crate::strings::t(
+                            "ck_audit.close.open",
+                            &[
+                                ("id", fid),
+                                ("sev", sev),
+                                ("title", title),
+                                ("source", source),
+                            ],
+                        )
                     };
+                    // The way on, as commands: the human settles the finding or asks for its fix.
+                    let accept = format!("bf checkpoint finding {kid} --accept {fid} --reason \"<why>\" --quote \"<the human's words>\"");
+                    let decline = format!("bf checkpoint finding {kid} --decline {fid} --reason \"<why>\" --quote \"<the human's words>\"");
+                    let fix = format!("bf checkpoint finding {kid} --fix-findings {fid} --quote \"<the human's words>\"");
                     directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "finding": fid, "gaps": [note.clone()],
+                        "steps": [
+                            format!("Ask the human what to do with {fid}, and take their words."),
+                            format!("If they want it fixed, run `{fix}`."),
+                            format!("If they accept it, run `{accept}`; if they decline it, run `{decline}`."),
+                            format!("Run `bf checkpoint close {kid}` again."),
+                        ],
+                        "commands": [fix, accept, decline],
                         "note": format!("`bf checkpoint close {kid}` would refuse: {note}.")}));
                 } else if gaps.is_empty() {
                     directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));

@@ -195,6 +195,24 @@ fn a_run_time_word_after_the_subcommand_of_a_filing_is_refused_to_an_agent() {
                 "{cmd}: {out}"
             );
         }
-        assert!(!guard(&fx, &fx.root, None, cmd).contains("deny"), "{cmd}");
+        let c = guard(&fx, &fx.root, None, cmd);
+        assert!(!c.contains("deny"), "{cmd}: {c}");
+    }
+}
+
+#[test]
+fn a_run_time_subcommand_with_a_run_time_word_is_refused_to_an_agent_as_a_human_filing() {
+    let (fx, wc) = setup();
+    for cmd in [
+        "C=checkpoint; F=--human; bf $C finding K-1 $F --quote x",
+        "S=finding; F=--human; bf checkpoint $S K-1 $F --quote x",
+    ] {
+        for cwd in [&fx.root, &wc] {
+            let out = guard(&fx, cwd, Some("builder"), cmd);
+            assert!(
+                out.contains("deny") && out.contains("builder"),
+                "{cmd}: {out}"
+            );
+        }
     }
 }
