@@ -1,0 +1,10 @@
+# Strings of the guard's refusal of a human finding filed by an agent session (R-81, D-170, TH-22).
+
+"human_finding.guard.refused" = "run `bf checkpoint finding --human`"
+"human_finding.guard.because" = "only the conductor files the human's words as a finding, and this call comes from a session that the harness marks as the agent type `{agent}`"
+"human_finding.guard.step" = "Report your own state with `bf report`; the conductor files the human's words."
+"human_finding.guard.worked" = "`bf next` gives the conductor the step for the human's words."
+"human_finding.guard.opaque.refused" = "run a checkpoint call whose words before the subcommand the guard cannot read"
+"human_finding.guard.opaque.because" = "only the conductor files the human's words as a finding, and this call, from a session that the harness marks as the agent type `{agent}`, has a word built at run time before or at the subcommand, or a hidden cargo alias, and that may expand to `checkpoint finding --human`, so it may be that step"
+"human_finding.guard.opaque.step" = "Write the command out in plain words."
+"human_finding.guard.opaque.worked" = "The guard reads every word of the command."

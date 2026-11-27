@@ -84,6 +84,52 @@ fn status_text(v: &Value) -> String {
         if let Some(l) = c["recovery_line"].as_str().filter(|l| !l.is_empty()) {
             t.push_str(&format!("{l}\n"));
         }
+        for f in c["findings"].as_array().into_iter().flatten() {
+            let state = f["state"].as_str().unwrap_or("");
+            let field = |k: &str| f[k].as_str().unwrap_or("").to_string();
+            let line = match state {
+                "open" => crate::strings::t(
+                    "status.finding.line",
+                    &[
+                        ("id", &field("id")),
+                        ("severity", &field("severity")),
+                        ("title", &field("title")),
+                        ("state", state),
+                        ("source", &field("source_text")),
+                    ],
+                ),
+                "answered" => crate::strings::t(
+                    "status.finding.answered",
+                    &[
+                        ("id", &field("id")),
+                        ("severity", &field("severity")),
+                        ("title", &field("title")),
+                        ("fate", &field("fate")),
+                    ],
+                ),
+                "wants_fix" => {
+                    let waits = f["waits_text"].as_str().unwrap_or("").to_string();
+                    crate::strings::t(
+                        if waits.is_empty() {
+                            "status.finding.wants_fix_plain"
+                        } else {
+                            "status.finding.wants_fix"
+                        },
+                        &[
+                            ("id", &field("id")),
+                            ("severity", &field("severity")),
+                            ("title", &field("title")),
+                            ("waits", &waits),
+                            ("source", &field("source_text")),
+                        ],
+                    )
+                }
+                _ => String::new(),
+            };
+            if !line.is_empty() {
+                t.push_str(&format!("{line}\n"));
+            }
+        }
     }
     for pg in v["pages"].as_array().into_iter().flatten() {
         t.push_str(&format!(

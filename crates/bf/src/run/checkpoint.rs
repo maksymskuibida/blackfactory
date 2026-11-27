@@ -475,16 +475,34 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
     let (mut check_gaps, mut unproven_names) =
         crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, kr, &content)?;
     // R-49: no checkpoint closes before its review ran on the content being closed.
-    let held_by = if crate::ckreview::required(&st) {
-        crate::ckreview::open_blocking_named(p, &st, k)?
-    } else {
-        vec![]
-    };
+    let held_by = crate::ckreview::close_held_by(p, &st, k)?;
     if !was_closed_already(&st, k) && !held_by.is_empty() {
-        let (id, sev, title) = &held_by[0];
-        check_gaps.push(format!(
-            "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
-        ));
+        let (id, sev, title, source) = &held_by[0];
+        if let Some(waits) = crate::ckconfirm::answered_text(p, &st, k, id)? {
+            check_gaps.push(crate::strings::t(
+                "ck_confirm.close.answered",
+                &[("id", id), ("sev", sev), ("title", title), ("fate", &waits)],
+            ));
+        } else if crate::ckreview::is_human(source) {
+            check_gaps.push(crate::strings::t(
+                "ck_human.close.open",
+                &[("id", id), ("sev", sev), ("title", title)],
+            ));
+        } else if source.is_empty() {
+            check_gaps.push(format!(
+                "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close: `bf next` gives the way on"
+            ));
+        } else {
+            check_gaps.push(crate::strings::t(
+                "ck_audit.close.open",
+                &[
+                    ("id", id),
+                    ("sev", sev),
+                    ("title", title),
+                    ("source", source),
+                ],
+            ));
+        }
         unproven_names.push(crate::checks::CHECKPOINT_REVIEW.to_string());
     } else if !was_closed_already(&st, k) && crate::ckreview::needed(p, &st, k, &content)? {
         check_gaps.push(format!(
@@ -502,10 +520,27 @@ pub fn checkpoint_close(p: &Project, k: &str, merge: bool) -> R<Value> {
         }
         steps.push(format!("Run `bf checkpoint close {k}` again."));
         let because = match held_by.first() {
-            Some((id, sev, title)) if !was_closed_already(&st, k) => {
-                let head = format!(
-                    "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
-                );
+            Some((id, sev, title, source)) if !was_closed_already(&st, k) => {
+                let head = if crate::ckreview::is_human(source) {
+                    crate::strings::t(
+                        "ck_human.close.open",
+                        &[("id", id), ("sev", sev), ("title", title)],
+                    )
+                } else if source.is_empty() {
+                    format!(
+                        "the finding {id} ({sev}: {title}) of the checkpoint review is still open and holds the close"
+                    )
+                } else {
+                    crate::strings::t(
+                        "ck_audit.close.open",
+                        &[
+                            ("id", id),
+                            ("sev", sev),
+                            ("title", title),
+                            ("source", source),
+                        ],
+                    )
+                };
                 if gaps.len() > 1 {
                     format!("{head}, and {} other gap(s) have no proof", gaps.len() - 1)
                 } else {

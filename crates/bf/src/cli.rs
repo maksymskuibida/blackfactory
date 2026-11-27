@@ -61,6 +61,7 @@ const VALUE_FLAGS: &[&str] = &[
     "unit",
     "result",
     "role",
+    "check",
     "note",
     "findings",
     "cost",
@@ -90,6 +91,8 @@ const VALUE_FLAGS: &[&str] = &[
     "accept",
     "decline",
     "fix-findings",
+    "severity",
+    "fix-quote",
     "need-files",
     "verdict",
     "revert",
@@ -402,6 +405,8 @@ fn enforce_zone(p: &Project, args: &Args) -> R<()> {
         // A builder puts a file it changed by mistake back to its base (U-103).
         ("unit", "unit") => sub == "restore",
         (_, "record") => matches!(sub, "get" | "list" | "put"),
+        // A checkpoint's copy reaches `bf legal finding` only to be refused with the audit round named (D-164).
+        ("checkpoint", "legal") => sub == "finding",
         // A scan runs where its check runs: its receipt is for the content of this working copy.
         (_, "scan") => matches!(sub, "secrets" | "licences" | "licenses"),
         _ => false,

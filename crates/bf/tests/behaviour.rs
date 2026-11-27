@@ -327,7 +327,13 @@ fn a_verifier_can_mark_a_check_unreachable_or_failed() {
     // Views show it.
     let v = fx.must(&["view", "checkpoint", "K-1"]).json();
     assert_contract("checkpoint", &v);
-    let row = &v["sections"][0]["rows"][0];
+    let proofs = v["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "proofs")
+        .unwrap();
+    let row = &proofs["rows"][0];
     assert_eq!(row["needs_you"], true);
     assert!(
         row["body"].to_string().contains("staging service is down"),

@@ -777,6 +777,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("wave-check", "neither"),
     ("review-checkpoint", "neither"),
     ("run-checkpoint-checks", "neither"),
+    ("audit-checkpoint", "neither"),
     ("close-checkpoint", "neither"),
     ("fix-checkpoint-gaps", "neither"),
     ("decide-gate", "holding:Run"),
@@ -795,6 +796,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("withdraw-repair", "neither"),
     ("decide-repair", "neither"),
     ("see-judged-repair", "neither"),
+    ("see-waiting-human-findings", "neither"),
     ("open-plan-repair", "neither"),
     ("judge-block", "neither"),
 ];

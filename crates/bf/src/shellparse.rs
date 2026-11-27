@@ -299,10 +299,13 @@ pub fn engine_calls(cmd: &str) -> Vec<Call> {
     collect(cmds, None, 0, &mut calls);
     // `export CARGO_ALIAS_X='run --'; cargo x ...`: an alias the line sets reaches every cargo call.
     let parsed = commands(cmd);
+    // Any word that names CARGO_ALIAS_ (with or without `=`), or a run-time word in the name position of
+    // `export`, `declare`, `typeset`, `read` or `printf -v`, may set an alias the line cannot show.
     let line_alias = parsed.iter().any(|p| {
         p.words
             .iter()
-            .any(|w| w.to_ascii_uppercase().starts_with("CARGO_ALIAS_") && w.contains('='))
+            .any(|w| w.to_ascii_uppercase().contains("CARGO_ALIAS_"))
+            || sets_run_time_name(&p.words)
     });
     if line_alias {
         for p in &parsed {
@@ -321,6 +324,28 @@ pub fn engine_calls(cmd: &str) -> Vec<Call> {
         }
     }
     calls
+}
+
+/// Does a command name a variable by a run-time word: `export $N=..`, `declare $N`, `typeset $N`,
+/// `read $N`, `printf -v $N ..`?
+fn sets_run_time_name(words: &[String]) -> bool {
+    let Some(i) = program_index(words) else {
+        return false;
+    };
+    let run_time = |w: &str| w.contains(['$', '`']);
+    let args = &words[i + 1..];
+    match basename(&words[i]) {
+        "export" | "declare" | "typeset" | "read" => args
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .any(|a| run_time(a.split('=').next().unwrap_or(a))),
+        "printf" => args
+            .iter()
+            .position(|a| a == "-v")
+            .and_then(|k| args.get(k + 1))
+            .is_some_and(|a| run_time(a)),
+        _ => false,
+    }
 }
 
 /// The functions the command line defines in its own shell: an unquoted `name()` in command position
@@ -459,7 +484,8 @@ fn is_quoted_command(how: &str) -> bool {
 
 /// The words after cargo's own options when the line gives cargo an alias it cannot read here: a
 /// `CARGO_ALIAS_*` assignment before it, or a `--config` value that names an alias
-/// (`--config 'alias.x="run --"'`). Such a call may be `cargo run`.
+/// (`--config 'alias.x="run --"'`), or a `--config` that is not KEY=VALUE (a path to a TOML file whose
+/// aliases the line cannot read). Such a call may be `cargo run`.
 pub fn cargo_alias_args(words: &[String]) -> Option<Vec<String>> {
     let i = program_index(words)?;
     if basename(&words[i]) != "cargo" {
@@ -473,10 +499,12 @@ pub fn cargo_alias_args(words: &[String]) -> Option<Vec<String>> {
     while k < words.len() && (words[k].starts_with('-') || words[k].starts_with('+')) {
         let w = words[k].as_str();
         if w == "--config" {
-            configured |= words.get(k + 1).is_some_and(|v| v.contains("alias"));
+            configured |= words
+                .get(k + 1)
+                .is_some_and(|v| v.contains("alias") || !v.contains('='));
             k += 2;
         } else if let Some(v) = w.strip_prefix("--config=") {
-            configured |= v.contains("alias");
+            configured |= v.contains("alias") || !v.contains('=');
             k += 1;
         } else if matches!(w, "--color" | "-Z" | "-C" | "--explain") {
             k += 2;

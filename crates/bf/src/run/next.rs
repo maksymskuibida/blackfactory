@@ -45,7 +45,8 @@ fn directive_kind(d: &Value) -> &'static str {
         "reviewer" if !d["checkpoint"].is_null() => "checkpoint_reviewer",
         "reviewer" => "reviewer",
         "verifier" => "verifier",
-        "security-auditor" => "reviewer",
+        "uiux-verifier" => "verifier",
+        "security-auditor" | "legal-auditor" => "reviewer",
         _ => "conductor",
     }
 }
@@ -481,7 +482,16 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 // ordinary step; no agent judges the load.
                 if marked.iter().all(|m| m["outcome"] == "unreachable") {
                     let (load, cores) = evidence::machine_load();
-                    directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": checks,
+                    let audits = crate::ckaudit::due(p, &st, &pl, kid, &content, &receipts)?;
+                    for c in &audits {
+                        directives.push(crate::ckaudit::directive(p, &st, &pl, kid, c));
+                    }
+                    let checks: Vec<String> = checks
+                        .into_iter()
+                        .filter(|c| !crate::ckaudit::is_source(&pl, kid, c))
+                        .collect();
+                    if !checks.is_empty() {
+                        directives.push(json!({"role": "verifier", "action": "run-checkpoint-checks", "checkpoint": kid, "checks": checks,
                         "tier": p.policy.tiers.verifier, "working_copy": p.work_dir().join(kid).to_string_lossy(),
                         "brief": p.briefs_dir().join(format!("{kid}-verifier.md")).to_string_lossy(),
                         "load": load, "cores": cores,
@@ -489,6 +499,7 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                                    "budget_left": if p.policy.budget.cap > 0.0 { json!(p.policy.budget.cap - st.cost) } else { Value::Null }},
                         "commands": [format!("bf brief {kid} --role verifier")],
                         "note": crate::strings::t("check_accept.run_again.note", &[("k", kid)])}));
+                    }
                 }
                 continue;
             }
@@ -531,8 +542,11 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                         s(r, "id") == c && s(r, "named") == crate::checks::CHECKPOINT_REVIEW
                     })
                 })
+                // An audit is offered to its auditor, never to the verifier (R-77).
+                .filter(|c| !crate::ckaudit::is_source(&pl, kid, c))
                 .collect();
             let review_needed = crate::ckreview::needed(p, &st, kid, &content)?;
+            let audits = crate::ckaudit::due(p, &st, &pl, kid, &content, &receipts)?;
             let human_needed =
                 crate::enforce::stops(k) && !st.gate_passed("checkpoint-step", Some(kid));
             if !missing.is_empty() {
@@ -547,6 +561,8 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 }
             } else if review_needed {
                 directives.push(crate::ckreview::directive(p, &st, kid)?);
+            } else if !audits.is_empty() {
+                // The close waits for every audit (R-77).
             } else if human_needed {
                 let open = st
                     .latest_gate("checkpoint-step", Some(kid))
@@ -582,13 +598,54 @@ pub(crate) fn next_raw(p: &Project) -> R<Value> {
                 let (check_gaps, unproven) =
                     crate::enforce::checkpoint_gaps(p, &pl, &st, &receipts, k, &content)?;
                 gaps.extend(check_gaps);
-                if gaps.is_empty() {
+                let held = if gaps.is_empty() {
+                    crate::ckreview::close_held_by(p, &st, kid)?
+                } else {
+                    vec![]
+                };
+                if let Some((fid, sev, title, source)) = held.first() {
+                    // The close would refuse on this open finding: offer the way on for it, not the close.
+                    let note = if crate::ckreview::is_human(source) {
+                        crate::strings::t(
+                            "ck_human.close.open",
+                            &[("id", fid), ("sev", sev), ("title", title)],
+                        )
+                    } else if source.is_empty() {
+                        format!("the finding {fid} ({sev}: {title}) of the checkpoint review is still open and holds the close of {kid}")
+                    } else {
+                        crate::strings::t(
+                            "ck_audit.close.open",
+                            &[
+                                ("id", fid),
+                                ("sev", sev),
+                                ("title", title),
+                                ("source", source),
+                            ],
+                        )
+                    };
+                    // The way on, as commands: the human settles the finding or asks for its fix.
+                    let accept = format!("bf checkpoint finding {kid} --accept {fid} --reason \"<why>\" --quote \"<the human's words>\"");
+                    let decline = format!("bf checkpoint finding {kid} --decline {fid} --reason \"<why>\" --quote \"<the human's words>\"");
+                    let fix = format!("bf checkpoint finding {kid} --fix-findings {fid} --quote \"<the human's words>\"");
+                    directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "finding": fid, "gaps": [note.clone()],
+                        "steps": [
+                            format!("Ask the human what to do with {fid}, and take their words."),
+                            format!("If they want it fixed, run `{fix}`."),
+                            format!("If they accept it, run `{accept}`; if they decline it, run `{decline}`."),
+                            format!("Run `bf checkpoint close {kid}` again."),
+                        ],
+                        "commands": [fix, accept, decline],
+                        "note": format!("`bf checkpoint close {kid}` would refuse: {note}.")}));
+                } else if gaps.is_empty() {
                     directives.push(json!({"role": "engine", "action": "close-checkpoint", "checkpoint": kid, "command": format!("bf checkpoint close {kid}")}));
                 } else {
                     directives.push(json!({"role": "conductor", "action": "fix-checkpoint-gaps", "checkpoint": kid, "gaps": gaps,
                         "steps": crate::enforce::way_out_steps(&st, &unproven),
                         "note": format!("`bf checkpoint close {kid}` would refuse: {}. Settle each gap, or ask the human to switch the check off for the run.", gaps.join("; "))}));
                 }
+            }
+            for c in &audits {
+                directives.push(crate::ckaudit::directive(p, &st, &pl, kid, c));
             }
             // Offered whenever a low finding is open and nothing holds.
             if let Some(d) = crate::ckreview::low_directive(p, &st, kid)? {
@@ -630,6 +687,13 @@ pub fn next(p: &Project) -> R<Value> {
     }
     let st = events::replay(p)?;
     let pl = plan::load(p)?;
+    // Human findings that wait for a fix are listed as information, each with what it waits for (R-81).
+    let waiting_entries = crate::ckhuman::next_entries(p, &st, &pl)?;
+    if !waiting_entries.is_empty() {
+        if let Some(ds) = v["directives"].as_array_mut() {
+            ds.extend(waiting_entries);
+        }
+    }
     let dirs = v["directives"].as_array().cloned().unwrap_or_default();
     let can_start = dirs.iter().any(|d| d["role"] != "human");
     let human_needed = dirs

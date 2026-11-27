@@ -86,7 +86,7 @@ fn tiny_project_end_to_end_in_a_granted_test_run() {
     }
     let cp = fx.must(&["view", "checkpoint", "K-1"]).json();
     assert_eq!(
-        cp["sections"][0]["rows"][0]["handled"]["tone"], "ok",
+        cp["sections"].as_array().unwrap().iter().find(|s| s["id"] == "proofs").unwrap()["rows"][0]["handled"]["tone"], "ok",
         "{cp}"
     );
 

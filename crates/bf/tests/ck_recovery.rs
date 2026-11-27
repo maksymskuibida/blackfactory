@@ -141,7 +141,7 @@ fn park(fx: &Fx) {
     brief_text(fx);
     let o = report(
         fx,
-        json!({"areas": areas(), "findings": [finding("two", "medium")]}),
+        json!({"areas": areas(), "findings": [finding("two", "medium")], "confirmed": ["r1.1"]}),
     );
     assert_eq!(o.code, 0, "{}", o.all());
     assert!(directive(fx, "decide-checkpoint-review").is_some());

@@ -171,11 +171,12 @@ pub(crate) fn cmd_report(args: &Args) -> R<()> {
         });
         return Ok(());
     }
-    let v = run::report(
+    let v = run::report_checked(
         &p,
         unit,
         result,
         args.flag("role"),
+        args.flag("check"),
         args.flag("note").unwrap_or(""),
         findings.as_ref(),
         cost,

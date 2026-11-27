@@ -672,6 +672,8 @@ pub struct CkFixOpen {
     pub open_seq: u64,
     /// The seq of the latest event that parked the fix; 0 while it was never parked.
     pub park_seq: u64,
+    /// The seq of the event right after which the fix went from `gap` back to `fix`; 0 when it never did (R-81).
+    pub gap_left: u64,
     /// What set the fix off, as the opening event recorded it: the failed checks, or the findings.
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
@@ -705,6 +707,14 @@ pub struct CkFixOpen {
     /// The words the human gave to an earlier, aborted fix of the same checkpoint: kept to be shown, never
     /// counted for a finding of this fix (its review rounds and numbers are its own).
     pub inherited: Vec<Accepted>,
+    /// Opened under the engine that leaves its findings answered when it ends (R-78, D-160).
+    pub confirm: bool,
+    /// The findings the human sent to this fix while it waited, with their ids (`r<round>.<number>` or
+    /// `f<round>.<number>`) and values (R-79).
+    pub added: Vec<(String, Value)>,
+    /// The ids of the findings the human filed that joined this fix while it was open: outside the stored
+    /// design of the fix (R-81, D-170).
+    pub outside_design: Vec<String>,
 }
 
 /// A hold the engine logged for a checkpoint: `marked`, `question` or `wave`, what it names, and the seq
@@ -884,6 +894,10 @@ pub struct CkFixDone {
     /// File -> its mark (`format only`, R-58); Null for a fix recorded before marks were kept.
     pub marks: Value,
     pub rounds_log: Vec<Value>,
+    /// The findings each of the fix's review rounds filed, `{round, findings}` (S-7).
+    pub history: Vec<Value>,
+    /// The log position of the opening of the fix, which an accept of its findings carries as `fix_open`.
+    pub open_seq: u64,
     pub origin_failed: Vec<Value>,
     pub origin_findings: Vec<Value>,
     /// The (round, number) pairs the fix was opened for; empty for a fix recorded before they were kept.
@@ -891,6 +905,25 @@ pub struct CkFixDone {
     /// The latest review round of the checkpoint that had reported when the fix opened.
     pub from_round: u32,
     pub seq: u64,
+    /// Opened under the engine that leaves its findings answered (R-78): a fix with no `confirm` is a fix
+    /// of today, and its findings are fixed when it ends.
+    pub confirm: bool,
+    /// Where each repository's checkpoint branch stood when the fix opened and when it ended.
+    pub before: Vec<(String, String)>,
+    pub after: Vec<(String, String)>,
+}
+
+/// What one round of a source said of the answered findings, as the replay keeps it (R-78).
+#[derive(Clone, Debug, Default)]
+pub struct CkConfirm {
+    pub checkpoint: String,
+    pub round: u32,
+    pub source: String,
+    pub seq: u64,
+    /// The ids (`r<round>.<number>`) the round named confirmed.
+    pub confirmed: Vec<String>,
+    /// The ids the round named still open.
+    pub still_open: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1021,6 +1054,23 @@ pub struct State {
     pub ck_settled: Vec<CkSettled>,
     /// Every checkpoint review round that reported: (checkpoint, round, seq of the report).
     pub ck_round_done: Vec<(String, u32, u64)>,
+    /// The source of each review round: (checkpoint, round) -> the check id of an audit, empty for the review.
+    pub ck_round_source: HashMap<(String, u32), String>,
+    /// The messages of the human a finding was filed from (R-81): a message files once, whatever decisions
+    /// it also made.
+    pub ck_human_filed: std::collections::HashSet<u64>,
+    /// The seqs of the filings the replay counted.
+    pub ck_human_seqs: std::collections::HashSet<u64>,
+    /// Checkpoint -> the (round, number) of the human findings filed with a fix that no fix holds yet (R-81).
+    pub ck_human_wait: BTreeMap<String, Vec<(u32, u32)>>,
+    /// Checkpoint -> the seq of the first `unit.start` of a unit of it: the floor of the words a finding of the
+    /// human may be filed from.
+    pub ck_first_start: BTreeMap<String, u64>,
+    /// The audit sources that confirm nothing now: (checkpoint, check id) of a check switched off for the run or
+    /// no longer listed by the checkpoint. Filled by `replay` from the plan, never by the log (R-78).
+    pub ck_unconfirming: std::collections::HashSet<(String, String)>,
+    /// What each round that reported said of the answered findings, in log order (R-78).
+    pub ck_confirms: Vec<CkConfirm>,
     /// Every checkpoint fix that was aborted: (checkpoint, the findings it was opened for as (round, number),
     /// seq of the abort).
     pub ck_fix_aborts: Vec<CkFixAbort>,
@@ -1119,13 +1169,49 @@ impl State {
 
 pub fn replay(p: &Project) -> R<State> {
     let log = load_log(p)?;
-    Ok(replay_log_with(
+    let mut st = replay_log_with(
         &log,
         &Words {
             approve: p.policy.human.approval_words.clone(),
             refuse: p.policy.human.refusal_words.clone(),
         },
-    ))
+    );
+    mark_unconfirming(p, &mut st);
+    Ok(st)
+}
+
+/// R-78: a source that is switched off now, or whose check the checkpoint no longer lists, confirms nothing, so
+/// the findings it would have confirmed read as fixed. Read from the plan at the time of the replay.
+fn mark_unconfirming(p: &Project, st: &mut State) {
+    thread_local! {
+        static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    // Only a log with a fix that waits for an audit needs the plan; loading it replays the log again, which
+    // must not mark again.
+    if !st.ck_fixes.iter().any(|d| d.confirm) || BUSY.with(|b| b.get()) {
+        return;
+    }
+    BUSY.with(|b| b.set(true));
+    let loaded = crate::plan::load(p);
+    BUSY.with(|b| b.set(false));
+    let Ok(pl) = loaded else {
+        return;
+    };
+    let pairs: std::collections::HashSet<(String, String)> = st
+        .ck_round_source
+        .iter()
+        .filter(|(_, src)| crate::ckreview::is_audit(src))
+        .map(|((k, _), src)| (k.clone(), src.clone()))
+        .collect();
+    for (k, src) in pairs {
+        let off = pl
+            .checks
+            .iter()
+            .any(|r| crate::store::s(r, "id") == src && crate::enforce::is_off(st, r));
+        if off || !crate::ckaudit::sources(&pl, &k).contains(&src) {
+            st.ck_unconfirming.insert((k, src));
+        }
+    }
 }
 
 pub fn replay_log(log: &Log) -> State {
@@ -1353,7 +1439,7 @@ fn open_blocking_checkpoints(
             continue;
         }
         if findings.iter().enumerate().any(|(i, f)| {
-            crate::ckreview::blocking(f) && crate::ckreview::fate(st, k, *round, i, f).is_none()
+            crate::ckreview::blocking(f) && crate::ckconfirm::holds(st, k, *round, i, f)
         }) {
             out.push(k.clone());
         }
@@ -1433,8 +1519,23 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
     let mut marked_seen = false;
     let mut parked_rounds: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
+    let mut was_gap: Option<String> = None;
     for (ix, ev) in log.events.iter().enumerate() {
         let seq = ev["seq"].as_u64().unwrap_or(0);
+        // A fix that the last event took out of `gap` is marked, so the replay can tell the moment (R-81).
+        if let Some(o) = st.ck_fix.as_mut() {
+            if was_gap.as_deref() == Some(o.checkpoint.as_str()) && o.phase == "fix" {
+                o.gap_left = ix
+                    .checked_sub(1)
+                    .and_then(|j| log.events.get(j))
+                    .map_or(0, |e| e["seq"].as_u64().unwrap_or(0));
+            }
+        }
+        was_gap = st
+            .ck_fix
+            .as_ref()
+            .filter(|o| o.phase == "gap")
+            .map(|o| o.checkpoint.clone());
         let at = ev["at"].as_str().unwrap_or("").to_string();
         let sv = |k: &str| ev.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         st.last_at = at.clone();
@@ -1847,6 +1948,10 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
             }
             "unit.start" => {
+                let ck = unit_start_checkpoint(ev);
+                if !ck.is_empty() {
+                    st.ck_first_start.entry(ck).or_insert(seq);
+                }
                 let u = st.units.entry(sv("unit")).or_default();
                 u.state = "running".into();
                 u.base_commit = sv("base_commit");
@@ -2286,8 +2391,32 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.open" => {
                 let ck = sv("checkpoint");
                 let source = sv("source");
-                let ids_named = id_pairs(&ev["finding_ids"]);
-                let findings_named = ev["findings"].as_array().cloned().unwrap_or_default();
+                let ids_all = id_pairs(&ev["finding_ids"]);
+                let findings_all = ev["findings"].as_array().cloned().unwrap_or_default();
+                // The human findings that waited for a fix and this opening takes (R-81) are judged apart: the
+                // other findings meet the rules of the way the fix was opened, as before.
+                let mut human_taken: Vec<(u32, u32)> = Vec::new();
+                let mut ids_named = ids_all.clone();
+                let mut findings_named = findings_all.clone();
+                if source != "check" && source != "wave" && ids_all.len() == findings_all.len() {
+                    let waiting = st.ck_human_wait.get(&ck).cloned().unwrap_or_default();
+                    let (mut rest_ids, mut rest_findings) = (Vec::new(), Vec::new());
+                    for ((r, i), f) in ids_all.iter().zip(&findings_all) {
+                        let own = waiting.contains(&(*r, *i))
+                            && ck_rounds
+                                .get(&(ck.clone(), *r))
+                                .and_then(|l| l.get((*i as usize).wrapping_sub(1)))
+                                == Some(f);
+                        if own {
+                            human_taken.push((*r, *i));
+                        } else {
+                            rest_ids.push((*r, *i));
+                            rest_findings.push(f.clone());
+                        }
+                    }
+                    ids_named = rest_ids;
+                    findings_named = rest_findings;
+                }
                 let mut report_round: Option<(String, u32)> = None;
                 let why: Option<&str> = if source == "check" || source == "wave" {
                     if !findings_named.is_empty() || !ids_named.is_empty() {
@@ -2417,12 +2546,66 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                                     }
                                 }
                             }
+                            "audit" => {
+                                // One fix after the audits: each finding it names is a blocking finding of a
+                                // round of an audit source, as the replay recorded it.
+                                let ok = !ids_named.is_empty()
+                                    && ids_named.len() == findings_named.len()
+                                    && ids_named.iter().zip(findings_named.iter()).all(
+                                        |((r, i), f)| {
+                                            *i >= 1
+                                                && matches!(
+                                                    f["severity"].as_str(),
+                                                    Some("critical" | "high" | "medium")
+                                                )
+                                                && ck_rounds
+                                                    .get(&(ck.clone(), *r))
+                                                    .and_then(|l| l.get(*i as usize - 1))
+                                                    == Some(f)
+                                        },
+                                    );
+                                if ok {
+                                    None
+                                } else {
+                                    Some("a fix opened after the audits names findings that differ from their rounds' or are not blocking")
+                                }
+                            }
+                            "human" => {
+                                // A fix opened for the human findings that wait: it holds at least one, and
+                                // every other finding it names is a blocking finding of an audit's round.
+                                let ok = !human_taken.is_empty()
+                                    && ids_named.len() == findings_named.len()
+                                    && ids_named.iter().zip(findings_named.iter()).all(
+                                        |((r, i), f)| {
+                                            *i >= 1
+                                                && crate::ckreview::blocking(f)
+                                                && st
+                                                    .ck_round_source
+                                                    .get(&(ck.clone(), *r))
+                                                    .is_some_and(|x| crate::ckreview::is_audit(x))
+                                                && ck_rounds
+                                                    .get(&(ck.clone(), *r))
+                                                    .and_then(|l| l.get(*i as usize - 1))
+                                                    == Some(f)
+                                        },
+                                    );
+                                if ok {
+                                    None
+                                } else {
+                                    marked_seen = true;
+                                    st.ignored.push(crate::strings::t(
+                                        "human_fix.ignored.open",
+                                        &[("seq", &seq.to_string()), ("k", &ck)],
+                                    ));
+                                    continue;
+                                }
+                            }
                             "reopen" => {
                                 // A fix reopened after an abort for the same findings keeps the human's
                                 // earlier words (R-71): it cites no turn of its own, only the latest opening
                                 // of these findings that the replay counted, which an abort has ended since;
                                 // one abort pays for one reopen. It meets every hold a pick meets.
-                                let named = id_pairs(&ev["finding_ids"]);
+                                let named = ids_named.clone();
                                 let quote = ev["human"]["quote"].as_str().unwrap_or("");
                                 let base = put_to_human_seq(&st, &ck, &named);
                                 let held = decision_bound(&st, &ck, base, seq).is_err()
@@ -2458,7 +2641,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 let mut cited: Option<u64> = None;
                 if let Some(tseq) = ev["human"]["turn"].as_u64() {
                     let quote = ev["human"]["quote"].as_str().unwrap_or("").to_string();
-                    let ids = id_pairs(&ev["finding_ids"]);
+                    let ids = ids_named.clone();
                     let base = put_to_human_seq(&st, &sv("checkpoint"), &ids);
                     let bound = match decision_bound(&st, &sv("checkpoint"), base, seq) {
                         Ok(b) => b,
@@ -2487,6 +2670,11 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 if let Some(key) = report_round {
                     report_used.insert(key);
+                }
+                if !human_taken.is_empty() {
+                    if let Some(w) = st.ck_human_wait.get_mut(&ck) {
+                        w.retain(|x| !human_taken.contains(x));
+                    }
                 }
                 let heads: Vec<(String, String)> = ev["before"]
                     .as_array()
@@ -2547,6 +2735,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                     wave: ev["wave"].as_u64().unwrap_or(0) as u32,
                     own_turn: ev["human"]["turn"].as_u64().is_some(),
                     from_saved: sv("from_saved"),
+                    confirm: ev["confirm"].as_bool().unwrap_or(false),
                     // The human's earlier words on the same findings of this checkpoint stay with the
                     // fix reopened after an abort (R-71).
                     inherited: st
@@ -2674,11 +2863,121 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 st.turns[turn_ix[&tseq]].used = true;
                 if let Some(o) = st.ck_fix.as_mut() {
+                    // From the low findings, every open finding of the fix's review goes into the fix (R-79).
+                    if o.phase == "low" {
+                        let items = crate::ckfix::open_ids(o);
+                        crate::ckfix::take_in(o, items);
+                    }
                     o.phase = "fix".into();
                     o.rounds = 0;
                     o.attempts = 0;
                     o.reason.clear();
                     o.missing.clear();
+                }
+            }
+            "checkpoint.fix.add" if ev["human"].as_bool() == Some(true) => {
+                // The human findings that wait for a fix join the open one with no turn of their own (R-81).
+                let prev = ix.checked_sub(1).and_then(|j| log.events.get(j));
+                if let Err(cause) = crate::ckhuman::replay_add(&mut st, &ck_rounds, ev, seq, prev) {
+                    st.ignored.push(cause);
+                    continue;
+                }
+            }
+            "checkpoint.fix.add" => {
+                let ck = sv("checkpoint");
+                let tseq = ev["turn"].as_u64().unwrap_or(0);
+                let Some(fx) = st
+                    .ck_fix
+                    .clone()
+                    .filter(|f| f.checkpoint == ck && matches!(f.phase.as_str(), "low" | "parked"))
+                else {
+                    st.ignored.push(format!(
+                        "event {seq}: findings were sent to a fix of {ck} that was not waiting for them (it was at work or none was open)"
+                    ));
+                    continue;
+                };
+                let pairs = id_pairs(&ev["finding_ids"]);
+                let mut items: Vec<(String, Value)> = Vec::new();
+                let mut bad: Option<String> = None;
+                for (r, i) in &pairs {
+                    let id = format!("r{r}.{i}");
+                    match ck_rounds
+                        .get(&(ck.clone(), *r))
+                        .and_then(|l| l.get((*i as usize).wrapping_sub(1)))
+                    {
+                        Some(v)
+                            if !fx.origin_ids.contains(&(*r, *i))
+                                && crate::ckreview::fate(&st, &ck, *r, *i as usize - 1, v)
+                                    .is_none() =>
+                        {
+                            items.push((id, v.clone()))
+                        }
+                        _ => bad = Some(id),
+                    }
+                }
+                let open = crate::ckfix::open_ids(&fx);
+                for x in ev["fix_findings"].as_array().into_iter().flatten() {
+                    let id = x["id"].as_str().unwrap_or("").to_string();
+                    match open.iter().find(|o| o.0 == id) {
+                        Some((_, v)) if *v == x["finding"] => items.push((id, v.clone())),
+                        _ => bad = Some(id),
+                    }
+                }
+                if let Some(id) = bad {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add names `{id}`, which is not an open finding the fix can take"
+                    ));
+                    continue;
+                }
+                if items.is_empty() {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add names no finding"
+                    ));
+                    continue;
+                }
+                let mut base = put_to_human_seq(&st, &ck, &pairs);
+                for x in ev["fix_findings"].as_array().into_iter().flatten() {
+                    let round = x["id"]
+                        .as_str()
+                        .and_then(|s| s.strip_prefix('f'))
+                        .and_then(|s| s.split_once('.'))
+                        .and_then(|(a, _)| a.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    for (r, q) in &fx.round_seqs {
+                        if *r == round {
+                            base = base.max(*q);
+                        }
+                    }
+                }
+                let bound = match decision_bound(&st, &ck, base, seq) {
+                    Ok(b) => b,
+                    Err(h) => {
+                        st.ignored.push(format!(
+                            "event {seq}: a checkpoint fix add was written while {}",
+                            h.during()
+                        ));
+                        continue;
+                    }
+                };
+                if !decision_turn_ok(
+                    &st,
+                    &turn_ix,
+                    tseq,
+                    bound,
+                    seq,
+                    &sv("quote"),
+                    Decide::Approve,
+                ) {
+                    st.ignored.push(format!(
+                        "event {seq}: a checkpoint fix add cites no valid human turn and quote, or words written before the findings were put to the human"
+                    ));
+                    continue;
+                }
+                st.turns[turn_ix[&tseq]].used = true;
+                if let Some(o) = st.ck_fix.as_mut() {
+                    crate::ckfix::take_in(o, items);
+                    o.phase = "fix".into();
+                    o.reason.clear();
                 }
             }
             "checkpoint.finding.settle" => {
@@ -2718,6 +3017,13 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 }
                 st.turns[turn_ix[&tseq]].used = true;
                 for id in ev["ids"].as_array().into_iter().flatten() {
+                    let pair = (
+                        id["round"].as_u64().unwrap_or(0) as u32,
+                        id["index"].as_u64().unwrap_or(0) as u32,
+                    );
+                    if let Some(w) = st.ck_human_wait.get_mut(&sv("checkpoint")) {
+                        w.retain(|x| *x != pair);
+                    }
                     st.ck_settled.push(CkSettled {
                         checkpoint: sv("checkpoint"),
                         round: id["round"].as_u64().unwrap_or(0) as u32,
@@ -2800,7 +3106,62 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                 st.turns[turn_ix[&tseq]].used = true;
                 *st.ck_asks.entry(sv("checkpoint")).or_insert(0) += 1;
             }
+            "checkpoint.review.open" => {
+                st.ck_round_source.insert(
+                    (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32),
+                    sv("source"),
+                );
+            }
+            "checkpoint.finding.human" => {
+                let k = sv("checkpoint");
+                let n = ev["round"].as_u64().unwrap_or(0) as u32;
+                match crate::ckhuman::judge(&st, &ck_rounds, ev, seq) {
+                    Err(cause) => {
+                        st.ignored.push(cause);
+                        continue;
+                    }
+                    Ok(tseq) => {
+                        st.ck_human_filed.insert(tseq);
+                        st.ck_human_seqs.insert(seq);
+                    }
+                }
+                st.ck_round_source
+                    .insert((k.clone(), n), crate::ckhuman::SOURCE.to_string());
+                if ev["fix"].as_bool().unwrap_or(false) {
+                    let count = ev["findings"].as_array().map_or(0, |l| l.len()) as u32;
+                    st.ck_human_wait
+                        .entry(k.clone())
+                        .or_default()
+                        .extend((1..=count).map(|i| (n, i)));
+                }
+                st.ck_round_done.push((k.clone(), n, seq));
+                ck_rounds.insert(
+                    (k, n),
+                    ev["findings"].as_array().cloned().unwrap_or_default(),
+                );
+            }
             "checkpoint.review.done" => {
+                if matches!(sv("result").as_str(), "clean" | "findings") {
+                    let n = ev["round"].as_u64().unwrap_or(0) as u32;
+                    let source = st
+                        .ck_round_source
+                        .get(&(sv("checkpoint"), n))
+                        .cloned()
+                        .unwrap_or_else(|| sv("source"));
+                    st.ck_confirms.push(CkConfirm {
+                        checkpoint: sv("checkpoint"),
+                        round: n,
+                        source,
+                        seq,
+                        confirmed: crate::store::str_list(ev, "confirmed"),
+                        still_open: ev["still_open"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|x| x["id"].as_str().unwrap_or("").to_string())
+                            .collect(),
+                    });
+                }
                 if ev["supersedes"].as_bool().unwrap_or(false) {
                     let (k, n) = (sv("checkpoint"), ev["round"].as_u64().unwrap_or(0) as u32);
                     ck_rounds.retain(|(c, r), _| !(*c == k && *r < n));
@@ -2831,6 +3192,8 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             "checkpoint.fix.abort" => {
                 if let Some(o) = st.ck_fix.take() {
                     st.ck_end_seq = seq;
+                    // The human findings the fix held or was to take are open again, with no wait (R-81).
+                    st.ck_human_wait.remove(&o.checkpoint);
                     st.ck_fix_aborts.push(CkFixAbort {
                         checkpoint: o.checkpoint.clone(),
                         ids: o.origin_ids.clone(),
@@ -2863,9 +3226,26 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                         by_file: ev["by_file"].clone(),
                         marks: ev["marks"].clone(),
                         rounds_log: o.rounds_log.clone(),
+                        history: o.history.clone(),
+                        open_seq: o.open_seq,
                         origin_failed: o.origin_failed.clone(),
                         origin_findings: o.origin_findings.clone(),
-                        ids: o.origin_ids.clone(),
+                        ids: {
+                            let mut ids = o.origin_ids.clone();
+                            if !ids.is_empty() || o.origin_findings.is_empty() {
+                                for (id, _) in o.added.iter().filter(|a| a.0.starts_with('r')) {
+                                    if let Some((r, i)) = id[1..].split_once('.') {
+                                        if let (Ok(r), Ok(i)) = (r.parse::<u32>(), i.parse::<u32>())
+                                        {
+                                            if !ids.contains(&(r, i)) {
+                                                ids.push((r, i));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ids
+                        },
                         from_round: st
                             .ck_round_done
                             .iter()
@@ -2874,6 +3254,19 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
                             .max()
                             .unwrap_or(0),
                         seq,
+                        confirm: o.confirm,
+                        before: o.before.clone(),
+                        after: ev["after"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|h| {
+                                (
+                                    h["repo"].as_str().unwrap_or("").to_string(),
+                                    h["head"].as_str().unwrap_or("").to_string(),
+                                )
+                            })
+                            .collect(),
                     });
                 }
             }
@@ -3025,6 +3418,7 @@ pub fn replay_log_with(log: &Log, words: &Words) -> State {
             }
             "checkpoint.close" => {
                 let k = sv("checkpoint");
+                st.ck_human_wait.remove(&k);
                 let merged = ev["merged"].as_bool().unwrap_or(false);
                 let e = st.closed.entry(k).or_default();
                 if e.seq == 0 {
@@ -3776,9 +4170,35 @@ pub fn pick_turn(st: &State, after_seq: u64, kind: Decide, quote: &str) -> R<(u6
     Ok((t.seq, t.text.clone()))
 }
 
+/// The checkpoint a `unit.start` belongs to: its `checkpoint` field, or for an event written before that
+/// field existed the id at the end of its `base` (the checkpoint branch, such as `bf/K-8`).
+fn unit_start_checkpoint(ev: &Value) -> String {
+    if let Some(c) = ev["checkpoint"].as_str().filter(|c| !c.is_empty()) {
+        return c.to_string();
+    }
+    let base = ev["base"].as_str().unwrap_or("");
+    let tail = base.rsplit('/').next().unwrap_or("");
+    match tail.strip_prefix("K-") {
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => tail.to_string(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_unit_start_without_a_checkpoint_field_still_gives_the_floor_of_the_human_words() {
+        let log = log_of(&[
+            ("human.turn", json!({"text":"before"})),
+            ("unit.start", json!({"unit":"U-1","base":"bf/K-8"})),
+            ("human.turn", json!({"text":"after"})),
+        ]);
+        let st = replay_log(&log);
+        assert_eq!(crate::ckhuman::words_floor(&st, "K-8"), Some(2));
+        assert_eq!(crate::ckhuman::words_floor(&st, "K-9"), None);
+    }
 
     fn ev(seq: u64, prev: &str, kind: &str, extra: Value) -> Value {
         let mut m = extra.as_object().cloned().unwrap_or_default();

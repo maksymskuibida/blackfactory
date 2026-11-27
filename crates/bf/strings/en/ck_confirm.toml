@@ -1,0 +1,35 @@
+# Strings of the confirmation of answered findings (R-78, D-160, D-62): what a finding reads as while it waits
+# for its source, the section of a round's brief that lists the answered findings, the lines of a fix's brief
+# that name the findings it answers, and the refusals of a report that names them wrongly.
+
+"ck_confirm.source.review" = "the checkpoint review"
+"ck_confirm.source.audit" = "the audit {check}"
+"ck_confirm.source.human" = "the checkpoint review (the human's own finding)"
+"ck_confirm.brief.item_human" = "- {id} [{severity}] {title}: the human wrote this finding themselves, in these words: \"{action}\". Answered by {fix}; the diff of that fix is in `{path}`."
+
+"ck_confirm.fate.answered" = "answered by {by}, waits for {source}"
+"ck_confirm.fate.by_confirmed" = "{by}, confirmed by round {round}"
+
+"ck_confirm.close.answered" = "the finding {id} ({sev}: {title}) is {fate}, and holds the close until that round names it confirmed: `bf next` gives the way on"
+
+"ck_confirm.brief.title" = "## Answered findings to confirm"
+"ck_confirm.brief.intro" = "Each finding below was filed by {source} and answered by a fix. Only this round can end it. Judge on the content now in the checkpoint whether each one is fixed. The report must name each one either in `confirmed` (its id) or in `still_open` (an object with `id` and `why`). A report that leaves one out, names one twice or names a finding that is not listed here is refused."
+"ck_confirm.brief.item" = "- {id} [{severity}] {title} ({where}). It asked: {action}. Answered by {fix}; the diff of that fix is in `{path}`."
+"ck_confirm.brief.form" = "The two lists go in the report beside `areas` and `findings`:\n\n```\n{{\"confirmed\": [\"r1.1\"], \"still_open\": [{{\"id\": \"r1.2\", \"why\": \"what is still wrong\"}}]}}\n```"
+
+
+"ck_confirm.what.report" = "report on {k} from {source}"
+"ck_confirm.what.fix_review" = "report the review of the fix of {k}"
+"ck_confirm.refuse.check" = "`bf status` shows what became of each finding."
+"ck_confirm.refuse.shape.why" = "`{field}` is not in its form: `confirmed` is a list of finding ids, and `still_open` is a list of objects with `id` and `why`"
+"ck_confirm.refuse.shape.step" = "Give `confirmed` as `[\"r1.1\"]` and `still_open` as `[{{\"id\": \"r1.2\", \"why\": \"what is still wrong\"}}]`."
+"ck_confirm.refuse.no_why.why" = "{id} is named in `still_open` with no `why`"
+"ck_confirm.refuse.no_why.step" = "Say in `why` what is still wrong with {id}."
+"ck_confirm.refuse.twice.why" = "{id} is named more than once in `confirmed` and `still_open`"
+"ck_confirm.refuse.twice.step" = "Name {id} once, in `confirmed` or in `still_open`."
+"ck_confirm.refuse.foreign.why" = "{id} is not an answered finding of {source}: only the source that filed a finding confirms it, and only once a fix has answered it"
+"ck_confirm.refuse.foreign.step" = "Leave {id} out of the report; the brief lists the findings this round confirms."
+"ck_confirm.refuse.missing.why" = "the answered finding {id} is named neither in `confirmed` nor in `still_open`"
+"ck_confirm.refuse.missing.step" = "Name {id} in `confirmed`, or in `still_open` with a `why`; each answered finding of this source needs one of the two."
+"ck_confirm.refuse.fix_review.why" = "the report names `{field}`, and a fix review ends no finding of the checkpoint"
+"ck_confirm.refuse.fix_review.step" = "Report whether the builder's work answers each finding, with a finding of your own for each that is not; the next round of the source that filed a finding confirms it. Leave `{field}` out of the report on {k}."

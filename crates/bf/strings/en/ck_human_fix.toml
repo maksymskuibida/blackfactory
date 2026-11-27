@@ -1,0 +1,24 @@
+# Strings of the fix a human finding asks for (R-81, D-169, D-170, TH-22, D-62): what a finding waits for, the
+# causes the replay gives for an opening or an add it ignores, and the lines of the briefs.
+
+"human_fix.waits.round" = "an open review or audit round of {k} must report first"
+"human_fix.waits.fix_round" = "the fix of {k} is at work: they join its next round, when its review has reported"
+"human_fix.waits.sync" = "a sync of the main branch into a checkpoint is open"
+"human_fix.waits.other_fix" = "a fix of another checkpoint is open"
+"human_fix.waits.units" = "a unit of {k} has not landed"
+"human_fix.waits.run" = "no run is active"
+"human_fix.waits.plan_gate" = "the plan gate is not approved"
+"human_fix.waits.budget" = "the budget cap is reached"
+"human_fix.waits.check" = "a check of {k} is marked unreachable and waits for the human"
+
+"human_fix.next.note" = "{k}: the human findings {ids} wait for a fix, because {reason}. The fix opens by itself at the first point nothing holds it; no step is needed."
+
+"human_fix.ignored.open" = "event {seq}: a fix of {k} opened for the human's findings holds no human finding that waits for a fix, or names a finding that is no blocking finding of an audit"
+"human_fix.ignored.add.none" = "event {seq}: human findings were added to the fix of {k}, but at least one is not waiting for a fix or is no open finding of the human"
+"human_fix.ignored.add.nofix" = "event {seq}: human findings were added to a fix of {k}, but no fix of {k} is open"
+"human_fix.ignored.add.step" = "event {seq}: human findings were added to the fix of {k} at the step `{step}`, which does not match the state the fix was in at that point"
+
+"human_fix.brief.title" = "Findings of the human, outside the stored design"
+"human_fix.brief.intro.builder" = "The human wrote each finding below themselves and asked for a fix, after this fix was opened. They are no part of the design stored for this fix. Fix each one with the rest and answer it in your report; the words are the human's."
+"human_fix.brief.intro.reviewer" = "The human wrote each finding below themselves and asked for a fix, after this fix was opened. They are no part of the design stored for this fix. Judge the builder's work on each one like on every finding the fix holds, and file a finding of your own for each one that is not answered."
+"human_fix.brief.item" = "{id} (filed by the human) [{severity}]. The human wrote: {action}"

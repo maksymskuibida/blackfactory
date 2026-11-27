@@ -167,7 +167,7 @@ fn the_areas_are_kept_with_the_review_shown_on_the_page_and_given_to_the_next_re
     assert_eq!(round["areas"][0]["area"], "the close rule", "{st}");
     assert_eq!(round["areas"][1]["how"], "built and run", "{st}");
     let page = fx.must(&["view", "checkpoint", "K-1"]).json();
-    let body = page["sections"][0]["rows"]
+    let body = page["sections"].as_array().unwrap().iter().find(|s| s["id"] == "proofs").unwrap()["rows"]
         .as_array()
         .unwrap()
         .iter()
@@ -240,7 +240,7 @@ fn the_first_review_is_cold_and_a_repeat_one_gets_the_report_the_fates_and_the_d
     );
     assert!(md.contains("whole checkpoint"), "{md}");
     assert!(
-        md.contains("first problem") && md.contains("Outcome: fixed by"),
+        md.contains("first problem") && md.contains("Outcome: answered by"),
         "{md}"
     );
     assert!(md.contains("Outcome: declined: that is the design"), "{md}");
@@ -263,7 +263,7 @@ fn the_first_review_is_cold_and_a_repeat_one_gets_the_report_the_fates_and_the_d
     // A repeat review does not file again what was declined.
     let o = report(
         &fx,
-        json!({"areas": areas(), "findings": [finding("second problem", "high")]}),
+        json!({"areas": areas(), "findings": [finding("second problem", "high")], "confirmed": ["r1.1"]}),
     );
     assert_ne!(o.code, 0, "{}", o.all());
     assert!(o.stderr.contains("declined"), "{}", o.stderr);
@@ -350,9 +350,16 @@ fn a_checkpoint_cannot_close_while_a_high_or_medium_finding_of_its_latest_review
     project(&fx);
     for (round, severity) in ["high", "medium", "critical"].into_iter().enumerate() {
         brief_text(&fx);
+        // The review confirms the finding the fix before it answered (R-78).
+        let confirmed: Vec<String> = if round == 0 {
+            vec![]
+        } else {
+            vec![format!("r{round}.1")]
+        };
         let o = report(
             &fx,
-            json!({"areas": areas(), "findings": [finding(&format!("open one {severity}"), severity)]}),
+            json!({"areas": areas(), "findings": [finding(&format!("open one {severity}"), severity)],
+                   "confirmed": confirmed}),
         );
         assert_eq!(o.code, 0, "{}", o.all());
         // The fix opened for the finding is open: the close names it.
@@ -477,9 +484,11 @@ fn a_bare_reviewer_report_opens_no_fix_with_no_round_open_and_never_lifts_a_park
     // Park the checkpoint with two reviews.
     for title in ["one", "two"] {
         brief_text(&fx);
+        // The second review confirms the finding the fix after the first answered (R-78).
+        let confirmed: Vec<&str> = if title == "one" { vec![] } else { vec!["r1.1"] };
         let o = report(
             &fx,
-            json!({"areas": areas(), "findings": [finding(title, "high")]}),
+            json!({"areas": areas(), "findings": [finding(title, "high")], "confirmed": confirmed}),
         );
         assert_eq!(o.code, 0, "{}", o.all());
         if title == "one" {
@@ -517,7 +526,7 @@ fn the_checkpoint_parks_after_the_set_number_of_reviews_and_only_the_human_relea
     brief_text(&fx);
     let o = report(
         &fx,
-        json!({"areas": areas(), "findings": [finding("two", "medium")]}),
+        json!({"areas": areas(), "findings": [finding("two", "medium")], "confirmed": ["r1.1"]}),
     );
     assert_eq!(o.code, 0, "{}", o.all());
     // Two reviews with a medium finding open: parked, no fix, no third brief.
@@ -747,5 +756,6 @@ fn a_finding_is_fixed_by_the_unit_whose_files_the_fix_changed() {
         &["report", "K-1", "--role", "reviewer", "--result", "built"],
     );
     let md = brief_text(&fx);
-    assert!(md.contains("Outcome: fixed by U-1"), "{md}");
+    // The fix answers the finding; the next review confirms it fixed (R-78).
+    assert!(md.contains("Outcome: answered by U-1"), "{md}");
 }

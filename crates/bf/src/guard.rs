@@ -5065,6 +5065,114 @@ fn unblock_denial(agent: &str, cmd: &str) -> Option<Decision> {
     }
 }
 
+/// Does a cargo alias that the line sets (`CARGO_ALIAS_X=...`, `export CARGO_ALIAS_X=...`,
+/// `--config alias.x=...`) hold `--human` or `checkpoint finding`, or is its value unreadable?
+fn alias_value_hides_filing(cmd: &str) -> bool {
+    let hides = |v: &str| {
+        let v = v.to_ascii_lowercase();
+        v.contains("--human")
+            || v.contains('$')
+            || v.contains('`')
+            || (v.contains("checkpoint") && v.contains("finding"))
+    };
+    crate::shellparse::commands(cmd).iter().any(|p| {
+        let mut k = 0;
+        while k < p.words.len() {
+            let w = p.words[k].as_str();
+            if w.to_ascii_uppercase().starts_with("CARGO_ALIAS_") {
+                if let Some((_, v)) = w.split_once('=') {
+                    if hides(v) {
+                        return true;
+                    }
+                }
+            } else if w == "--config" {
+                if let Some(v) = p.words.get(k + 1) {
+                    if (v.contains("alias") && hides(v)) || !v.contains('=') {
+                        return true;
+                    }
+                }
+            } else if let Some(v) = w.strip_prefix("--config=") {
+                if (v.contains("alias") && hides(v)) || !v.contains('=') {
+                    return true;
+                }
+            }
+            k += 1;
+        }
+        false
+    })
+}
+
+/// `bf checkpoint finding --human` is the conductor's own step (R-81, D-170, TH-22): a call whose
+/// payload names an agent type (every subagent, in a working copy or in the workspace) is refused,
+/// also when its words before the subcommand cannot be read. A stated limit: the guard trusts the
+/// harness's agent type as for `bf unit unblock`, so a second top-level session that the harness
+/// does not mark as a subagent cannot be told from the conductor; the quote rule binds it.
+///
+/// A cargo alias call (an alias assignment, `export`, or `--config`) is refused for an agent when any
+/// word after the program is read at run time: the alias name is then the first plain word, and the
+/// words behind it may be `run -- checkpoint finding K-1 --human`. A `--config` that is not KEY=VALUE
+/// names a TOML file the line cannot read, and is refused as opaque. A stated limit: an alias in a
+/// `.cargo/config.toml` in the tree is beyond what a line can show, and is not covered.
+fn human_finding_denial(agent: &str, cmd: &str) -> Option<Decision> {
+    let t = |k: &str| crate::strings::t(k, &[("agent", agent)]);
+    let calls = crate::shellparse::engine_calls(cmd);
+    let human = |c: &crate::shellparse::Call| {
+        c.words
+            .iter()
+            .any(|w| w == "--human" || w.starts_with("--human="))
+    };
+    let plain_of =
+        |c: &crate::shellparse::Call| crate::cli::Args::parse(c.words.get(1..).unwrap_or(&[])).pos;
+    if calls.iter().any(|c| {
+        let plain = plain_of(c);
+        plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("finding")
+            && human(c)
+    }) {
+        return Some(deny(
+            &t("human_finding.guard.refused"),
+            &t("human_finding.guard.because"),
+            &[&t("human_finding.guard.step")],
+            &t("human_finding.guard.worked"),
+        ));
+    }
+    let finding_call = |c: &crate::shellparse::Call| {
+        let plain = plain_of(c);
+        plain.first().map(|x| x.as_str()) == Some("checkpoint")
+            && plain.get(1).map(|x| x.as_str()) == Some("finding")
+    };
+    if calls.iter().any(|c| {
+        // A run-time word before the subcommand (also as a flag value the parser drops from the plain
+        // words) may expand to `checkpoint finding --human`, so no literal `--human` is needed.
+        run_time_before_subcommand(c.words.get(1..).unwrap_or(&[]))
+            || (c.group && human(c))
+            // A cargo alias call hides its words in the alias value: refuse it when the value holds
+            // `--human` or `checkpoint finding`, or cannot be read (built at run time).
+            || (c.cargo
+                && c.group
+                && (alias_value_hides_filing(cmd)
+                    || c.words.iter().skip(1).any(|w| run_time_word(w))))
+            // A word read at run time anywhere in a `checkpoint finding` call may be `--human`.
+            || (finding_call(c) && c.words.iter().skip(1).any(|w| run_time_word(w)))
+            // The subcommand itself read at run time (`bf $C finding K-1 $F`, `bf checkpoint $S K-1 $F`)
+            // is enough by itself: one run-time word can expand to `finding --human`.
+            || {
+                let plain = plain_of(c);
+                plain.first().is_some_and(|x| run_time_word(x))
+                    || (plain.first().map(|x| x.as_str()) == Some("checkpoint")
+                        && plain.get(1).is_some_and(|x| run_time_word(x)))
+            }
+    }) {
+        return Some(deny(
+            &t("human_finding.guard.opaque.refused"),
+            &t("human_finding.guard.opaque.because"),
+            &[&t("human_finding.guard.opaque.step")],
+            &t("human_finding.guard.opaque.worked"),
+        ));
+    }
+    None
+}
+
 /// Is a call one of `bf unit unblock`, or one that may be it because its words before the
 /// subcommand cannot be read?
 fn is_unblock_call(c: &crate::shellparse::Call) -> bool {
@@ -6514,8 +6622,16 @@ pub fn decide(input: &Value, table: &Value) -> Decision {
             return d;
         }
     }
+    // The design refusal comes first, so a design type keeps the refusal it names for a call.
     if tool == "Bash" && design::binds(agent_type(input)) {
         if let Some(d) = design::shell_denial(ti["command"].as_str().unwrap_or(""), &cwd, table) {
+            return d;
+        }
+    }
+    if tool == "Bash" && !agent_type(input).is_empty() {
+        if let Some(d) =
+            human_finding_denial(agent_type(input), ti["command"].as_str().unwrap_or(""))
+        {
             return d;
         }
     }

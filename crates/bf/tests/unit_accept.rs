@@ -156,20 +156,19 @@ fn a_low_accepted_while_a_high_stays_open_parks_the_unit_and_the_high_accepted_l
 }
 
 #[test]
-fn an_accept_naming_only_records_only_findings_is_refused_before_anything_is_written() {
+fn an_accept_naming_only_records_only_findings_is_taken_and_the_unit_stays_parked() {
     let fx = parked();
     finding(&fx, "F-3", "medium");
     fx.human(WORDS);
-    let before = std::fs::read_to_string(fx.project().log_path()).unwrap();
-    let o = fx.refused(&["unit", "accept", "U-1", "F-3", "--quote", WORDS]);
-    assert!(o.all().contains("release"), "{}", o.all());
-    assert_eq!(outcome(&fx, "F-3"), "");
-    assert_eq!(state_of(&fx, "U-1"), "parked");
-    let after = std::fs::read_to_string(fx.project().log_path()).unwrap();
-    assert_eq!(before, after);
-    // With a log-listed finding named too, the records-only one is covered.
-    fx.must(&["unit", "accept", "U-1", "F-1,F-2,F-3", "--quote", WORDS]);
+    let o = fx
+        .must(&["unit", "accept", "U-1", "F-3", "--quote", WORDS, "--json"])
+        .json();
+    assert_eq!(o["state"], "parked", "{o}");
     assert_eq!(outcome(&fx, "F-3"), "accepted");
+    assert_eq!(state_of(&fx, "U-1"), "parked");
+    // The rest, in a new message: the unit is reviewed.
+    fx.human(LATER);
+    fx.must(&["unit", "accept", "U-1", "F-1,F-2", "--quote", LATER]);
     assert_eq!(state_of(&fx, "U-1"), "reviewed");
 }
 

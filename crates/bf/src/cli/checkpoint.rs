@@ -106,6 +106,8 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
                     ),
                     None => crate::strings::t("cli.ckfix.abort.done", &[("k", k)]),
                 }
+            } else if let Some(m) = v["message"].as_str() {
+                m.to_string()
             } else {
                 crate::strings::t("cli.ckfix.release.done", &[("k", k)])
             }
@@ -204,6 +206,18 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         let k = args.pos_at(2, "a checkpoint ID")?;
         let quote = args.flag("quote").unwrap_or("");
         let reason = args.flag("reason").unwrap_or("");
+        if args.has("human") {
+            let items = human_items(&p, args, k)?;
+            let v = crate::ckhuman::file(
+                &p,
+                k,
+                &items,
+                args.has("fix"),
+                args.flag("fix-quote").unwrap_or(""),
+            )?;
+            out(args, &v, || crate::ckhuman::done_line(k, &v));
+            return Ok(());
+        }
         let v = if let Some(ids) = args.flag("fix-findings") {
             crate::ckreview::fix_chosen(&p, k, ids, quote)?
         } else if let Some(ids) = args.flag("accept") {
@@ -323,4 +337,50 @@ pub(crate) fn cmd_checkpoint(args: &Args) -> R<()> {
         t
     });
     Ok(())
+}
+
+/// The findings a human filing names: `--quote` with an optional `--severity`, or `--findings -` (standard
+/// input) or `--findings <file>` with a JSON list of `{quote, severity}`.
+fn human_items(p: &crate::store::Project, args: &Args, k: &str) -> R<Vec<crate::ckhuman::Item>> {
+    let bad = |e: String| {
+        refuse_owned(
+            crate::strings::t("ck_human.what", &[("k", k)]),
+            crate::strings::t("ck_human.stdin.why", &[("e", &e)]),
+            vec![crate::strings::t("ck_human.stdin.step", &[])],
+            crate::strings::t("ck_human.check", &[]),
+        )
+    };
+    let Some(src) = args.flag("findings") else {
+        let Some(q) = args.flag("quote") else {
+            return Err(refuse_owned(
+                crate::strings::t("ck_human.what", &[("k", k)]),
+                crate::strings::t("ck_human.usage.why", &[]),
+                vec![crate::strings::t("ck_human.usage.step", &[])],
+                crate::strings::t("ck_human.check", &[]),
+            ));
+        };
+        return Ok(vec![(
+            q.to_string(),
+            args.flag("severity").map(String::from),
+        )]);
+    };
+    let v: Value = if src == "-" {
+        serde_json::from_str(&super::read_stdin()).map_err(|e| bad(e.to_string()))?
+    } else {
+        super::read_data_in(p, src)?
+    };
+    let Some(list) = v.as_array() else {
+        return Err(bad(String::new()));
+    };
+    list.iter()
+        .map(|x| {
+            if !x.is_object() {
+                return Err(bad(String::new()));
+            }
+            Ok((
+                s(x, "quote").to_string(),
+                x.get("severity").and_then(|v| v.as_str()).map(String::from),
+            ))
+        })
+        .collect()
 }

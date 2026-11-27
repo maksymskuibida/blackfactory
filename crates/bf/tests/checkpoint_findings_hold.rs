@@ -160,12 +160,16 @@ fn a_finding_filed_again_is_open_on_its_own_and_the_close_is_refused() {
         &["report", "K-1", "--role", "reviewer", "--result", "built"],
     );
     assert!(
-        fates(&fx, 1)[0].starts_with("fixed by"),
+        fates(&fx, 1)[0].starts_with("answered by"),
         "{:?}",
         fates(&fx, 1)
     );
     brief(&fx);
-    let o = report(&fx, json!({"areas": areas(), "findings": [high()]}));
+    // The review confirms r1.1 fixed and files the same finding again: that one is a new finding.
+    let o = report(
+        &fx,
+        json!({"areas": areas(), "findings": [high()], "confirmed": ["r1.1"]}),
+    );
     assert_eq!(o.code, 0, "{}", o.all());
     let f = fates(&fx, 2);
     eprintln!("round 2 fate: {f:?}");
@@ -285,7 +289,10 @@ fn after_a_release_an_aborted_fix_leaves_the_released_finding_open_and_the_human
     let mut medium = high();
     medium["title"] = json!("the second answer is wrong");
     medium["severity"] = json!("medium");
-    let o = report(&fx, json!({"areas": areas(), "findings": [medium]}));
+    let o = report(
+        &fx,
+        json!({"areas": areas(), "findings": [medium], "confirmed": ["r1.1"]}),
+    );
     assert_eq!(o.code, 0, "{}", o.all());
     let d = directives(&fx);
     assert!(d.contains(&"decide-checkpoint-review".to_string()), "{d:?}");
@@ -516,7 +523,7 @@ pub(crate) fn require_sandbox_for_states() {
 /// `fixture_state_copy`: a copy of each state of this file passes the canary (in `state_copy`) and fixes
 /// or reopens as the same state built through the full `bf` calls in the test does.
 pub(crate) fn copies_behave_as_their_sources() {
-    // The started state fixes: a high finding, its fix passes, and the finding is fixed by it.
+    // The started state fixes: a high finding, its fix passes, and the finding is answered by it.
     let fix = |fx: &Fx| -> Vec<String> {
         brief(fx);
         let o = report(fx, json!({"areas": areas(), "findings": [high()]}));
@@ -529,7 +536,7 @@ pub(crate) fn copies_behave_as_their_sources() {
     let src_fates = fix(&src);
     let fx = started();
     let copy_fates = fix(&fx);
-    assert!(copy_fates[0].starts_with("fixed by"), "{copy_fates:?}");
+    assert!(copy_fates[0].starts_with("answered by"), "{copy_fates:?}");
     assert_eq!(copy_fates, src_fates);
     assert_eq!(
         fs::read_to_string(fx.work("K-1").join("src/a.txt")).unwrap(),

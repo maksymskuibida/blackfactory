@@ -1,0 +1,49 @@
+# Strings of the findings the human files on a checkpoint in their own words (R-81, D-169, D-170, TH-22, D-62):
+# the refusals of the command, the causes the replay gives for an event it ignores, and the lines the command
+# and the close print.
+
+"ck_human.what" = "file a finding of {k} in the human's words"
+"ck_human.check" = "`bf status` shows the finding with the human's words."
+
+"ck_human.usage.why" = "a human finding needs `--human` with `--quote` (one finding) or `--findings -` (a JSON list of objects with `quote` and `severity`)"
+"ck_human.usage.step" = "Run `bf checkpoint finding <K> --human --quote \"<the human's words>\" [--severity critical|high|medium|low]`, or give `--human --findings -` a list such as `[{{\"quote\": \"<their words>\", \"severity\": \"medium\"}}]` on standard input."
+
+"ck_human.not_checkpoint.why" = "{k} is no checkpoint of the plan"
+"ck_human.not_checkpoint.step" = "Name a checkpoint the plan lists; `bf status` shows them."
+
+"ck_human.closed.why" = "{k} is closed (log event {seq}): a new finding of a closed checkpoint goes to an amendment, not to the checkpoint"
+"ck_human.closed.step" = "Take the human's words to an amendment; `bf next` shows how one is asked for."
+
+"ck_human.severity.why" = "`{severity}` is no severity: a finding is critical, high, medium or low"
+"ck_human.severity.step" = "Give `--severity` one of critical, high, medium or low, or leave it out for high."
+
+"ck_human.empty.why" = "no finding was given: the list is empty or a quote is empty"
+"ck_human.empty.step" = "Give each finding the human's words in `quote`."
+
+"ck_human.stdin.why" = "the findings are not a JSON list of objects with `quote` and `severity`: {e}"
+"ck_human.stdin.step" = "Give a list such as `[{{\"quote\": \"<their words>\", \"severity\": \"medium\"}}]`."
+
+"ck_human.fix_quote.why" = "`--fix` asks for a fix and needs `--fix-quote` with the words of the same message that ask for it; `--fix-quote` without `--fix` asks for nothing"
+"ck_human.fix_quote.step" = "Give both, or neither."
+
+"ck_human.words.no_floor.why" = "no unit of {k} has started yet, so no message of the human can be filed from"
+"ck_human.words.no_floor.step" = "File the finding after the first unit of {k} started, from a message the human writes then."
+"ck_human.words.none.why" = "no message of the human was recorded after the first unit of {k} started (log event {floor}) that no finding was filed from"
+"ck_human.words.none.step" = "Ask the human in chat for their finding in a new message, in their own words. The hook records it with `bf human-turn`; check with `bf log --tail 5`. Then run the command again with `--quote` set to their words."
+"ck_human.words.filed.why" = "those words are in a message a finding was already filed from (message {turn}): one message files once"
+"ck_human.words.filed.step" = "Ask the human for a new message with the finding, in their own words, and run the command again with `--quote` set to the words of that message."
+"ck_human.words.floor.why" = "those words are in a message written before the first unit of {k} started (log event {floor}): they cannot be filed"
+"ck_human.words.floor.step" = "Ask the human again in a new message, in their own words, and run the command again with `--quote` set to the words of that message."
+"ck_human.words.absent.why" = "the quote is in no message of the human after the first unit of {k} started that no finding was filed from; the newest says: \"{last}\""
+"ck_human.words.absent.step" = "Copy the human's words from their message exactly, and run the command again with `--quote`; every quote of one filing, and the words that ask for a fix, must lie in the same message."
+
+"ck_human.done" = "{k}: {n} finding(s) of the human filed as round {round}: {ids}"
+"ck_human.done.fix" = "{k}: {n} finding(s) of the human filed as round {round}: {ids}; a fix was asked for with them"
+
+"ck_human.ignored.closed" = "event {seq}: a finding the human filed names {k}, which was closed"
+"ck_human.ignored.round" = "event {seq}: a finding the human filed names round {round} of {k}, which is taken"
+"ck_human.ignored.existing" = "event {seq}: a finding the human filed names a finding that {k} already has"
+"ck_human.ignored.turn" = "event {seq}: a finding the human filed cites no valid message of the human (one after the first unit of {k} started, not filed from before, holding every quote)"
+"ck_human.ignored.shape" = "event {seq}: a finding the human filed has findings that are not the human's words, or none"
+
+"ck_human.close.open" = "the finding {id} ({sev}: {title}) that the human wrote themselves is still open and holds the close: `bf next` gives the way on"
