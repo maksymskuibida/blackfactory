@@ -2409,6 +2409,9 @@ pub fn release(p: &Project, k: &str, quote: &str) -> R<Value> {
         "checkpoint.review.release",
         json!({"checkpoint": k, "after_round": last.round, "turn": turn, "quote": quote.trim()}),
     )?;
+    // The fix counts only once this release follows its opening, so its files go to the guard now: the
+    // overlay written while the fix opened saw no fix yet and was removed.
+    crate::ckfix::write_overlay(p)?;
     p.write_guard()?;
     Ok(json!({"checkpoint": k, "released": true, "fix_opened": true}))
 }

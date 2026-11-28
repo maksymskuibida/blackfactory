@@ -669,6 +669,9 @@ pub fn next(p: &Project) -> R<Value> {
         crate::ckfix::maybe_open(p)?;
         // A wave check that failed gets a fix too, held to the units that landed since the last pass.
         crate::wavecheck::maybe_open(p)?;
+        // The guard's file set of an open checkpoint fix follows the log, so an overlay that a command
+        // left out of date (or removed) is put right before a builder is sent to the fix.
+        crate::ckfix::write_overlay(p)?;
     }
     let st0 = events::require_chain(p)?;
     let design_only = st0.active_run().is_none() && !st0.gate_passed("plan", None);
