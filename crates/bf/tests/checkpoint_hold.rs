@@ -1520,3 +1520,42 @@ fn the_review_switch_off_bound_names_the_checkpoint_whose_hold_refuses() {
     }
     assert!(bf::events::review_off_bound(&st, &open[..1], 1, u64::MAX).is_ok(), "K-1 alone has no hold");
 }
+
+/// A builder's edit of `rel` in the checkpoint's working copy, judged by the guard as the hook calls it.
+fn builder_edit_allowed(fx: &Fx, rel: &str) -> bool {
+    let wc = fx.work("K-1");
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "cwd": wc.to_string_lossy(),
+        "agent_type": "builder",
+        "tool_input": {"file_path": wc.join(rel).to_string_lossy(), "old_string": "a", "new_string": "b"},
+    });
+    let root = fx.root.to_string_lossy().to_string();
+    let o = fx.bf_stdin(&fx.root, &["guard", "--root", &root], &payload.to_string());
+    !o.stdout.contains("\"deny\"")
+}
+
+// A fix opened by the release of a parked review hands its files to the guard: the overlay is written after
+// the release event, so the fix's builder may edit the files of the checkpoint's units. A `bf next` puts an
+// overlay that is missing back.
+#[test]
+fn a_fix_opened_by_a_review_release_lets_its_builder_write() {
+    let fx = setup(PASS);
+    fx.set_policy("checkpoint_reviews = 3", "checkpoint_reviews = 1");
+    report(&fx, json!([f("high", "the answer is wrong")]));
+    fx.human("Release it, please.");
+    let o = release_review(&fx, "Release it, please.");
+    say("release the parked review", &o);
+    assert_eq!(o.code, 0, "{}", o.all());
+    let overlay = fx.state_dir().join("ckfix.json");
+    let body: Value = serde_json::from_str(&fs::read_to_string(&overlay).expect("the overlay is written")).unwrap();
+    assert_eq!(body["body"]["checkpoint"], "K-1", "{body}");
+    assert!(builder_edit_allowed(&fx, "src/a.txt"), "the fix's builder may edit a file of K-1's units");
+    // An overlay that went missing is put back by the next read of the directives.
+    fs::remove_file(&overlay).unwrap();
+    assert!(!builder_edit_allowed(&fx, "src/a.txt"), "with no overlay the edit is refused");
+    fx.must(&["next", "--json"]);
+    assert!(overlay.exists(), "bf next writes the overlay again");
+    assert!(builder_edit_allowed(&fx, "src/a.txt"), "and the edit is allowed again");
+}
